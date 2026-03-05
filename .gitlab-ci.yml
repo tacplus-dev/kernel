@@ -1,0 +1,70 @@
+stages:
+  - build
+  - package
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository -Daether.connector.http.retryHandler.count=5"
+  IMAGE_NAME: $CI_REGISTRY_IMAGE/elvis
+  TACPLUS_VERSION: v1.0.0
+  TACPLUS_PROJECT_ID: "78207479"
+  PROTO_REPO: https://gitlab.com/secondstarcavalier/controlplane/services/proto.git
+
+.maven-cache: &maven-cache
+  cache:
+    key: maven-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .m2/repository
+
+build:
+  stage: build
+  image: maven:3-eclipse-temurin-21
+  <<: *maven-cache
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git protobuf-compiler > /dev/null
+    # Configure git to use CI job token for private repos
+    - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
+    # Download tacplus binary from generic package registry
+    - |
+      curl --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+           -fsSL -o /usr/local/bin/tacplus \
+           "${CI_API_V4_URL}/projects/${TACPLUS_PROJECT_ID}/packages/generic/tacplus/${TACPLUS_VERSION}/tacplus-linux-amd64"
+      chmod +x /usr/local/bin/tacplus
+    # Clone proto source and point tacplus.yaml at it
+    - |
+      git clone --depth 1 "$PROTO_REPO" /tmp/proto
+      sed -i "s|^src:.*|src: /tmp/proto|" tacplus.yaml
+  script:
+    - |
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        VERSION="${CI_COMMIT_TAG#v}"
+        mvn versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false -s ci_settings.xml
+      fi
+    - mvn package -DskipTests -B -s ci_settings.xml
+  artifacts:
+    paths:
+      - target/elvis-*.jar
+      - "!target/original-*"
+    expire_in: 1 hour
+
+docker:
+  stage: package
+  image: docker:latest
+  services:
+    - docker:dind
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - |
+      VERSION="${CI_COMMIT_TAG#v}"
+      MAJOR_MINOR="${VERSION%.*}"
+      JAR_FILE="target/elvis-${VERSION}.jar"
+
+      docker build --build-arg JAR_FILE="$JAR_FILE" -t "$IMAGE_NAME:$VERSION" .
+      docker tag "$IMAGE_NAME:$VERSION" "$IMAGE_NAME:$MAJOR_MINOR"
+      docker tag "$IMAGE_NAME:$VERSION" "$IMAGE_NAME:latest"
+
+      docker push "$IMAGE_NAME:$VERSION"
+      docker push "$IMAGE_NAME:$MAJOR_MINOR"
+      docker push "$IMAGE_NAME:latest"

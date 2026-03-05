@@ -286,7 +286,7 @@ public class Main {
                 return args[i + 1];
             }
         }
-        // Fall back to BOOTSTRAP_CONFIG env var (consistent with fleetwood, ironmaiden, etc.)
+        // Fall back to BOOTSTRAP_CONFIG env var (consistent with sentinel, identity, etc.)
         String env = System.getenv("BOOTSTRAP_CONFIG");
         if (env != null && !env.isEmpty()) {
             return env;

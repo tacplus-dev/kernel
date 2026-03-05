@@ -1,13 +1,13 @@
 FROM eclipse-temurin:21-jre
 
-RUN groupadd -r elvis && useradd -r -g elvis elvis
+RUN groupadd -r kernel && useradd -r -g kernel kernel
 
 WORKDIR /app
 
-COPY target/elvis.jar /app/elvis.jar
-COPY elvis /app/elvis
-RUN chmod +x /app/elvis && mkdir -p /app/data && chown elvis:elvis /app/data
+COPY target/kernel.jar /app/kernel.jar
+COPY kernel /app/kernel
+RUN chmod +x /app/kernel && mkdir -p /app/data && chown kernel:kernel /app/data
 
-USER elvis
+USER kernel
 
-ENTRYPOINT ["/app/elvis"]
+ENTRYPOINT ["/app/kernel"]

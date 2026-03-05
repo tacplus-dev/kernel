@@ -4,7 +4,7 @@ stages:
 
 variables:
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository -Daether.connector.http.retryHandler.count=5"
-  IMAGE_NAME: $CI_REGISTRY_IMAGE/elvis
+  IMAGE_NAME: $CI_REGISTRY_IMAGE/kernel
   TACPLUS_VERSION: v1.0.0
   TACPLUS_PROJECT_ID: "78207479"
   PROTO_REPO: https://gitlab.com/secondstarcavalier/controlplane/services/proto.git
@@ -42,7 +42,7 @@ build:
     - mvn package -DskipTests -B -s ci_settings.xml
   artifacts:
     paths:
-      - target/elvis-*.jar
+      - target/kernel-*.jar
       - "!target/original-*"
     expire_in: 1 hour
 
@@ -59,7 +59,7 @@ docker:
     - |
       VERSION="${CI_COMMIT_TAG#v}"
       MAJOR_MINOR="${VERSION%.*}"
-      JAR_FILE="target/elvis-${VERSION}.jar"
+      JAR_FILE="target/kernel-${VERSION}.jar"
 
       docker build --build-arg JAR_FILE="$JAR_FILE" -t "$IMAGE_NAME:$VERSION" .
       docker tag "$IMAGE_NAME:$VERSION" "$IMAGE_NAME:$MAJOR_MINOR"

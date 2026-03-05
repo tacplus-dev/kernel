@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
-	<groupId>com.gitlab.secondstarcavalier.controlplane.services.elvis</groupId>
-	<artifactId>elvis</artifactId>
+	<groupId>com.gitlab.secondstarcavalier.controlplane.services.kernel</groupId>
+	<artifactId>kernel</artifactId>
 	<version>1.0.0</version>
 	<packaging>jar</packaging>
-	<name>Elvis Server</name>
-	<description>Elvis distributed state server</description>
+	<name>Kernel Server</name>
+	<description>Kernel distributed state server</description>
 	<properties>
 		<maven.compiler.release>21</maven.compiler.release>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -313,8 +313,8 @@
 				<configuration>
 					<protoDir>${project.build.directory}/generated-sources/tacplus/proto-annotated</protoDir>
 					<outputDir>${project.build.directory}/generated-sources/tacplus-backend</outputDir>
-					<javaPackageBase>com.gitlab.secondstarcavalier.controlplane.services.elvis.tacplusbackend</javaPackageBase>
-					<peerContextClass>com.gitlab.secondstarcavalier.controlplane.services.elvis.cluster.PeerContext</peerContextClass>
+					<javaPackageBase>com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend</javaPackageBase>
+					<peerContextClass>com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster.PeerContext</peerContextClass>
 					<!-- typesPackageBase, interfacesPackage read from codegen-config.json -->
 				</configuration>
 			</plugin>
@@ -348,10 +348,10 @@
 							<goal>shade</goal>
 						</goals>
 						<configuration>
-							<finalName>elvis</finalName>
+							<finalName>kernel</finalName>
 							<transformers>
 								<transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-									<mainClass>com.gitlab.secondstarcavalier.controlplane.services.elvis.Main</mainClass>
+									<mainClass>com.gitlab.secondstarcavalier.controlplane.services.kernel.Main</mainClass>
 								</transformer>
 								<transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
 							</transformers>
@@ -396,7 +396,7 @@
 									<finalName>mock-cluster</finalName>
 									<transformers>
 										<transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-											<mainClass>com.gitlab.secondstarcavalier.controlplane.services.elvis.Main</mainClass>
+											<mainClass>com.gitlab.secondstarcavalier.controlplane.services.kernel.Main</mainClass>
 										</transformer>
 										<transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
 									</transformers>
@@ -419,7 +419,7 @@
 						<artifactId>exec-maven-plugin</artifactId>
 						<version>${exec-plugin.version}</version>
 						<configuration>
-							<mainClass>com.gitlab.secondstarcavalier.controlplane.services.elvis.Main</mainClass>
+							<mainClass>com.gitlab.secondstarcavalier.controlplane.services.kernel.Main</mainClass>
 						</configuration>
 					</plugin>
 				</plugins>

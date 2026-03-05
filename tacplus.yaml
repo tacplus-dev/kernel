@@ -1,4 +1,4 @@
 language: java-maven
 src: /Users/jody/workspace/services/proto
 tag: latest
-pkg: com.gitlab.secondstarcavalier.controlplane.services.elvis
+pkg: com.gitlab.secondstarcavalier.controlplane.services.kernel

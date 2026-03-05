@@ -1,23 +1,23 @@
-# Elvis
+# Kernel
 
-Elvis is the distributed backend database for the control plane. It provides
+Kernel is the distributed backend database for the control plane. It provides
 clustered state management over gRPC, built on Hazelcast, with persistence,
 security, real-time diagnostics, and a built-in token exchange service.
 
-Every elvis instance runs as a Hazelcast cluster node, a gRPC server, a
-persistence manager, and a security enforcer. Microservices connect to elvis
+Every kernel instance runs as a Hazelcast cluster node, a gRPC server, a
+persistence manager, and a security enforcer. Microservices connect to kernel
 to read and write distributed state via auto-generated gRPC clients.
 
-## Why "Elvis"
+## Why "Kernel"
 
-The service's formal name in proto definitions is `BackendDB`. Elvis is the
+The service's formal name in proto definitions is `BackendDB`. Kernel is the
 internal code name used everywhere else.
 
 ## Architecture
 
 ```
                     ┌───────────────────────────────────────────────┐
-                    │                elvis cluster                  │
+                    │                kernel cluster                  │
                     │                                               │
   microservices ──► │  gRPC server                                  │
    (via gRPC)       │    ├── SecurityInterceptor (token validation) │
@@ -39,30 +39,30 @@ internal code name used everywhere else.
 
 ## Token Exchanger
 
-TokenExchanger is a service built directly into elvis. It handles
-authentication for backend access — every microservice that talks to elvis
+TokenExchanger is a service built directly into kernel. It handles
+authentication for backend access — every microservice that talks to kernel
 must first obtain tokens from TokenExchanger.
 
 ### Why it must be built in
 
-TokenExchanger exists inside elvis to solve a chicken-and-egg problem.
+TokenExchanger exists inside kernel to solve a chicken-and-egg problem.
 Consider Identity (the OAuth2 gateway): Identity needs to publish its
-signing keys (JWKs) to elvis so that other services can verify tokens
-Identity issues. But to write anything to elvis, Identity first needs a
+signing keys (JWKs) to kernel so that other services can verify tokens
+Identity issues. But to write anything to kernel, Identity first needs a
 valid ServiceToken. If the token exchange service were external, it would
 itself need a ServiceToken to bootstrap — a circular dependency.
 
-By building TokenExchanger into elvis, the bootstrap flow becomes:
+By building TokenExchanger into kernel, the bootstrap flow becomes:
 
 1. Identity (or any service) has a **CredPair** — a public key registered
-   in elvis's Config, bound to a service identity (subject + principal).
+   in kernel's Config, bound to a service identity (subject + principal).
 2. The service signs a bootstrap JWT with its CredPair private key.
 3. The service calls `TokenExchangerService.ExchangeToken(bootstrap_jwt)`.
 4. TokenExchanger recognizes the kid from the Config's `cred_pairs` list,
    verifies the signature, and returns a **refresh token**.
 5. The service exchanges the refresh token for a short-lived **access token**
-   scoped to the elvis backend.
-6. The service can now make authenticated gRPC calls to elvis (e.g.,
+   scoped to the kernel backend.
+6. The service can now make authenticated gRPC calls to kernel (e.g.,
    Identity publishes its JWKs to `IdentityState.verifying_keys`).
 
 ### What TokenExchanger does
@@ -74,7 +74,7 @@ TokenExchanger performs exactly three operations:
    key in Config. Returns a refresh token bound to that CredPair's identity.
 
 2. **Refresh token → access token**: Accepts a valid (unexpired) refresh
-   token. Returns a short-lived access token for the elvis backend. The
+   token. Returns a short-lived access token for the kernel backend. The
    access token contains the service identity (sub, aud, instance_id).
 
 3. **Refresh token renewal**: Accepts an unexpired refresh token alongside a
@@ -83,7 +83,7 @@ TokenExchanger performs exactly three operations:
    This enables seamless token rotation without identity discontinuity.
 
 All tokens issued by TokenExchanger are **exclusively for communicating with
-the elvis backend**. They are validated by elvis's SecurityInterceptor
+the kernel backend**. They are validated by kernel's SecurityInterceptor
 internally. No external service needs to independently verify these tokens.
 
 ### State: TokenExchangerInternal
@@ -111,11 +111,11 @@ a service identity:
 - `kid` — Key ID, used to match incoming JWTs to this CredPair
 - `key` — JWK public key material
 - `subject_type` — Identity type (e.g., `"service"`)
-- `principal` — Identity name (e.g., `"identity"`, `"fleetwood"`)
+- `principal` — Identity name (e.g., `"identity"`, `"sentinel"`)
 
 ## Built-in State Roots
 
-Elvis hosts four built-in state roots plus any number of external service
+Kernel hosts four built-in state roots plus any number of external service
 state roots (e.g., `IdentityStateInternal`, `SnoopyState`, etc.).
 
 ### TokenExchangerInternal
@@ -179,7 +179,7 @@ Every incoming gRPC call passes through the SecurityInterceptor, which:
 
 1. Extracts the bearer token from the request
 2. Validates the JWT signature against known signing keys
-3. Checks `aud` matches `SecurityConfig.audience` (default: `"elvis"`)
+3. Checks `aud` matches `SecurityConfig.audience` (default: `"kernel"`)
 4. Checks token lifetime against `SecurityConfig.token_ttl_seconds`
 5. Enforces `BackendSecurity` policies (who can read/write each boundary)
 6. Publishes connection activity to `ClusterState.service_connections`
@@ -198,7 +198,7 @@ Views are always read-only regardless of caller access level.
 
 ### Rate Limiting
 
-Elvis detects polling and nudges clients toward Watch/Subscribe streaming:
+Kernel detects polling and nudges clients toward Watch/Subscribe streaming:
 
 - `polling_rate` (default 2.0 req/s) — For unary RPCs that have streaming
   alternatives. A low limit encourages using Watch.
@@ -232,7 +232,7 @@ Rate limiting is per-service per-method. Violations are tracked in
 
 ## Persistence
 
-Elvis persists all boundary data marked with `(spec.persistence) = true`:
+Kernel persists all boundary data marked with `(spec.persistence) = true`:
 
 - **Redo log** — Records every mutation (put/delete) with map name, key,
   proto bytes, operation type, timestamp, and consistency model. Enables
@@ -259,7 +259,7 @@ Elvis persists all boundary data marked with `(spec.persistence) = true`:
 The `JwkVerifyingKeysView` is a cross-service aggregated view that collects
 public signing keys from multiple state roots. Currently:
 
-- `TokenExchangerInternal.verifying_keys` — Elvis's own signing keys
+- `TokenExchangerInternal.verifying_keys` — Kernel's own signing keys
 - `IdentityState.verifying_keys` — Identity's signing keys
 
 The view auto-generates a `JwkVerifyingKeysViewService` with Watch and Get
@@ -267,10 +267,10 @@ RPCs. Frontend services (via the frontendserver library and service_config)
 subscribe to this view at boot to discover all signing keys for token
 validation on incoming requests.
 
-## Fleetwood (Admin Dashboard)
+## Sentinel (Admin Dashboard)
 
-Fleetwood is a separate frontend service that provides a web-based admin
-dashboard for elvis. It has an empty backend state (`FleetwoodState`) and
+Sentinel is a separate frontend service that provides a web-based admin
+dashboard for kernel. It has an empty backend state (`SentinelState`) and
 reads `ClusterState` via a security policy RO grant. Its `GetDashboard` RPC
 returns cluster info, health, node metrics, gRPC stats, persistence status,
 network stats, and map stats in a single call.
@@ -279,12 +279,12 @@ network stats, and map stats in a single call.
 
 Services define their own state roots in their proto files (e.g.,
 `SnoopyState`, `WoodstockState`, `IdentityStateInternal`, `IdentityState`).
-Elvis hosts all of these as Hazelcast IMaps. Access is controlled by the
+Kernel hosts all of these as Hazelcast IMaps. Access is controlled by the
 `BackendSecurity` policy — each service gets RW to its own state and RO
 (or no access) to others as configured.
 
 ## Proto Definition
 
 The complete proto definition is in
-[`services/elvis.proto`](elvis.proto). Shared admin metric types are in
+[`services/kernel.proto`](kernel.proto). Shared admin metric types are in
 [`services/cluster.proto`](cluster.proto).

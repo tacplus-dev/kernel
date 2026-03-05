@@ -375,7 +375,7 @@ public class ClusterStatePublisher {
 
     /**
      * Derives a display name from BoundaryInfo.
-     * service="services/config_holder/SpringsteenConfigState", boundary="Config" → "springsteen.Config"
+     * service="services/config_holder/GatewayConfigState", boundary="Config" → "gateway.Config"
      * service="services/elvis/ClusterState", boundary="NodeMetrics" → "elvis.NodeMetrics"
      */
     private static String deriveDisplayName(Registry.BoundaryInfo info) {
@@ -385,7 +385,7 @@ public class ClusterStatePublisher {
             return info.getBoundary();
         }
         String pkg = parts[1];        // "elvis", "config_holder"
-        String stateName = parts[2];  // "ClusterState", "SpringsteenConfigState"
+        String stateName = parts[2];  // "ClusterState", "GatewayConfigState"
 
         if ("config_holder".equals(pkg)) {
             String svcName = stateName;

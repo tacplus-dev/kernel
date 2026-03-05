@@ -23,10 +23,9 @@ import org.slf4j.LoggerFactory;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
-
-import static com.gitlab.secondstarcavalier.controlplane.services.elvis.tacplus.types.libs.entitlement.Helpers.subjectTypeToString;
 
 /**
  * gRPC service implementing the token exchange protocol.
@@ -43,6 +42,10 @@ import static com.gitlab.secondstarcavalier.controlplane.services.elvis.tacplus.
 public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchangerServiceImplBase {
 
     private static final Logger logger = LoggerFactory.getLogger(TokenExchangerService.class);
+
+    /** Standard JWT claims that conflict with ours — these are NOT carried forward as custom claims. */
+    private static final Set<String> STANDARD_JWT_CLAIMS = Set.of(
+            "sub", "iss", "aud", "exp", "iat", "azp", "nbf", "jti");
 
     private final Elvis.TokenExchangerConfig config;
     private final String refreshAudience;
@@ -107,7 +110,6 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
                     "invalid input_token: " + e.getMessage());
         }
 
-        String requestedAud = request.getAud();
         String inputAud = inputToken.getAudience();
 
         // Routing: if the input token's audience is already the refresh audience,
@@ -127,13 +129,12 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
      * and mints a refresh token.
      *
      * <p>For bootstrap JWTs from CredPair holders: looks up the CredPair by kid,
-     * verifies the signature, and derives the subject from the CredPair identity.
+     * verifies the signature, and derives the subject from the identity mapping.
      * For external IdP tokens: resolves the key via issuer discovery.
      */
     private TokenOuterClass.Token exchangeExternalToRefresh(
             Elvis.TokenRequest request, TokenWrapper inputToken) throws StatusException {
 
-        // 3a. Validate input token — try CredPair lookup first, then external resolver
         String kid = inputToken.getKid();
         if (kid.isEmpty()) {
             throw new StatusException(Status.INVALID_ARGUMENT,
@@ -159,36 +160,32 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
                         "bootstrap JWT verification failed: " + e.getMessage());
             }
 
-            // Look up entitlement mapping for this CredPair principal
-            Entitlement.ServiceEntitlementMapping mapping = findMapping(matchedCredPair.getPrincipal());
+            // Look up identity mapping by kid → service name
+            Entitlement.ServiceEntitlementMapping mapping = findMappingByKid(kid);
             if (mapping == null) {
                 throw new StatusException(Status.PERMISSION_DENIED,
-                        "no entitlement mapping for principal: " + matchedCredPair.getPrincipal());
+                        "no entitlement mapping for kid: " + kid);
             }
 
-            // Resolve the ServiceEntitlements by ID
-            Entitlement.ServiceEntitlements entitlements = findEntitlements(mapping.getEntitlementsId());
+            String serviceName = mapping.getService();
+
+            // Derive entitlements from proto descriptors via service entitlements
+            Entitlement.ServiceEntitlements entitlements = findEntitlements(serviceName + "-entitlements");
             if (entitlements == null) {
                 throw new StatusException(Status.PERMISSION_DENIED,
-                        "no service entitlements for id: " + mapping.getEntitlementsId());
+                        "no service entitlements for: " + serviceName);
             }
-
-            // Derive subject from mapping's subject_type + principal
-            String subjectPrefix = subjectTypeToString(mapping.getSubjectType());
-            String subject = subjectPrefix + ":" + mapping.getPrincipal();
 
             // Instance ID: check for continuity token to preserve instance_id across restarts
             String instanceId;
             if (!request.getContinuityToken().isEmpty()) {
-                instanceId = resolveInstanceIdFromContinuityToken(request, subject);
+                instanceId = resolveInstanceIdFromContinuityToken(request, serviceName);
             } else {
                 instanceId = UUID.randomUUID().toString();
-                logger.info("Generated new instance_id={} for sub={}", instanceId, subject);
+                logger.info("Generated new instance_id={} for sub={}", instanceId, serviceName);
             }
 
-            return mintRefreshToken(subject, request, Map.of(
-                    "subject_type", subjectPrefix,
-                    "principal", mapping.getPrincipal(),
+            return mintRefreshToken(serviceName, request, Map.of(
                     "instance_id", instanceId
             ), buildEntitlementsClaim(entitlements));
         }
@@ -211,8 +208,6 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
         }
 
         // Use subject from the input token for external IdP flow
-        // External IdP tokens don't use CredPair entitlements — IronMaiden resolves
-        // entitlements via OPA for these tokens independently.
         String subject = inputToken.getSubject();
 
         return mintRefreshToken(subject, request, Map.of(), null);
@@ -247,6 +242,9 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
                 .setExpiration(exp)
                 .setJTI(UUID.randomUUID().toString());
 
+        // Set azp = "elvis" (elvis is the minter)
+        newToken.setCustomField("azp", "elvis");
+
         // Include extra claims
         for (Map.Entry<String, Object> entry : extraClaims.entrySet()) {
             newToken.setCustomField(entry.getKey(), entry.getValue());
@@ -267,16 +265,15 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
      * Phase 2: Validates refresh token using exchanger signing keys,
      * then takes one of two paths:
      * <ul>
-     *   <li><b>CredPair-origin</b> (detected by {@code subject_type} claim):
-     *       copies {@code subject_type} and {@code principal} into service token.</li>
-     *   <li><b>External-origin</b> (no {@code subject_type} claim):
-     *       carries forward the {@code origin} claim map.</li>
+     *   <li><b>S2S</b> (sub = known service name): carries forward instance_id
+     *       and scopes entitlements to target service.</li>
+     *   <li><b>U2S</b> (sub = "api"): carries forward flat IDP claims.</li>
      * </ul>
      */
     private TokenOuterClass.Token exchangeRefreshToService(
             Elvis.TokenRequest request, TokenWrapper inputToken) throws StatusException {
 
-        // 6a. Validate input token using exchanger signing keys ONLY
+        // Validate input token using exchanger signing keys ONLY
         String kid = inputToken.getKid();
         if (kid.isEmpty()) {
             throw new StatusException(Status.INVALID_ARGUMENT,
@@ -309,7 +306,7 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
             throw new StatusException(Status.UNAVAILABLE, "no active signing key");
         }
 
-        // 6b-c. Compute expiration
+        // Compute expiration
         long inputExp = inputToken.getExpiration();
         long exp;
         if (request.getExp() == 0) {
@@ -323,69 +320,62 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
         }
 
         long now = Instant.now().getEpochSecond();
+        String subject = inputToken.getSubject();
 
-        // 6d. Build base service token
+        // Build base service token
         TokenWrapper newToken = TokenWrapper.create()
                 .setIssuer("token-exchanger")
-                .setSubject(inputToken.getSubject())
+                .setSubject(subject)
                 .setAudience(request.getAud())
                 .setIssuedAt(now)
                 .setExpiration(exp)
                 .setJTI(UUID.randomUUID().toString());
 
-        // 6e. Detect CredPair vs External origin and populate claims
-        boolean isCredPairOrigin = false;
-        if (inputToken.getProto().hasPayload()) {
-            isCredPairOrigin = inputToken.getProto().getPayload()
-                    .containsFields("subject_type");
-        }
+        // Set azp = "elvis" (elvis is the minter)
+        newToken.setCustomField("azp", "elvis");
 
-        if (isCredPairOrigin) {
-            // CredPair path: copy subject_type, principal, and instance_id — no OPA
-            Map<String, Value> fields = inputToken.getProto().getPayload().getFieldsMap();
-            Value subjectTypeVal = fields.get("subject_type");
-            if (subjectTypeVal != null && subjectTypeVal.getKindCase() == Value.KindCase.STRING_VALUE) {
-                newToken.setCustomField("subject_type", subjectTypeVal.getStringValue());
-            }
-            Value principalVal = fields.get("principal");
-            if (principalVal != null && principalVal.getKindCase() == Value.KindCase.STRING_VALUE) {
-                newToken.setCustomField("principal", principalVal.getStringValue());
-            }
-            // Propagate instance_id from refresh token to service token
-            Value instanceIdVal = fields.get("instance_id");
-            if (instanceIdVal != null && instanceIdVal.getKindCase() == Value.KindCase.STRING_VALUE) {
-                newToken.setCustomField("instance_id", instanceIdVal.getStringValue());
-            }
+        // Detect S2S vs U2S by checking if sub is "api"
+        boolean isU2S = "api".equals(subject);
 
-            // Scope entitlements from refresh token to the target service.
-            // If no entitlements exist for the target audience, the service token
-            // is issued without entitlements — authorization is enforced by
-            // SecurityInterceptor graph policies, not by entitlements.
-            Value entitlementsVal = fields.get("entitlements");
-            if (entitlementsVal != null && entitlementsVal.getKindCase() == Value.KindCase.STRUCT_VALUE) {
-                String targetAud = request.getAud();
-                Struct entMap = entitlementsVal.getStructValue();
-                Value svcEntitlements = entMap.getFieldsOrDefault(targetAud, null);
-                if (svcEntitlements != null) {
-                    // Set as flat list for the access token
-                    newToken.setCustomField("entitlements", svcEntitlements);
-                }
-            }
-
-            logger.info("Minted service token (CredPair): sub={}, aud={}, exp={}, instance_id={}",
-                    inputToken.getSubject(), request.getAud(), exp,
-                    instanceIdVal != null ? instanceIdVal.getStringValue() : "none");
-        } else {
-            // External path: carry forward the "origin" claim map as-is
+        if (!isU2S) {
+            // S2S path: carry forward instance_id
             if (inputToken.getProto().hasPayload()) {
-                Value originVal = inputToken.getProto().getPayload().getFieldsOrDefault("origin", null);
-                if (originVal != null) {
-                    newToken.setCustomField("origin", originVal);
+                Map<String, Value> fields = inputToken.getProto().getPayload().getFieldsMap();
+                Value instanceIdVal = fields.get("instance_id");
+                if (instanceIdVal != null && instanceIdVal.getKindCase() == Value.KindCase.STRING_VALUE) {
+                    newToken.setCustomField("instance_id", instanceIdVal.getStringValue());
+                }
+
+                // Scope entitlements from refresh token to the target service
+                Value entitlementsVal = fields.get("entitlements");
+                if (entitlementsVal != null && entitlementsVal.getKindCase() == Value.KindCase.STRUCT_VALUE) {
+                    String targetAud = request.getAud();
+                    Struct entMap = entitlementsVal.getStructValue();
+                    Value svcEntitlements = entMap.getFieldsOrDefault(targetAud, null);
+                    if (svcEntitlements != null) {
+                        newToken.setCustomField("entitlements", svcEntitlements);
+                    }
                 }
             }
 
-            logger.info("Minted service token (External): sub={}, aud={}, exp={}",
-                    inputToken.getSubject(), request.getAud(), exp);
+            logger.info("Minted service token (S2S): sub={}, aud={}, exp={}",
+                    subject, request.getAud(), exp);
+        } else {
+            // U2S path: carry forward flat IDP claims (origin_ prefixed and others)
+            if (inputToken.getProto().hasPayload()) {
+                Map<String, Value> fields = inputToken.getProto().getPayload().getFieldsMap();
+                for (Map.Entry<String, Value> entry : fields.entrySet()) {
+                    String key = entry.getKey();
+                    // Skip standard JWT claims — the minter manages those
+                    if (STANDARD_JWT_CLAIMS.contains(key)) {
+                        continue;
+                    }
+                    newToken.setCustomField(key, entry.getValue());
+                }
+            }
+
+            logger.info("Minted service token (U2S): sub={}, aud={}, exp={}",
+                    subject, request.getAud(), exp);
         }
 
         newToken.sign(signingKey);
@@ -458,13 +448,11 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
     }
 
     /**
-     * Finds the entitlement mapping for the given principal.
-     * CredPair principals are matched as "local:<principal>".
+     * Finds the entitlement mapping by credential_id (kid).
      */
-    private Entitlement.ServiceEntitlementMapping findMapping(String principal) {
-        String localId = "local:" + principal;
+    private Entitlement.ServiceEntitlementMapping findMappingByKid(String kid) {
         for (Entitlement.ServiceEntitlementMapping m : entitlementMappingsReader.get()) {
-            if (localId.equals(m.getStringId())) {
+            if (kid.equals(m.getCredentialId())) {
                 return m;
             }
         }

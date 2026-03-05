@@ -46,15 +46,15 @@ must first obtain tokens from TokenExchanger.
 ### Why it must be built in
 
 TokenExchanger exists inside elvis to solve a chicken-and-egg problem.
-Consider IronMaiden (the OAuth2 gateway): IronMaiden needs to publish its
+Consider Identity (the OAuth2 gateway): Identity needs to publish its
 signing keys (JWKs) to elvis so that other services can verify tokens
-IronMaiden issues. But to write anything to elvis, IronMaiden first needs a
+Identity issues. But to write anything to elvis, Identity first needs a
 valid ServiceToken. If the token exchange service were external, it would
 itself need a ServiceToken to bootstrap — a circular dependency.
 
 By building TokenExchanger into elvis, the bootstrap flow becomes:
 
-1. IronMaiden (or any service) has a **CredPair** — a public key registered
+1. Identity (or any service) has a **CredPair** — a public key registered
    in elvis's Config, bound to a service identity (subject + principal).
 2. The service signs a bootstrap JWT with its CredPair private key.
 3. The service calls `TokenExchangerService.ExchangeToken(bootstrap_jwt)`.
@@ -63,7 +63,7 @@ By building TokenExchanger into elvis, the bootstrap flow becomes:
 5. The service exchanges the refresh token for a short-lived **access token**
    scoped to the elvis backend.
 6. The service can now make authenticated gRPC calls to elvis (e.g.,
-   IronMaiden publishes its JWKs to `IronMaidenShared.verifying_keys`).
+   Identity publishes its JWKs to `IdentityState.verifying_keys`).
 
 ### What TokenExchanger does
 
@@ -111,12 +111,12 @@ a service identity:
 - `kid` — Key ID, used to match incoming JWTs to this CredPair
 - `key` — JWK public key material
 - `subject_type` — Identity type (e.g., `"service"`)
-- `principal` — Identity name (e.g., `"ironmaiden"`, `"fleetwood"`)
+- `principal` — Identity name (e.g., `"identity"`, `"fleetwood"`)
 
 ## Built-in State Roots
 
 Elvis hosts four built-in state roots plus any number of external service
-state roots (e.g., `IronMaidenInternal`, `SnoopyState`, etc.).
+state roots (e.g., `IdentityStateInternal`, `SnoopyState`, etc.).
 
 ### TokenExchangerInternal
 
@@ -260,7 +260,7 @@ The `JwkVerifyingKeysView` is a cross-service aggregated view that collects
 public signing keys from multiple state roots. Currently:
 
 - `TokenExchangerInternal.verifying_keys` — Elvis's own signing keys
-- `IronMaidenShared.verifying_keys` — IronMaiden's signing keys
+- `IdentityState.verifying_keys` — Identity's signing keys
 
 The view auto-generates a `JwkVerifyingKeysViewService` with Watch and Get
 RPCs. Frontend services (via the frontendserver library and service_config)
@@ -278,7 +278,7 @@ network stats, and map stats in a single call.
 ## External Service State Roots
 
 Services define their own state roots in their proto files (e.g.,
-`SnoopyState`, `WoodstockState`, `IronMaidenInternal`, `IronMaidenShared`).
+`SnoopyState`, `WoodstockState`, `IdentityStateInternal`, `IdentityState`).
 Elvis hosts all of these as Hazelcast IMaps. Access is controlled by the
 `BackendSecurity` policy — each service gets RW to its own state and RO
 (or no access) to others as configured.

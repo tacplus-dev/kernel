@@ -3,7 +3,7 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.raft;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCert;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertPair;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.host.HostOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.utils.Validation;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Lock;
 
@@ -56,7 +56,7 @@ public class RatisLockManager {
     public RatisLockManager(
             String selfHost,
             int raftPort,
-            List<HostOuterClass.Host> members,
+            List<String> members,
             File storageDir,
             X509.X509CertPair tls,
             List<X509.X509Cert> trustedCas)
@@ -68,7 +68,7 @@ public class RatisLockManager {
         List<RaftPeer> peers = new ArrayList<>();
         RaftPeerId selfPeerId = null;
         for (int i = 0; i < members.size(); i++) {
-            String host = members.get(i).getHost();
+            String host = Validation.parseHost(members.get(i));
             RaftPeerId peerId = RaftPeerId.valueOf("peer-" + i);
             peers.add(RaftPeer.newBuilder()
                     .setId(peerId)
@@ -82,7 +82,7 @@ public class RatisLockManager {
         if (selfPeerId == null) {
             throw new IllegalArgumentException(
                     "Self host " + selfHost + " not found in member list: "
-                    + members.stream().map(HostOuterClass.Host::getHost)
+                    + members.stream().map(Validation::parseHost)
                             .collect(java.util.stream.Collectors.joining(", ")));
         }
 

@@ -7,7 +7,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.raft.RatisLock
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence.PersistenceManager.PersistenceConfig;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.backendclient.BackendServer;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertPair;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.host.HostOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.utils.Validation;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
@@ -80,9 +80,9 @@ public class ClusterServer {
         Kernel.BootstrapConfig cfg = Helpers.bootstrapConfigDefaults(protoConfig).build();
 
         // Extract values from proto config with defaults
-        this.grpcPort = cfg.getListener().getPort();
+        this.grpcPort = Validation.parsePort(cfg.getListener());
         int hzPort = grpcPort + 1;
-        List<HostOuterClass.Host> members = cfg.getMembersList();
+        List<String> members = cfg.getMembersList();
         if (frontendConfig == null) {
             frontendConfig = Kernel.Config.getDefaultInstance();
         }
@@ -92,7 +92,7 @@ public class ClusterServer {
         // For local/mock usage, fall back to matching listener host against members.
         String hostname = System.getenv("HOSTNAME");
         if (hostname == null || hostname.isEmpty()) {
-            hostname = cfg.getListener().getHost();
+            hostname = Validation.parseHost(cfg.getListener());
         }
         String instanceName = (hostname != null && !hostname.isEmpty() && !hostname.equals("0.0.0.0"))
                 ? "node-" + hostname
@@ -107,11 +107,11 @@ public class ClusterServer {
         if ("0.0.0.0".equals(raftHost) || raftHost == null || raftHost.isEmpty()) {
             // Fall back: for local/mock mode, match by port offset
             if (members.size() > 0) {
-                int idx = grpcPort - members.get(0).getPort() + 1;
+                int idx = grpcPort - Validation.parsePort(members.get(0)) + 1;
                 if (idx >= 0 && idx < members.size()) {
-                    raftHost = members.get(idx).getHost();
+                    raftHost = Validation.parseHost(members.get(idx));
                 } else {
-                    raftHost = members.get(0).getHost();
+                    raftHost = Validation.parseHost(members.get(0));
                 }
             }
         }
@@ -147,12 +147,8 @@ public class ClusterServer {
         joinConfig.getMulticastConfig().setEnabled(false);
         TcpIpConfig tcp = joinConfig.getTcpIpConfig();
         tcp.setEnabled(true);
-        for (HostOuterClass.Host member : members) {
-            String addr = member.getHost();
-            if (member.getPort() > 0) {
-                addr += ":" + member.getPort();
-            }
-            tcp.addMember(addr);
+        for (String member : members) {
+            tcp.addMember(member);
         }
 
         // Explicitly disable client protocol and REST.

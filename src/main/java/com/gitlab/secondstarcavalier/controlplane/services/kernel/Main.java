@@ -7,7 +7,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.k
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.logger.LogbackConfigurator;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertPair;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.host.HostOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.utils.Validation;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.key.KeyOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
@@ -93,12 +93,9 @@ public class Main {
         }
 
         // Build the shared member list (hazelcast discovery endpoints)
-        List<HostOuterClass.Host> members = new ArrayList<>();
+        List<String> members = new ArrayList<>();
         for (int i = 0; i < nodeCount; i++) {
-            members.add(HostOuterClass.Host.newBuilder()
-                    .setHost("127.0.0.1")
-                    .setPort(HAZELCAST_BASE_PORT + i)
-                    .build());
+            members.add("127.0.0.1:" + (HAZELCAST_BASE_PORT + i));
         }
 
         // Generate a self-signed CA for the mock cluster
@@ -137,9 +134,7 @@ public class Main {
 
             var config = Kernel.BootstrapConfig.newBuilder()
                     .setClusterName(MOCK_CLUSTER_NAME)
-                    .setListener(HostOuterClass.Host.newBuilder()
-                            .setHost("0.0.0.0")
-                            .setPort(GRPC_BASE_PORT + i))
+                    .setListener("0.0.0.0:" + (GRPC_BASE_PORT + i))
                     .setRaftPort(RAFT_BASE_PORT + i)
                     .setNodeCount(nodeCount)
                     .setTls(nodeTls)
@@ -242,9 +237,8 @@ public class Main {
 
         // 9. Start
         LogbackConfigurator.install(null);
-        logger.info("Starting with config: listener={}:{}, cluster={}",
-                bootstrapConfig.getListener().getHost(),
-                bootstrapConfig.getListener().getPort(),
+        logger.info("Starting with config: listener={}, cluster={}",
+                bootstrapConfig.getListener(),
                 bootstrapConfig.getClusterName());
 
         ClusterServer server;
@@ -267,8 +261,7 @@ public class Main {
             return;
         }
 
-        logger.info("Node ready — gRPC {}:{}", bootstrapConfig.getListener().getHost(),
-                bootstrapConfig.getListener().getPort());
+        logger.info("Node ready — gRPC {}", bootstrapConfig.getListener());
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             logger.info("Shutting down...");
@@ -420,7 +413,7 @@ public class Main {
         // config always differ from the default. Instead check if any
         // user-visible fields are actually set.
         return !config.getClusterName().isEmpty()
-                || config.hasListener()
+                || !config.getListener().isEmpty()
                 || !config.getMembersList().isEmpty()
                 || config.getNodeCount() != 0
                 || config.hasTls()

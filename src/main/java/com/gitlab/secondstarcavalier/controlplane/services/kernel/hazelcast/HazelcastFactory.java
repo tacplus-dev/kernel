@@ -14,7 +14,7 @@ import org.slf4j.LoggerFactory;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence.PersistenceManager;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCert;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertPair;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.host.HostOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.utils.Validation;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.SerializerRegistry;
@@ -75,16 +75,12 @@ public class HazelcastFactory {
 
         TcpIpConfig tcpIpConfig = joinConfig.getTcpIpConfig();
         tcpIpConfig.setEnabled(true);
-        for (HostOuterClass.Host member : cfg.getMembersList()) {
-            String addr = Objects.requireNonNull(member.getHost());
-            if (member.getPort() > 0) {
-                addr += ":" + member.getPort();
-            }
-            tcpIpConfig.addMember(addr);
+        for (String member : cfg.getMembersList()) {
+            tcpIpConfig.addMember(member);
         }
 
         // Hazelcast port = listener (gRPC) port + 1
-        int hzPort = cfg.getListener().getPort() + 1;
+        int hzPort = Validation.parsePort(cfg.getListener()) + 1;
         networkConfig.setPort(hzPort);
         networkConfig.setPortAutoIncrement(false);
 

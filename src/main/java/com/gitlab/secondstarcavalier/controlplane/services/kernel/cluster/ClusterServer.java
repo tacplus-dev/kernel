@@ -117,15 +117,28 @@ public class ClusterServer {
         }
         int raftPort = cfg.getRaftPort();
         try {
-            this.ratisLockManager = new RatisLockManager(
+            var rlm = new RatisLockManager(
                     raftHost,
                     raftPort,
                     members,
                     new java.io.File(cfg.getPersistenceDir(), "raft"),
                     cfg.getTls(),
                     cfg.getLoaderCaList());
-            ratisLockManager.start();
-            ratisLockManager.waitForLeader();
+            rlm.start();
+            this.ratisLockManager = rlm;
+            try {
+                rlm.waitForLeader();
+            } catch (IOException e) {
+                // Raft leader election timed out — proceed without consensus.
+                // The cluster will come online; atomic operations (leader elections,
+                // fenced locks) will fail until Raft consensus forms, but reads,
+                // watches, and convergent writes will work immediately.
+                logger.warn("Raft leader election timed out — cluster will start without " +
+                        "consensus. Atomic operations blocked until Raft quorum forms.", e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted during Raft startup", e);
+            }
         } catch (Exception e) {
             throw new RuntimeException("Failed to start RatisLockManager", e);
         }
@@ -178,8 +191,11 @@ public class ClusterServer {
             try {
                 persistence.initialize(hazelcast, initialQuorumForPersistence);
             } catch (IOException e) {
-                logger.error("Persistence initialization failed", e);
-                throw new RuntimeException("Failed to initialize persistence", e);
+                // Persistence initialization failed — log and continue.
+                // The cluster will start without restored state. Data will
+                // converge from other nodes once they come online.
+                logger.warn("Persistence initialization failed — starting without " +
+                        "restored state. Data will converge from peers.", e);
             }
         }
 
@@ -252,6 +268,11 @@ public class ClusterServer {
         this.clusterSetLogLevelHandler = new ClusterSetLogLevelHandler();
 
         // 6. Dynamic quorum monitoring — quorum = currentSize / 2 + 1
+        // Quorum loss only blocks ATOMIC writes (leader elections, lease renewals).
+        // The cluster stays online and healthy regardless — reads, watches, and
+        // convergent writes all continue. This avoids a catch-22 where losing
+        // quorum causes health checks to fail which causes restarts which
+        // prevents quorum from ever being restored.
         int memberCount = members.size();
         hazelcast.getCluster().addMembershipListener(new MembershipListener() {
             private volatile boolean hadQuorum = true;
@@ -264,12 +285,11 @@ public class ClusterServer {
                 logger.info("[node:{}] Member joined: {} — cluster size={}/{}",
                         grpcPort, e.getMember().getAddress(), size, memberCount);
                 if (hasQuorum && !hadQuorum) {
-                    logger.info("[node:{}] QUORUM ACHIEVED ({}/{} members)",
+                    logger.info("[node:{}] QUORUM RESTORED ({}/{} members) — atomic operations re-enabled",
                             grpcPort, size, memberCount);
                 }
                 hadQuorum = hasQuorum;
                 backendServers.services().setQuorumAvailable(hasQuorum);
-                healthManager.setStatus("", hasQuorum ? ServingStatus.SERVING : ServingStatus.NOT_SERVING);
                 clusterPublisher.onMembershipChange();
             }
 
@@ -281,21 +301,18 @@ public class ClusterServer {
                 logger.warn("[node:{}] Member left: {} — cluster size={}/{}",
                         grpcPort, e.getMember().getAddress(), size, memberCount);
                 if (!hasQuorum && hadQuorum) {
-                    logger.error("[node:{}] QUORUM LOST ({}/{} members, need {})",
+                    logger.warn("[node:{}] QUORUM LOST ({}/{} members, need {}) — atomic writes blocked, cluster remains online",
                             grpcPort, size, memberCount, quorum);
                 }
                 hadQuorum = hasQuorum;
                 backendServers.services().setQuorumAvailable(hasQuorum);
-                healthManager.setStatus("", hasQuorum ? ServingStatus.SERVING : ServingStatus.NOT_SERVING);
                 clusterPublisher.onMembershipChange();
             }
         });
 
-        // Set initial health based on current cluster size
-        int initialSize = hazelcast.getCluster().getMembers().size();
-        int initialQuorum = initialSize / 2 + 1;
-        boolean initialHasQuorum = initialSize >= initialQuorum;
-        healthManager.setStatus("", initialHasQuorum ? ServingStatus.SERVING : ServingStatus.NOT_SERVING);
+        // Cluster is always SERVING once construction completes.
+        // Quorum state only affects atomic operations, not overall health.
+        healthManager.setStatus("", ServingStatus.SERVING);
 
         // 7. Build gRPC server
         BackendServer backendServer = new BackendServer();

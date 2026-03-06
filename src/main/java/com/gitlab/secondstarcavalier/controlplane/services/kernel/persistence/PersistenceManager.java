@@ -118,9 +118,21 @@ public class PersistenceManager {
 		timestampsMap.put(nodeId, localTimestamp);
 		logger.info("Published persistence timestamp: {} for node {}", localTimestamp, nodeId);
 
-		// 2. Wait for quorum
-		logger.info("Waiting for {} nodes to publish timestamps...", quorum);
+		// 2. Wait for quorum (with timeout to avoid catch-22)
+		// If quorum isn't reached within the timeout, proceed with available nodes.
+		// This prevents a deadlock where nodes can't come online without quorum,
+		// but quorum requires nodes to be online.
+		long quorumTimeoutMs = 30_000; // 30 seconds
+		long deadline = System.currentTimeMillis() + quorumTimeoutMs;
+		logger.info("Waiting for {} nodes to publish timestamps (timeout={}s)...",
+				quorum, quorumTimeoutMs / 1000);
 		while (timestampsMap.size() < quorum) {
+			if (System.currentTimeMillis() >= deadline) {
+				logger.warn("Quorum timeout reached — proceeding with {}/{} nodes. " +
+						"Persistence negotiation will use available nodes only.",
+						timestampsMap.size(), quorum);
+				break;
+			}
 			try {
 				Thread.sleep(500);
 			} catch (InterruptedException e) {
@@ -128,7 +140,9 @@ public class PersistenceManager {
 				throw new IOException("Interrupted waiting for quorum", e);
 			}
 		}
-		logger.info("Quorum reached: {} nodes have published timestamps", timestampsMap.size());
+		if (timestampsMap.size() >= quorum) {
+			logger.info("Quorum reached: {} nodes have published timestamps", timestampsMap.size());
+		}
 
 		// 3. Determine winner: highest timestamp, then lexicographic nodeId for ties
 		String winnerId = null;
@@ -167,9 +181,18 @@ public class PersistenceManager {
 			readyMap.put(READY_KEY, nodeId);
 			logger.info("Persistence ready sentinel set");
 		} else {
-			// Non-winner: wait for ready sentinel
-			logger.info("Waiting for winner to complete restore...");
+			// Non-winner: wait for ready sentinel (with timeout)
+			long restoreTimeoutMs = 60_000; // 60 seconds
+			long restoreDeadline = System.currentTimeMillis() + restoreTimeoutMs;
+			logger.info("Waiting for winner to complete restore (timeout={}s)...",
+					restoreTimeoutMs / 1000);
 			while (!readyMap.containsKey(READY_KEY)) {
+				if (System.currentTimeMillis() >= restoreDeadline) {
+					logger.warn("Timed out waiting for persistence winner — " +
+							"proceeding without convergent merge. " +
+							"Data will converge once winner comes online.");
+					break;
+				}
 				try {
 					Thread.sleep(500);
 				} catch (InterruptedException e) {
@@ -177,11 +200,13 @@ public class PersistenceManager {
 					throw new IOException("Interrupted waiting for persistence ready", e);
 				}
 			}
-			logger.info("Winner ready, performing convergent merge...");
 
-			// Wrap the Hazelcast entry timestamps map as an IMap for the restorer
-			IMap<String, Long> entryTsIMap = new SimpleHazelcastIMap<>(entryTimestampsMap);
-			restorer.mergeConvergent(entryTsIMap);
+			if (readyMap.containsKey(READY_KEY)) {
+				logger.info("Winner ready, performing convergent merge...");
+				// Wrap the Hazelcast entry timestamps map as an IMap for the restorer
+				IMap<String, Long> entryTsIMap = new SimpleHazelcastIMap<>(entryTimestampsMap);
+				restorer.mergeConvergent(entryTsIMap);
+			}
 		}
 
 		// 5. Schedule periodic dumps

@@ -31,6 +31,12 @@ build:
       curl -fsSL -o /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-${PROTOC_ARCH}.zip"
       unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
       chmod +x /usr/local/bin/protoc
+    - |
+      GRPC_ARCH="linux-x86_64"
+      if [ "$ARCH" = "arm64" ]; then GRPC_ARCH="linux-aarch_64"; fi
+      curl -fsSL -o /usr/local/bin/protoc-gen-grpc-java \
+        "https://repo1.maven.org/maven2/io/grpc/protoc-gen-grpc-java/1.79.0/protoc-gen-grpc-java-1.79.0-${GRPC_ARCH}.exe"
+      chmod +x /usr/local/bin/protoc-gen-grpc-java
     - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
     - |
       curl --header "JOB-TOKEN: $CI_JOB_TOKEN" \

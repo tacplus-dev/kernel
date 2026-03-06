@@ -24,7 +24,13 @@ build:
     paths:
       - .m2/repository
   before_script:
-    - apt-get update -qq && apt-get install -y -qq git protobuf-compiler > /dev/null
+    - apt-get update -qq && apt-get install -y -qq git unzip > /dev/null
+    - |
+      ARCH=$(dpkg --print-architecture)
+      if [ "$ARCH" = "arm64" ]; then PROTOC_ARCH="linux-aarch_64"; else PROTOC_ARCH="linux-x86_64"; fi
+      curl -fsSL -o /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-${PROTOC_ARCH}.zip"
+      unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+      chmod +x /usr/local/bin/protoc
     - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
     - |
       curl --header "JOB-TOKEN: $CI_JOB_TOKEN" \

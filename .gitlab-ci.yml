@@ -26,10 +26,12 @@ build:
   before_script:
     - apt-get update -qq && apt-get install -y -qq git protobuf-compiler > /dev/null
     - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
+    - *parse-version
     - |
+      TACPLUS_PKG="tacplus-${MAJOR}-${MINOR}"
       curl --header "JOB-TOKEN: $CI_JOB_TOKEN" \
            -fsSL -o /usr/local/bin/tacplus \
-           "${CI_API_V4_URL}/projects/${TACPLUS_PROJECT_ID}/packages/generic/tacplus/v1.0.0/tacplus-linux-amd64"
+           "${CI_API_V4_URL}/projects/${TACPLUS_PROJECT_ID}/packages/generic/${TACPLUS_PKG}/latest/${TACPLUS_PKG}-latest-linux-amd64"
       chmod +x /usr/local/bin/tacplus
     - |
       git clone --depth 1 "$PROTO_REPO" /tmp/proto

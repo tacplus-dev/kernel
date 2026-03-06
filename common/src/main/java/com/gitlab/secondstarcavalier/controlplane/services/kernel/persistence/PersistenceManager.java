@@ -93,11 +93,10 @@ public class PersistenceManager {
 	 * Runs the startup negotiation protocol:
 	 * <ol>
 	 * <li>Each node publishes its latest persistence timestamp</li>
-	 * <li>Wait for quorum</li>
-	 * <li>Node with newest timestamp wins (ties: lexicographic nodeId)</li>
-	 * <li>Winner restores dump + redo logs</li>
-	 * <li>Non-winners wait for ready sentinel, then merge convergent
-	 * entries</li>
+	 * <li>Wait for quorum (with timeout)</li>
+	 * <li>If quorum reached: winner negotiation → full restore (convergent + atomic)</li>
+	 * <li>If quorum NOT reached: restore convergent data only from local files,
+	 *     atomic data waits until quorum forms</li>
 	 * </ol>
 	 */
 	public void initialize(HazelcastInstance hazelcast, int quorum) throws IOException {
@@ -119,18 +118,12 @@ public class PersistenceManager {
 		logger.info("Published persistence timestamp: {} for node {}", localTimestamp, nodeId);
 
 		// 2. Wait for quorum (with timeout to avoid catch-22)
-		// If quorum isn't reached within the timeout, proceed with available nodes.
-		// This prevents a deadlock where nodes can't come online without quorum,
-		// but quorum requires nodes to be online.
 		long quorumTimeoutMs = 30_000; // 30 seconds
 		long deadline = System.currentTimeMillis() + quorumTimeoutMs;
 		logger.info("Waiting for {} nodes to publish timestamps (timeout={}s)...",
 				quorum, quorumTimeoutMs / 1000);
 		while (timestampsMap.size() < quorum) {
 			if (System.currentTimeMillis() >= deadline) {
-				logger.warn("Quorum timeout reached — proceeding with {}/{} nodes. " +
-						"Persistence negotiation will use available nodes only.",
-						timestampsMap.size(), quorum);
 				break;
 			}
 			try {
@@ -140,9 +133,24 @@ public class PersistenceManager {
 				throw new IOException("Interrupted waiting for quorum", e);
 			}
 		}
-		if (timestampsMap.size() >= quorum) {
-			logger.info("Quorum reached: {} nodes have published timestamps", timestampsMap.size());
+		boolean hasQuorum = timestampsMap.size() >= quorum;
+
+		if (!hasQuorum) {
+			// No quorum — restore convergent data only from local persistence.
+			// The node comes online with convergent state available immediately.
+			// Atomic data will be restored when quorum forms.
+			logger.warn("Quorum not reached ({}/{} nodes) — restoring convergent data only. " +
+					"Atomic writes blocked until quorum forms.",
+					timestampsMap.size(), quorum);
+			nodeRole = "DEGRADED";
+			restorer.restoreConvergentOnly();
+			scheduleDumps();
+			initialized = true;
+			logger.info("Persistence initialization complete (role=DEGRADED, convergent only)");
+			return;
 		}
+
+		logger.info("Quorum reached: {} nodes have published timestamps", timestampsMap.size());
 
 		// 3. Determine winner: highest timestamp, then lexicographic nodeId for ties
 		String winnerId = null;
@@ -166,7 +174,7 @@ public class PersistenceManager {
 		com.hazelcast.map.IMap<String, String> readyMap = hazelcast.getMap(READY_MAP);
 
 		if (isWinner) {
-			// Winner: restore from dump + redo logs
+			// Winner: restore from dump + redo logs (convergent + atomic)
 			if (winnerTimestamp > 0) {
 				Map<String, Long> entryTimestamps = restorer.restore();
 				// Publish entry timestamps for convergent merge
@@ -181,7 +189,7 @@ public class PersistenceManager {
 			readyMap.put(READY_KEY, nodeId);
 			logger.info("Persistence ready sentinel set");
 		} else {
-			// Non-winner: wait for ready sentinel (with timeout)
+			// Non-winner: wait for ready sentinel
 			long restoreTimeoutMs = 60_000; // 60 seconds
 			long restoreDeadline = System.currentTimeMillis() + restoreTimeoutMs;
 			logger.info("Waiting for winner to complete restore (timeout={}s)...",
@@ -189,9 +197,13 @@ public class PersistenceManager {
 			while (!readyMap.containsKey(READY_KEY)) {
 				if (System.currentTimeMillis() >= restoreDeadline) {
 					logger.warn("Timed out waiting for persistence winner — " +
-							"proceeding without convergent merge. " +
-							"Data will converge once winner comes online.");
-					break;
+							"falling back to convergent-only restore.");
+					nodeRole = "DEGRADED";
+					restorer.restoreConvergentOnly();
+					scheduleDumps();
+					initialized = true;
+					logger.info("Persistence initialization complete (role=DEGRADED, convergent only)");
+					return;
 				}
 				try {
 					Thread.sleep(500);
@@ -200,13 +212,10 @@ public class PersistenceManager {
 					throw new IOException("Interrupted waiting for persistence ready", e);
 				}
 			}
-
-			if (readyMap.containsKey(READY_KEY)) {
-				logger.info("Winner ready, performing convergent merge...");
-				// Wrap the Hazelcast entry timestamps map as an IMap for the restorer
-				IMap<String, Long> entryTsIMap = new SimpleHazelcastIMap<>(entryTimestampsMap);
-				restorer.mergeConvergent(entryTsIMap);
-			}
+			logger.info("Winner ready, performing convergent merge...");
+			// Wrap the Hazelcast entry timestamps map as an IMap for the restorer
+			IMap<String, Long> entryTsIMap = new SimpleHazelcastIMap<>(entryTimestampsMap);
+			restorer.mergeConvergent(entryTsIMap);
 		}
 
 		// 5. Schedule periodic dumps

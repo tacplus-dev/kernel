@@ -78,6 +78,7 @@ public class ClusterServer {
 
         // Apply all defaults (including sub-message defaults) in one shot
         Kernel.BootstrapConfig cfg = Helpers.bootstrapConfigDefaults(protoConfig).build();
+        boolean isEdge = cfg.getMode() == Kernel.NodeMode.NODE_MODE_EDGE;
 
         // Extract values from proto config with defaults
         this.grpcPort = Validation.parsePort(cfg.getListener());
@@ -98,58 +99,70 @@ public class ClusterServer {
                 ? "node-" + hostname
                 : "node-" + hzPort;
 
-        // 1. Create and start Ratis lock manager FIRST.
-        // Raft consensus must form before the Hazelcast cluster starts so that
-        // distributed locks are available when backend maps are initialized.
-        String raftHost = hostname;
-        // If hostname is a bind address (0.0.0.0), find our hostname in the members list
-        // by matching the listener port.
-        if ("0.0.0.0".equals(raftHost) || raftHost == null || raftHost.isEmpty()) {
-            // Fall back: for local/mock mode, match by port offset
-            if (members.size() > 0) {
-                int idx = grpcPort - Validation.parsePort(members.get(0)) + 1;
-                if (idx >= 0 && idx < members.size()) {
-                    raftHost = Validation.parseHost(members.get(idx));
-                } else {
-                    raftHost = Validation.parseHost(members.get(0));
+        // 1. Create and start Ratis lock manager FIRST (core only).
+        // Edge nodes don't participate in Raft consensus.
+        if (!isEdge) {
+            // Raft consensus must form before the Hazelcast cluster starts so that
+            // distributed locks are available when backend maps are initialized.
+            String raftHost = hostname;
+            // If hostname is a bind address (0.0.0.0), find our hostname in the members list
+            // by matching the listener port.
+            if ("0.0.0.0".equals(raftHost) || raftHost == null || raftHost.isEmpty()) {
+                // Fall back: for local/mock mode, match by port offset
+                if (members.size() > 0) {
+                    int idx = grpcPort - Validation.parsePort(members.get(0)) + 1;
+                    if (idx >= 0 && idx < members.size()) {
+                        raftHost = Validation.parseHost(members.get(idx));
+                    } else {
+                        raftHost = Validation.parseHost(members.get(0));
+                    }
                 }
             }
-        }
-        int raftPort = cfg.getRaftPort();
-        try {
-            var rlm = new RatisLockManager(
-                    raftHost,
-                    raftPort,
-                    members,
-                    new java.io.File(cfg.getPersistenceDir(), "raft"),
-                    cfg.getTls(),
-                    cfg.getLoaderCaList());
-            rlm.start();
-            this.ratisLockManager = rlm;
+            int raftPort = cfg.getRaftPort();
             try {
-                rlm.waitForLeader();
-            } catch (IOException e) {
-                // Raft leader election timed out — proceed without consensus.
-                // The cluster will come online; atomic operations (leader elections,
-                // fenced locks) will fail until Raft consensus forms, but reads,
-                // watches, and convergent writes will work immediately.
-                logger.warn("Raft leader election timed out — cluster will start without " +
-                        "consensus. Atomic operations blocked until Raft quorum forms.", e);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("Interrupted during Raft startup", e);
+                var rlm = new RatisLockManager(
+                        raftHost,
+                        raftPort,
+                        members,
+                        new java.io.File(cfg.getPersistenceDir(), "raft"),
+                        cfg.getTls(),
+                        cfg.getLoaderCaList());
+                rlm.start();
+                this.ratisLockManager = rlm;
+                try {
+                    rlm.waitForLeader();
+                } catch (IOException e) {
+                    // Raft leader election timed out — proceed without consensus.
+                    // The cluster will come online; atomic operations (leader elections,
+                    // fenced locks) will fail until Raft consensus forms, but reads,
+                    // watches, and convergent writes will work immediately.
+                    logger.warn("Raft leader election timed out — cluster will start without " +
+                            "consensus. Atomic operations blocked until Raft quorum forms.", e);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted during Raft startup", e);
+                }
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to start RatisLockManager", e);
             }
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to start RatisLockManager", e);
+        } else {
+            this.ratisLockManager = null;
+            logger.info("Edge mode — Raft consensus skipped");
         }
 
-        // 2. Create Hazelcast instance (after Raft consensus is established)
+        // 2. Create Hazelcast instance (after Raft consensus is established for core)
         var hzConfig = new com.hazelcast.config.Config();
         hzConfig.setClusterName(cfg.getClusterName());
         hzConfig.setInstanceName(instanceName);
         hzConfig.setProperty("hazelcast.partition.count", String.valueOf(cfg.getPartitionCount()));
         hzConfig.setProperty("hazelcast.logging.type", "slf4j");
         hzConfig.setProperty("hazelcast.phone.home.enabled", "false");
+
+        // Edge nodes join as lite members — no data partitions, no partition ownership.
+        // They can still read/write all maps; data is stored on core member partitions.
+        if (isEdge) {
+            hzConfig.setLiteMember(true);
+        }
 
         // Network configuration
         var networkConfig = hzConfig.getNetworkConfig();
@@ -171,23 +184,31 @@ public class ClusterServer {
         SerializerRegistry.register(hzConfig);
         this.hazelcast = Hazelcast.newHazelcastInstance(hzConfig);
 
-        logger.info("Hazelcast {} started (cluster size={})",
-                instanceName, hazelcast.getCluster().getMembers().size());
+        logger.info("Hazelcast {} started (mode={}, lite={}, cluster size={})",
+                instanceName, isEdge ? "edge" : "core",
+                hazelcast.getCluster().getLocalMember().isLiteMember(),
+                hazelcast.getCluster().getMembers().size());
 
-        // 3. Create persistence manager
-        PersistenceConfig persistenceConfig = PersistenceConfig.fromEnv();
-        this.persistence = new PersistenceManager(
-                Path.of(cfg.getPersistenceDir()), instanceName, persistenceConfig);
+        // 3. Create persistence manager (core only — edge has no persistence)
+        if (!isEdge) {
+            PersistenceConfig persistenceConfig = PersistenceConfig.fromEnv();
+            this.persistence = new PersistenceManager(
+                    Path.of(cfg.getPersistenceDir()), instanceName, persistenceConfig);
+        } else {
+            this.persistence = new PersistenceManager(
+                    Path.of(cfg.getPersistenceDir()), instanceName, PersistenceConfig.disabled());
+            logger.info("Edge mode — persistence disabled");
+        }
 
         // 4. Health management (start as NOT_SERVING until restore completes)
         this.healthManager = new HealthStatusManager();
         healthManager.setStatus("", ServingStatus.NOT_SERVING);
 
-        // 5. Initialize persistence (restore from dump/redo, negotiate winner)
+        // 5. Initialize persistence (restore from dump/redo, negotiate winner) — core only
         //    Compute initial quorum from node_count (falling back to members size)
         int nodeCount = cfg.getNodeCount() > 0 ? cfg.getNodeCount() : members.size();
-        int initialQuorumForPersistence = nodeCount / 2 + 1;
-        if (persistenceConfig.enabled()) {
+        if (!isEdge && persistence.isEnabled()) {
+            int initialQuorumForPersistence = nodeCount / 2 + 1;
             try {
                 persistence.initialize(hazelcast, initialQuorumForPersistence);
             } catch (IOException e) {
@@ -199,9 +220,22 @@ public class ClusterServer {
             }
         }
 
-        // 6. Create backend servers (persistence listeners attached to maps)
-        HazelcastManager manager = new HazelcastManager(hazelcast, persistence, ratisLockManager);
+        // 6. Create backend servers
+        // Edge: no persistence listeners, no locks (HazelcastManager accepts null)
+        // Core: full persistence + lock support
+        HazelcastManager manager = isEdge
+                ? new HazelcastManager(hazelcast)
+                : new HazelcastManager(hazelcast, persistence, ratisLockManager);
         this.backendServers = new BackendServers(manager);
+
+        // Set initial quorum state so ATOMIC ops are blocked if we started degraded.
+        // Quorum is based on core (non-lite) member count only.
+        // Edge nodes don't own data partitions and don't count toward quorum.
+        long initialCoreCount = hazelcast.getCluster().getMembers().stream()
+                .filter(m -> !m.isLiteMember())
+                .count();
+        int quorumSize = nodeCount / 2 + 1;
+        backendServers.services().setQuorumAvailable(isEdge || initialCoreCount >= quorumSize);
 
         // Create JWK verifying keys view server — aggregates all view_member collections
         this.jwkViewServer = new JwkVerifyingKeysViewServer(
@@ -267,26 +301,30 @@ public class ClusterServer {
         // 5e. ClusterState SetLogLevel handler — implements SetLogLevel command
         this.clusterSetLogLevelHandler = new ClusterSetLogLevelHandler();
 
-        // 6. Dynamic quorum monitoring — quorum = currentSize / 2 + 1
-        // Quorum loss only blocks ATOMIC writes (leader elections, lease renewals).
-        // The cluster stays online and healthy regardless — reads, watches, and
-        // convergent writes all continue. This avoids a catch-22 where losing
-        // quorum causes health checks to fail which causes restarts which
-        // prevents quorum from ever being restored.
+        // 6. Dynamic quorum monitoring
+        // Quorum is based on core (non-lite) member count only. Edge nodes joining
+        // or leaving never affects quorum. Quorum loss only blocks ATOMIC writes
+        // (leader elections, lease renewals). The cluster stays online and healthy
+        // regardless — reads, watches, and convergent writes all continue.
         int memberCount = members.size();
+        final int quorumThreshold = quorumSize;
+        final boolean edgeMode = isEdge;
         hazelcast.getCluster().addMembershipListener(new MembershipListener() {
             private volatile boolean hadQuorum = true;
 
             @Override
             public void memberAdded(MembershipEvent e) {
-                int size = hazelcast.getCluster().getMembers().size();
-                int quorum = size / 2 + 1;
-                boolean hasQuorum = size >= quorum;
-                logger.info("[node:{}] Member joined: {} — cluster size={}/{}",
-                        grpcPort, e.getMember().getAddress(), size, memberCount);
+                long coreCount = hazelcast.getCluster().getMembers().stream()
+                        .filter(m -> !m.isLiteMember())
+                        .count();
+                int totalSize = hazelcast.getCluster().getMembers().size();
+                boolean hasQuorum = edgeMode || coreCount >= quorumThreshold;
+                logger.info("[node:{}] Member joined: {} (lite={}) — cluster size={}, core count={}",
+                        grpcPort, e.getMember().getAddress(), e.getMember().isLiteMember(),
+                        totalSize, coreCount);
                 if (hasQuorum && !hadQuorum) {
-                    logger.info("[node:{}] QUORUM RESTORED ({}/{} members) — atomic operations re-enabled",
-                            grpcPort, size, memberCount);
+                    logger.info("[node:{}] QUORUM RESTORED ({} core members, need {}) — atomic operations re-enabled",
+                            grpcPort, coreCount, quorumThreshold);
                 }
                 hadQuorum = hasQuorum;
                 backendServers.services().setQuorumAvailable(hasQuorum);
@@ -295,14 +333,17 @@ public class ClusterServer {
 
             @Override
             public void memberRemoved(MembershipEvent e) {
-                int size = hazelcast.getCluster().getMembers().size();
-                int quorum = size / 2 + 1;
-                boolean hasQuorum = size >= quorum;
-                logger.warn("[node:{}] Member left: {} — cluster size={}/{}",
-                        grpcPort, e.getMember().getAddress(), size, memberCount);
+                long coreCount = hazelcast.getCluster().getMembers().stream()
+                        .filter(m -> !m.isLiteMember())
+                        .count();
+                int totalSize = hazelcast.getCluster().getMembers().size();
+                boolean hasQuorum = edgeMode || coreCount >= quorumThreshold;
+                logger.warn("[node:{}] Member left: {} (lite={}) — cluster size={}, core count={}",
+                        grpcPort, e.getMember().getAddress(), e.getMember().isLiteMember(),
+                        totalSize, coreCount);
                 if (!hasQuorum && hadQuorum) {
-                    logger.warn("[node:{}] QUORUM LOST ({}/{} members, need {}) — atomic writes blocked, cluster remains online",
-                            grpcPort, size, memberCount, quorum);
+                    logger.warn("[node:{}] QUORUM LOST ({} core members, need {}) — atomic writes blocked, cluster remains online",
+                            grpcPort, coreCount, quorumThreshold);
                 }
                 hadQuorum = hasQuorum;
                 backendServers.services().setQuorumAvailable(hasQuorum);
@@ -392,21 +433,25 @@ public class ClusterServer {
                         .setTimestampMs(System.currentTimeMillis())
                         .build());
 
-        String clusterStateSvcName = "kernel.ClusterStateBackendService";
-        for (ServerServiceDefinition svc : backendServers.services().getGrpcServices()) {
-            if (svc.getServiceDescriptor().getName().equals(clusterStateSvcName)) {
-                serverBuilder.addService(clusterSetLogLevelHandler.wrapWithSetLogLevel(svc));
-            } else {
-                serverBuilder.addService(svc);
+        if (isEdge) {
+            // --- Edge mode: register ALL gRPC services for microservice clients ---
+            String clusterStateSvcName = "kernel.ClusterStateBackendService";
+            for (ServerServiceDefinition svc : backendServers.services().getGrpcServices()) {
+                if (svc.getServiceDescriptor().getName().equals(clusterStateSvcName)) {
+                    serverBuilder.addService(clusterSetLogLevelHandler.wrapWithSetLogLevel(svc));
+                } else {
+                    serverBuilder.addService(svc);
+                }
             }
+            serverBuilder.addService(new BackendServiceImpl(backendServer, grpcPort, hazelcast, cfg.getClusterName()));
+            serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
+                jwkViewServer.bindService(), backendServers.getAuthenticator().callerInterceptor()));
         }
-        serverBuilder.addService(new BackendServiceImpl(backendServer, grpcPort, hazelcast, cfg.getClusterName()));
-        serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
-            jwkViewServer.bindService(), backendServers.getAuthenticator().callerInterceptor()));
+        // Health service is always registered (core for k8s probes, edge for LB)
         serverBuilder.addService(healthManager.getHealthService());
 
-        // Conditionally create and register the token exchanger
-        if (frontendConfig.hasTokenExchanger()) {
+        // Conditionally create and register the token exchanger (edge only — core has no clients)
+        if (isEdge && frontendConfig.hasTokenExchanger()) {
             var exchangerCfg = frontendConfig.getTokenExchanger();
             var exchangerState = backendServers.services().getTokenExchangerStateMap();
 
@@ -448,6 +493,7 @@ public class ClusterServer {
         }
 
         this.grpcServer = serverBuilder.build();
+        logger.info("Kernel node configured as {} (grpcPort={})", isEdge ? "EDGE" : "CORE", grpcPort);
     }
 
     /**
@@ -515,7 +561,9 @@ public class ClusterServer {
         jwkViewServer.close();
         backendServers.services().close();
         persistence.close();
-        ratisLockManager.close();
+        if (ratisLockManager != null) {
+            ratisLockManager.close();
+        }
         hazelcast.shutdown();
         logger.info("Node {} shut down", grpcPort);
     }

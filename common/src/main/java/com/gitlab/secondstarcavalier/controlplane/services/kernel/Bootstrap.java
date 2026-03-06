@@ -35,19 +35,16 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Entry point for a single cluster node.
- *
- * <p>
- * Resolves a {@link Kernel.BootstrapConfig} from a config file, environment
- * variables, or both, then starts the server. "Mock" vs "production" is just a
- * matter of what config you provide — there is no separate code path.
+ * Shared bootstrap logic for kernel nodes. Resolves a
+ * {@link Kernel.BootstrapConfig} from a config file, environment variables, or
+ * both, then starts the server in the specified mode.
  *
  * <p>
  * The {@code mock} subcommand generates bootstrap configs for a local cluster.
  */
-public class Main {
+public class Bootstrap {
 
-    private static final Logger logger = LoggerFactory.getLogger(Main.class);
+    private static final Logger logger = LoggerFactory.getLogger(Bootstrap.class);
     private static final String DEFAULT_CONFIG_NAME = "bootstrap-config";
     private static final int DEFAULT_MOCK_NODES = 3;
     private static final int GRPC_BASE_PORT = 5000;
@@ -55,11 +52,12 @@ public class Main {
     private static final int RAFT_BASE_PORT = 7000;
     private static final String MOCK_CLUSTER_NAME = "mock-cluster";
 
-    public static void main(String[] args) throws Exception {
+    /**
+     * Entry point: parses args, resolves config, and starts the server in the
+     * given mode. The mode overrides any {@code mode} field in the config.
+     */
+    public static void run(String[] args, Kernel.NodeMode mode) throws Exception {
         // Enable Hazelcast SSL support (open-source build gate bypass).
-        // The SSL wiring code ships in the open-source jar but is gated behind
-        // an isEnterprise() check. This override enables mTLS for cluster
-        // member-to-member communication without requiring an Enterprise license.
         System.setProperty("hazelcast.internal.override.enterprise", "true");
 
         if (args.length > 0 && "mock".equals(args[0])) {
@@ -67,7 +65,7 @@ public class Main {
             return;
         }
 
-        startServer(args);
+        startServer(args, mode);
     }
 
     // ── mock config generation ───────────────────────────────────────────
@@ -175,7 +173,7 @@ public class Main {
     }
 
     // ── server startup ───────────────────────────────────────────────────
-    private static void startServer(String[] args) throws Exception {
+    private static void startServer(String[] args, Kernel.NodeMode mode) throws Exception {
         // 1. Parse --config/-c from args
         String configPath = parseConfigArg(args);
 
@@ -221,8 +219,10 @@ public class Main {
             return;
         }
 
-        // 5. Apply defaults
-        bootstrapConfig = Helpers.bootstrapConfigDefaults(bootstrapConfig).build();
+        // 5. Apply defaults and force the mode
+        bootstrapConfig = Helpers.bootstrapConfigDefaults(bootstrapConfig)
+                .setMode(mode)
+                .build();
 
         // 6. Validate BootstrapConfig
         Helpers.validateBootstrapConfig(bootstrapConfig);
@@ -237,9 +237,9 @@ public class Main {
 
         // 9. Start
         LogbackConfigurator.install(null);
-        logger.info("Starting with config: listener={}, cluster={}",
-                bootstrapConfig.getListener(),
-                bootstrapConfig.getClusterName());
+        String modeName = mode == Kernel.NodeMode.NODE_MODE_EDGE ? "edge" : "core";
+        logger.info("Starting {} node: listener={}, cluster={}",
+                modeName, bootstrapConfig.getListener(), bootstrapConfig.getClusterName());
 
         ClusterServer server;
         try {
@@ -261,7 +261,7 @@ public class Main {
             return;
         }
 
-        logger.info("Node ready — gRPC {}", bootstrapConfig.getListener());
+        logger.info("{} node ready — gRPC {}", modeName, bootstrapConfig.getListener());
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             logger.info("Shutting down...");

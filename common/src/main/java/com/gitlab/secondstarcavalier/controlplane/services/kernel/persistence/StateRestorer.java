@@ -171,6 +171,70 @@ public class StateRestorer {
     }
 
     /**
+     * Restores only convergent data from local dump and redo logs.
+     * Used when quorum is unavailable — loads convergent state so the node
+     * can serve reads immediately, while atomic data waits for quorum.
+     */
+    public void restoreConvergentOnly() throws IOException {
+        long dumpTimestamp = 0;
+
+        // 1. Load convergent entries from latest dump
+        List<Path> dumps = FullDumper.listDumpFiles(dataDir, nodeId);
+        int loadedCount = 0;
+        if (!dumps.isEmpty()) {
+            Path latestDump = dumps.getLast();
+            dumpTimestamp = FullDumper.extractTimestamp(latestDump);
+            logger.info("Loading convergent data from dump: {}", latestDump.getFileName());
+
+            try (InputStream is = new GZIPInputStream(
+                    new BufferedInputStream(Files.newInputStream(latestDump)))) {
+                byte[] firstRecord = readRecord(is);
+                try {
+                    DbDump dbDump = DbDump.parseFrom(firstRecord);
+                    if (dbDump.getEntriesCount() > 0 || dbDump.getTimestampMs() > 0) {
+                        for (KitchenSink ks : dbDump.getEntriesList()) {
+                            if (ks.getConsistency() != KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_ATOMIC) {
+                                applyKitchenSink(ks);
+                                loadedCount++;
+                            }
+                        }
+                    }
+                } catch (InvalidProtocolBufferException e) {
+                    // Legacy format — load all entries (legacy doesn't distinguish consistency)
+                    FullDumpHeader header = FullDumpHeader.parseFrom(firstRecord);
+                    byte[] recordData;
+                    while ((recordData = readRecordOrNull(is)) != null) {
+                        RedoLogEntry entry = RedoLogEntry.parseFrom(recordData);
+                        if (entry.getConsistency() != Kernel.ConsistencyType.CONSISTENCY_ATOMIC) {
+                            applyEntry(entry);
+                            loadedCount++;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Replay convergent entries from redo logs newer than dump
+        List<Path> redos = RedoLog.listSegments(dataDir, nodeId);
+        for (Path redo : redos) {
+            long fileTs = RedoLog.extractTimestamp(redo, "redo-" + nodeId + "-", ".log");
+            if (fileTs >= dumpTimestamp) {
+                List<KitchenSink> entries = readRedoLogKitchenSink(redo);
+                entries.sort(Comparator.comparingLong(KitchenSink::getTimestampMs));
+                for (KitchenSink ks : entries) {
+                    if (ks.getTimestampMs() > dumpTimestamp
+                            && ks.getConsistency() != KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_ATOMIC) {
+                        applyKitchenSink(ks);
+                        loadedCount++;
+                    }
+                }
+            }
+        }
+
+        logger.info("Convergent-only restore complete: {} entries loaded", loadedCount);
+    }
+
+    /**
      * Performs convergent merge for non-winner nodes. Scans local redo logs
      * for entries where {@code consistency = CONVERGENT} and pushes any that
      * are newer than the corresponding entry in the winner's data.

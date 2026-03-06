@@ -38,9 +38,9 @@ build:
            "${CI_API_V4_URL}/projects/${TACPLUS_PROJECT_ID}/packages/generic/tacplus-1-1/latest/tacplus-1-1-latest-linux-amd64"
       chmod +x /usr/local/bin/tacplus
     - git clone --depth 1 "$PROTO_REPO" /tmp/proto
-    - cd server && tacplus build --src /tmp/proto --tag "${CI_COMMIT_TAG#v}"
+    - (cd server && tacplus build --src /tmp/proto --tag "${CI_COMMIT_TAG#v}")
   script:
-    - mvn package -DskipTests -B -s ../ci_settings.xml
+    - mvn package -DskipTests -B -s ci_settings.xml
   artifacts:
     paths:
       - server/target/kernel.jar

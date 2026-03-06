@@ -1,0 +1,19 @@
+
+    @Override
+    public void getLeader{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+            StreamObserver<{{LEADER_TYPE}}> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+            {{LEADER_TYPE}} value = {{LEADER_FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+            logger.info("{{FIELD_PASCAL}} getLeader: leader={} term={}",
+                value != null ? value.getLeaderId() : "(none)", value != null ? value.getTerm() : 0);
+            responseObserver.onNext(value == null ? {{LEADER_TYPE}}.getDefaultInstance() : value);
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to get leader {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

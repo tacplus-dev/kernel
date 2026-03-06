@@ -1,0 +1,54 @@
+
+    @Override
+    public void resign{{FIELD_PASCAL}}Leader({{OUTER_CLASS}}.LeaderResignRequest request,
+            StreamObserver<{{LEADER_TYPE}}> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.ADMIN);
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+            return;
+        }
+        try {
+            Lock lock = {{LEADER_FIELD_CAMEL}}Lock;
+            lock.lock();
+            try {
+                {{LEADER_TYPE}} current = {{LEADER_FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+                if (current == null || !current.getLeaderId().equals(request.getLeaderId())) {
+                    // Not the leader — return current state
+                    logger.info("{{FIELD_PASCAL}} resign: {} is not the leader (current={})",
+                        request.getLeaderId(), current != null ? current.getLeaderId() : "(none)");
+                    responseObserver.onNext(current == null ? {{LEADER_TYPE}}.getDefaultInstance() : current);
+                    responseObserver.onCompleted();
+                    return;
+                }
+
+                // Fence token must match to prevent stale resignations
+                if (request.getFenceToken() != 0 && request.getFenceToken() != current.getFenceToken()) {
+                    logger.warn("{{FIELD_PASCAL}} resign: fence token mismatch for {} (got={}, expected={})",
+                        request.getLeaderId(), request.getFenceToken(), current.getFenceToken());
+                    responseObserver.onError(Status.FAILED_PRECONDITION
+                        .withDescription("fence token mismatch — leadership may have changed")
+                        .asRuntimeException());
+                    return;
+                }
+
+                // Clear leader, preserve fence token and term
+                {{LEADER_TYPE}} vacant = {{LEADER_TYPE}}.newBuilder()
+                    .setFenceToken(current.getFenceToken())
+                    .setTerm(current.getTerm())
+                    .build();
+                {{LEADER_FIELD_CAMEL}}Map.put(Singleton.SINGLETON_KEY, vacant);
+                {{LEADER_FIELD_CAMEL}}Topic.publish(vacant);
+                logger.info("{{FIELD_PASCAL}} resign: {} resigned, leadership vacated (term={})",
+                    request.getLeaderId(), current.getTerm());
+                responseObserver.onNext(vacant);
+                responseObserver.onCompleted();
+            } finally {
+                lock.unlock();
+            }
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to resign {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

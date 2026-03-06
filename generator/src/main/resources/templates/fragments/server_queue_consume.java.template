@@ -1,0 +1,34 @@
+
+    @Override
+    public void consumeFrom{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+            StreamObserver<{{QUALIFIED_TYPE}}> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.ADMIN);
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+            return;
+        }
+        ServerCallStreamObserver<{{QUALIFIED_TYPE}}> serverObserver =
+                (ServerCallStreamObserver<{{QUALIFIED_TYPE}}>) responseObserver;
+        logger.info("{{FIELD_PASCAL}} consume: new consumer connected");
+        Thread consumerThread = new Thread(() -> {
+            try {
+                while (!serverObserver.isCancelled()) {
+                    {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Queue.take();
+                    logger.info("{{FIELD_PASCAL}} consume: delivered item to consumer");
+                    serverObserver.onNext(value);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                if (!serverObserver.isCancelled()) {
+                    responseObserver.onError(Status.INTERNAL
+                        .withDescription("failed to consume from {{FIELD_PASCAL}}: " + e.getMessage())
+                        .withCause(e).asRuntimeException());
+                }
+            }
+            logger.info("{{FIELD_PASCAL}} consume: consumer disconnected");
+        }, "{{FIELD_PASCAL}}-consumer");
+        consumerThread.setDaemon(true);
+        consumerThread.start();
+    }

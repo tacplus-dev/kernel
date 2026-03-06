@@ -1,0 +1,41 @@
+{{HEADER}}
+
+package {{PACKAGE}};
+
+import com.hazelcast.nio.serialization.compact.CompactReader;
+import com.hazelcast.nio.serialization.compact.CompactSerializer;
+import com.hazelcast.nio.serialization.compact.CompactWriter;
+
+{{IMPORT_LINE}}
+
+public class {{CLASS_NAME}} implements CompactSerializer<{{QUALIFIED_TYPE}}> {
+
+    @Override
+    public String getTypeName() {
+        return "{{PROTO_PACKAGE}}.{{TYPE_NAME}}";
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public Class<{{QUALIFIED_TYPE}}> getCompactClass() {
+        return {{QUALIFIED_TYPE}}.class;
+    }
+
+    @Override
+    public void write(CompactWriter writer, {{QUALIFIED_TYPE}} msg) {
+        // Full proto bytes for lossless round-trip
+        writer.writeArrayOfInt8("__proto__", msg.toByteArray());
+{{SCALAR_PROJECTIONS}}    }
+
+    @Override
+    public {{QUALIFIED_TYPE}} read(CompactReader reader) {
+        byte[] bytes = reader.readArrayOfInt8("__proto__");
+        if (bytes == null) return {{QUALIFIED_TYPE}}.getDefaultInstance();
+        try {
+            return {{QUALIFIED_TYPE}}.parseFrom(bytes);
+        } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+            throw new com.hazelcast.core.HazelcastException(
+                "failed to deserialize {{TYPE_NAME}}", e);
+        }
+    }
+}

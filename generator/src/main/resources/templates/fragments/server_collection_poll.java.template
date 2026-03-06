@@ -1,0 +1,24 @@
+
+    private void pollCollection{{FIELD_PASCAL}}() {
+        try {
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.newBuilder();
+            for (java.util.Map.Entry<String, {{QUALIFIED_TYPE}}> e : {{FIELD_CAMEL}}Map.entrySet()) {
+                resp.putEntries(e.getKey(), e.getValue());
+            }
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse current = resp.build();
+            for (WatcherEntry<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> entry : {{FIELD_CAMEL}}Watchers) {
+                {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse lastSent = entry.lastSent.get();
+                if (lastSent == null || !lastSent.equals(current)) {
+                    try {
+                        entry.observer.onNext(current);
+                        entry.lastSent.set(current);
+                    } catch (Exception e) {
+                        logger.warn("Failed to send {{FIELD_PASCAL}} collection update", e);
+                        {{FIELD_CAMEL}}Watchers.remove(entry);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to poll {{FIELD_PASCAL}} collection", e);
+        }
+    }

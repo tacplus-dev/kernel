@@ -1,0 +1,31 @@
+
+    @Override
+    public void subscribeTo{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+            StreamObserver<{{QUALIFIED_TYPE}}> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+            return;
+        }
+        String peer = PeerContext.PEER_KEY.get();
+        logger.info("{{FIELD_PASCAL}} subscribe: new subscriber from {}", peer);
+        String subscriptionId = {{FIELD_CAMEL}}Topic.addMessageListener(envelope -> {
+            if (peer != null && peer.equals(envelope.senderPeer)) {
+                return;
+            }
+            try {
+                responseObserver.onNext(envelope.message);
+            } catch (Exception ex) {
+                logger.warn("Failed to send {{FIELD_PASCAL}} event to subscriber", ex);
+            }
+        });
+
+        if (responseObserver instanceof ServerCallStreamObserver) {
+            ((ServerCallStreamObserver<{{QUALIFIED_TYPE}}>) responseObserver).setOnCancelHandler(
+                () -> {
+                    {{FIELD_CAMEL}}Topic.removeMessageListener(subscriptionId);
+                    logger.info("{{FIELD_PASCAL}} subscribe: subscriber disconnected from {}", peer);
+                });
+        }
+    }

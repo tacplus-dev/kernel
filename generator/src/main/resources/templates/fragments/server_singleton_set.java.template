@@ -1,0 +1,18 @@
+
+    @Override
+    public void set{{FIELD_PASCAL}}({{QUALIFIED_TYPE}} request,
+            StreamObserver<{{QUALIFIED_TYPE}}> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
+            {{HELPERS_REF}}.validate{{TYPE_NAME}}(request);
+            {{QUALIFIED_TYPE}} old = {{FIELD_CAMEL}}Map.put(Singleton.SINGLETON_KEY, request);
+            responseObserver.onNext(old == null ? {{QUALIFIED_TYPE}}.getDefaultInstance() : old);
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to set {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

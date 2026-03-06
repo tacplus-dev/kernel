@@ -1,0 +1,35 @@
+
+    @Override
+    public void watchLeader{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+            StreamObserver<{{LEADER_TYPE}}> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+            return;
+        }
+        try {
+            {{LEADER_TYPE}} value = {{LEADER_FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+            if (value != null) {
+                logger.info("{{FIELD_PASCAL}} watchLeader: sending initial leader={} term={}",
+                    value.getLeaderId(), value.getTerm());
+                responseObserver.onNext(value);
+            } else {
+                logger.info("{{FIELD_PASCAL}} watchLeader: no current leader, watcher registered");
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to send initial {{FIELD_PASCAL}} leader value", e);
+        }
+
+        WatcherEntry<{{LEADER_TYPE}}> entry = new WatcherEntry<>(responseObserver);
+        {{LEADER_FIELD_CAMEL}}Watchers.add(entry);
+        logger.info("{{FIELD_PASCAL}} watchLeader: total watchers={}", {{LEADER_FIELD_CAMEL}}Watchers.size());
+
+        if (responseObserver instanceof ServerCallStreamObserver) {
+            ((ServerCallStreamObserver<{{LEADER_TYPE}}>) responseObserver).setOnCancelHandler(
+                () -> {
+                    {{LEADER_FIELD_CAMEL}}Watchers.remove(entry);
+                    logger.info("{{FIELD_PASCAL}} watchLeader: watcher disconnected, remaining={}", {{LEADER_FIELD_CAMEL}}Watchers.size());
+                });
+        }
+    }

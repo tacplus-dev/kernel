@@ -6,11 +6,10 @@
 	<version>1.0.0</version>
 	<packaging>pom</packaging>
 	<name>Kernel Parent</name>
-	<description>Parent POM for kernel core/edge modules</description>
+	<description>Parent POM for kernel</description>
 	<modules>
-		<module>common</module>
-		<module>core</module>
-		<module>edge</module>
+		<module>generator</module>
+		<module>server</module>
 	</modules>
 	<properties>
 		<maven.compiler.release>21</maven.compiler.release>
@@ -35,17 +34,7 @@
 			<id>gitlab-maven</id>
 			<url>https://gitlab.com/api/v4/projects/79479556/packages/maven</url>
 		</repository>
-		<repository>
-			<id>gitlab-tacplus</id>
-			<url>https://gitlab.com/api/v4/projects/78207479/packages/maven</url>
-		</repository>
 	</repositories>
-	<pluginRepositories>
-		<pluginRepository>
-			<id>gitlab-tacplus</id>
-			<url>https://gitlab.com/api/v4/projects/78207479/packages/maven</url>
-		</pluginRepository>
-	</pluginRepositories>
 	<distributionManagement>
 		<repository>
 			<id>gitlab-maven</id>

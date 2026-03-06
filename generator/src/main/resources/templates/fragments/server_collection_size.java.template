@@ -1,0 +1,17 @@
+
+    @Override
+    public void size{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}SizeRequest request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}SizeResponse> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+            responseObserver.onNext({{OUTER_CLASS}}.{{FIELD_PASCAL}}SizeResponse.newBuilder()
+                .setSize({{FIELD_CAMEL}}Map.size()).build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to get size of {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

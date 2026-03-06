@@ -1,0 +1,31 @@
+
+    @Override
+    public void watch{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+            return;
+        }
+        try {
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.newBuilder();
+            for (java.util.Map.Entry<String, {{QUALIFIED_TYPE}}> e : {{FIELD_CAMEL}}Map.entrySet()) {
+                resp.putEntries(e.getKey(), e.getValue());
+            }
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse snapshot = resp.build();
+            if (snapshot.getEntriesCount() > 0) {
+                responseObserver.onNext(snapshot);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to send initial {{FIELD_PASCAL}} collection snapshot", e);
+        }
+
+        WatcherEntry<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> entry = new WatcherEntry<>(responseObserver);
+        {{FIELD_CAMEL}}Watchers.add(entry);
+
+        if (responseObserver instanceof ServerCallStreamObserver) {
+            ((ServerCallStreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse>) responseObserver).setOnCancelHandler(
+                () -> {{FIELD_CAMEL}}Watchers.remove(entry));
+        }
+    }

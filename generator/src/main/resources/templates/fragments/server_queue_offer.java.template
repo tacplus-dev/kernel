@@ -1,0 +1,21 @@
+
+    @Override
+    public void offerTo{{FIELD_PASCAL}}({{QUALIFIED_TYPE}} request,
+            StreamObserver<{{OUTER_CLASS}}.QueueReceipt> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
+            {{HELPERS_REF}}.validate{{TYPE_NAME}}(request);
+            boolean accepted = {{FIELD_CAMEL}}Queue.offer(request);
+            int size = {{FIELD_CAMEL}}Queue.size();
+            logger.info("{{FIELD_PASCAL}} offer: accepted={} queueSize={}", accepted, size);
+            responseObserver.onNext({{OUTER_CLASS}}.QueueReceipt.newBuilder()
+                .setAccepted(accepted).setQueueSize(size).build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to offer to {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

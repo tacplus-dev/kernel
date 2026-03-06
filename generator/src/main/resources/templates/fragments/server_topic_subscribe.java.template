@@ -1,0 +1,20 @@
+
+    @Override
+    public void subscribeTo{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+            StreamObserver<{{QUALIFIED_TYPE}}> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+            return;
+        }
+        // Topic subscription — register listener and stream events
+        logger.info("{{FIELD_PASCAL}} subscribe: new subscriber connected");
+        {{FIELD_CAMEL}}Topic.addMessageListener(message -> {
+            try {
+                responseObserver.onNext(message);
+            } catch (Exception e) {
+                logger.warn("Failed to send {{FIELD_PASCAL}} event", e);
+            }
+        });
+    }

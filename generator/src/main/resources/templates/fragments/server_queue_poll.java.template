@@ -1,0 +1,14 @@
+
+    @Override
+    public void pollFrom{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+            StreamObserver<{{QUALIFIED_TYPE}}> responseObserver) {
+        try {
+            {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Queue.poll();
+            responseObserver.onNext(value == null ? {{QUALIFIED_TYPE}}.getDefaultInstance() : value);
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to poll from {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

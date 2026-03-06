@@ -1,0 +1,18 @@
+
+    @Override
+    public void set{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}PutRequest request,
+            StreamObserver<{{OUTER_CLASS}}.MapEmpty> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
+            {{HELPERS_REF}}.validate{{TYPE_NAME}}(request.getValue());
+            {{FIELD_CAMEL}}Map.set(request.getKey(), request.getValue());
+            responseObserver.onNext({{OUTER_CLASS}}.MapEmpty.getDefaultInstance());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to set {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

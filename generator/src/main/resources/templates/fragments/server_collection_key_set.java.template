@@ -1,0 +1,18 @@
+
+    @Override
+    public void keySet{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysRequest request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysResponse> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysResponse.newBuilder();
+            resp.addAllKeys({{FIELD_CAMEL}}Map.keySet());
+            responseObserver.onNext(resp.build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to keySet {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

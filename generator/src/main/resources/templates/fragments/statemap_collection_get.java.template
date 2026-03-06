@@ -1,0 +1,6 @@
+
+    public {{QUALIFIED_TYPE}} get{{FIELD_PASCAL}}(String key) {
+        {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(key);
+        if (value == null) return {{QUALIFIED_TYPE}}.getDefaultInstance();
+        return value;
+    }

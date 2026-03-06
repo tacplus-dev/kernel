@@ -1,0 +1,5 @@
+
+    public void publish{{FIELD_PASCAL}}({{QUALIFIED_TYPE}} message) throws ProtoException {
+        {{HELPERS_REF}}.validate{{TYPE_NAME}}(message);
+        {{FIELD_CAMEL}}Topic.publish(message);
+    }

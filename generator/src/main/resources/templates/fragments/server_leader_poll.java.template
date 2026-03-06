@@ -1,0 +1,48 @@
+
+    private void pollLeader{{FIELD_PASCAL}}() {
+        try {
+            {{LEADER_TYPE}} current = {{LEADER_FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+
+            // Check lease expiry
+            if (current != null && !current.getLeaderId().isEmpty()
+                    && current.getLeaseExpiryMs() < System.currentTimeMillis()) {
+                // Lease expired — fully clear leadership state so next election starts fresh
+                Lock lock = {{LEADER_FIELD_CAMEL}}Lock;
+                if (lock.tryLock()) {
+                    try {
+                        // Re-read under lock to avoid race
+                        current = {{LEADER_FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+                        if (current != null && !current.getLeaderId().isEmpty()
+                                && current.getLeaseExpiryMs() < System.currentTimeMillis()) {
+                            logger.info("{{FIELD_PASCAL}} leader lease expired for {} (term={}) — state cleared",
+                                current.getLeaderId(), current.getTerm());
+                            {{LEADER_FIELD_CAMEL}}Map.remove(Singleton.SINGLETON_KEY);
+                            {{LEADER_TYPE}} empty = {{LEADER_TYPE}}.getDefaultInstance();
+                            {{LEADER_FIELD_CAMEL}}Topic.publish(empty);
+                            current = empty;
+                        }
+                    } finally {
+                        lock.unlock();
+                    }
+                }
+            }
+
+            // Notify watchers
+            if (current == null) return;
+            for (WatcherEntry<{{LEADER_TYPE}}> entry : {{LEADER_FIELD_CAMEL}}Watchers) {
+                {{LEADER_TYPE}} lastSent = entry.lastSent.get();
+                if (lastSent == null || !lastSent.equals(current)) {
+                    try {
+                        entry.observer.onNext(current);
+                        entry.lastSent.set(current);
+                    } catch (Exception e) {
+                        logger.warn("Failed to send {{FIELD_PASCAL}} leader update", e);
+                        {{LEADER_FIELD_CAMEL}}Watchers.remove(entry);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to poll {{FIELD_PASCAL}} leader", e);
+        }
+    }
+

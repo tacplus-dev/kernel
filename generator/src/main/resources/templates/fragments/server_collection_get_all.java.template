@@ -1,0 +1,20 @@
+
+    @Override
+    public void getAll{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}GetAllRequest request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.newBuilder();
+            for (java.util.Map.Entry<String, {{QUALIFIED_TYPE}}> e : {{FIELD_CAMEL}}Map.entrySet()) {
+                resp.putEntries(e.getKey(), e.getValue());
+            }
+            responseObserver.onNext(resp.build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to getAll {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

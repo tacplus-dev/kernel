@@ -1,0 +1,18 @@
+
+    @Override
+    public void size{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+            StreamObserver<{{OUTER_CLASS}}.QueueSizeResponse> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+            int size = {{FIELD_CAMEL}}Queue.size();
+            responseObserver.onNext({{OUTER_CLASS}}.QueueSizeResponse.newBuilder()
+                .setSize(size).build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to get size of {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

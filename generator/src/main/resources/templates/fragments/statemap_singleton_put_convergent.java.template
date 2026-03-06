@@ -1,0 +1,5 @@
+
+    public void put{{FIELD_PASCAL}}({{QUALIFIED_TYPE}} value) throws ProtoException {
+        {{HELPERS_REF}}.validate{{TYPE_NAME}}(value);
+        {{FIELD_CAMEL}}Map.put(Singleton.SINGLETON_KEY, value);
+    }

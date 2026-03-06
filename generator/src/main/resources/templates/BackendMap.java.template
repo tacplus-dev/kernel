@@ -1,0 +1,40 @@
+{{HEADER}}
+
+package {{PACKAGE}};
+
+import {{INTERFACES_PACKAGE}}.IMap;
+import {{INTERFACES_PACKAGE}}.IQueue;
+import {{INTERFACES_PACKAGE}}.ITopic;
+import {{INTERFACES_PACKAGE}}.Lock;
+import {{INTERFACES_PACKAGE}}.Manager;
+import {{INTERFACES_PACKAGE}}.Singleton;
+import {{ERRORS_PACKAGE}}.ProtoException;
+{{CROSS_IMPORTS}}
+
+import {{TYPES_PACKAGE}}.*;
+import {{TYPES_PACKAGE}}.{{OUTER_CLASS}}.*;
+
+/**
+ * BackendMap provides typed distributed map accessors for {{BACKEND_NAME}}Service.
+ *
+ * <p>Each boundary (field with a consistency annotation in the backend root message)
+ * gets its own {@link IMap}. ATOMIC boundaries require a {@link Lock} for writes.
+ * CONVERGENT boundaries allow lock-free writes.
+ *
+ * <p>All put methods call {@code Helpers.validate<Type>()} before storing to ensure
+ * proto validation annotations are enforced at the storage boundary.
+ *
+ * <p>Map and lock names are prefixed with the fully-qualified class name to avoid
+ * collisions across services sharing the same cluster.
+ *
+ * <p>Generated from: {{PROTO_FILE}}
+ */
+public class {{CLASS_NAME}} {
+    private static final String CLASS_NAME = {{CLASS_NAME}}.class.getName();
+
+    private final Manager manager;
+{{FIELDS}}
+{{CONSTRUCTOR}}
+{{PROTO_METHOD}}
+{{METHODS}}
+}

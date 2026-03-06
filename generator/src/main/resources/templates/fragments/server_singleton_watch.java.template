@@ -1,0 +1,27 @@
+
+    @Override
+    public void watch{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+            StreamObserver<{{QUALIFIED_TYPE}}> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+            return;
+        }
+        try {
+            {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+            if (value != null) {
+                responseObserver.onNext(value);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to send initial {{FIELD_PASCAL}} value", e);
+        }
+
+        WatcherEntry<{{QUALIFIED_TYPE}}> entry = new WatcherEntry<>(responseObserver);
+        {{FIELD_CAMEL}}Watchers.add(entry);
+
+        if (responseObserver instanceof ServerCallStreamObserver) {
+            ((ServerCallStreamObserver<{{QUALIFIED_TYPE}}>) responseObserver).setOnCancelHandler(
+                () -> {{FIELD_CAMEL}}Watchers.remove(entry));
+        }
+    }

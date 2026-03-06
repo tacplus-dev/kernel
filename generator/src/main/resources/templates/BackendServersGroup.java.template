@@ -1,0 +1,54 @@
+{{HEADER}}
+
+package {{PACKAGE}};
+
+import {{INTERFACES_PACKAGE}}.Manager;
+import {{AUTHENTICATOR_PACKAGE}}.SecurityAuthenticator;
+import io.grpc.BindableService;
+import io.grpc.ServerServiceDefinition;
+import io.grpc.protobuf.services.ProtoReflectionService;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * BackendServers aggregates all per-service backend servers for this group.
+ * Each backend state service gets a state server that provides
+ * typed access to its distributed-map-backed boundaries.
+ *
+ * <p>Generated from services with service_backend annotation.
+ */
+public class BackendServers implements java.io.Closeable {
+
+    private final Manager manager;
+{{FIELDS}}
+{{CONSTRUCTOR}}
+    /**
+     * Returns the Manager shared by all backend servers.
+     */
+    public Manager getManager() {
+        return manager;
+    }
+
+    /**
+     * Returns all BackendService gRPC server implementations, each wrapped
+     * with the caller-extraction interceptor for security authentication.
+     */
+    public SecurityAuthenticator getAuthenticator() {
+        return authenticator;
+    }
+
+    public List<ServerServiceDefinition> getGrpcServices() {
+        io.grpc.ServerInterceptor callerInterceptor = authenticator.callerInterceptor();
+        List<ServerServiceDefinition> services = new ArrayList<>();
+{{GRPC_SERVICE_ADDS}}        services.add(ProtoReflectionService.newInstance().bindService());
+        return services;
+    }
+
+    public void setQuorumAvailable(boolean available) {
+{{QUORUM_CALLS}}    }
+
+    @Override
+    public void close() {
+{{CLOSE_CALLS}}    }
+{{GETTERS}}
+}

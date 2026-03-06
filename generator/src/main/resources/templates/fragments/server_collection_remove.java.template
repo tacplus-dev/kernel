@@ -1,0 +1,21 @@
+
+    @Override
+    public void remove{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}GetRequest request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
+            {{QUALIFIED_TYPE}} old = {{FIELD_CAMEL}}Map.remove(request.getKey());
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.newBuilder();
+            if (old != null) {
+                resp.setValue(old).setFound(true);
+            }
+            responseObserver.onNext(resp.build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to remove {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

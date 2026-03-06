@@ -1,0 +1,9 @@
+
+    public void put{{FIELD_PASCAL}}(String key, {{QUALIFIED_TYPE}} value, Lock lock) throws ProtoException {
+        if (!lock.isLockedByCurrentThread()) {
+            throw new ProtoException(
+                    ProtoException.FAILED_PRECONDITION, "Must hold lock to update atomic state: {{TYPE_NAME}}");
+        }
+        {{HELPERS_REF}}.validate{{TYPE_NAME}}(value);
+        {{FIELD_CAMEL}}Map.put(key, value);
+    }

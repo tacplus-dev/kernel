@@ -1,0 +1,17 @@
+
+    @Override
+    public void get{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+            StreamObserver<{{QUALIFIED_TYPE}}> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+            {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+            responseObserver.onNext(value == null ? {{QUALIFIED_TYPE}}.getDefaultInstance() : value);
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to get {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

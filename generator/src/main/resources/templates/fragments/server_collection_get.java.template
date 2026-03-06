@@ -1,0 +1,21 @@
+
+    @Override
+    public void get{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}GetRequest request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+            {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(request.getKey());
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.newBuilder();
+            if (value != null) {
+                resp.setValue(value).setFound(true);
+            }
+            responseObserver.onNext(resp.build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to get {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

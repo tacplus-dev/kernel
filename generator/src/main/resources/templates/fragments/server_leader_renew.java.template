@@ -1,0 +1,66 @@
+
+    @Override
+    public StreamObserver<{{OUTER_CLASS}}.LeaderLeaseRenewal> renewLease{{FIELD_PASCAL}}(
+            StreamObserver<{{LEADER_TYPE}}> responseObserver) {
+        return new StreamObserver<{{OUTER_CLASS}}.LeaderLeaseRenewal>() {
+            @Override
+            public void onNext({{OUTER_CLASS}}.LeaderLeaseRenewal renewal) {
+                try {
+                    checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.ADMIN);
+                } catch (ProtoException e) {
+                    responseObserver.onError(toGrpcError(e));
+                    return;
+                }
+                if (!quorumAvailable) {
+                    responseObserver.onError(Status.UNAVAILABLE
+                        .withDescription("quorum lost — lease renewal suspended").asRuntimeException());
+                    return;
+                }
+                try {
+                    Lock lock = {{LEADER_FIELD_CAMEL}}Lock;
+                    lock.lock();
+                    try {
+                        {{LEADER_TYPE}} current = {{LEADER_FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+                        if (current != null
+                                && current.getLeaderId().equals(renewal.getLeaderId())
+                                && current.getFenceToken() == renewal.getFenceToken()) {
+                            // Extend the lease
+                            {{LEADER_TYPE}} renewed = current.toBuilder()
+                                .setLeaseExpiryMs(System.currentTimeMillis() + LEASE_TTL_MS)
+                                .build();
+                            {{LEADER_FIELD_CAMEL}}Map.put(Singleton.SINGLETON_KEY, renewed);
+                            logger.debug("{{FIELD_PASCAL}} lease renewed: leader={} fence={}",
+                                renewal.getLeaderId(), renewal.getFenceToken());
+                            responseObserver.onNext(renewed);
+                        } else {
+                            // Stale leader — fence token doesn't match
+                            logger.info("{{FIELD_PASCAL}} lease renewal REJECTED: requester={} fence={}, current leader={} fence={}",
+                                renewal.getLeaderId(), renewal.getFenceToken(),
+                                current != null ? current.getLeaderId() : "(none)",
+                                current != null ? current.getFenceToken() : 0);
+                            responseObserver.onError(Status.FAILED_PRECONDITION
+                                .withDescription("Leadership lost — fence token mismatch")
+                                .asRuntimeException());
+                        }
+                    } finally {
+                        lock.unlock();
+                    }
+                } catch (Exception e) {
+                    responseObserver.onError(Status.INTERNAL
+                        .withDescription("failed to renew {{FIELD_PASCAL}} lease: " + e.getMessage())
+                        .withCause(e).asRuntimeException());
+                }
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                // Stream dropped — leader is gone. Lease will expire naturally.
+                logger.info("{{FIELD_PASCAL}} lease stream dropped", t);
+            }
+
+            @Override
+            public void onCompleted() {
+                responseObserver.onCompleted();
+            }
+        };
+    }

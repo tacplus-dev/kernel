@@ -1,0 +1,20 @@
+
+    @Override
+    public void publishTo{{FIELD_PASCAL}}({{QUALIFIED_TYPE}} request,
+            StreamObserver<{{OUTER_CLASS}}.TopicPublishReceipt> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
+            {{HELPERS_REF}}.validate{{TYPE_NAME}}(request);
+            {{FIELD_CAMEL}}Topic.publish(request);
+            logger.info("{{FIELD_PASCAL}} publish: message published");
+            responseObserver.onNext({{OUTER_CLASS}}.TopicPublishReceipt.newBuilder()
+                .setPublished(true).build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to publish to {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

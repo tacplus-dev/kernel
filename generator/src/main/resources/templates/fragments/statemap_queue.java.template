@@ -1,0 +1,17 @@
+
+    public boolean offer{{FIELD_PASCAL}}({{QUALIFIED_TYPE}} item) throws ProtoException {
+        {{HELPERS_REF}}.validate{{TYPE_NAME}}(item);
+        return {{FIELD_CAMEL}}Queue.offer(item);
+    }
+
+    public {{QUALIFIED_TYPE}} poll{{FIELD_PASCAL}}() {
+        return {{FIELD_CAMEL}}Queue.poll();
+    }
+
+    public {{QUALIFIED_TYPE}} peek{{FIELD_PASCAL}}() {
+        return {{FIELD_CAMEL}}Queue.peek();
+    }
+
+    public int size{{FIELD_PASCAL}}() {
+        return {{FIELD_CAMEL}}Queue.size();
+    }

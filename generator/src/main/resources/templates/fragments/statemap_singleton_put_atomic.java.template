@@ -1,0 +1,19 @@
+
+    public void put{{FIELD_PASCAL}}({{QUALIFIED_TYPE}} value, Lock lock) throws ProtoException {
+        if (!lock.isLockedByCurrentThread()) {
+            throw new ProtoException(ProtoException.FAILED_PRECONDITION,
+                "Must hold lock to update atomic state: {{FIELD_PASCAL}}");
+        }
+        {{HELPERS_REF}}.validate{{TYPE_NAME}}(value);
+        {{FIELD_CAMEL}}Map.put(Singleton.SINGLETON_KEY, value);
+    }
+
+    public Lock lock{{FIELD_PASCAL}}() {
+        Lock lock = manager.getLock(CLASS_NAME + ":{{MAP_NAME}}");
+        lock.lock();
+        return lock;
+    }
+
+    public void unlock{{FIELD_PASCAL}}(Lock lock) {
+        lock.unlock();
+    }

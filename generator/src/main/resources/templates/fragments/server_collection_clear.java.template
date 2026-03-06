@@ -1,0 +1,17 @@
+
+    @Override
+    public void clear{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}ClearRequest request,
+            StreamObserver<{{OUTER_CLASS}}.MapEmpty> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
+            {{FIELD_CAMEL}}Map.clear();
+            responseObserver.onNext({{OUTER_CLASS}}.MapEmpty.getDefaultInstance());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to clear {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

@@ -1,0 +1,22 @@
+
+    @Override
+    public void putIfAbsent{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}PutRequest request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
+            {{HELPERS_REF}}.validate{{TYPE_NAME}}(request.getValue());
+            {{QUALIFIED_TYPE}} existing = {{FIELD_CAMEL}}Map.putIfAbsent(request.getKey(), request.getValue());
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.newBuilder();
+            if (existing != null) {
+                resp.setValue(existing).setFound(true);
+            }
+            responseObserver.onNext(resp.build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to putIfAbsent {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

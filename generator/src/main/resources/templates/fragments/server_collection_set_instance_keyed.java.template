@@ -1,0 +1,37 @@
+
+    @Override
+    public void set{{FIELD_PASCAL}}({{QUALIFIED_TYPE}} request,
+            StreamObserver<{{OUTER_CLASS}}.MapEmpty> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
+
+            // Extract instance identity from auth context
+            String subject = SecurityAuthenticator.CALLER_SERVICE_KEY.get();
+            String instanceId = SecurityAuthenticator.CALLER_INSTANCE_ID_KEY.get();
+            if (instanceId == null || instanceId.isEmpty()) {
+                responseObserver.onError(Status.FAILED_PRECONDITION
+                    .withDescription("token missing instance_id claim — token predates instance_id support")
+                    .asRuntimeException());
+                return;
+            }
+
+            // Server-authoritative: build composite key and overwrite identity fields
+            String compositeKey = subject + "@" + instanceId;
+            {{QUALIFIED_TYPE}} authoritative = request.toBuilder()
+                .setId(compositeKey)
+                .setServiceId(subject)
+                .setInstanceId(instanceId)
+                .build();
+
+            {{HELPERS_REF}}.validate{{TYPE_NAME}}(authoritative);
+            {{FIELD_CAMEL}}Map.set(compositeKey, authoritative);
+            responseObserver.onNext({{OUTER_CLASS}}.MapEmpty.getDefaultInstance());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to set {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

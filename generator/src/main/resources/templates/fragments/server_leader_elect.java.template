@@ -1,0 +1,66 @@
+
+    @Override
+    public void elect{{FIELD_PASCAL}}Leader({{OUTER_CLASS}}.LeaderElectRequest request,
+            StreamObserver<{{LEADER_TYPE}}> responseObserver) {
+        try {
+            checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.ADMIN);
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+            return;
+        }
+        if (!quorumAvailable) {
+            responseObserver.onError(Status.UNAVAILABLE
+                .withDescription("quorum lost — elections suspended").asRuntimeException());
+            return;
+        }
+        try {
+            Lock lock = {{LEADER_FIELD_CAMEL}}Lock;
+            boolean acquired = lock.tryLock();
+            try {
+                {{LEADER_TYPE}} current = {{LEADER_FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+
+                if (!acquired) {
+                    // Could not acquire lock — return current leader
+                    logger.info("{{FIELD_PASCAL}} elect: lock contention, candidate={}, current leader={}",
+                        request.getCandidateId(), current != null ? current.getLeaderId() : "(none)");
+                    responseObserver.onNext(current == null ? {{LEADER_TYPE}}.getDefaultInstance() : current);
+                    responseObserver.onCompleted();
+                    return;
+                }
+
+                // Check if existing leader has a valid lease
+                if (current != null && !current.getLeaderId().isEmpty()
+                        && current.getLeaseExpiryMs() > System.currentTimeMillis()) {
+                    logger.info("{{FIELD_PASCAL}} elect: existing leader={} term={} (lease valid), candidate={} rejected",
+                        current.getLeaderId(), current.getTerm(), request.getCandidateId());
+                    responseObserver.onNext(current);
+                    responseObserver.onCompleted();
+                    return;
+                }
+
+                // Elect new leader
+                long newFence = (current != null ? current.getFenceToken() : 0) + 1;
+                long newTerm = (current != null ? current.getTerm() : 0) + 1;
+                {{LEADER_TYPE}} record = {{LEADER_TYPE}}.newBuilder()
+                    .setLeaderId(request.getCandidateId())
+                    .setFenceToken(newFence)
+                    .setTerm(newTerm)
+                    .setLeaseExpiryMs(System.currentTimeMillis() + LEASE_TTL_MS)
+                    .build();
+                {{LEADER_FIELD_CAMEL}}Map.put(Singleton.SINGLETON_KEY, record);
+                {{LEADER_FIELD_CAMEL}}Topic.publish(record);
+                logger.info("{{FIELD_PASCAL}} elect: NEW LEADER={} term={} fence={}",
+                    record.getLeaderId(), newTerm, newFence);
+                responseObserver.onNext(record);
+                responseObserver.onCompleted();
+            } finally {
+                if (acquired) {
+                    lock.unlock();
+                }
+            }
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to elect {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

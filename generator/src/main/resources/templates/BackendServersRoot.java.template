@@ -1,0 +1,23 @@
+{{HEADER}}
+
+package {{PACKAGE}};
+
+import {{INTERFACES_PACKAGE}}.Manager;
+import {{AUTHENTICATOR_PACKAGE}}.SecurityAuthenticator;
+
+/**
+ * BackendServers is the root aggregator for all backend server groups.
+ *
+ * <p>Generated from services with service_backend annotation.
+ */
+public class BackendServers {
+
+    private final SecurityAuthenticator authenticator;
+{{FIELDS}}
+{{CONSTRUCTOR}}
+    /** Returns the SecurityAuthenticator shared by all backend servers. */
+    public SecurityAuthenticator getAuthenticator() {
+        return authenticator;
+    }
+{{GETTERS}}
+{{ROOT_QUORUM_METHOD}}}

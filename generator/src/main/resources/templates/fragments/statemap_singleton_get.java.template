@@ -1,0 +1,6 @@
+
+    public {{QUALIFIED_TYPE}} get{{FIELD_PASCAL}}() {
+        {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+        if (value == null) return {{QUALIFIED_TYPE}}.getDefaultInstance();
+        return value;
+    }

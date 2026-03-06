@@ -1,0 +1,12 @@
+{{HEADER}}
+
+package {{PACKAGE}};
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.CompactSerializationConfig;
+
+public class SerializerRegistry {
+    public static void register(Config hzConfig) {
+        CompactSerializationConfig compact = hzConfig.getSerializationConfig().getCompactSerializationConfig();
+{{REGISTRATIONS}}    }
+}

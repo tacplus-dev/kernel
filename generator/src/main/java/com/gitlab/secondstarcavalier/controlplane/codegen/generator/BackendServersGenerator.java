@@ -197,11 +197,9 @@ public class BackendServersGenerator {
             // NOT a per-service typed config in ConfigHolder. Skip it.
             if (backendName.equals("ServiceConfigState")) continue;
 
-            // Derive ConfigHolder type reference (same proto package as ConfigState services)
+            // Derive Services type reference from libs/generated.proto (package generated).
             if (configHolderType == null) {
-                String typesPackage = ctx.getTypesPackage(svc);
-                String outerClass = ctx.getOuterClassName(svc);
-                configHolderType = typesPackage + "." + outerClass + ".ConfigHolder";
+                configHolderType = ctx.getTypesPackageBase() + ".types.libs.generated.Generated.Services";
             }
 
             // AwsConnectorConfigState → AwsConnector → has/getAwsConnectorConfig()
@@ -212,16 +210,16 @@ public class BackendServersGenerator {
 
         if (configHolderType != null && !configStateMappings.isEmpty()) {
             getters.append("\n    /**\n");
-            getters.append("     * Installs configs from a ConfigHolder into per-service config state maps.\n");
+            getters.append("     * Installs configs from a Services holder into per-service config state maps.\n");
             getters.append("     * @return the number of configs installed\n");
             getters.append("     */\n");
-            getters.append("    public int installConfigHolder(").append(configHolderType).append(" configHolder) {\n");
+            getters.append("    public int installServices(").append(configHolderType).append(" services) {\n");
             getters.append("        int installed = 0;\n");
             for (String[] mapping : configStateMappings) {
                 String mapField = mapping[0];
                 String configPrefix = mapping[1];
-                getters.append("        if (configHolder.has").append(configPrefix).append("Config()) {\n");
-                getters.append("            ").append(mapField).append(".putConfig(configHolder.get")
+                getters.append("        if (services.has").append(configPrefix).append("Config()) {\n");
+                getters.append("            ").append(mapField).append(".putConfig(services.get")
                        .append(configPrefix).append("Config());\n");
                 getters.append("            installed++;\n");
                 getters.append("        }\n");

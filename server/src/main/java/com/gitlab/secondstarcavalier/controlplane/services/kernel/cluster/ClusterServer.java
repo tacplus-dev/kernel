@@ -220,14 +220,19 @@ public class ClusterServer {
                     return result;
                 });
 
-        // Capture CredPair public keys from Config
-        final var credPairPublicKeys = frontendConfig.getCredPairsList().stream()
-                .map(JwkOuterClass.CredPair::getPublicKey)
-                .collect(java.util.stream.Collectors.toList());
+        // Capture delegate CredPair public keys from Config
+        final var delegatePublicKeys = new java.util.ArrayList<JwkOuterClass.Jwk>();
+        for (Kernel.Delegate delegate : frontendConfig.getDelegatesList()) {
+            for (JwkOuterClass.CredPair cp : delegate.getCredPairsList()) {
+                if (cp.hasPublicKey()) {
+                    delegatePublicKeys.add(cp.getPublicKey());
+                }
+            }
+        }
 
         // Combined key supplier
         Supplier<List<JwkOuterClass.Jwk>> allKeysSupplier = () -> {
-            var keys = new java.util.ArrayList<>(credPairPublicKeys);
+            var keys = new java.util.ArrayList<>(delegatePublicKeys);
             try {
                 keys.addAll(backendServers
                         .services()
@@ -420,15 +425,13 @@ public class ClusterServer {
         // Health service is always registered
         serverBuilder.addService(healthManager.getHealthService());
 
-        // Conditionally create and register the token exchanger (edge nodes serve
-        // clients)
-        if (isEdge && frontendConfig.hasTokenExchanger()) {
-            var exchangerCfg = frontendConfig.getTokenExchanger();
+        // Conditionally create and register the token exchanger (edge nodes serve clients)
+        if (isEdge && frontendConfig.getDelegatesCount() > 0) {
             var exchangerState = backendServers.services().getTokenExchangerStateMap();
 
             this.keyRotator = new KeyRotator(
-                    exchangerCfg.getKeyRotationIntervalSeconds() > 0
-                            ? exchangerCfg.getKeyRotationIntervalSeconds()
+                    frontendConfig.getKeyRotationIntervalSeconds() > 0
+                            ? frontendConfig.getKeyRotationIntervalSeconds()
                             : 86400,
                     jwk -> {
                         try {
@@ -450,23 +453,17 @@ public class ClusterServer {
 
             this.externalJwkResolver = new ExternalJwkResolver(allKeysSupplier);
 
-            final var credPairs = frontendConfig.getCredPairsList();
-            final var entitlementMappings = frontendConfig.getEntitlementMappingsList();
-            final var serviceEntitlements = frontendConfig.getServiceEntitlementsList();
+            final var delegates = frontendConfig.getDelegatesList();
             var exchangerService = new TokenExchangerService(
-                    exchangerCfg,
+                    frontendConfig.getDefaultTokenExpirySeconds(),
                     externalJwkResolver,
                     keyRotator,
                     allKeysSupplier,
-                    () -> credPairs,
-                    () -> entitlementMappings,
-                    () -> serviceEntitlements);
+                    () -> delegates);
 
             backendServers.services().registerTokenExchangerService(exchangerService);
             serverBuilder.addService(exchangerService);
-            logger.info(
-                    "TokenExchangerService registered on gRPC server (refreshAud={})",
-                    exchangerCfg.getRefreshAudience());
+            logger.info("TokenExchangerService registered on gRPC server ({} delegates)", delegates.size());
         } else {
             this.keyRotator = null;
             this.externalJwkResolver = null;
@@ -497,7 +494,7 @@ public class ClusterServer {
             logger.info("No configs in Config — config state maps unchanged");
             return;
         }
-        int installed = backendServers.services().installConfigHolder(config.getConfigs());
+        int installed = backendServers.services().installServices(config.getConfigs());
         logger.info("Installed {} config(s) into per-service config state maps", installed);
     }
 

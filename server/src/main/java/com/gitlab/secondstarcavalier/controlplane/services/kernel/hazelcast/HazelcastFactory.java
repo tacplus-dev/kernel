@@ -9,6 +9,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Manager;
 import com.hazelcast.config.Config;
 import com.hazelcast.config.JoinConfig;
+import com.hazelcast.config.MapConfig;
 import com.hazelcast.config.NetworkConfig;
 import com.hazelcast.config.SSLConfig;
 import com.hazelcast.config.TcpIpConfig;
@@ -143,6 +144,15 @@ public class HazelcastFactory {
 
             logger.info("CP subsystem enabled, cp_member_count={}", cpCfg.getCpMemberCount());
         }
+
+        // Data replication: ensure data exists on MIN_DATA_COPIES nodes.
+        // backupCount = min(MIN_DATA_COPIES - 1, nodeCount - 1) so a 3+ node
+        // cluster keeps 3 copies, while smaller clusters degrade gracefully.
+        int nodeCount = cfg.getNodeCount() > 0 ? cfg.getNodeCount() : cfg.getMembersCount();
+        int backupCount = Math.min((int) Helpers.MIN_DATA_COPIES - 1, Math.max(nodeCount - 1, 0));
+        hzConfig.getMapConfig("default").setBackupCount(backupCount);
+        logger.info("Hazelcast backup count set to {} (target {} copies, {} nodes)",
+                backupCount, Helpers.MIN_DATA_COPIES, nodeCount);
 
         SerializerRegistry.register(hzConfig);
 

@@ -4,13 +4,10 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.jwk.ImmutableJwk;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.key.ImmutableKey;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.token.TokenWrapper;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.entitlement.Entitlement;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.TokenOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.TokenExchangerServiceGrpc;
-import com.google.protobuf.ListValue;
-import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -35,6 +32,9 @@ import org.slf4j.LoggerFactory;
  * exchanger signing keys only, clones claims, sets requested audience,
  * and signs with active key.</li>
  * </ol>
+ *
+ * <p>Authorization is enforced by static policy (allow_service/allow_user
+ * annotations) at the frontend, not by entitlements baked into tokens.
  */
 public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchangerServiceImplBase {
 
@@ -47,32 +47,26 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
     private static final Set<String> STANDARD_JWT_CLAIMS =
             Set.of("sub", "iss", "aud", "exp", "iat", "azp", "nbf", "jti");
 
-    private final String refreshAudience;
+    /** Token type claim used to distinguish refresh tokens from service tokens. */
+    private static final String TOKEN_TYPE_REFRESH = "refresh";
+
     private final long defaultTokenExpirySeconds;
     private final ExternalJwkResolver externalJwkResolver;
     private final KeyRotator keyRotator;
     private final Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader;
-    private final Supplier<List<JwkOuterClass.CredPair>> credPairsReader;
-    private final Supplier<List<Entitlement.ServiceEntitlementMapping>> entitlementMappingsReader;
-    private final Supplier<List<Entitlement.ServiceEntitlements>> serviceEntitlementsReader;
+    private final Supplier<List<Kernel.Delegate>> delegatesReader;
 
     public TokenExchangerService(
-            Kernel.TokenExchangerConfig config,
+            long defaultTokenExpirySeconds,
             ExternalJwkResolver externalJwkResolver,
             KeyRotator keyRotator,
             Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
-            Supplier<List<JwkOuterClass.CredPair>> credPairsReader,
-            Supplier<List<Entitlement.ServiceEntitlementMapping>> entitlementMappingsReader,
-            Supplier<List<Entitlement.ServiceEntitlements>> serviceEntitlementsReader) {
-        this.refreshAudience = config.getRefreshAudience().isEmpty() ? "refresh" : config.getRefreshAudience();
-        this.defaultTokenExpirySeconds =
-                config.getDefaultTokenExpirySeconds() > 0 ? config.getDefaultTokenExpirySeconds() : 3600;
+            Supplier<List<Kernel.Delegate>> delegatesReader) {
+        this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
         this.externalJwkResolver = externalJwkResolver;
         this.keyRotator = keyRotator;
         this.verifyingKeysReader = verifyingKeysReader;
-        this.credPairsReader = credPairsReader;
-        this.entitlementMappingsReader = entitlementMappingsReader;
-        this.serviceEntitlementsReader = serviceEntitlementsReader;
+        this.delegatesReader = delegatesReader;
     }
 
     @Override
@@ -105,12 +99,11 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
             throw new StatusException(Status.INVALID_ARGUMENT, "invalid input_token: " + e.getMessage());
         }
 
-        String inputAud = inputToken.getAudience();
-
-        // Routing: if the input token's audience is already the refresh audience,
-        // this is a refresh token being exchanged for a service token (Phase 2).
-        // Otherwise it's an external/bootstrap token (Phase 1).
-        if (refreshAudience.equals(inputAud)) {
+        // Routing: if the token has typ=refresh, it's a refresh token being
+        // exchanged for a service token (Phase 2). Otherwise it's an
+        // external/bootstrap token (Phase 1).
+        Object typ = inputToken.getCustomField("typ");
+        if (TOKEN_TYPE_REFRESH.equals(typ)) {
             // Phase 2: Refresh → Service Token
             return exchangeRefreshToService(request, inputToken);
         }
@@ -124,8 +117,8 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
      * and mints a refresh token.
      *
      * <p>
-     * For bootstrap JWTs from CredPair holders: looks up the CredPair by kid,
-     * verifies the signature, and derives the subject from the identity mapping.
+     * For bootstrap JWTs from delegate CredPair holders: looks up the delegate
+     * by kid, verifies the signature, and derives the subject from the delegate name.
      * For external IdP tokens: resolves the key via issuer discovery.
      */
     private TokenOuterClass.Token exchangeExternalToRefresh(Kernel.TokenRequest request, TokenWrapper inputToken)
@@ -136,17 +129,24 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
             throw new StatusException(Status.INVALID_ARGUMENT, "input_token missing kid header");
         }
 
-        // Try CredPair lookup by kid
+        // Try delegate lookup by kid
+        Kernel.Delegate matchedDelegate = null;
         JwkOuterClass.CredPair matchedCredPair = null;
-        for (JwkOuterClass.CredPair cp : credPairsReader.get()) {
-            if (cp.hasPublicKey() && kid.equals(cp.getPublicKey().getKid())) {
-                matchedCredPair = cp;
+        for (Kernel.Delegate delegate : delegatesReader.get()) {
+            for (JwkOuterClass.CredPair cp : delegate.getCredPairsList()) {
+                if (cp.hasPublicKey() && kid.equals(cp.getPublicKey().getKid())) {
+                    matchedDelegate = delegate;
+                    matchedCredPair = cp;
+                    break;
+                }
+            }
+            if (matchedDelegate != null) {
                 break;
             }
         }
 
-        if (matchedCredPair != null) {
-            // CredPair flow: verify signature with CredPair's public key
+        if (matchedDelegate != null) {
+            // Delegate CredPair flow: verify signature with CredPair's public key
             ImmutableJwk verificationKey = ImmutableJwk.from(matchedCredPair.getPublicKey());
             try {
                 inputToken.verify(verificationKey);
@@ -155,32 +155,19 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
                         Status.UNAUTHENTICATED, "bootstrap JWT verification failed: " + e.getMessage());
             }
 
-            // Look up identity mapping by kid → service name
-            Entitlement.ServiceEntitlementMapping mapping = findMappingByKid(kid);
-            if (mapping == null) {
-                throw new StatusException(Status.PERMISSION_DENIED, "no entitlement mapping for kid: " + kid);
-            }
+            String delegateName = matchedDelegate.getName();
 
-            String serviceName = mapping.getService();
-
-            // Derive entitlements from proto descriptors via service entitlements
-            Entitlement.ServiceEntitlements entitlements = findEntitlements(serviceName + "-entitlements");
-            if (entitlements == null) {
-                throw new StatusException(Status.PERMISSION_DENIED, "no service entitlements for: " + serviceName);
-            }
-
-            // Instance ID: check for continuity token to preserve instance_id across
-            // restarts
+            // Instance ID: check for continuity token to preserve instance_id across restarts
             String instanceId;
             if (!request.getContinuityToken().isEmpty()) {
-                instanceId = resolveInstanceIdFromContinuityToken(request, serviceName);
+                instanceId = resolveInstanceIdFromContinuityToken(request, delegateName);
             } else {
                 instanceId = UUID.randomUUID().toString();
-                logger.info("Generated new instance_id={} for sub={}", instanceId, serviceName);
+                logger.info("Generated new instance_id={} for sub={}", instanceId, delegateName);
             }
 
             return mintRefreshToken(
-                    serviceName, request, Map.of("instance_id", instanceId), buildEntitlementsClaim(entitlements));
+                    delegateName, request, Map.of("instance_id", instanceId));
         }
 
         // External IdP flow: resolve key via issuer
@@ -201,17 +188,15 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
         // Use subject from the input token for external IdP flow
         String subject = inputToken.getSubject();
 
-        return mintRefreshToken(subject, request, Map.of(), null);
+        return mintRefreshToken(subject, request, Map.of());
     }
 
     /**
-     * Mints a new refresh token with the given subject and entitlements.
-     *
-     * @param entitlementsClaim protobuf Value containing the entitlements map, or
-     *                          null
+     * Mints a new refresh token with the given subject.
+     * No entitlements are baked into tokens — authorization is enforced at the frontend.
      */
     private TokenOuterClass.Token mintRefreshToken(
-            String subject, Kernel.TokenRequest request, Map<String, Object> extraClaims, Value entitlementsClaim)
+            String subject, Kernel.TokenRequest request, Map<String, Object> extraClaims)
             throws StatusException {
 
         ImmutableKey signingKey = keyRotator.getActiveSigningKey();
@@ -230,22 +215,19 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
         TokenWrapper newToken = TokenWrapper.create()
                 .setIssuer("token-exchanger")
                 .setSubject(subject)
-                .setAudience(refreshAudience)
+                .setAudience("kernel")
                 .setIssuedAt(now)
                 .setExpiration(exp)
                 .setJTI(UUID.randomUUID().toString());
 
+        // Mark as refresh token so Phase 2 can identify it.
+        newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
         // Set azp = "kernel" (kernel is the minter)
         newToken.setCustomField("azp", "kernel");
 
         // Include extra claims
         for (Map.Entry<String, Object> entry : extraClaims.entrySet()) {
             newToken.setCustomField(entry.getKey(), entry.getValue());
-        }
-
-        // Inject entitlements (structured map: {service: [rpcs]})
-        if (entitlementsClaim != null) {
-            newToken.setCustomField("entitlements", entitlementsClaim);
         }
 
         newToken.sign(signingKey);
@@ -256,12 +238,13 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
 
     /**
      * Phase 2: Validates refresh token using exchanger signing keys,
-     * then takes one of two paths:
-     * <ul>
-     * <li><b>S2S</b> (sub = known service name): carries forward instance_id
-     * and scopes entitlements to target service.</li>
-     * <li><b>U2S</b> (sub = "api"): carries forward flat IDP claims.</li>
-     * </ul>
+     * then mints a service token scoped to the requested audience.
+     *
+     * <p>For S2S tokens (sub = known delegate), validates that the delegate
+     * is authorized for the requested audience. Carries forward instance_id.
+     *
+     * <p>For U2S tokens (sub = "api" or non-delegate), carries forward
+     * flat IDP claims.
      */
     private TokenOuterClass.Token exchangeRefreshToService(Kernel.TokenRequest request, TokenWrapper inputToken)
             throws StatusException {
@@ -312,6 +295,29 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
         long now = Instant.now().getEpochSecond();
         String subject = inputToken.getSubject();
 
+        // Check if this is an S2S token by looking up the delegate
+        Kernel.Delegate delegate = findDelegateByName(subject);
+        boolean isS2S = delegate != null;
+
+        if (isS2S && !request.getAud().isEmpty()) {
+            // Validate delegate is authorized for the requested audience
+            String targetAud = request.getAud();
+            boolean authorized = targetAud.equals(subject); // can always talk to self
+            if (!authorized) {
+                for (String svc : delegate.getAuthorizedServicesList()) {
+                    if (svc.equals(targetAud) || svc.equals("*")) {
+                        authorized = true;
+                        break;
+                    }
+                }
+            }
+            if (!authorized) {
+                throw new StatusException(
+                        Status.PERMISSION_DENIED,
+                        "delegate " + subject + " not authorized for service " + targetAud);
+            }
+        }
+
         // Build base service token
         TokenWrapper newToken = TokenWrapper.create()
                 .setIssuer("token-exchanger")
@@ -326,27 +332,13 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
         // Set principal = subject so SecurityAuthenticator can identify the caller
         newToken.setCustomField("principal", subject);
 
-        // Detect S2S vs U2S by checking if sub is "api"
-        boolean isU2S = "api".equals(subject);
-
-        if (!isU2S) {
+        if (isS2S) {
             // S2S path: carry forward instance_id
             if (inputToken.getProto().hasPayload()) {
                 Map<String, Value> fields = inputToken.getProto().getPayload().getFieldsMap();
                 Value instanceIdVal = fields.get("instance_id");
                 if (instanceIdVal != null && instanceIdVal.getKindCase() == Value.KindCase.STRING_VALUE) {
                     newToken.setCustomField("instance_id", instanceIdVal.getStringValue());
-                }
-
-                // Scope entitlements from refresh token to the target service
-                Value entitlementsVal = fields.get("entitlements");
-                if (entitlementsVal != null && entitlementsVal.getKindCase() == Value.KindCase.STRUCT_VALUE) {
-                    String targetAud = request.getAud();
-                    Struct entMap = entitlementsVal.getStructValue();
-                    Value svcEntitlements = entMap.getFieldsOrDefault(targetAud, null);
-                    if (svcEntitlements != null) {
-                        newToken.setCustomField("entitlements", svcEntitlements);
-                    }
                 }
             }
 
@@ -387,11 +379,12 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
             throw new StatusException(Status.INVALID_ARGUMENT, "invalid continuity_token: " + e.getMessage());
         }
 
-        // Validate: must be a refresh token (audience = refreshAudience)
-        if (!refreshAudience.equals(continuityToken.getAudience())) {
+        // Validate: must be a refresh token (typ = "refresh")
+        Object typ = continuityToken.getCustomField("typ");
+        if (!TOKEN_TYPE_REFRESH.equals(typ)) {
             throw new StatusException(
                     Status.INVALID_ARGUMENT,
-                    "continuity_token must be a refresh token (expected aud=" + refreshAudience + ")");
+                    "continuity_token must be a refresh token (expected typ=refresh)");
         }
 
         // Validate: must be signed by exchanger
@@ -436,44 +429,15 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
     }
 
     /**
-     * Finds the entitlement mapping by credential_id (kid).
+     * Finds a delegate by name (sub claim).
      */
-    private Entitlement.ServiceEntitlementMapping findMappingByKid(String kid) {
-        for (Entitlement.ServiceEntitlementMapping m : entitlementMappingsReader.get()) {
-            if (kid.equals(m.getCredentialId())) {
-                return m;
+    private Kernel.Delegate findDelegateByName(String name) {
+        for (Kernel.Delegate d : delegatesReader.get()) {
+            if (name.equals(d.getName())) {
+                return d;
             }
         }
         return null;
-    }
-
-    /**
-     * Finds the ServiceEntitlements by its id.
-     */
-    private Entitlement.ServiceEntitlements findEntitlements(String entitlementsId) {
-        for (Entitlement.ServiceEntitlements se : serviceEntitlementsReader.get()) {
-            if (entitlementsId.equals(se.getId())) {
-                return se;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Builds a protobuf Value containing the entitlements map: {service: [rpcs]}.
-     */
-    private Value buildEntitlementsClaim(Entitlement.ServiceEntitlements entitlements) {
-        Struct.Builder entMap = Struct.newBuilder();
-        for (Entitlement.ServiceEntitlement ent : entitlements.getEntitlementsList()) {
-            ListValue.Builder rpcs = ListValue.newBuilder();
-            for (String rpc : ent.getAllowedRpcsList()) {
-                rpcs.addValues(Value.newBuilder().setStringValue(rpc).build());
-            }
-            entMap.putFields(
-                    ent.getServiceName(),
-                    Value.newBuilder().setListValue(rpcs.build()).build());
-        }
-        return Value.newBuilder().setStructValue(entMap.build()).build();
     }
 
     /**

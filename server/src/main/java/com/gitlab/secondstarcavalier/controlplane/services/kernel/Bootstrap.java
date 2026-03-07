@@ -322,8 +322,6 @@ public class Bootstrap {
                 || config.getNodeCount() != 0
                 || config.hasTls()
                 || config.getPartitionCount() != 0
-                || config.getEnableMetrics()
-                || config.getEnableTracing()
                 || !config.getPersistenceDir().isEmpty()
                 || config.getPersistenceFormatValue() != 0
                 || config.getRaftPort() != 0

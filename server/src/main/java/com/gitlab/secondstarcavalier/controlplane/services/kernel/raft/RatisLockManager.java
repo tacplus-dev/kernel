@@ -6,7 +6,11 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.host.HostOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Lock;
-
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
@@ -19,12 +23,6 @@ import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.io.File;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
 
 /**
  * Manages a Ratis (Raft consensus) cluster for distributed fenced locks.
@@ -80,9 +78,9 @@ public class RatisLockManager {
         }
 
         if (selfPeerId == null) {
-            throw new IllegalArgumentException(
-                    "Self host " + selfHost + " not found in member list: "
-                    + members.stream().map(HostOuterClass.Host::getHost)
+            throw new IllegalArgumentException("Self host " + selfHost + " not found in member list: "
+                    + members.stream()
+                            .map(HostOuterClass.Host::getHost)
                             .collect(java.util.stream.Collectors.joining(", ")));
         }
 
@@ -154,8 +152,7 @@ public class RatisLockManager {
         long deadline = System.currentTimeMillis() + 30_000;
         while (System.currentTimeMillis() < deadline) {
             try {
-                RaftClientReply reply = client.io().send(
-                        Message.valueOf(ByteString.copyFromUtf8("QUERY:__ping__")));
+                RaftClientReply reply = client.io().send(Message.valueOf(ByteString.copyFromUtf8("QUERY:__ping__")));
                 if (reply.isSuccess()) {
                     logger.info("Raft leader elected, cluster ready");
                     return;
@@ -196,8 +193,7 @@ public class RatisLockManager {
     public long acquire(String lockName) {
         try {
             String command = "ACQUIRE:" + lockName + ":" + ownerId;
-            RaftClientReply reply = client.io().send(
-                    Message.valueOf(ByteString.copyFromUtf8(command)));
+            RaftClientReply reply = client.io().send(Message.valueOf(ByteString.copyFromUtf8(command)));
             String response = reply.getMessage().getContent().toStringUtf8();
             if (response.startsWith("OK:")) {
                 return Long.parseLong(response.substring(3));
@@ -223,8 +219,7 @@ public class RatisLockManager {
     public String query(String lockName) {
         try {
             String command = "QUERY:" + lockName;
-            RaftClientReply reply = client.io().send(
-                    Message.valueOf(ByteString.copyFromUtf8(command)));
+            RaftClientReply reply = client.io().send(Message.valueOf(ByteString.copyFromUtf8(command)));
             return reply.getMessage().getContent().toStringUtf8();
         } catch (IOException e) {
             logger.warn("Lock query failed for {}: {}", lockName, e.getMessage());

@@ -13,7 +13,6 @@ import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Manager;
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.MultiMap;
 import com.hazelcast.core.HazelcastInstance;
-
 import java.util.function.Function;
 
 /**
@@ -36,8 +35,8 @@ public class HazelcastManager implements Manager {
         this(hazelcast, null, null);
     }
 
-    public HazelcastManager(HazelcastInstance hazelcast, PersistenceProvider persistence,
-            Function<String, Lock> lockProvider) {
+    public HazelcastManager(
+            HazelcastInstance hazelcast, PersistenceProvider persistence, Function<String, Lock> lockProvider) {
         this.hazelcast = hazelcast;
         this.persistence = persistence;
         this.lockProvider = lockProvider;
@@ -95,10 +94,11 @@ public class HazelcastManager implements Manager {
 
     @Override
     public <E> IPriorityQueue<E> getPriorityQueue(String name) {
-		// TODO: Implement when a proto uses (spec.priority_queue). Hazelcast has no native
-		// priority queue — will need an IMap-backed sorted structure with client-side ordering.
-		// No proto currently uses this annotation so this is not reachable.
-        throw new UnsupportedOperationException("Priority queue not yet implemented — no proto uses (spec.priority_queue)");
+        // TODO: Implement when a proto uses (spec.priority_queue). Hazelcast has no native
+        // priority queue — will need an IMap-backed sorted structure with client-side ordering.
+        // No proto currently uses this annotation so this is not reachable.
+        throw new UnsupportedOperationException(
+                "Priority queue not yet implemented — no proto uses (spec.priority_queue)");
     }
 
     @Override
@@ -117,14 +117,38 @@ public class HazelcastManager implements Manager {
     }
 
     private static final Lock NO_OP_LOCK = new Lock() {
-        @Override public void lock() {}
-        @Override public void lockInterruptibly() {}
-        @Override public boolean tryLock() { return true; }
-        @Override public boolean tryLock(long time, java.util.concurrent.TimeUnit unit) { return true; }
-        @Override public void unlock() {}
-        @Override public boolean isLocked() { return false; }
-        @Override public boolean isLockedByCurrentThread() { return false; }
-        @Override public int getLockCount() { return 0; }
-    };
+        @Override
+        public void lock() {}
 
+        @Override
+        public void lockInterruptibly() {}
+
+        @Override
+        public boolean tryLock() {
+            return true;
+        }
+
+        @Override
+        public boolean tryLock(long time, java.util.concurrent.TimeUnit unit) {
+            return true;
+        }
+
+        @Override
+        public void unlock() {}
+
+        @Override
+        public boolean isLocked() {
+            return false;
+        }
+
+        @Override
+        public boolean isLockedByCurrentThread() {
+            return false;
+        }
+
+        @Override
+        public int getLockCount() {
+            return 0;
+        }
+    };
 }

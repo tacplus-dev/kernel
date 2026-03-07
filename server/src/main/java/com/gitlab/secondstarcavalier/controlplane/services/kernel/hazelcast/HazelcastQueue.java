@@ -1,10 +1,9 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast;
 
+import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IQueue;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
-
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IQueue;
 
 /**
  * HazelcastQueue adapts a Hazelcast {@link com.hazelcast.collection.IQueue}

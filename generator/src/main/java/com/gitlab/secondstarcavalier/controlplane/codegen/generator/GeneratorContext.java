@@ -245,6 +245,20 @@ public class GeneratorContext {
         imports.add("import " + javaPkg + "." + outerClass + ";");
     }
 
+    /**
+     * Returns the cross-package import statement for a single boundary,
+     * or empty string if the boundary is not cross-package.
+     */
+    public String getCrossPackageImport(SharedBoundary b) {
+        if (!b.isCrossPackage()) {
+            return "";
+        }
+        String typeDir = parser.resolveTypeDir(b.getCrossPkg());
+        String outerClass = resolveCrossOuterClass(b.getCrossPkg());
+        String javaPkg = typesPackageBase + ".types." + typeDir + "." + b.getCrossPkg();
+        return "import " + javaPkg + "." + outerClass + ";\n";
+    }
+
     public List<AccessPolicy> getSecurityPolicies() {
         return securityPolicies;
     }

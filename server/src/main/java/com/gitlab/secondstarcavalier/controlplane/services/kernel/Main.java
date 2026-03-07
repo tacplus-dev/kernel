@@ -7,7 +7,7 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel;
  */
 public class Main {
 
-	public static void main(String[] args) throws Exception {
-		Bootstrap.run(args);
-	}
+    public static void main(String[] args) throws Exception {
+        Bootstrap.run(args);
+    }
 }

@@ -1,3 +1,2 @@
 language: java-maven
 pkg: com.gitlab.secondstarcavalier.controlplane.services.kernel
-src: ../proto

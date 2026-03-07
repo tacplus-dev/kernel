@@ -48,10 +48,15 @@ public class BackendMapGenerator {
             fields.append("    private final ITopic<").append(qt).append("> ").append(b.getFieldCamel()).append("Topic;\n");
         }
 
+        // Check if manager field is needed (atomic singletons use manager.getLock() at runtime)
+        boolean needsManager = info.getSingletons().stream().anyMatch(SharedBoundary::isAtomic);
+
         // Build constructor
         StringBuilder ctor = new StringBuilder();
         ctor.append("\n    public ").append(className).append("(Manager manager) {\n");
-        ctor.append("        this.manager = manager;\n");
+        if (needsManager) {
+            ctor.append("        this.manager = manager;\n");
+        }
         for (SharedBoundary b : info.getSingletons()) {
             String mapGetter = b.isAtomic() ? "getAtomicMap" : "getConvergentMap";
             ctor.append("        this.").append(b.getFieldCamel()).append("Map = manager.").append(mapGetter)
@@ -157,11 +162,31 @@ public class BackendMapGenerator {
             }
         }
 
+        // Build conditional imports
+        StringBuilder extraImports = new StringBuilder();
+        boolean hasQueues = !info.getQueues().isEmpty() || !info.getPriorityQueues().isEmpty();
+        boolean hasTopics = !info.getTopics().isEmpty();
+        boolean hasAtomic = info.getSingletons().stream().anyMatch(SharedBoundary::isAtomic)
+                || info.getCollections().stream().anyMatch(SharedBoundary::isAtomic);
+        if (hasQueues) {
+            extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".IQueue;\n");
+        }
+        if (hasTopics) {
+            extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".ITopic;\n");
+        }
+        if (hasAtomic) {
+            extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".Lock;\n");
+        }
+        if (!info.getSingletons().isEmpty()) {
+            extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".Singleton;\n");
+        }
+
         // Render main template
         Map<String, String> mainVars = new LinkedHashMap<>();
         mainVars.put("HEADER", GeneratorContext.header(svc.getProtoFile()));
         mainVars.put("PACKAGE", pkg);
         mainVars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
+        mainVars.put("EXTRA_IMPORTS", extraImports.toString());
         mainVars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());
         mainVars.put("CROSS_IMPORTS", crossSb.toString());
         mainVars.put("TYPES_PACKAGE", ctx.getTypesPackage(svc));
@@ -169,6 +194,7 @@ public class BackendMapGenerator {
         mainVars.put("BACKEND_NAME", info.getBackendName());
         mainVars.put("PROTO_FILE", svc.getProtoFile());
         mainVars.put("CLASS_NAME", className);
+        mainVars.put("MANAGER_FIELD", needsManager ? "    private final Manager manager;\n" : "");
         mainVars.put("FIELDS", fields.toString());
         mainVars.put("CONSTRUCTOR", ctor.toString());
         mainVars.put("PROTO_METHOD", proto.toString());

@@ -1,6 +1,18 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.backendclient.BackendServer;
+import io.grpc.ForwardingServerCall;
+import io.grpc.ForwardingServerCallListener;
+import io.grpc.Grpc;
+import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
+import io.grpc.ServerInterceptor;
+import io.grpc.ServerMethodDefinition;
+import io.grpc.ServerServiceDefinition;
+import io.grpc.Status;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -15,24 +27,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.backendclient.BackendServer;
-
-
-import io.grpc.Grpc;
-import io.grpc.Metadata;
-import io.grpc.MethodDescriptor;
-import io.grpc.ForwardingServerCall;
-import io.grpc.ForwardingServerCallListener;
-import io.grpc.ServerCall;
-import io.grpc.ServerCallHandler;
-import io.grpc.ServerInterceptor;
-import io.grpc.ServerMethodDefinition;
-import io.grpc.ServerServiceDefinition;
-import io.grpc.Status;
 
 /**
  * gRPC interceptor that detects and rate-limits polling of unary read RPCs.
@@ -51,17 +47,17 @@ public class RateLimitInterceptor implements ServerInterceptor {
 
     private static final Logger logger = LoggerFactory.getLogger(RateLimitInterceptor.class);
 
-    enum Category { EXEMPT, HAS_STREAMING, NO_STREAMING }
+    enum Category {
+        EXEMPT,
+        HAS_STREAMING,
+        NO_STREAMING
+    }
 
-    private static final Set<String> WRITE_PREFIXES = Set.of(
-        "Set", "Put", "PutIfAbsent", "Remove", "Delete", "Clear",
-        "Offer", "Publish"
-    );
+    private static final Set<String> WRITE_PREFIXES =
+            Set.of("Set", "Put", "PutIfAbsent", "Remove", "Delete", "Clear", "Offer", "Publish");
 
     // Sorted longest-first so "GetAll" matches before "Get"
-    private static final List<String> READ_PREFIXES = List.of(
-        "ContainsKey", "GetAll", "KeySet", "Peek", "Size", "Get"
-    );
+    private static final List<String> READ_PREFIXES = List.of("ContainsKey", "GetAll", "KeySet", "Peek", "Size", "Get");
 
     private final double pollingRate;
     private final double unaryRate;
@@ -84,8 +80,8 @@ public class RateLimitInterceptor implements ServerInterceptor {
      * @param services         the registered gRPC services to introspect for method classification
      * @param backendServer  optional backend server for sending rate-limit warnings to clients (nullable)
      */
-    public RateLimitInterceptor(double pollingRate, double unaryRate,
-                                List<ServerServiceDefinition> services, BackendServer backendServer) {
+    public RateLimitInterceptor(
+            double pollingRate, double unaryRate, List<ServerServiceDefinition> services, BackendServer backendServer) {
         this.pollingRate = pollingRate;
         this.unaryRate = unaryRate;
         this.backendServer = backendServer;
@@ -101,19 +97,20 @@ public class RateLimitInterceptor implements ServerInterceptor {
             Map<Category, Integer> counts = new EnumMap<>(Category.class);
             for (Category c : Category.values()) counts.put(c, 0);
             methodCategories.values().forEach(c -> counts.merge(c, 1, Integer::sum));
-            logger.info("RateLimitInterceptor initialized: pollingRate={}/s, unaryRate={}/s, " +
-                    "methods: {} exempt, {} with streaming alt, {} without streaming alt",
-                pollingRate, unaryRate,
-                counts.get(Category.EXEMPT),
-                counts.get(Category.HAS_STREAMING),
-                counts.get(Category.NO_STREAMING));
+            logger.info(
+                    "RateLimitInterceptor initialized: pollingRate={}/s, unaryRate={}/s, "
+                            + "methods: {} exempt, {} with streaming alt, {} without streaming alt",
+                    pollingRate,
+                    unaryRate,
+                    counts.get(Category.EXEMPT),
+                    counts.get(Category.HAS_STREAMING),
+                    counts.get(Category.NO_STREAMING));
         }
     }
 
     @Override
     public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
-            ServerCall<ReqT, RespT> call, Metadata headers,
-            ServerCallHandler<ReqT, RespT> next) {
+            ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
 
         String fullMethodName = call.getMethodDescriptor().getFullMethodName();
         totalRpcs.incrementAndGet();
@@ -156,8 +153,8 @@ public class RateLimitInterceptor implements ServerInterceptor {
             }
 
             String msg = (cat == Category.HAS_STREAMING)
-                ? "Rate limit exceeded — use the streaming Watch/Subscribe alternative instead of polling"
-                : "Rate limit exceeded — this boundary should implement a streaming alternative";
+                    ? "Rate limit exceeded — use the streaming Watch/Subscribe alternative instead of polling"
+                    : "Rate limit exceeded — this boundary should implement a streaming alternative";
 
             call.close(Status.RESOURCE_EXHAUSTED.withDescription(msg), new Metadata());
             // Return a no-op listener since the call is already closed
@@ -172,8 +169,7 @@ public class RateLimitInterceptor implements ServerInterceptor {
      * Increments counters on call start, decrements on close.
      */
     private <ReqT, RespT> ServerCall.Listener<ReqT> trackActiveCall(
-            ServerCall<ReqT, RespT> call, Metadata headers,
-            ServerCallHandler<ReqT, RespT> next, boolean isStreaming) {
+            ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next, boolean isStreaming) {
 
         activeRpcs.incrementAndGet();
         if (isStreaming) {

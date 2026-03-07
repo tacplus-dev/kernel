@@ -3,7 +3,6 @@
 package {{PACKAGE}};
 
 import {{INTERFACES_PACKAGE}}.Manager;
-import {{AUTHENTICATOR_PACKAGE}}.SecurityAuthenticator;
 
 /**
  * BackendServers is the root aggregator for all backend server groups.

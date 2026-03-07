@@ -6,13 +6,11 @@ import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageLite;
 import com.google.protobuf.Parser;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Registry that tracks all persistent maps: their name, the underlying IMap,
@@ -33,16 +31,23 @@ public class MapRegistry {
         private volatile Parser<? extends MessageLite> parser;
         private final ConsistencyType consistency;
 
-        MapInfo(IMap<String, ?> map, Parser<? extends MessageLite> parser,
-                ConsistencyType consistency) {
+        MapInfo(IMap<String, ?> map, Parser<? extends MessageLite> parser, ConsistencyType consistency) {
             this.map = map;
             this.parser = parser;
             this.consistency = consistency;
         }
 
-        public IMap<String, ?> map() { return map; }
-        public Parser<? extends MessageLite> parser() { return parser; }
-        public ConsistencyType consistency() { return consistency; }
+        public IMap<String, ?> map() {
+            return map;
+        }
+
+        public Parser<? extends MessageLite> parser() {
+            return parser;
+        }
+
+        public ConsistencyType consistency() {
+            return consistency;
+        }
     }
 
     private final ConcurrentHashMap<String, MapInfo> maps = new ConcurrentHashMap<>();
@@ -52,8 +57,8 @@ public class MapRegistry {
      * The parser can be null and set later via {@link #setParserIfAbsent}.
      */
     @SuppressWarnings("unchecked")
-    public void register(String name, IMap<?, ?> map, Parser<? extends MessageLite> parser,
-                         ConsistencyType consistency) {
+    public void register(
+            String name, IMap<?, ?> map, Parser<? extends MessageLite> parser, ConsistencyType consistency) {
         maps.put(name, new MapInfo((IMap<String, ?>) map, parser, consistency));
     }
 

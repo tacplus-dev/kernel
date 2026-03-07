@@ -4,7 +4,6 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.MessageLite;
-
 import java.util.HashMap;
 import java.util.Map;
 
@@ -28,11 +27,10 @@ public final class KitchenSinkHelper {
     private static final Map<String, Descriptors.FieldDescriptor> TYPE_TO_FIELD = new HashMap<>();
 
     static {
-        Descriptors.OneofDescriptor payloadOneof =
-                KitchenSink.getDescriptor().getOneofs().stream()
-                        .filter(o -> o.getName().equals("payload"))
-                        .findFirst()
-                        .orElse(null);
+        Descriptors.OneofDescriptor payloadOneof = KitchenSink.getDescriptor().getOneofs().stream()
+                .filter(o -> o.getName().equals("payload"))
+                .findFirst()
+                .orElse(null);
         if (payloadOneof != null) {
             for (Descriptors.FieldDescriptor fd : payloadOneof.getFields()) {
                 if (fd.getType() == Descriptors.FieldDescriptor.Type.MESSAGE) {
@@ -42,8 +40,7 @@ public final class KitchenSinkHelper {
         }
     }
 
-    private KitchenSinkHelper() {
-    }
+    private KitchenSinkHelper() {}
 
     /**
      * Sets the typed payload on a KitchenSink builder based on the message type.
@@ -73,8 +70,7 @@ public final class KitchenSinkHelper {
         if (payloadCase == KitchenSink.PayloadCase.PAYLOAD_NOT_SET) {
             return null;
         }
-        Descriptors.FieldDescriptor fd = ks.getDescriptorForType()
-                .findFieldByNumber(payloadCase.getNumber());
+        Descriptors.FieldDescriptor fd = ks.getDescriptorForType().findFieldByNumber(payloadCase.getNumber());
         if (fd != null) {
             Object value = ks.getField(fd);
             if (value instanceof MessageLite ml) {

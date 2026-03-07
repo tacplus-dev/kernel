@@ -2,7 +2,6 @@
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.raft;
 
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Lock;
-
 import java.util.concurrent.TimeUnit;
 
 /**

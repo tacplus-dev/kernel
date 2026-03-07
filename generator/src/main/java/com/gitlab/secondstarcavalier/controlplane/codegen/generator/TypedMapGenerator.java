@@ -39,11 +39,6 @@ public class TypedMapGenerator {
         String helpersRef = ctx.getHelpersRef(svc, b);
         String className = b.getTypeName() + "Map";
 
-        List<String> crossImports = ctx.getCrossPackageImports(info, outerClassName);
-        StringBuilder crossSb = new StringBuilder();
-        for (String imp : crossImports) crossSb.append(imp).append("\n");
-        if (!crossImports.isEmpty()) crossSb.append("\n");
-
         String templateName = isCollection ? "TypedMapCollection.java.template" : "TypedMapSingleton.java.template";
 
         Map<String, String> vars = new LinkedHashMap<>();
@@ -51,9 +46,8 @@ public class TypedMapGenerator {
         vars.put("PACKAGE", pkg);
         vars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
         vars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());
-        vars.put("TYPES_PACKAGE", ctx.getTypesPackage(svc));
-        vars.put("OUTER_CLASS", outerClassName);
-        vars.put("CROSS_IMPORTS", crossSb.toString());
+        vars.put("TYPES_IMPORT", typesImport(b, ctx, svc));
+        vars.put("CROSS_IMPORTS", ctx.getCrossPackageImport(b));
         vars.put("CLASS_NAME", className);
         vars.put("TYPE_NAME", b.getTypeName());
         vars.put("QUALIFIED_TYPE", qualifiedType);
@@ -73,19 +67,13 @@ public class TypedMapGenerator {
         String helpersRef = ctx.getHelpersRef(svc, b);
         String className = b.getTypeName() + "Queue";
 
-        List<String> crossImports = ctx.getCrossPackageImports(info, outerClassName);
-        StringBuilder crossSb = new StringBuilder();
-        for (String imp : crossImports) crossSb.append(imp).append("\n");
-        if (!crossImports.isEmpty()) crossSb.append("\n");
-
         Map<String, String> vars = new LinkedHashMap<>();
         vars.put("HEADER", GeneratorContext.header(svc.getProtoFile()));
         vars.put("PACKAGE", pkg);
         vars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
         vars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());
-        vars.put("TYPES_PACKAGE", ctx.getTypesPackage(svc));
-        vars.put("OUTER_CLASS", outerClassName);
-        vars.put("CROSS_IMPORTS", crossSb.toString());
+        vars.put("TYPES_IMPORT", typesImport(b, ctx, svc));
+        vars.put("CROSS_IMPORTS", ctx.getCrossPackageImport(b));
         vars.put("CLASS_NAME", className);
         vars.put("TYPE_NAME", b.getTypeName());
         vars.put("QUALIFIED_TYPE", qualifiedType);
@@ -105,19 +93,13 @@ public class TypedMapGenerator {
         String helpersRef = ctx.getHelpersRef(svc, b);
         String className = b.getTypeName() + "Topic";
 
-        List<String> crossImports = ctx.getCrossPackageImports(info, outerClassName);
-        StringBuilder crossSb = new StringBuilder();
-        for (String imp : crossImports) crossSb.append(imp).append("\n");
-        if (!crossImports.isEmpty()) crossSb.append("\n");
-
         Map<String, String> vars = new LinkedHashMap<>();
         vars.put("HEADER", GeneratorContext.header(svc.getProtoFile()));
         vars.put("PACKAGE", pkg);
         vars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
         vars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());
-        vars.put("TYPES_PACKAGE", ctx.getTypesPackage(svc));
-        vars.put("OUTER_CLASS", outerClassName);
-        vars.put("CROSS_IMPORTS", crossSb.toString());
+        vars.put("TYPES_IMPORT", typesImport(b, ctx, svc));
+        vars.put("CROSS_IMPORTS", ctx.getCrossPackageImport(b));
         vars.put("CLASS_NAME", className);
         vars.put("TYPE_NAME", b.getTypeName());
         vars.put("QUALIFIED_TYPE", qualifiedType);
@@ -128,5 +110,13 @@ public class TypedMapGenerator {
         Path dir = ctx.getOutputDir().resolve("src/main/java/" + pkg.replace('.', '/'));
         Files.createDirectories(dir);
         Files.writeString(dir.resolve(className + ".java"), content);
+    }
+
+    /** Returns the types wildcard import only when the boundary uses the local outer class. */
+    private static String typesImport(SharedBoundary b, GeneratorContext ctx, BackendServiceInfo svc) {
+        if (b.isCrossPackage()) {
+            return "";
+        }
+        return "import " + ctx.getTypesPackage(svc) + ".*;\n";
     }
 }

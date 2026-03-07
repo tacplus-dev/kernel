@@ -2,10 +2,6 @@
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.RedoLogEntry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass;
@@ -19,6 +15,8 @@ import com.hazelcast.map.listener.EntryEvictedListener;
 import com.hazelcast.map.listener.EntryRemovedListener;
 import com.hazelcast.map.listener.EntryUpdatedListener;
 import com.hazelcast.map.listener.MapClearedListener;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Hazelcast MapListener that logs cluster-wide map mutations to the
@@ -28,12 +26,12 @@ import com.hazelcast.map.listener.MapClearedListener;
  * <p>Registered via {@code hazelcastMap.addEntryListener(listener, true)} so
  * that entry values are included in events.
  */
-public class PersistenceMapListener implements
-        EntryAddedListener<String, Object>,
-        EntryUpdatedListener<String, Object>,
-        EntryRemovedListener<String, Object>,
-        EntryEvictedListener<String, Object>,
-        MapClearedListener {
+public class PersistenceMapListener
+        implements EntryAddedListener<String, Object>,
+                EntryUpdatedListener<String, Object>,
+                EntryRemovedListener<String, Object>,
+                EntryEvictedListener<String, Object>,
+                MapClearedListener {
 
     private static final Logger logger = LoggerFactory.getLogger(PersistenceMapListener.class);
 
@@ -43,8 +41,8 @@ public class PersistenceMapListener implements
     private final MapRegistry registry;
     private volatile boolean parserDetected = false;
 
-    public PersistenceMapListener(RedoLog redoLog, String mapName,
-                                  Kernel.ConsistencyType consistency, MapRegistry registry) {
+    public PersistenceMapListener(
+            RedoLog redoLog, String mapName, Kernel.ConsistencyType consistency, MapRegistry registry) {
         this.redoLog = redoLog;
         this.mapName = mapName;
         this.consistency = consistency;

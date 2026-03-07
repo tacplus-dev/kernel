@@ -302,8 +302,27 @@ public class BackendServiceServerGenerator {
             setQuorum.append("    }\n");
         } else {
             setQuorum.append("    public void setQuorumAvailable(boolean available) {\n");
-            setQuorum.append("        this.quorumAvailable = available;\n");
+            setQuorum.append("        // No leader-enabled boundaries — nothing to do\n");
             setQuorum.append("    }\n");
+        }
+
+        // Conditional imports
+        StringBuilder extraImports = new StringBuilder();
+        boolean hasQueuesOrPQ = !queues.isEmpty() || !priorityQueues.isEmpty() || hasLeaders;
+        if (hasQueuesOrPQ) {
+            extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".IQueue;\n");
+        }
+        if (hasTopics || hasLeaders) {
+            extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".ITopic;\n");
+        }
+        boolean hasAtomic = singletons.stream().anyMatch(SharedBoundary::isAtomic)
+                || collections.stream().anyMatch(SharedBoundary::isAtomic)
+                || hasLeaders;
+        if (hasAtomic) {
+            extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".Lock;\n");
+        }
+        if (!singletons.isEmpty() || hasLeaders) {
+            extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".Singleton;\n");
         }
 
         // Render main template
@@ -312,6 +331,7 @@ public class BackendServiceServerGenerator {
         mainVars.put("PACKAGE", pkg);
         mainVars.put("CROSS_IMPORTS", crossSb.toString());
         mainVars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
+        mainVars.put("EXTRA_IMPORTS", extraImports.toString());
         mainVars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());
         mainVars.put("AUTHENTICATOR_PACKAGE", ctx.getJavaPackageBase());
         mainVars.put("TYPES_PACKAGE", ctx.getTypesPackage(svc));
@@ -321,6 +341,10 @@ public class BackendServiceServerGenerator {
         mainVars.put("TARGET_SERVICE", svc.getPackageName() + ".BackendService");
         mainVars.put("GRPC_BASE", grpcBase);
         mainVars.put("BACKEND_MAP_CLASS_NAME", info.getClassName());
+        mainVars.put("LEADER_CONSTANTS", hasLeaders
+                ? "    private static final long LEASE_TTL_MS = 15_000; // 15 second lease for leader election\n" : "");
+        mainVars.put("QUORUM_FIELD", hasLeaders
+                ? "    private volatile boolean quorumAvailable = true;\n" : "");
         mainVars.put("FIELDS", fields.toString());
         mainVars.put("CONSTRUCTOR", ctor.toString());
         mainVars.put("SINGLETON_RPCS", singletonRpcs.toString());

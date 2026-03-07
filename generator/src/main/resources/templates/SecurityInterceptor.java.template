@@ -354,20 +354,16 @@ public class SecurityInterceptor implements ServerInterceptor {
 
     /** Helper to build a policy from lists. Used by the static initializer. */
     private static Policy buildPolicy(String name, List<String> rw, List<String> ro, List<String> exec) {
-        return new Policy(name, rw, ro, exec);
+        return new Policy(rw, ro);
     }
 
     private static final class Policy {
-        final String name;
         final List<String> rw;
         final List<String> ro;
-        final List<String> exec;
 
-        Policy(String name, List<String> rw, List<String> ro, List<String> exec) {
-            this.name = name;
+        Policy(List<String> rw, List<String> ro) {
             this.rw = rw;
             this.ro = ro;
-            this.exec = exec;
         }
     }
 

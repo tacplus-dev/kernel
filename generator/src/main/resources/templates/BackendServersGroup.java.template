@@ -4,9 +4,8 @@ package {{PACKAGE}};
 
 import {{INTERFACES_PACKAGE}}.Manager;
 import {{AUTHENTICATOR_PACKAGE}}.SecurityAuthenticator;
-import io.grpc.BindableService;
-import io.grpc.ServerServiceDefinition;
-import io.grpc.protobuf.services.ProtoReflectionService;
+{{EXTRA_IMPORTS}}import io.grpc.ServerServiceDefinition;
+import io.grpc.protobuf.services.ProtoReflectionServiceV1;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -40,7 +39,7 @@ public class BackendServers implements java.io.Closeable {
     public List<ServerServiceDefinition> getGrpcServices() {
         io.grpc.ServerInterceptor callerInterceptor = authenticator.callerInterceptor();
         List<ServerServiceDefinition> services = new ArrayList<>();
-{{GRPC_SERVICE_ADDS}}        services.add(ProtoReflectionService.newInstance().bindService());
+{{GRPC_SERVICE_ADDS}}        services.add(ProtoReflectionServiceV1.newInstance().bindService());
         return services;
     }
 

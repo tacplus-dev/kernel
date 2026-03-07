@@ -5,9 +5,7 @@ package {{PACKAGE}};
 import {{INTERFACES_PACKAGE}}.IQueue;
 import {{ERRORS_PACKAGE}}.ProtoException;
 
-import {{TYPES_PACKAGE}}.*;
-import {{TYPES_PACKAGE}}.{{OUTER_CLASS}}.*;
-{{CROSS_IMPORTS}}
+{{TYPES_IMPORT}}{{CROSS_IMPORTS}}
 /**
  * {{CLASS_NAME}} provides typed access to a distributed queue storing {{TYPE_NAME}} values.
  *

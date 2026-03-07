@@ -230,11 +230,18 @@ public class BackendServersGenerator {
             getters.append("    }\n");
         }
 
+        // Conditional imports
+        StringBuilder extraImports = new StringBuilder();
+        if (!rpcServices.isEmpty()) {
+            extraImports.append("import io.grpc.BindableService;\n");
+        }
+
         Map<String, String> vars = new LinkedHashMap<>();
         vars.put("HEADER", GeneratorContext.header("servicetypestate/registry"));
         vars.put("PACKAGE", pkg);
         vars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
         vars.put("AUTHENTICATOR_PACKAGE", ctx.getJavaPackageBase());
+        vars.put("EXTRA_IMPORTS", extraImports.toString());
         vars.put("FIELDS", fields.toString());
         vars.put("CONSTRUCTOR", ctor.toString());
         vars.put("GRPC_SERVICE_ADDS", grpcAdds.toString());

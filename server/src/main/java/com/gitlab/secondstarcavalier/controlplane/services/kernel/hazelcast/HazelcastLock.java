@@ -4,7 +4,6 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast;
 
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Lock;
 import com.hazelcast.cp.lock.FencedLock;
-
 import java.util.concurrent.TimeUnit;
 
 /**

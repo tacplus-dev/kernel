@@ -3,16 +3,11 @@
 package {{PACKAGE}};
 
 import {{INTERFACES_PACKAGE}}.IMap;
-import {{INTERFACES_PACKAGE}}.IQueue;
-import {{INTERFACES_PACKAGE}}.ITopic;
-import {{INTERFACES_PACKAGE}}.Lock;
-import {{INTERFACES_PACKAGE}}.Manager;
-import {{INTERFACES_PACKAGE}}.Singleton;
+{{EXTRA_IMPORTS}}import {{INTERFACES_PACKAGE}}.Manager;
 import {{ERRORS_PACKAGE}}.ProtoException;
 {{CROSS_IMPORTS}}
 
 import {{TYPES_PACKAGE}}.*;
-import {{TYPES_PACKAGE}}.{{OUTER_CLASS}}.*;
 
 /**
  * BackendMap provides typed distributed map accessors for {{BACKEND_NAME}}Service.
@@ -32,8 +27,7 @@ import {{TYPES_PACKAGE}}.{{OUTER_CLASS}}.*;
 public class {{CLASS_NAME}} {
     private static final String CLASS_NAME = {{CLASS_NAME}}.class.getName();
 
-    private final Manager manager;
-{{FIELDS}}
+{{MANAGER_FIELD}}{{FIELDS}}
 {{CONSTRUCTOR}}
 {{PROTO_METHOD}}
 {{METHODS}}

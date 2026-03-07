@@ -1,6 +1,9 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.RedoLogEntry;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
+import com.google.protobuf.MessageLite;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -15,13 +18,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.RedoLogEntry;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
-import com.google.protobuf.MessageLite;
 
 /**
  * Append-only redo log writer. Each mutation to a persistent IMap is recorded
@@ -69,17 +67,14 @@ public class RedoLog {
         lock.lock();
         try {
             this.currentSegmentTimestamp = System.currentTimeMillis();
-            this.currentFile = dataDir.resolve(
-                    "redo-" + nodeId + "-" + currentSegmentTimestamp + ".log");
+            this.currentFile = dataDir.resolve("redo-" + nodeId + "-" + currentSegmentTimestamp + ".log");
             Files.createDirectories(dataDir);
-            this.out = new BufferedOutputStream(Files.newOutputStream(
-                    currentFile,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND));
+            this.out = new BufferedOutputStream(
+                    Files.newOutputStream(currentFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND));
             logger.info("Opened redo log segment: {}", currentFile.getFileName());
 
-            flushTask = flusher.scheduleAtFixedRate(this::periodicFlush,
-                    flushIntervalMs, flushIntervalMs, TimeUnit.MILLISECONDS);
+            flushTask = flusher.scheduleAtFixedRate(
+                    this::periodicFlush, flushIntervalMs, flushIntervalMs, TimeUnit.MILLISECONDS);
         } finally {
             lock.unlock();
         }
@@ -189,9 +184,10 @@ public class RedoLog {
         List<Path> segments = new ArrayList<>();
         try (var stream = Files.list(dataDir)) {
             stream.filter(p -> {
-                String name = p.getFileName().toString();
-                return name.startsWith("redo-" + nodeId + "-") && name.endsWith(".log");
-            }).forEach(segments::add);
+                        String name = p.getFileName().toString();
+                        return name.startsWith("redo-" + nodeId + "-") && name.endsWith(".log");
+                    })
+                    .forEach(segments::add);
         }
         segments.sort((a, b) -> {
             long ta = extractTimestamp(a, "redo-" + nodeId + "-", ".log");
@@ -211,9 +207,10 @@ public class RedoLog {
         List<Path> segments = new ArrayList<>();
         try (var stream = Files.list(dataDir)) {
             stream.filter(p -> {
-                String name = p.getFileName().toString();
-                return name.startsWith("redo-") && name.endsWith(".log");
-            }).forEach(segments::add);
+                        String name = p.getFileName().toString();
+                        return name.startsWith("redo-") && name.endsWith(".log");
+                    })
+                    .forEach(segments::add);
         }
         segments.sort((a, b) -> {
             long ta = extractTimestampGeneric(a);
@@ -269,8 +266,7 @@ public class RedoLog {
                 logger.warn("Error closing redo log segment", e);
             }
             out = null;
-            logger.info("Closed redo log segment: {}",
-                    currentFile != null ? currentFile.getFileName() : "null");
+            logger.info("Closed redo log segment: {}", currentFile != null ? currentFile.getFileName() : "null");
         }
     }
 }

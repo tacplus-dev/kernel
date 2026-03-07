@@ -1,13 +1,12 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast;
 
+import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IMap;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
-
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IMap;
 
 /**
  * HazelcastMap adapts a Hazelcast {@link com.hazelcast.map.IMap} to the

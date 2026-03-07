@@ -3,11 +3,7 @@
 package {{PACKAGE}};
 
 {{CROSS_IMPORTS}}import {{INTERFACES_PACKAGE}}.IMap;
-import {{INTERFACES_PACKAGE}}.IQueue;
-import {{INTERFACES_PACKAGE}}.ITopic;
-import {{INTERFACES_PACKAGE}}.Lock;
-import {{INTERFACES_PACKAGE}}.Manager;
-import {{INTERFACES_PACKAGE}}.Singleton;
+{{EXTRA_IMPORTS}}import {{INTERFACES_PACKAGE}}.Manager;
 import {{ERRORS_PACKAGE}}.ProtoException;
 import {{AUTHENTICATOR_PACKAGE}}.SecurityAuthenticator;
 {{SECURITY_INTERCEPTOR_IMPORT}}{{PEER_CONTEXT_IMPORT}}import io.grpc.Status;
@@ -15,7 +11,6 @@ import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 
 import {{TYPES_PACKAGE}}.*;
-import {{TYPES_PACKAGE}}.{{OUTER_CLASS}}.*;
 
 import java.io.Closeable;
 import java.util.List;
@@ -43,16 +38,14 @@ public class {{CLASS_NAME}}
     private static final Logger logger = LoggerFactory.getLogger({{CLASS_NAME}}.class);
     private static final String CLASS_NAME = {{BACKEND_MAP_CLASS_NAME}}.class.getName();
     private static final String TARGET_SERVICE = "{{TARGET_SERVICE}}";
-    private static final long LEASE_TTL_MS = 15_000; // 15 second lease for leader election
-
+{{LEADER_CONSTANTS}}
     private final ScheduledExecutorService scheduler =
         Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "{{SERVICE_PREFIX}}BackendServiceWatcher");
             t.setDaemon(true);
             return t;
         });
-    private volatile boolean quorumAvailable = true;
-    private final SecurityAuthenticator authenticator;
+{{QUORUM_FIELD}}    private final SecurityAuthenticator authenticator;
 {{FIELDS}}
 {{CONSTRUCTOR}}
 {{SET_QUORUM_AVAILABLE}}

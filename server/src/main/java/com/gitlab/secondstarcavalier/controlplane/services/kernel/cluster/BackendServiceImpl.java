@@ -4,20 +4,17 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 import static com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster.PeerContext.PEER_KEY;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.backendclient.BackendServer;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.LogMessage;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.ClusterState;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.host.HostOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.BackendServiceGrpc;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.ClusterInfo;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.ClusterMember;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.PingResponse;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.ClusterState;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.LogMessage;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.MemberStatus;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.BackendServiceGrpc;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.host.HostOuterClass;
-
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.PingResponse;
 import com.hazelcast.core.HazelcastInstance;
-
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,8 +38,8 @@ public class BackendServiceImpl extends BackendServiceGrpc.BackendServiceImplBas
     private final HazelcastInstance hazelcast;
     private final String clusterName;
 
-    public BackendServiceImpl(BackendServer backendServer, int grpcPort,
-                              HazelcastInstance hazelcast, String clusterName) {
+    public BackendServiceImpl(
+            BackendServer backendServer, int grpcPort, HazelcastInstance hazelcast, String clusterName) {
         this.backendServer = backendServer;
         this.grpcPort = grpcPort;
         this.hazelcast = hazelcast;
@@ -106,22 +103,20 @@ public class BackendServiceImpl extends BackendServiceGrpc.BackendServiceImplBas
      */
     private ClusterState buildClusterState() {
         var cluster = hazelcast.getCluster();
-        var clusterInfo = ClusterInfo.newBuilder()
-                .setClusterName(clusterName);
+        var clusterInfo = ClusterInfo.newBuilder().setClusterName(clusterName);
 
         for (var member : cluster.getMembers()) {
             var address = member.getAddress();
-            clusterInfo.addMembers(
-                    ClusterMember.newBuilder()
-                            .setEndpoint(HostOuterClass.Host.newBuilder()
-                                    .setHost(address.getHost()).setPort(grpcPort).build())
-                            .setStatus(MemberStatus.MEMBER_STATUS_READY)
-                            .setPriority(member.localMember() ? 10 : 5)
-                            .build());
+            clusterInfo.addMembers(ClusterMember.newBuilder()
+                    .setEndpoint(HostOuterClass.Host.newBuilder()
+                            .setHost(address.getHost())
+                            .setPort(grpcPort)
+                            .build())
+                    .setStatus(MemberStatus.MEMBER_STATUS_READY)
+                    .setPriority(member.localMember() ? 10 : 5)
+                    .build());
         }
 
-        return ClusterState.newBuilder()
-                .addClusters(clusterInfo.build())
-                .build();
+        return ClusterState.newBuilder().addClusters(clusterInfo.build()).build();
     }
 }

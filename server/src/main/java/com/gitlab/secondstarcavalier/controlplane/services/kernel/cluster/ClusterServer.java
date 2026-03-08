@@ -221,14 +221,10 @@ public class ClusterServer {
                     return result;
                 });
 
-        // Capture delegate CredPair public keys from Config
+        // Capture delegate public keys from Config
         final var delegatePublicKeys = new java.util.ArrayList<JwkOuterClass.Jwk>();
         for (Kernel.Delegate delegate : frontendConfig.getDelegatesList()) {
-            for (JwkOuterClass.CredPair cp : delegate.getCredPairsList()) {
-                if (cp.hasPublicKey()) {
-                    delegatePublicKeys.add(cp.getPublicKey());
-                }
-            }
+            delegatePublicKeys.addAll(delegate.getCredPairsList());
         }
 
         // Combined key supplier

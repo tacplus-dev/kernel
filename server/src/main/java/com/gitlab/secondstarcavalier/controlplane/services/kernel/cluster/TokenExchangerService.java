@@ -6,6 +6,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.k
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.token.TokenWrapper;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.TokenOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.TokenExchangerServiceGrpc;
 import com.google.protobuf.Value;
@@ -70,7 +71,7 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
     }
 
     @Override
-    public void exchangeToken(Kernel.TokenRequest request, StreamObserver<TokenOuterClass.Token> responseObserver) {
+    public void exchangeToken(Tokenrequest.TokenRequest request, StreamObserver<TokenOuterClass.Token> responseObserver) {
         try {
             TokenOuterClass.Token result = doExchange(request);
             responseObserver.onNext(result);
@@ -85,7 +86,7 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
         }
     }
 
-    private TokenOuterClass.Token doExchange(Kernel.TokenRequest request) throws StatusException {
+    private TokenOuterClass.Token doExchange(Tokenrequest.TokenRequest request) throws StatusException {
         // 1. Input token must not be empty
         if (request.getInputToken().isEmpty()) {
             throw new StatusException(Status.INVALID_ARGUMENT, "input_token is required");
@@ -117,11 +118,11 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
      * and mints a refresh token.
      *
      * <p>
-     * For bootstrap JWTs from delegate CredPair holders: looks up the delegate
+     * For bootstrap JWTs from delegate key holders: looks up the delegate
      * by kid, verifies the signature, and derives the subject from the delegate name.
      * For external IdP tokens: resolves the key via issuer discovery.
      */
-    private TokenOuterClass.Token exchangeExternalToRefresh(Kernel.TokenRequest request, TokenWrapper inputToken)
+    private TokenOuterClass.Token exchangeExternalToRefresh(Tokenrequest.TokenRequest request, TokenWrapper inputToken)
             throws StatusException {
 
         String kid = inputToken.getKid();
@@ -131,12 +132,12 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
 
         // Try delegate lookup by kid
         Kernel.Delegate matchedDelegate = null;
-        JwkOuterClass.CredPair matchedCredPair = null;
+        JwkOuterClass.Jwk matchedJwk = null;
         for (Kernel.Delegate delegate : delegatesReader.get()) {
-            for (JwkOuterClass.CredPair cp : delegate.getCredPairsList()) {
-                if (cp.hasPublicKey() && kid.equals(cp.getPublicKey().getKid())) {
+            for (JwkOuterClass.Jwk jwk : delegate.getCredPairsList()) {
+                if (kid.equals(jwk.getKid())) {
                     matchedDelegate = delegate;
-                    matchedCredPair = cp;
+                    matchedJwk = jwk;
                     break;
                 }
             }
@@ -146,8 +147,8 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
         }
 
         if (matchedDelegate != null) {
-            // Delegate CredPair flow: verify signature with CredPair's public key
-            ImmutableJwk verificationKey = ImmutableJwk.from(matchedCredPair.getPublicKey());
+            // Delegate key flow: verify signature with delegate's public key
+            ImmutableJwk verificationKey = ImmutableJwk.from(matchedJwk);
             try {
                 inputToken.verify(verificationKey);
             } catch (Exception e) {
@@ -196,7 +197,7 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
      * No entitlements are baked into tokens — authorization is enforced at the frontend.
      */
     private TokenOuterClass.Token mintRefreshToken(
-            String subject, Kernel.TokenRequest request, Map<String, Object> extraClaims)
+            String subject, Tokenrequest.TokenRequest request, Map<String, Object> extraClaims)
             throws StatusException {
 
         ImmutableKey signingKey = keyRotator.getActiveSigningKey();
@@ -246,7 +247,7 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
      * <p>For U2S tokens (sub = "api" or non-delegate), carries forward
      * flat IDP claims.
      */
-    private TokenOuterClass.Token exchangeRefreshToService(Kernel.TokenRequest request, TokenWrapper inputToken)
+    private TokenOuterClass.Token exchangeRefreshToService(Tokenrequest.TokenRequest request, TokenWrapper inputToken)
             throws StatusException {
 
         // Validate input token using exchanger signing keys ONLY
@@ -369,7 +370,7 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
      * Validates: the continuity token is a valid, non-expired refresh token
      * and shares the same subject as the bootstrap JWT.
      */
-    private String resolveInstanceIdFromContinuityToken(Kernel.TokenRequest request, String bootstrapSubject)
+    private String resolveInstanceIdFromContinuityToken(Tokenrequest.TokenRequest request, String bootstrapSubject)
             throws StatusException {
 
         TokenWrapper continuityToken;

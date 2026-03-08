@@ -62,7 +62,6 @@ public class HazelcastManager implements Manager {
         return base;
     }
 
-    @Override
     public <K, V> IMap<K, V> getReplicatedMap(String name) {
         return new HazelcastReplicatedMap<>(hazelcast.getReplicatedMap(name));
     }

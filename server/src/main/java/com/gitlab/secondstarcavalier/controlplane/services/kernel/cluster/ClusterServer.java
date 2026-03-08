@@ -426,8 +426,10 @@ public class ClusterServer {
         // Health service is always registered
         serverBuilder.addService(healthManager.getHealthService());
 
-        // Conditionally create and register the token exchanger (edge nodes serve clients)
-        if (isEdge && frontendConfig.getDelegatesCount() > 0) {
+        // Create and register the token exchanger on all nodes (CORE and EDGE).
+        // EDGE nodes serve microservice clients directly; CORE nodes must also
+        // run the exchanger so that EDGE nodes can obtain tokens via the cluster.
+        if (frontendConfig.getDelegatesCount() > 0) {
             var exchangerState = backendServers.services().getTokenExchangerStateMap();
 
             this.keyRotator = new KeyRotator(
@@ -470,8 +472,9 @@ public class ClusterServer {
             this.externalJwkResolver = null;
         }
 
-        // Conditionally create and register the X509 cert exchanger (edge nodes serve clients)
-        if (isEdge) {
+        // Create and register the X509 cert exchanger on all nodes (CORE and EDGE).
+        // Every node generates its own CA keypair so it can sign certs locally.
+        {
             var caState = backendServers.services().getCaStateMap();
 
             this.caKeyHolder = new CaKeyHolder(
@@ -484,8 +487,6 @@ public class ClusterServer {
             backendServers.services().registerX509CertExchangerService(certExchangerService);
             serverBuilder.addService(certExchangerService);
             logger.info("X509CertExchangerService registered on gRPC server");
-        } else {
-            this.caKeyHolder = null;
         }
 
         this.grpcServer = serverBuilder.build();

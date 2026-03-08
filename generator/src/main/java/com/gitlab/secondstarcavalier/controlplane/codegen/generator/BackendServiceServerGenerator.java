@@ -96,12 +96,12 @@ public class BackendServiceServerGenerator {
         ctor.append("\n    public ").append(className).append("(Manager manager, SecurityAuthenticator authenticator) {\n");
         ctor.append("        this.authenticator = authenticator;\n");
         for (SharedBoundary b : singletons) {
-            String mapGetter = b.isAtomic() ? "getAtomicMap" : "getConvergentMap";
+            String mapGetter = b.isAtomic() ? "getAtomicMap" : b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
             ctor.append("        this.").append(b.getFieldCamel()).append("Map = manager.").append(mapGetter)
               .append("(CLASS_NAME + \":").append(b.getMapName()).append("\");\n");
         }
         for (SharedBoundary b : collections) {
-            String mapGetter = b.isAtomic() ? "getAtomicMap" : "getConvergentMap";
+            String mapGetter = b.isAtomic() ? "getAtomicMap" : b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
             ctor.append("        this.").append(b.getFieldCamel()).append("Map = manager.").append(mapGetter)
               .append("(CLASS_NAME + \":").append(b.getMapName()).append("\");\n");
         }

@@ -75,6 +75,7 @@ public class BoundaryAnalyzer {
             AnnotationValue privAnn = field.getAnnotations().get("private");
             boolean isPrivate = privAnn != null && privAnn.getBoolValue();
             boolean isAtomic = hasCons && "CONSISTENCY_ATOMIC".equals(consAnn.getEnumValue());
+            boolean isReplicated = hasCons && "CONSISTENCY_REPLICATED".equals(consAnn.getEnumValue());
             String typeName = StringUtils.extractSimpleTypeName(field.getType());
 
             // Detect cross-package references
@@ -98,6 +99,7 @@ public class BoundaryAnalyzer {
             b.setTypeName(typeName);
             b.setMapName(mapName);
             b.setAtomic(isAtomic);
+            b.setReplicated(isReplicated);
             b.setRepeated(field.isRepeated());
             b.setPrivateField(isPrivate);
             b.setCrossPackage(isCrossPackage);

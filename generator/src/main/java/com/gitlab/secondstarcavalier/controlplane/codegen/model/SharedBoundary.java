@@ -19,6 +19,7 @@ public class SharedBoundary {
     private boolean topic;
     private boolean leader;  // per-graph leader election (on queue/topic/priority_queue)
     private String epochExpirationGetter;  // e.g., "getExpiresAt" — null when no epoch field
+    private boolean replicated;
     private boolean instanceKeyed;  // server builds key from auth context (instance_id claim)
 
     public String getFieldName() { return fieldName; }
@@ -74,6 +75,9 @@ public class SharedBoundary {
 
     public String getEpochExpirationGetter() { return epochExpirationGetter; }
     public void setEpochExpirationGetter(String epochExpirationGetter) { this.epochExpirationGetter = epochExpirationGetter; }
+
+    public boolean isReplicated() { return replicated; }
+    public void setReplicated(boolean replicated) { this.replicated = replicated; }
 
     public boolean isInstanceKeyed() { return instanceKeyed; }
     public void setInstanceKeyed(boolean instanceKeyed) { this.instanceKeyed = instanceKeyed; }

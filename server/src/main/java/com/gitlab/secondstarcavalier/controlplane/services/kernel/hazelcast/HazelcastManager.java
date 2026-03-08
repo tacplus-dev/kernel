@@ -63,6 +63,11 @@ public class HazelcastManager implements Manager {
     }
 
     @Override
+    public <K, V> IMap<K, V> getReplicatedMap(String name) {
+        return new HazelcastReplicatedMap<>(hazelcast.getReplicatedMap(name));
+    }
+
+    @Override
     public <K, V> IMap<K, V> getVolatileMap(String name) {
         return new HazelcastMap<>(hazelcast.getMap(name));
     }

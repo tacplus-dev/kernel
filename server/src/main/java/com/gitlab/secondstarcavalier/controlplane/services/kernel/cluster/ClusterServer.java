@@ -72,6 +72,7 @@ public class ClusterServer {
     private final Server grpcServer;
     private final KeyRotator keyRotator;
     private final ExternalJwkResolver externalJwkResolver;
+    private final CaKeyHolder caKeyHolder;
     private final AutoCloseable raftCloseable;
 
     /**
@@ -469,6 +470,24 @@ public class ClusterServer {
             this.externalJwkResolver = null;
         }
 
+        // Conditionally create and register the X509 cert exchanger (edge nodes serve clients)
+        if (isEdge) {
+            var caState = backendServers.services().getCaStateMap();
+
+            this.caKeyHolder = new CaKeyHolder(
+                    frontendConfig.getCaCertLifetimeSeconds() > 0
+                            ? frontendConfig.getCaCertLifetimeSeconds()
+                            : 31536000,
+                    cert -> caState.putCaCerts(cert.getId(), cert));
+
+            var certExchangerService = new X509CertExchangerService(caKeyHolder);
+            backendServers.services().registerX509CertExchangerService(certExchangerService);
+            serverBuilder.addService(certExchangerService);
+            logger.info("X509CertExchangerService registered on gRPC server");
+        } else {
+            this.caKeyHolder = null;
+        }
+
         this.grpcServer = serverBuilder.build();
         logger.info("Kernel node configured as {} (grpcPort={})", modeName.toUpperCase(), grpcPort);
     }
@@ -507,10 +526,16 @@ public class ClusterServer {
         if (externalJwkResolver != null) {
             externalJwkResolver.start();
         }
+        if (caKeyHolder != null) {
+            caKeyHolder.start();
+        }
         logger.info("gRPC server started on port {}", grpcPort);
     }
 
     public void shutdown() {
+        if (caKeyHolder != null) {
+            caKeyHolder.stop();
+        }
         if (keyRotator != null) {
             keyRotator.stop();
         }

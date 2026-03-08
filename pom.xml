@@ -32,7 +32,7 @@
 	<repositories>
 		<repository>
 			<id>gitlab-maven</id>
-			<url>https://gitlab.com/api/v4/projects/79479556/packages/maven</url>
+			<url>https://gitlab.com/api/v4/projects/79641700/packages/maven</url>
 		</repository>
 	</repositories>
 	<distributionManagement>

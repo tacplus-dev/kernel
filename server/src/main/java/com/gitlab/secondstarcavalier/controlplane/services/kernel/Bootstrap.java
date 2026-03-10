@@ -27,6 +27,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
 /**
  * Shared bootstrap logic for kernel nodes. Resolves a
@@ -60,7 +61,7 @@ public class Bootstrap {
      * {@code depsFactory}, which receives the resolved config and returns the
      * appropriate dependencies.
      */
-    public static void run(String[] args, Kernel.NodeMode mode, Function<ResolvedConfig, Dependencies> depsFactory)
+    public static void run(String[] args, Hazelcast.NodeMode mode, Function<ResolvedConfig, Dependencies> depsFactory)
             throws Exception {
         System.setProperty("hazelcast.internal.override.enterprise", "true");
         startServer(args, mode, depsFactory);
@@ -74,8 +75,8 @@ public class Bootstrap {
         System.setProperty("hazelcast.internal.override.enterprise", "true");
 
         // Peek at config to determine mode before full startup
-        Kernel.NodeMode mode = peekMode(args);
-        boolean isCore = mode != Kernel.NodeMode.NODE_MODE_EDGE;
+        Hazelcast.NodeMode mode = peekMode(args);
+        boolean isCore = mode != Hazelcast.NodeMode.NODE_MODE_EDGE;
 
         if (isCore) {
             startServer(args, mode, resolved -> buildCoreDeps(resolved));
@@ -88,7 +89,7 @@ public class Bootstrap {
      * Resolves the bootstrap and frontend config from args/env. Useful for
      * callers that need the config before constructing dependencies.
      */
-    public static ResolvedConfig resolveConfigs(String[] args, Kernel.NodeMode mode) throws Exception {
+    public static ResolvedConfig resolveConfigs(String[] args, Hazelcast.NodeMode mode) throws Exception {
         String configPath = parseConfigArg(args);
         Kernel.BootstrapConfig fileConfig = loadConfigFile(configPath);
         var envConfig = Helpers.bootstrapConfigFromEnvVar(System.getenv()).build();
@@ -134,13 +135,13 @@ public class Bootstrap {
 
     // ── server startup ───────────────────────────────────────────────────
     private static void startServer(
-            String[] args, Kernel.NodeMode mode, Function<ResolvedConfig, Dependencies> depsFactory) throws Exception {
+            String[] args, Hazelcast.NodeMode mode, Function<ResolvedConfig, Dependencies> depsFactory) throws Exception {
         ResolvedConfig resolved = resolveConfigs(args, mode);
         if (resolved == null) return;
 
         LogbackConfigurator.install(null);
-        boolean isCore = mode != Kernel.NodeMode.NODE_MODE_EDGE;
-        boolean isEdge = mode != Kernel.NodeMode.NODE_MODE_CORE;
+        boolean isCore = mode != Hazelcast.NodeMode.NODE_MODE_EDGE;
+        boolean isEdge = mode != Hazelcast.NodeMode.NODE_MODE_CORE;
         String modeName = isCore && isEdge ? "core-edge" : isCore ? "core" : "edge";
         logger.info(
                 "Starting {} node: listener={}, cluster={}",
@@ -332,20 +333,20 @@ public class Bootstrap {
      * Peeks at config to determine mode without fully resolving.
      * Returns NODE_MODE_CORE_EDGE if no mode is specified (default).
      */
-    private static Kernel.NodeMode peekMode(String[] args) throws IOException {
+    private static Hazelcast.NodeMode peekMode(String[] args) throws IOException {
         String configPath = parseConfigArg(args);
         Kernel.BootstrapConfig fileConfig = loadConfigFile(configPath);
-        if (fileConfig != null && fileConfig.getMode() != Kernel.NodeMode.NODE_MODE_CORE_EDGE) {
+        if (fileConfig != null && fileConfig.getMode() != Hazelcast.NodeMode.NODE_MODE_CORE_EDGE) {
             return fileConfig.getMode();
         }
         var envConfig = Helpers.bootstrapConfigFromEnvVar(System.getenv()).build();
-        if (envConfig.getMode() != Kernel.NodeMode.NODE_MODE_CORE_EDGE) {
+        if (envConfig.getMode() != Hazelcast.NodeMode.NODE_MODE_CORE_EDGE) {
             return envConfig.getMode();
         }
         if (fileConfig != null) {
             return fileConfig.getMode();
         }
-        return Kernel.NodeMode.NODE_MODE_CORE_EDGE;
+        return Hazelcast.NodeMode.NODE_MODE_CORE_EDGE;
     }
 
     /**

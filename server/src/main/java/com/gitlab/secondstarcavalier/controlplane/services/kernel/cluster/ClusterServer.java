@@ -11,7 +11,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.sentinel.Sentinel;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.wrappers.views.JwkVerifyingKeysViewServer;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.BackendServers;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.SerializerRegistry;
@@ -19,7 +19,6 @@ import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java
 import com.hazelcast.cluster.MembershipEvent;
 import com.hazelcast.cluster.MembershipListener;
 import com.hazelcast.config.TcpIpConfig;
-import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import io.grpc.Attributes;
 import io.grpc.Context;
@@ -94,8 +93,8 @@ public class ClusterServer {
         // Apply all defaults (including sub-message defaults) in one shot
         Kernel.BootstrapConfig cfg =
                 Helpers.bootstrapConfigDefaults(protoConfig).build();
-        boolean isCore = cfg.getMode() != Kernel.NodeMode.NODE_MODE_EDGE;
-        boolean isEdge = cfg.getMode() != Kernel.NodeMode.NODE_MODE_CORE;
+        boolean isCore = cfg.getMode() != Hazelcast.NodeMode.NODE_MODE_EDGE;
+        boolean isEdge = cfg.getMode() != Hazelcast.NodeMode.NODE_MODE_CORE;
 
         this.persistence = persistence;
         this.raftCloseable = raftCloseable;
@@ -147,7 +146,7 @@ public class ClusterServer {
         hzConfig.getRestConfig().setEnabled(false);
 
         SerializerRegistry.register(hzConfig);
-        this.hazelcast = Hazelcast.newHazelcastInstance(hzConfig);
+        this.hazelcast = com.hazelcast.core.Hazelcast.newHazelcastInstance(hzConfig);
 
         String modeName = isCore && isEdge ? "core-edge" : isCore ? "core" : "edge";
         logger.info(
@@ -323,7 +322,7 @@ public class ClusterServer {
         // 6. Build gRPC server
         BackendServer backendServer = new BackendServer();
 
-        Kernel.RateLimitConfig rateLimit = frontendConfig.getRateLimit();
+        Hazelcast.RateLimitConfig rateLimit = frontendConfig.getRateLimit();
         var rateLimiter = new RateLimitInterceptor(
                 rateLimit.getPollingRate(),
                 rateLimit.getUnaryRate(),
@@ -395,7 +394,7 @@ public class ClusterServer {
                 frontendConfig,
                 grpcPort,
                 rateLimiter,
-                () -> Sentinel.AdminTokenCacheStats.newBuilder()
+                () -> Hazelcast.AdminTokenCacheStats.newBuilder()
                         .setNodeId(nodeId)
                         .setTimestampMs(System.currentTimeMillis())
                         .build());

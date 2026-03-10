@@ -3,8 +3,8 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.FullDumpHeader;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.RedoLogEntry;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.FullDumpHeader;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.RedoLogEntry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.ConsistencyType;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.DbDump;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.zip.GZIPOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
 /**
  * Writes periodic full snapshots of all registered IMaps. Each dump is a
@@ -83,7 +84,7 @@ public class FullDumper {
         for (Map.Entry<String, MapRegistry.MapInfo> mapEntry : allMaps.entrySet()) {
             String mapName = mapEntry.getKey();
             MapRegistry.MapInfo info = mapEntry.getValue();
-            ConsistencyType ksConsistency = info.consistency() == Kernel.ConsistencyType.CONSISTENCY_ATOMIC
+            ConsistencyType ksConsistency = info.consistency() == Hazelcast.ConsistencyType.CONSISTENCY_ATOMIC
                     ? ConsistencyType.CONSISTENCY_ATOMIC
                     : ConsistencyType.CONSISTENCY_CONVERGENT;
 

@@ -14,7 +14,6 @@ import com.hazelcast.config.NetworkConfig;
 import com.hazelcast.config.SSLConfig;
 import com.hazelcast.config.TcpIpConfig;
 import com.hazelcast.config.cp.CPSubsystemConfig;
-import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import java.io.FileOutputStream;
 import java.nio.file.Files;
@@ -24,6 +23,7 @@ import java.security.cert.Certificate;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
 /**
  * Factory for creating a configured Hazelcast instance from a
@@ -76,8 +76,8 @@ public class HazelcastFactory {
 
         // Network timeouts
         if (cfg.hasNetwork()) {
-            Kernel.NetworkConfig net =
-                    Helpers.networkConfigDefaults(cfg.getNetwork()).build();
+            Hazelcast.NetworkConfig net =
+                    com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Helpers.networkConfigDefaults(cfg.getNetwork()).build();
             tcpIpConfig.setConnectionTimeoutSeconds((int) net.getConnectTimeoutSeconds());
             hzConfig.setProperty(
                     "hazelcast.heartbeat.interval.seconds",
@@ -133,8 +133,8 @@ public class HazelcastFactory {
 
         // CP Subsystem (needed for FencedLock / ATOMIC boundaries)
         if (cfg.hasCpSubsystem() && cfg.getCpSubsystem().getEnabled()) {
-            Kernel.CPSubsystemConfig cpCfg =
-                    Helpers.cPSubsystemConfigDefaults(cfg.getCpSubsystem()).build();
+            Hazelcast.CPSubsystemConfig cpCfg =
+                    com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Helpers.cPSubsystemConfigDefaults(cfg.getCpSubsystem()).build();
 
             CPSubsystemConfig hzCp = hzConfig.getCPSubsystemConfig();
             hzCp.setCPMemberCount(cpCfg.getCpMemberCount());
@@ -156,6 +156,6 @@ public class HazelcastFactory {
 
         SerializerRegistry.register(hzConfig);
 
-        return Hazelcast.newHazelcastInstance(hzConfig);
+        return com.hazelcast.core.Hazelcast.newHazelcastInstance(hzConfig);
     }
 }

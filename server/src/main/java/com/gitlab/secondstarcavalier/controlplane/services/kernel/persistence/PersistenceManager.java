@@ -3,7 +3,7 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.PersistenceProvider;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.ConsistencyType;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.ConsistencyType;
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IMap;
 import com.hazelcast.core.HazelcastInstance;
 import java.io.IOException;
@@ -16,6 +16,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
 /**
  * Coordinator for the persistence subsystem. Owns the {@link RedoLog},

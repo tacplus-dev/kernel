@@ -3,7 +3,7 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.RedoLogEntry;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.RedoLogEntry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
 import com.google.protobuf.ByteString;
@@ -17,6 +17,7 @@ import com.hazelcast.map.listener.EntryUpdatedListener;
 import com.hazelcast.map.listener.MapClearedListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
 /**
  * Hazelcast MapListener that logs cluster-wide map mutations to the
@@ -37,12 +38,12 @@ public class PersistenceMapListener
 
     private final RedoLog redoLog;
     private final String mapName;
-    private final Kernel.ConsistencyType consistency;
+    private final Hazelcast.ConsistencyType consistency;
     private final MapRegistry registry;
     private volatile boolean parserDetected = false;
 
     public PersistenceMapListener(
-            RedoLog redoLog, String mapName, Kernel.ConsistencyType consistency, MapRegistry registry) {
+            RedoLog redoLog, String mapName, Hazelcast.ConsistencyType consistency, MapRegistry registry) {
         this.redoLog = redoLog;
         this.mapName = mapName;
         this.consistency = consistency;
@@ -91,7 +92,7 @@ public class PersistenceMapListener
                 redoLog.appendLegacy(RedoLogEntry.newBuilder()
                         .setMapName(mapName)
                         .setKey(key)
-                        .setOp(Kernel.OpType.OP_TYPE_PUT)
+                        .setOp(Hazelcast.OpType.OP_TYPE_PUT)
                         .setTimestampMs(System.currentTimeMillis())
                         .setConsistency(consistency)
                         .setValue(ByteString.copyFrom(msg.toByteArray()))
@@ -105,7 +106,7 @@ public class PersistenceMapListener
     }
 
     private KitchenSinkOuterClass.ConsistencyType mapConsistency() {
-        return consistency == Kernel.ConsistencyType.CONSISTENCY_ATOMIC
+        return consistency == Hazelcast.ConsistencyType.CONSISTENCY_ATOMIC
                 ? KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_ATOMIC
                 : KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_CONVERGENT;
     }

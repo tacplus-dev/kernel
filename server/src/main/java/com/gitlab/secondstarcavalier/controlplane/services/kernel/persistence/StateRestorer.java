@@ -3,8 +3,8 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.FullDumpHeader;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.RedoLogEntry;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.FullDumpHeader;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.RedoLogEntry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.DbDump;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.zip.GZIPInputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
 /**
  * Restores Hazelcast IMap state from dump files and redo logs at startup.
@@ -204,7 +205,7 @@ public class StateRestorer {
                     byte[] recordData;
                     while ((recordData = readRecordOrNull(is)) != null) {
                         RedoLogEntry entry = RedoLogEntry.parseFrom(recordData);
-                        if (entry.getConsistency() != Kernel.ConsistencyType.CONSISTENCY_ATOMIC) {
+                        if (entry.getConsistency() != Hazelcast.ConsistencyType.CONSISTENCY_ATOMIC) {
                             applyEntry(entry);
                             loadedCount++;
                         }
@@ -312,7 +313,7 @@ public class StateRestorer {
         }
 
         IMap<String, Object> map = (IMap<String, Object>) info.map();
-        if (entry.getOp() == Kernel.OpType.OP_TYPE_DELETE) {
+        if (entry.getOp() == Hazelcast.OpType.OP_TYPE_DELETE) {
             map.delete(entry.getKey());
         } else {
             try {
@@ -365,14 +366,14 @@ public class StateRestorer {
                 .setTimestampMs(entry.getTimestampMs());
 
         // Map OpType
-        if (entry.getOp() == Kernel.OpType.OP_TYPE_DELETE) {
+        if (entry.getOp() == Hazelcast.OpType.OP_TYPE_DELETE) {
             builder.setOp(KitchenSinkOuterClass.OpType.OP_TYPE_DELETE);
         } else {
             builder.setOp(KitchenSinkOuterClass.OpType.OP_TYPE_PUT);
         }
 
         // Map ConsistencyType
-        if (entry.getConsistency() == Kernel.ConsistencyType.CONSISTENCY_ATOMIC) {
+        if (entry.getConsistency() == Hazelcast.ConsistencyType.CONSISTENCY_ATOMIC) {
             builder.setConsistency(KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_ATOMIC);
         } else {
             builder.setConsistency(KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_CONVERGENT);

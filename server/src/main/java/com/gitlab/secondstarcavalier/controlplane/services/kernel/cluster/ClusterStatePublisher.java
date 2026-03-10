@@ -4,7 +4,7 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.PersistenceProvider;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.sentinel.Sentinel;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.wrappers.backendclients.Registry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.services.kernel.ClusterStateMap;
 import com.hazelcast.cluster.Member;
@@ -44,7 +44,7 @@ public class ClusterStatePublisher {
     private final Kernel.BootstrapConfig bootstrapConfig;
     private final int grpcPort;
     private final RateLimitInterceptor rateLimiter;
-    private final Supplier<Sentinel.AdminTokenCacheStats> tokenCacheStatsSupplier;
+    private final Supplier<Hazelcast.AdminTokenCacheStats> tokenCacheStatsSupplier;
 
     private final ScheduledExecutorService scheduler;
     private ScheduledFuture<?> publishTask;
@@ -57,7 +57,7 @@ public class ClusterStatePublisher {
             Kernel.Config frontendConfig,
             int grpcPort,
             RateLimitInterceptor rateLimiter,
-            Supplier<Sentinel.AdminTokenCacheStats> tokenCacheStatsSupplier) {
+            Supplier<Hazelcast.AdminTokenCacheStats> tokenCacheStatsSupplier) {
         this.hazelcast = hazelcast;
         this.clusterStateMap = clusterStateMap;
         this.persistence = persistence;
@@ -143,7 +143,7 @@ public class ClusterStatePublisher {
         var cluster = hazelcast.getCluster();
         var localMember = cluster.getLocalMember();
 
-        var builder = Sentinel.AdminClusterInfo.newBuilder()
+        var builder = Hazelcast.AdminClusterInfo.newBuilder()
                 .setClusterName(hazelcast.getConfig().getClusterName())
                 .setState(cluster.getClusterState().name())
                 .setLocalMember(localMember.getUuid().toString())
@@ -154,7 +154,7 @@ public class ClusterStatePublisher {
                         com.hazelcast.instance.BuildInfoProvider.getBuildInfo().getVersion());
 
         for (Member member : cluster.getMembers()) {
-            builder.addMembers(Sentinel.AdminMember.newBuilder()
+            builder.addMembers(Hazelcast.AdminMember.newBuilder()
                     .setUuid(member.getUuid().toString())
                     .setAddress(member.getAddress().toString())
                     .setLite(member.isLiteMember())
@@ -176,7 +176,7 @@ public class ClusterStatePublisher {
         long coreCount =
                 cluster.getMembers().stream().filter(m -> !m.isLiteMember()).count();
 
-        clusterStateMap.putClusterHealth(Sentinel.AdminClusterHealth.newBuilder()
+        clusterStateMap.putClusterHealth(Hazelcast.AdminClusterHealth.newBuilder()
                 .setClusterSafe(partitionService.isClusterSafe())
                 .setLocalMemberSafe(partitionService.isLocalMemberSafe())
                 .setClusterState(cluster.getClusterState().name())
@@ -204,7 +204,7 @@ public class ClusterStatePublisher {
             if (t >= 0) gcTimeMs += t;
         }
 
-        var memory = Sentinel.AdminMemoryMetrics.newBuilder()
+        var memory = Hazelcast.AdminMemoryMetrics.newBuilder()
                 .setHeapUsedBytes(heap.getUsed())
                 .setHeapMaxBytes(heap.getMax())
                 .setHeapCommittedBytes(heap.getCommitted())
@@ -212,7 +212,7 @@ public class ClusterStatePublisher {
                 .setGcCount(gcCount)
                 .setGcTimeMs(gcTimeMs);
 
-        var cpu = Sentinel.AdminCpuMetrics.newBuilder()
+        var cpu = Hazelcast.AdminCpuMetrics.newBuilder()
                 .setAvailableProcessors(osBean.getAvailableProcessors())
                 .setSystemLoadAverage(osBean.getSystemLoadAverage())
                 .setUptimeMs(rtBean.getUptime());
@@ -223,7 +223,7 @@ public class ClusterStatePublisher {
             cpu.setSystemCpuLoad(sunOs.getCpuLoad());
         }
 
-        var disk = Sentinel.AdminDiskMetrics.newBuilder();
+        var disk = Hazelcast.AdminDiskMetrics.newBuilder();
         String persistenceDir = bootstrapConfig.getPersistenceDir();
         if (!persistenceDir.isEmpty()) {
             File dir = new File(persistenceDir);
@@ -240,7 +240,7 @@ public class ClusterStatePublisher {
 
         clusterStateMap.putNodeMetrics(
                 nodeId,
-                Sentinel.AdminNodeMetrics.newBuilder()
+                Hazelcast.AdminNodeMetrics.newBuilder()
                         .setNodeId(nodeId)
                         .setMemory(memory)
                         .setCpu(cpu)
@@ -252,7 +252,7 @@ public class ClusterStatePublisher {
     // ---- gRPC Stats (per-node) ----
 
     private void publishGrpcStats(String nodeId) {
-        var builder = Sentinel.AdminGrpcStats.newBuilder()
+        var builder = Hazelcast.AdminGrpcStats.newBuilder()
                 .setNodeId(nodeId)
                 .setActiveConnections(rateLimiter.getActiveConnections())
                 .setActiveRpcs(rateLimiter.getActiveRpcs())
@@ -270,7 +270,7 @@ public class ClusterStatePublisher {
     private void publishPersistenceStatus(String nodeId) {
         clusterStateMap.putPersistenceStatus(
                 nodeId,
-                Sentinel.AdminPersistenceStatus.newBuilder()
+                Hazelcast.AdminPersistenceStatus.newBuilder()
                         .setNodeId(nodeId)
                         .setEnabled(persistence.isEnabled())
                         .setPersistenceDir(bootstrapConfig.getPersistenceDir())
@@ -286,7 +286,7 @@ public class ClusterStatePublisher {
         var cluster = hazelcast.getCluster();
         var localMember = cluster.getLocalMember();
 
-        var builder = Sentinel.AdminNetworkStats.newBuilder()
+        var builder = Hazelcast.AdminNetworkStats.newBuilder()
                 .setNodeId(nodeId)
                 .setGrpcListenAddress(":" + grpcPort)
                 .setHazelcastListenAddress(localMember.getAddress().toString())
@@ -299,7 +299,7 @@ public class ClusterStatePublisher {
 
         for (Member member : cluster.getMembers()) {
             if (!member.localMember()) {
-                builder.addMemberConnections(Sentinel.AdminMemberConnection.newBuilder()
+                builder.addMemberConnections(Hazelcast.AdminMemberConnection.newBuilder()
                         .setAddress(member.getAddress().toString())
                         .setConnected(true)
                         .setConnectionCount(1));
@@ -339,7 +339,7 @@ public class ClusterStatePublisher {
     private void publishThreadInfo(String nodeId) {
         ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
 
-        var builder = Sentinel.AdminThreadInfo.newBuilder()
+        var builder = Hazelcast.AdminThreadInfo.newBuilder()
                 .setNodeId(nodeId)
                 .setThreadCount(threadBean.getThreadCount())
                 .setPeakThreadCount(threadBean.getPeakThreadCount())
@@ -362,7 +362,7 @@ public class ClusterStatePublisher {
     // ---- Token Cache Stats (per-node) ----
 
     private void publishTokenCacheStats(String nodeId) {
-        Sentinel.AdminTokenCacheStats stats = tokenCacheStatsSupplier.get();
+        Hazelcast.AdminTokenCacheStats stats = tokenCacheStatsSupplier.get();
         clusterStateMap.putTokenCacheStats(nodeId, stats);
     }
 
@@ -412,14 +412,14 @@ public class ClusterStatePublisher {
         return pkg + "." + info.getBoundary();
     }
 
-    private static Sentinel.AdminGraphType toAdminGraphType(String graphType) {
+    private static Hazelcast.AdminGraphType toAdminGraphType(String graphType) {
         return switch (graphType) {
-            case "singleton" -> Sentinel.AdminGraphType.ADMIN_GRAPH_TYPE_SINGLETON;
-            case "collection" -> Sentinel.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION;
-            case "queue" -> Sentinel.AdminGraphType.ADMIN_GRAPH_TYPE_QUEUE;
-            case "priority_queue" -> Sentinel.AdminGraphType.ADMIN_GRAPH_TYPE_PRIORITY_QUEUE;
-            case "topic" -> Sentinel.AdminGraphType.ADMIN_GRAPH_TYPE_TOPIC;
-            default -> Sentinel.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION;
+            case "singleton" -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_SINGLETON;
+            case "collection" -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION;
+            case "queue" -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_QUEUE;
+            case "priority_queue" -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_PRIORITY_QUEUE;
+            case "topic" -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_TOPIC;
+            default -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION;
         };
     }
 
@@ -447,13 +447,13 @@ public class ClusterStatePublisher {
 
                 clusterStateMap.putMapStats(
                         mapName,
-                        Sentinel.AdminMapStats.newBuilder()
+                        Hazelcast.AdminMapStats.newBuilder()
                                 .setMapName(displayName)
                                 .setValueType(valueType)
                                 .setGraphType(
                                         info != null
                                                 ? toAdminGraphType(info.getGraphType())
-                                                : Sentinel.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION)
+                                                : Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION)
                                 .setQualifiedName(qualifiedName)
                                 .setStateRoot(stateRoot)
                                 .setConsistency(info != null ? info.getConsistency() : "")

@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast;
 
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.ConsistencyType;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.ConsistencyType;
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IList;
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IMap;
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IPriorityQueue;
@@ -14,6 +14,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.MultiMap;
 import com.hazelcast.core.HazelcastInstance;
 import java.util.function.Function;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
 /**
  * HazelcastManager implements {@link Manager} by delegating to a

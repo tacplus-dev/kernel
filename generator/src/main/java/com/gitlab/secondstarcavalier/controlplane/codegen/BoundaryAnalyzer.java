@@ -55,6 +55,11 @@ public class BoundaryAnalyzer {
                 continue;
             }
 
+            // Skip command RPCs and state imports — they are not boundaries
+            if (field.getAnnotations().containsKey("command") || field.getAnnotations().containsKey("state_import")) {
+                continue;
+            }
+
             AnnotationValue consAnn = field.getAnnotations().get("consistency");
             AnnotationValue queueAnn = field.getAnnotations().get("queue");
             AnnotationValue pqAnn = field.getAnnotations().get("priority_queue");
@@ -62,20 +67,20 @@ public class BoundaryAnalyzer {
             AnnotationValue leaderAnn = field.getAnnotations().get("leader");
             AnnotationValue ikAnn = field.getAnnotations().get("instance_keyed");
 
-            boolean hasCons = consAnn != null;
             boolean hasQueue = queueAnn != null && queueAnn.getBoolValue();
             boolean hasPQ = pqAnn != null && pqAnn.getStringValue() != null && !pqAnn.getStringValue().isEmpty();
             boolean hasTopic = topicAnn != null && topicAnn.getBoolValue();
             boolean isLeader = leaderAnn != null && leaderAnn.getBoolValue();
 
-            if (!hasCons && !hasQueue && !hasPQ && !hasTopic) {
-                continue;
-            }
-
             AnnotationValue privAnn = field.getAnnotations().get("private");
             boolean isPrivate = privAnn != null && privAnn.getBoolValue();
-            boolean isAtomic = hasCons && "CONSISTENCY_ATOMIC".equals(consAnn.getEnumValue());
-            boolean isReplicated = hasCons && "CONSISTENCY_REPLICATED".equals(consAnn.getEnumValue());
+            // Default to CONVERGENT when no consistency annotation is present.
+            String enumVal = consAnn != null ? consAnn.getEnumValue() : "CONSISTENCY_CONVERGENT";
+            if (enumVal == null || enumVal.isEmpty()) {
+                enumVal = "CONSISTENCY_CONVERGENT";
+            }
+            boolean isAtomic = "CONSISTENCY_ATOMIC".equals(enumVal);
+            boolean isReplicated = "CONSISTENCY_REPLICATED".equals(enumVal);
             String typeName = StringUtils.extractSimpleTypeName(field.getType());
 
             // Detect cross-package references

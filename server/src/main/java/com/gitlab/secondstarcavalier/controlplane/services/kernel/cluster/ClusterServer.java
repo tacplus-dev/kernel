@@ -39,6 +39,7 @@ import io.grpc.netty.shaded.io.netty.handler.ssl.SslContextBuilder;
 import io.grpc.protobuf.services.HealthStatusManager;
 import java.io.IOException;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,440 +55,446 @@ import org.slf4j.LoggerFactory;
  */
 public class ClusterServer {
 
-    private static final Logger logger = LoggerFactory.getLogger(ClusterServer.class);
+	private static final Logger logger = LoggerFactory.getLogger(ClusterServer.class);
 
-    private final int grpcPort;
-    private final HazelcastInstance hazelcast;
-    private final PersistenceProvider persistence;
-    private final BackendServers backendServers;
-    private final JwkVerifyingKeysViewServer jwkViewServer;
-    private final ClusterStatePublisher clusterPublisher;
-    private final ClusterSetLogLevelHandler clusterSetLogLevelHandler;
-    private final HealthStatusManager healthManager;
-    private final Server grpcServer;
-    private final KeyRotator keyRotator;
-    private final ExternalJwkResolver externalJwkResolver;
-    private final CaKeyHolder caKeyHolder;
+	private final int grpcPort;
+	private final HazelcastInstance hazelcast;
+	private final PersistenceProvider persistence;
+	private final BackendServers backendServers;
+	private final JwkVerifyingKeysViewServer jwkViewServer;
+	private final ClusterStatePublisher clusterPublisher;
+	private final ClusterSetLogLevelHandler clusterSetLogLevelHandler;
+	private final HealthStatusManager healthManager;
+	private final Server grpcServer;
+	private final KeyRotator keyRotator;
+	private final ExternalJwkResolver externalJwkResolver;
+	private final CaKeyHolder caKeyHolder;
 
-    /**
-     * @param protoConfig    the bootstrap configuration
-     * @param frontendConfig the frontend configuration (nullable)
-     * @param persistence    persistence provider
-     */
-    public ClusterServer(
-            Kernel.BootstrapConfig protoConfig,
-            Kernel.Config frontendConfig,
-            PersistenceProvider persistence) {
+	/**
+	 * @param protoConfig    the bootstrap configuration
+	 * @param frontendConfig the frontend configuration (nullable)
+	 * @param persistence    persistence provider
+	 */
+	public ClusterServer(
+			Kernel.BootstrapConfig protoConfig,
+			Kernel.Config frontendConfig,
+			PersistenceProvider persistence) {
 
-        // Apply all defaults (including sub-message defaults) in one shot
-        Kernel.BootstrapConfig cfg =
-                Helpers.bootstrapConfigDefaults(protoConfig).build();
+		Kernel.BootstrapConfig cfg = Helpers.bootstrapConfigDefaults(protoConfig).build();
+		Kernel.Config effectiveFrontendConfig = frontendConfig != null ? frontendConfig
+				: Kernel.Config.getDefaultInstance();
 
-        this.persistence = persistence;
+		this.persistence = persistence;
 
-        // Extract values from proto config with defaults
-        this.grpcPort = cfg.getListener().getPort();
-        int hzPort = grpcPort + 1;
-        var members = cfg.getMembersList();
-        if (frontendConfig == null) {
-            frontendConfig = Kernel.Config.getDefaultInstance();
-        }
+		this.grpcPort = cfg.getGrpcPort();
+		int hzPort = cfg.getHazelcastPort();
+		var members = cfg.getMembersList();
 
-        // Determine hostname for self-identification.
-        String hostname = System.getenv("HOSTNAME");
-        if (hostname == null || hostname.isEmpty()) {
-            hostname = cfg.getListener().getHost();
-        }
-        String instanceName = (hostname != null && !hostname.isEmpty() && !hostname.equals("0.0.0.0"))
-                ? "node-" + hostname
-                : "node-" + hzPort;
+		String hostname = System.getenv("HOSTNAME");
+		if (hostname == null || hostname.isEmpty()) {
+			hostname = cfg.getListener().getHost();
+		}
+		String instanceName = (hostname != null && !hostname.isEmpty() && !hostname.equals("0.0.0.0"))
+				? "node-" + hostname
+				: "node-" + hzPort;
 
-        // 1. Create Hazelcast instance
-        var hzConfig = new com.hazelcast.config.Config();
-        hzConfig.setClusterName(cfg.getClusterName());
-        hzConfig.setInstanceName(instanceName);
-        hzConfig.setProperty("hazelcast.partition.count", String.valueOf(cfg.getPartitionCount()));
-        hzConfig.setProperty("hazelcast.logging.type", "slf4j");
-        hzConfig.setProperty("hazelcast.phone.home.enabled", "false");
+		var hzConfig = new com.hazelcast.config.Config();
+		hzConfig.setClusterName(Objects.requireNonNull(cfg.getClusterName(), "clusterName"));
+		hzConfig.setInstanceName(Objects.requireNonNull(instanceName, "instanceName"));
+		hzConfig.setProperty(
+				"hazelcast.partition.count",
+				Objects.requireNonNull(String.valueOf(cfg.getPartitionCount()), "hazelcast.partition.count"));
+		hzConfig.setProperty("hazelcast.logging.type", "slf4j");
+		hzConfig.setProperty("hazelcast.phone.home.enabled", "false");
 
-        // Network configuration
-        var networkConfig = hzConfig.getNetworkConfig();
-        networkConfig.setPort(hzPort);
-        networkConfig.setPortAutoIncrement(false);
+		// Network configuration
+		var networkConfig = hzConfig.getNetworkConfig();
+		networkConfig.setPort(hzPort);
+		networkConfig.setPortAutoIncrement(false);
 
-        var joinConfig = networkConfig.getJoin();
-        joinConfig.getMulticastConfig().setEnabled(false);
-        TcpIpConfig tcp = joinConfig.getTcpIpConfig();
-        tcp.setEnabled(true);
-        for (var member : members) {
-            tcp.addMember(member.getHost() + ":" + (member.getPort() + 1));
-        }
+		var joinConfig = networkConfig.getJoin();
+		joinConfig.getMulticastConfig().setEnabled(false);
+		TcpIpConfig tcp = joinConfig.getTcpIpConfig();
+		tcp.setEnabled(true);
+		for (var member : members) {
+			String memberHost = Objects.requireNonNull(member.getHost(), "member.host");
+			tcp.addMember(memberHost + ":" + hzPort);
+		}
 
-        hzConfig.getRestConfig().setEnabled(false);
+		hzConfig.getRestConfig().setEnabled(false);
 
-        SerializerRegistry.register(hzConfig);
-        this.hazelcast = com.hazelcast.core.Hazelcast.newHazelcastInstance(hzConfig);
+		SerializerRegistry.register(hzConfig);
+		this.hazelcast = com.hazelcast.core.Hazelcast.newHazelcastInstance(hzConfig);
 
-        logger.info(
-                "Hazelcast {} started (cluster size={})",
-                instanceName,
-                hazelcast.getCluster().getMembers().size());
+		logger.info(
+				"Hazelcast {} started (cluster size={})",
+				instanceName,
+				hazelcast.getCluster().getMembers().size());
 
-        // 2. Health management (start as NOT_SERVING until restore completes)
-        this.healthManager = new HealthStatusManager();
-        healthManager.setStatus("", ServingStatus.NOT_SERVING);
+		// 2. Health management (start as NOT_SERVING until restore completes)
+		this.healthManager = new HealthStatusManager();
+		healthManager.setStatus("", ServingStatus.NOT_SERVING);
 
-        // 3. Initialize persistence
-        int nodeCount = cfg.getNodeCount() > 0 ? cfg.getNodeCount() : members.size();
-        if (persistence.isEnabled()) {
-            int initialQuorumForPersistence = nodeCount / 2 + 1;
-            try {
-                persistence.initialize(hazelcast, initialQuorumForPersistence);
-            } catch (IOException e) {
-                logger.warn(
-                        "Persistence initialization failed — starting without "
-                                + "restored state. Data will converge from peers.",
-                        e);
-            }
-        }
+		// 3. Initialize persistence
+		int nodeCount = cfg.getNodeCount() > 0 ? cfg.getNodeCount() : members.size();
+		if (persistence.isEnabled()) {
+			int initialQuorumForPersistence = nodeCount / 2 + 1;
+			try {
+				persistence.initialize(hazelcast, initialQuorumForPersistence);
+			} catch (IOException e) {
+				logger.warn(
+						"Persistence initialization failed — starting without "
+								+ "restored state. Data will converge from peers.",
+						e);
+			}
+		}
 
-        // 4. Create backend servers
-        HazelcastManager manager = new HazelcastManager(hazelcast, persistence);
-        this.backendServers = new BackendServers(manager);
+		// 4. Create backend servers
+		HazelcastManager manager = new HazelcastManager(hazelcast, persistence);
+		this.backendServers = new BackendServers(manager);
 
-        // All boundaries are convergent — quorum is always available
-        backendServers.services().setQuorumAvailable(true);
+		// All boundaries are convergent — quorum is always available
+		backendServers.services().setQuorumAvailable(true);
 
-        // Create JWK verifying keys view server
-        this.jwkViewServer = new JwkVerifyingKeysViewServer(
-                backendServers.getAuthenticator(),
-                () -> {
-                    java.util.Map<String, JwkOuterClass.Jwk> result = new java.util.LinkedHashMap<>();
-                    try {
-                        for (JwkOuterClass.Jwk jwk : backendServers
-                                .services()
-                                .getIdentityStateMap()
-                                .proto()
-                                .getVerifyingKeysList()) {
-                            result.put(jwk.getKid(), jwk);
-                        }
-                    } catch (Exception e) {
-                        logger.warn("Failed to read IdentityState verifying keys: {}", e.getMessage());
-                    }
-                    return result;
-                },
-                () -> {
-                    java.util.Map<String, JwkOuterClass.Jwk> result = new java.util.LinkedHashMap<>();
-                    try {
-                        for (JwkOuterClass.Jwk jwk : backendServers
-                                .services()
-                                .getTokenExchangerStateMap()
-                                .proto()
-                                .getVerifyingKeysList()) {
-                            result.put(jwk.getKid(), jwk);
-                        }
-                    } catch (Exception e) {
-                        logger.warn("Failed to read TokenExchangerInternal verifying keys: {}", e.getMessage());
-                    }
-                    return result;
-                });
+		// Create JWK verifying keys view server
+		this.jwkViewServer = new JwkVerifyingKeysViewServer(
+				backendServers.getAuthenticator(),
+				() -> {
+					java.util.Map<String, JwkOuterClass.Jwk> result = new java.util.LinkedHashMap<>();
+					try {
+						for (JwkOuterClass.Jwk jwk : backendServers
+								.services()
+								.getIdentityStateMap()
+								.proto()
+								.getVerifyingKeysList()) {
+							String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
+							result.put(kid, jwk);
+						}
+					} catch (Exception e) {
+						logger.warn("Failed to read IdentityState verifying keys: {}", e.getMessage());
+					}
+					return result;
+				},
+				() -> {
+					java.util.Map<String, JwkOuterClass.Jwk> result = new java.util.LinkedHashMap<>();
+					try {
+						for (JwkOuterClass.Jwk jwk : backendServers
+								.services()
+								.getTokenExchangerStateMap()
+								.proto()
+								.getVerifyingKeysList()) {
+							String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
+							result.put(kid, jwk);
+						}
+					} catch (Exception e) {
+						logger.warn("Failed to read TokenExchangerInternal verifying keys: {}", e.getMessage());
+					}
+					return result;
+				});
 
-        // Capture delegate public keys from Config
-        final var delegatePublicKeys = new java.util.ArrayList<JwkOuterClass.Jwk>();
-        for (Kernel.Delegate delegate : frontendConfig.getDelegatesList()) {
-            delegatePublicKeys.addAll(delegate.getCredPairsList());
-        }
+		// Capture delegate public keys from Config
+		final var delegatePublicKeys = new java.util.ArrayList<JwkOuterClass.Jwk>();
+		for (Kernel.Delegate delegate : effectiveFrontendConfig.getDelegatesList()) {
+			delegatePublicKeys.addAll(delegate.getCredPairsList());
+		}
 
-        // Combined key supplier
-        Supplier<List<JwkOuterClass.Jwk>> allKeysSupplier = () -> {
-            var keys = new java.util.ArrayList<>(delegatePublicKeys);
-            try {
-                keys.addAll(backendServers
-                        .services()
-                        .getTokenExchangerStateMap()
-                        .proto()
-                        .getVerifyingKeysList());
-            } catch (Exception e) {
-                logger.warn("Failed to read verifying keys: {}", e.getMessage());
-            }
-            return keys;
-        };
+		// Combined key supplier
+		Supplier<List<JwkOuterClass.Jwk>> allKeysSupplier = () -> {
+			var keys = new java.util.ArrayList<>(delegatePublicKeys);
+			try {
+				keys.addAll(backendServers
+						.services()
+						.getTokenExchangerStateMap()
+						.proto()
+						.getVerifyingKeysList());
+			} catch (Exception e) {
+				logger.warn("Failed to read verifying keys: {}", e.getMessage());
+			}
+			return keys;
+		};
 
-        // Wire JWT key provider for SecurityAuthenticator
-        backendServers.getAuthenticator().setKeyProvider(() -> {
-            return JwkOuterClass.Jwks.newBuilder()
-                    .addAllKeys(allKeysSupplier.get())
-                    .build();
-        });
+		// Wire JWT key provider for SecurityAuthenticator
+		backendServers.getAuthenticator().setKeyProvider(() -> {
+			return JwkOuterClass.Jwks.newBuilder()
+					.addAllKeys(allKeysSupplier.get())
+					.build();
+		});
 
-        // Install trusted CAs from Config into TrustedCaState
-        installTrustedCas(frontendConfig.getTrustedCasList());
+		// Install trusted CAs from Config into TrustedCaState
+		installTrustedCas(effectiveFrontendConfig.getTrustedCasList());
 
-        // Install Config.configs into ConfigHolder boundary maps
-        installConfigHolder(frontendConfig);
+		// Install Config.configs into ConfigHolder boundary maps
+		installConfigHolder(effectiveFrontendConfig);
 
-        // ClusterState SetLogLevel handler
-        this.clusterSetLogLevelHandler = new ClusterSetLogLevelHandler();
+		// ClusterState SetLogLevel handler
+		this.clusterSetLogLevelHandler = new ClusterSetLogLevelHandler();
 
-        // 5. Membership listener for cluster state publishing
-        hazelcast.getCluster().addMembershipListener(new MembershipListener() {
-            @Override
-            public void memberAdded(MembershipEvent e) {
-                int totalSize = hazelcast.getCluster().getMembers().size();
-                logger.info(
-                        "[node:{}] Member joined: {} — cluster size={}",
-                        grpcPort,
-                        e.getMember().getAddress(),
-                        totalSize);
-                clusterPublisher.onMembershipChange();
-            }
+		// 5. Membership listener for cluster state publishing
+		hazelcast.getCluster().addMembershipListener(new MembershipListener() {
+			@Override
+			public void memberAdded(MembershipEvent e) {
+				int totalSize = hazelcast.getCluster().getMembers().size();
+				logger.info(
+						"[node:{}] Member joined: {} — cluster size={}",
+						grpcPort,
+						e.getMember().getAddress(),
+						totalSize);
+				clusterPublisher.onMembershipChange();
+			}
 
-            @Override
-            public void memberRemoved(MembershipEvent e) {
-                int totalSize = hazelcast.getCluster().getMembers().size();
-                logger.warn(
-                        "[node:{}] Member left: {} — cluster size={}",
-                        grpcPort,
-                        e.getMember().getAddress(),
-                        totalSize);
-                clusterPublisher.onMembershipChange();
-            }
-        });
+			@Override
+			public void memberRemoved(MembershipEvent e) {
+				int totalSize = hazelcast.getCluster().getMembers().size();
+				logger.warn(
+						"[node:{}] Member left: {} — cluster size={}",
+						grpcPort,
+						e.getMember().getAddress(),
+						totalSize);
+				clusterPublisher.onMembershipChange();
+			}
+		});
 
-        // Cluster is always SERVING once construction completes.
-        healthManager.setStatus("", ServingStatus.SERVING);
+		// Cluster is always SERVING once construction completes.
+		healthManager.setStatus("", ServingStatus.SERVING);
 
-        // 6. Build gRPC server
-        BackendServer backendServer = new BackendServer();
+		// 6. Build gRPC server
+		BackendServer backendServer = new BackendServer();
 
-        Hazelcast.RateLimitConfig rateLimit = frontendConfig.getRateLimit();
-        var rateLimiter = new RateLimitInterceptor(
-                rateLimit.getPollingRate(),
-                rateLimit.getUnaryRate(),
-                backendServers.services().getGrpcServices(),
-                backendServer);
+		Hazelcast.RateLimitConfig rateLimit = effectiveFrontendConfig.getRateLimit();
+		var rateLimiter = new RateLimitInterceptor(
+				rateLimit.getPollingRate(),
+				rateLimit.getUnaryRate(),
+				backendServers.services().getGrpcServices(),
+				backendServer);
 
-        ServerTransportFilter transportFilter = new ServerTransportFilter() {
-            @Override
-            public Attributes transportReady(Attributes transportAttrs) {
-                var remote = transportAttrs.get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR);
-                logger.info("Node {} — client connected: {}", grpcPort, remote);
-                rateLimiter.connectionOpened();
-                return transportAttrs;
-            }
+		ServerTransportFilter transportFilter = new ServerTransportFilter() {
+			@Override
+			public Attributes transportReady(Attributes transportAttrs) {
+				var remote = transportAttrs.get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR);
+				logger.info("Node {} — client connected: {}", grpcPort, remote);
+				rateLimiter.connectionOpened();
+				return transportAttrs;
+			}
 
-            @Override
-            public void transportTerminated(Attributes transportAttrs) {
-                if (transportAttrs == null) {
-                    return;
-                }
-                var remote = transportAttrs.get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR);
-                logger.info("Node {} — client disconnected: {}", grpcPort, remote);
-                rateLimiter.connectionClosed();
-            }
-        };
+			@Override
+			public void transportTerminated(Attributes transportAttrs) {
+				if (transportAttrs == null) {
+					return;
+				}
+				var remote = transportAttrs.get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR);
+				logger.info("Node {} — client disconnected: {}", grpcPort, remote);
+				rateLimiter.connectionClosed();
+			}
+		};
 
-        @SuppressWarnings("Convert2Lambda")
-        ServerInterceptor rpcInterceptor = new ServerInterceptor() {
-            @Override
-            public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
-                    ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
-                String method = call.getMethodDescriptor().getFullMethodName();
-                var remote = call.getAttributes().get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR);
-                String peer = remote != null ? remote.toString() : "unknown";
-                logger.info("Node {} — {} from {}", grpcPort, method, peer);
-                Context ctx = Context.current().withValue(PEER_KEY, peer);
-                return Contexts.interceptCall(ctx, call, headers, next);
-            }
-        };
+		@SuppressWarnings("Convert2Lambda")
+		ServerInterceptor rpcInterceptor = new ServerInterceptor() {
+			@Override
+			public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
+					ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
+				String method = call.getMethodDescriptor().getFullMethodName();
+				var remote = call.getAttributes().get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR);
+				String peer = remote != null ? remote.toString() : "unknown";
+				logger.info("Node {} — {} from {}", grpcPort, method, peer);
+				Context ctx = Context.current().withValue(PEER_KEY, peer);
+				return Contexts.interceptCall(ctx, call, headers, next);
+			}
+		};
 
-        // Build gRPC server with TLS
-        ImmutableCertPair grpcTlsPair = ImmutableCertPair.from(cfg.getTls());
-        SslContext grpcSslContext;
-        try {
-            SslContextBuilder sslBuilder = SslContextBuilder.forServer(
-                            grpcTlsPair.getKey().getPrivateKey(),
-                            grpcTlsPair.getCert().getX509Certificate())
-                    .clientAuth(ClientAuth.NONE);
-            grpcSslContext = GrpcSslContexts.configure(sslBuilder).build();
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to configure gRPC TLS", e);
-        }
+		// Build gRPC server with TLS
+		ImmutableCertPair grpcTlsPair = ImmutableCertPair.from(cfg.getTls());
+		SslContext grpcSslContext;
+		try {
+			SslContextBuilder sslBuilder = SslContextBuilder.forServer(
+					grpcTlsPair.getKey().getPrivateKey(),
+					grpcTlsPair.getCert().getX509Certificate())
+					.clientAuth(ClientAuth.NONE);
+			grpcSslContext = GrpcSslContexts.configure(sslBuilder).build();
+		} catch (Exception e) {
+			throw new RuntimeException("Failed to configure gRPC TLS", e);
+		}
 
-        NettyServerBuilder serverBuilder = NettyServerBuilder.forPort(grpcPort)
-                .sslContext(grpcSslContext)
-                .addTransportFilter(transportFilter)
-                .intercept(rpcInterceptor)
-                .intercept(backendServers.getAuthenticator().callerInterceptor());
+		NettyServerBuilder serverBuilder = NettyServerBuilder.forPort(grpcPort)
+				.sslContext(grpcSslContext)
+				.addTransportFilter(transportFilter)
+				.intercept(rpcInterceptor)
+				.intercept(backendServers.getAuthenticator().callerInterceptor());
 
-        serverBuilder.intercept(rateLimiter);
+		serverBuilder.intercept(rateLimiter);
 
-        // Create cluster state publisher
-        String nodeId = hazelcast.getCluster().getLocalMember().getUuid().toString();
-        this.clusterPublisher = new ClusterStatePublisher(
-                hazelcast,
-                backendServers.services().getClusterStateMap(),
-                persistence,
-                cfg,
-                frontendConfig,
-                grpcPort,
-                rateLimiter,
-                () -> Hazelcast.AdminTokenCacheStats.newBuilder()
-                        .setNodeId(nodeId)
-                        .setTimestampMs(System.currentTimeMillis())
-                        .build());
+		// Create cluster state publisher
+		String nodeId = Objects.requireNonNull(
+				hazelcast.getCluster().getLocalMember().getUuid().toString(),
+				"nodeId");
+		this.clusterPublisher = new ClusterStatePublisher(
+				hazelcast,
+				backendServers.services().getClusterStateMap(),
+				persistence,
+				cfg,
+				effectiveFrontendConfig,
+				grpcPort,
+				rateLimiter,
+				() -> Hazelcast.AdminTokenCacheStats.newBuilder()
+						.setNodeId(nodeId)
+						.setTimestampMs(System.currentTimeMillis())
+						.build());
 
-        // Register all gRPC services
-        String clusterStateSvcName = "kernel.ClusterStateBackendService";
-        for (ServerServiceDefinition svc : backendServers.services().getGrpcServices()) {
-            if (svc.getServiceDescriptor().getName().equals(clusterStateSvcName)) {
-                serverBuilder.addService(clusterSetLogLevelHandler.wrapWithSetLogLevel(svc));
-            } else {
-                serverBuilder.addService(svc);
-            }
-        }
-        // Register libs gRPC services (ServiceConfigStateBackendService, etc.)
-        for (ServerServiceDefinition svc : backendServers.libs().getGrpcServices()) {
-            serverBuilder.addService(svc);
-        }
-        serverBuilder.addService(new BackendServiceImpl(backendServer, grpcPort, hazelcast, cfg.getClusterName()));
-        serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
-                jwkViewServer.bindService(),
-                backendServers.getAuthenticator().callerInterceptor()));
+		// Register all gRPC services
+		String clusterStateSvcName = "kernel.ClusterStateBackendService";
+		for (ServerServiceDefinition svc : backendServers.services().getGrpcServices()) {
+			if (svc.getServiceDescriptor().getName().equals(clusterStateSvcName)) {
+				serverBuilder.addService(clusterSetLogLevelHandler.wrapWithSetLogLevel(svc));
+			} else {
+				serverBuilder.addService(svc);
+			}
+		}
+		// Register libs gRPC services (ServiceConfigStateBackendService, etc.)
+		for (ServerServiceDefinition svc : backendServers.libs().getGrpcServices()) {
+			serverBuilder.addService(svc);
+		}
+		serverBuilder.addService(new BackendServiceImpl(backendServer, grpcPort, hazelcast, cfg.getClusterName()));
+		serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
+				jwkViewServer.bindService(),
+				backendServers.getAuthenticator().callerInterceptor()));
 
-        // Health service is always registered
-        serverBuilder.addService(healthManager.getHealthService());
+		// Health service is always registered
+		serverBuilder.addService(healthManager.getHealthService());
 
-        // Create and register the token exchanger.
-        if (frontendConfig.getDelegatesCount() > 0) {
-            var exchangerState = backendServers.services().getTokenExchangerStateMap();
+		// Create and register the token exchanger.
+		if (effectiveFrontendConfig.getDelegatesCount() > 0) {
+			var exchangerState = backendServers.services().getTokenExchangerStateMap();
 
-            this.keyRotator = new KeyRotator(
-                    frontendConfig.getKeyRotationIntervalSeconds() > 0
-                            ? frontendConfig.getKeyRotationIntervalSeconds()
-                            : 86400,
-                    jwk -> {
-                        try {
-                            exchangerState.putVerifyingKeys(jwk.getKid(), jwk);
-                        } catch (Exception e) {
-                            throw new RuntimeException("putVerifyingKeys failed", e);
-                        }
-                    },
-                    kid -> exchangerState.deleteVerifyingKeys(kid),
-                    () -> {
-                        try {
-                            return new java.util.ArrayList<>(
-                                    exchangerState.proto().getVerifyingKeysList());
-                        } catch (Exception e) {
-                            logger.warn("Failed to read verifying keys: {}", e.getMessage());
-                            return List.of();
-                        }
-                    });
+			this.keyRotator = new KeyRotator(
+					effectiveFrontendConfig.getKeyRotationIntervalSeconds() > 0
+							? effectiveFrontendConfig.getKeyRotationIntervalSeconds()
+							: 86400,
+					jwk -> {
+						try {
+							String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
+							exchangerState.putVerifyingKeys(kid, jwk);
+						} catch (Exception e) {
+							throw new RuntimeException("putVerifyingKeys failed", e);
+						}
+					},
+					kid -> exchangerState.deleteVerifyingKeys(Objects.requireNonNull(kid, "kid")),
+					() -> {
+						try {
+							return new java.util.ArrayList<>(
+									exchangerState.proto().getVerifyingKeysList());
+						} catch (Exception e) {
+							logger.warn("Failed to read verifying keys: {}", e.getMessage());
+							return List.of();
+						}
+					});
 
-            this.externalJwkResolver = new ExternalJwkResolver(allKeysSupplier);
+			this.externalJwkResolver = new ExternalJwkResolver(allKeysSupplier);
 
-            final var delegates = frontendConfig.getDelegatesList();
-            var exchangerService = new TokenExchangerService(
-                    frontendConfig.getDefaultTokenExpirySeconds(),
-                    externalJwkResolver,
-                    keyRotator,
-                    allKeysSupplier,
-                    () -> delegates);
+			final var delegates = effectiveFrontendConfig.getDelegatesList();
+			var exchangerService = new TokenExchangerService(
+					effectiveFrontendConfig.getDefaultTokenExpirySeconds(),
+					externalJwkResolver,
+					keyRotator,
+					allKeysSupplier,
+					() -> delegates);
 
-            backendServers.services().registerTokenExchangerService(exchangerService);
-            serverBuilder.addService(exchangerService);
-            logger.info("TokenExchangerService registered on gRPC server ({} delegates)", delegates.size());
-        } else {
-            this.keyRotator = null;
-            this.externalJwkResolver = null;
-        }
+			backendServers.services().registerTokenExchangerService(exchangerService);
+			serverBuilder.addService(exchangerService);
+			logger.info("TokenExchangerService registered on gRPC server ({} delegates)", delegates.size());
+		} else {
+			this.keyRotator = null;
+			this.externalJwkResolver = null;
+		}
 
-        // Create and register the X509 cert exchanger.
-        // Every node generates its own CA keypair so it can sign certs locally.
-        {
-            var caState = backendServers.services().getCaStateMap();
+		// Create and register the X509 cert exchanger.
+		// Every node generates its own CA keypair so it can sign certs locally.
+		{
+			var caState = backendServers.services().getCaStateMap();
 
-            this.caKeyHolder = new CaKeyHolder(
-                    frontendConfig.getCaCertLifetimeSeconds() > 0
-                            ? frontendConfig.getCaCertLifetimeSeconds()
-                            : 31536000,
-                    cert -> caState.putCaCerts(cert.getId(), cert));
+			this.caKeyHolder = new CaKeyHolder(
+					effectiveFrontendConfig.getCaCertLifetimeSeconds() > 0
+							? effectiveFrontendConfig.getCaCertLifetimeSeconds()
+							: 31536000,
+					cert -> {
+						String certId = Objects.requireNonNull(cert.getId(), "cert.id");
+						caState.putCaCerts(certId, cert);
+					});
 
-            var certExchangerService = new X509CertExchangerService(caKeyHolder);
-            backendServers.services().registerX509CertExchangerService(certExchangerService);
-            serverBuilder.addService(certExchangerService);
-            logger.info("X509CertExchangerService registered on gRPC server");
-        }
+			var certExchangerService = new X509CertExchangerService(caKeyHolder);
+			backendServers.services().registerX509CertExchangerService(certExchangerService);
+			serverBuilder.addService(certExchangerService);
+			logger.info("X509CertExchangerService registered on gRPC server");
+		}
 
-        this.grpcServer = serverBuilder.build();
-        logger.info("Kernel node configured (grpcPort={})", grpcPort);
-    }
+		this.grpcServer = serverBuilder.build();
+		logger.info("Kernel node configured (grpcPort={})", grpcPort);
+	}
 
-    private void installTrustedCas(List<X509.X509Cert> configCas) {
-        var map = backendServers.services().getTrustedCaStateMap();
-        int installed = 0;
-        for (var ca : configCas) {
-            if (ca.getId().isEmpty()) {
-                logger.warn("Skipping trusted CA without id");
-                continue;
-            }
-            map.putTrustedCas(ca.getId(), ca);
-            installed++;
-        }
-        if (installed > 0) {
-            logger.info("Installed {} trusted CA(s) into TrustedCaState", installed);
-        }
-    }
+	private void installTrustedCas(List<X509.X509Cert> configCas) {
+		var map = backendServers.services().getTrustedCaStateMap();
+		int installed = 0;
+		for (var ca : configCas) {
+			String caId = Objects.requireNonNull(ca.getId(), "trustedCa.id");
+			if (caId.isEmpty()) {
+				logger.warn("Skipping trusted CA without id");
+				continue;
+			}
+			map.putTrustedCas(caId, ca);
+			installed++;
+		}
+		if (installed > 0) {
+			logger.info("Installed {} trusted CA(s) into TrustedCaState", installed);
+		}
+	}
 
-    private void installConfigHolder(Kernel.Config config) {
-        if (!config.hasConfigs()) {
-            logger.info("No configs in Config — config state maps unchanged");
-            return;
-        }
-        int installed = backendServers.services().installServices(config.getConfigs());
-        logger.info("Installed {} config(s) into per-service config state maps", installed);
-    }
+	private void installConfigHolder(Kernel.Config config) {
+		if (!config.hasConfigs()) {
+			logger.info("No configs in Config — config state maps unchanged");
+			return;
+		}
+		int installed = backendServers.services().installServices(config.getConfigs());
+		logger.info("Installed {} config(s) into per-service config state maps", installed);
+	}
 
-    public void start() throws IOException {
-        grpcServer.start();
-        clusterPublisher.start();
-        if (keyRotator != null) {
-            keyRotator.start();
-        }
-        if (externalJwkResolver != null) {
-            externalJwkResolver.start();
-        }
-        if (caKeyHolder != null) {
-            caKeyHolder.start();
-        }
-        logger.info("gRPC server started on port {}", grpcPort);
-    }
+	public void start() throws IOException {
+		grpcServer.start();
+		clusterPublisher.start();
+		if (keyRotator != null) {
+			keyRotator.start();
+		}
+		if (externalJwkResolver != null) {
+			externalJwkResolver.start();
+		}
+		if (caKeyHolder != null) {
+			caKeyHolder.start();
+		}
+		logger.info("gRPC server started on port {}", grpcPort);
+	}
 
-    public void shutdown() {
-        if (caKeyHolder != null) {
-            caKeyHolder.stop();
-        }
-        if (keyRotator != null) {
-            keyRotator.stop();
-        }
-        if (externalJwkResolver != null) {
-            externalJwkResolver.stop();
-        }
-        clusterPublisher.stop();
-        healthManager.enterTerminalState();
-        grpcServer.shutdown();
-        jwkViewServer.close();
-        backendServers.services().close();
-        persistence.close();
-        hazelcast.shutdown();
-        logger.info("Node {} shut down", grpcPort);
-    }
+	public void shutdown() {
+		if (caKeyHolder != null) {
+			caKeyHolder.stop();
+		}
+		if (keyRotator != null) {
+			keyRotator.stop();
+		}
+		if (externalJwkResolver != null) {
+			externalJwkResolver.stop();
+		}
+		clusterPublisher.stop();
+		healthManager.enterTerminalState();
+		grpcServer.shutdown();
+		jwkViewServer.close();
+		backendServers.services().close();
+		persistence.close();
+		hazelcast.shutdown();
+		logger.info("Node {} shut down", grpcPort);
+	}
 
-    public void awaitTermination() throws InterruptedException {
-        grpcServer.awaitTermination();
-    }
+	public void awaitTermination() throws InterruptedException {
+		grpcServer.awaitTermination();
+	}
 
-    public int getGrpcPort() {
-        return grpcPort;
-    }
+	public int getGrpcPort() {
+		return grpcPort;
+	}
 }

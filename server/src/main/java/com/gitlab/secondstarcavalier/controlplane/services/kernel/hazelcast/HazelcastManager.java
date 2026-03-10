@@ -13,6 +13,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Manager;
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.MultiMap;
 import com.hazelcast.core.HazelcastInstance;
+import java.util.Objects;
 
 /**
  * HazelcastManager implements {@link Manager} by delegating to a
@@ -26,119 +27,122 @@ import com.hazelcast.core.HazelcastInstance;
  */
 public class HazelcastManager implements Manager {
 
-    private final HazelcastInstance hazelcast;
-    private final PersistenceProvider persistence;
+	private final HazelcastInstance hazelcast;
+	private final PersistenceProvider persistence;
 
-    public HazelcastManager(HazelcastInstance hazelcast) {
-        this(hazelcast, null);
-    }
+	public HazelcastManager(HazelcastInstance hazelcast) {
+		this(hazelcast, null);
+	}
 
-    public HazelcastManager(HazelcastInstance hazelcast, PersistenceProvider persistence) {
-        this.hazelcast = hazelcast;
-        this.persistence = persistence;
-    }
+	public HazelcastManager(HazelcastInstance hazelcast, PersistenceProvider persistence) {
+		this.hazelcast = Objects.requireNonNull(hazelcast, "hazelcast");
+		this.persistence = persistence;
+	}
 
-    @Override
-    public <K, V> IMap<K, V> getConvergentMap(String name) {
-        com.hazelcast.map.IMap<K, V> hzMap = hazelcast.getMap(name);
-        IMap<K, V> base = new HazelcastMap<>(hzMap);
-        if (persistence != null) {
-            persistence.registerMap(name, hzMap, base, ConsistencyType.CONSISTENCY_CONVERGENT);
-        }
-        return base;
-    }
+	@Override
+	public <K, V> IMap<K, V> getConvergentMap(String name) {
+		String mapName = Objects.requireNonNull(name, "name");
+		com.hazelcast.map.IMap<K, V> hzMap = hazelcast.getMap(mapName);
+		IMap<K, V> base = new HazelcastMap<>(hzMap);
+		if (persistence != null) {
+			persistence.registerMap(mapName, hzMap, base, ConsistencyType.CONSISTENCY_CONVERGENT);
+		}
+		return base;
+	}
 
-    @Override
-    public <K, V> IMap<K, V> getAtomicMap(String name) {
-        // All boundaries are convergent — atomic maps delegate to convergent.
-        return getConvergentMap(name);
-    }
+	@Override
+	public <K, V> IMap<K, V> getAtomicMap(String name) {
+		return getConvergentMap(name);
+	}
 
-    @Override
-    public <K, V> IMap<K, V> getReplicatedMap(String name) {
-        return new HazelcastReplicatedMap<>(hazelcast.getReplicatedMap(name));
-    }
+	@Override
+	public <K, V> IMap<K, V> getReplicatedMap(String name) {
+		return new HazelcastReplicatedMap<>(hazelcast.getReplicatedMap(Objects.requireNonNull(name, "name")));
+	}
 
-    @Override
-    public <K, V> IMap<K, V> getVolatileMap(String name) {
-        return new HazelcastMap<>(hazelcast.getMap(name));
-    }
+	@Override
+	public <K, V> IMap<K, V> getVolatileMap(String name) {
+		return new HazelcastMap<>(hazelcast.getMap(Objects.requireNonNull(name, "name")));
+	}
 
-    @Override
-    public <K, V> MultiMap<K, V> getMultiMap(String name) {
-        return new HazelcastMultiMap<>(hazelcast.getMultiMap(name));
-    }
+	@Override
+	public <K, V> MultiMap<K, V> getMultiMap(String name) {
+		return new HazelcastMultiMap<>(hazelcast.getMultiMap(Objects.requireNonNull(name, "name")));
+	}
 
-    @Override
-    public <E> IList<E> getList(String name) {
-        return new HazelcastList<>(hazelcast.getList(name));
-    }
+	@Override
+	public <E> IList<E> getList(String name) {
+		return new HazelcastList<>(hazelcast.getList(Objects.requireNonNull(name, "name")));
+	}
 
-    @Override
-    public <E> ISet<E> getSet(String name) {
-        return new HazelcastSet<>(hazelcast.getSet(name));
-    }
+	@Override
+	public <E> ISet<E> getSet(String name) {
+		return new HazelcastSet<>(hazelcast.getSet(Objects.requireNonNull(name, "name")));
+	}
 
-    @Override
-    public <E> IQueue<E> getQueue(String name) {
-        return new HazelcastQueue<>(hazelcast.getQueue(name));
-    }
+	@Override
+	public <E> IQueue<E> getQueue(String name) {
+		return new HazelcastQueue<>(hazelcast.getQueue(Objects.requireNonNull(name, "name")));
+	}
 
-    @Override
-    public <E> ITopic<E> getTopic(String name) {
-        return new HazelcastTopic<>(hazelcast.getTopic(name));
-    }
+	@Override
+	public <E> ITopic<E> getTopic(String name) {
+		return new HazelcastTopic<>(hazelcast.getTopic(Objects.requireNonNull(name, "name")));
+	}
 
-    @Override
-    public <E> IPriorityQueue<E> getPriorityQueue(String name) {
-        throw new UnsupportedOperationException(
-                "Priority queue not yet implemented — no proto uses (spec.priority_queue)");
-    }
+	@Override
+	public <E> IPriorityQueue<E> getPriorityQueue(String name) {
+		throw new UnsupportedOperationException(
+				"Priority queue not yet implemented — no proto uses (spec.priority_queue)");
+	}
 
-    @Override
-    public IdGenerator getIdGenerator(String name) {
-        var flake = hazelcast.getFlakeIdGenerator(name);
-        return flake::newId;
-    }
+	@Override
+	public IdGenerator getIdGenerator(String name) {
+		var flake = hazelcast.getFlakeIdGenerator(Objects.requireNonNull(name, "name"));
+		return flake::newId;
+	}
 
-    @Override
-    public Lock getLock(String name) {
-        return NO_OP_LOCK;
-    }
+	@Override
+	public Lock getLock(String name) {
+		return NO_OP_LOCK;
+	}
 
-    private static final Lock NO_OP_LOCK = new Lock() {
-        @Override
-        public void lock() {}
+	private static final Lock NO_OP_LOCK = new Lock() {
+		@Override
+		public void lock() {
+		}
 
-        @Override
-        public void lockInterruptibly() {}
+		@Override
+		public void lockInterruptibly() {
+		}
 
-        @Override
-        public boolean tryLock() {
-            return true;
-        }
+		@Override
+		public boolean tryLock() {
+			return true;
+		}
 
-        @Override
-        public boolean tryLock(long time, java.util.concurrent.TimeUnit unit) {
-            return true;
-        }
+		@Override
+		public boolean tryLock(long time, java.util.concurrent.TimeUnit unit) {
+			return true;
+		}
 
-        @Override
-        public void unlock() {}
+		@Override
+		public void unlock() {
+		}
 
-        @Override
-        public boolean isLocked() {
-            return false;
-        }
+		@Override
+		public boolean isLocked() {
+			return false;
+		}
 
-        @Override
-        public boolean isLockedByCurrentThread() {
-            return false;
-        }
+		@Override
+		public boolean isLockedByCurrentThread() {
+			return false;
+		}
 
-        @Override
-        public int getLockCount() {
-            return 0;
-        }
-    };
+		@Override
+		public int getLockCount() {
+			return 0;
+		}
+	};
 }

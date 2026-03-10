@@ -4,13 +4,10 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster.ClusterServer;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.PersistenceProvider;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence.PersistenceManager;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.raft.RatisLockManager;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.logger.LogbackConfigurator;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Lock;
 import java.io.ByteArrayInputStream;
-import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -22,17 +19,15 @@ import java.security.KeyStore;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.List;
-import java.util.function.Function;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
 /**
  * Shared bootstrap logic for kernel nodes. Resolves a
  * {@link Kernel.BootstrapConfig} from a config file, environment variables, or
- * both, then starts the server in the specified mode.
+ * both, then starts the server.
  */
 public class Bootstrap {
 
@@ -45,51 +40,73 @@ public class Bootstrap {
     public record ResolvedConfig(Kernel.BootstrapConfig bootstrap, Kernel.Config frontend) {}
 
     /**
-     * Dependency container for mode-specific components.
-     */
-    public record Dependencies(
-            PersistenceProvider persistence, Function<String, Lock> lockProvider, AutoCloseable raftCloseable) {
-
-        public static Dependencies edge() {
-            return new Dependencies(PersistenceProvider.disabled(), null, null);
-        }
-    }
-
-    /**
      * Resolves configuration from args and environment, then starts the server.
-     * Mode-specific dependencies (persistence, raft, locks) are provided by the
-     * {@code depsFactory}, which receives the resolved config and returns the
-     * appropriate dependencies.
-     */
-    public static void run(String[] args, Hazelcast.NodeMode mode, Function<ResolvedConfig, Dependencies> depsFactory)
-            throws Exception {
-        System.setProperty("hazelcast.internal.override.enterprise", "true");
-        startServer(args, mode, depsFactory);
-    }
-
-    /**
-     * Single entry point. Reads mode from config (default: CORE_EDGE),
-     * then creates mode-appropriate dependencies and starts the server.
      */
     public static void run(String[] args) throws Exception {
         System.setProperty("hazelcast.internal.override.enterprise", "true");
 
-        // Peek at config to determine mode before full startup
-        Hazelcast.NodeMode mode = peekMode(args);
-        boolean isCore = mode != Hazelcast.NodeMode.NODE_MODE_EDGE;
+        ResolvedConfig resolved = resolveConfigs(args);
+        if (resolved == null) return;
 
-        if (isCore) {
-            startServer(args, mode, resolved -> buildCoreDeps(resolved));
-        } else {
-            startServer(args, mode, resolved -> Dependencies.edge());
+        LogbackConfigurator.install(null);
+        logger.info(
+                "Starting kernel node: listener={}, cluster={}",
+                resolved.bootstrap().getListener(),
+                resolved.bootstrap().getClusterName());
+
+        // Create persistence
+        Kernel.BootstrapConfig cfg = resolved.bootstrap();
+        var members = cfg.getMembersList();
+        int grpcPort = cfg.getListener().getPort();
+
+        String hostname = System.getenv("HOSTNAME");
+        if (hostname == null || hostname.isEmpty()) {
+            hostname = cfg.getListener().getHost();
         }
+        String instanceName = (hostname != null && !hostname.isEmpty() && !hostname.equals("0.0.0.0"))
+                ? "node-" + hostname
+                : "node-" + (grpcPort + 1);
+
+        PersistenceManager.PersistenceConfig persistenceConfig = PersistenceManager.PersistenceConfig.fromEnv();
+        PersistenceManager persistence =
+                new PersistenceManager(Path.of(cfg.getPersistenceDir()), instanceName, persistenceConfig);
+
+        ClusterServer server;
+        try {
+            server = new ClusterServer(
+                    resolved.bootstrap(),
+                    resolved.frontend(),
+                    persistence);
+        } catch (Exception e) {
+            logger.error("Failed to initialize ClusterServer — shutting down", e);
+            System.exit(1);
+            return;
+        }
+
+        try {
+            server.start();
+        } catch (IOException e) {
+            logger.error("Failed to start gRPC server — shutting down", e);
+            server.shutdown();
+            System.exit(1);
+            return;
+        }
+
+        logger.info("Kernel node ready — gRPC {}", resolved.bootstrap().getListener());
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            logger.info("Shutting down...");
+            server.shutdown();
+            logger.info("Shut down");
+        }));
+
+        server.awaitTermination();
     }
 
     /**
-     * Resolves the bootstrap and frontend config from args/env. Useful for
-     * callers that need the config before constructing dependencies.
+     * Resolves the bootstrap and frontend config from args/env.
      */
-    public static ResolvedConfig resolveConfigs(String[] args, Hazelcast.NodeMode mode) throws Exception {
+    public static ResolvedConfig resolveConfigs(String[] args) throws Exception {
         String configPath = parseConfigArg(args);
         Kernel.BootstrapConfig fileConfig = loadConfigFile(configPath);
         var envConfig = Helpers.bootstrapConfigFromEnvVar(System.getenv()).build();
@@ -121,8 +138,7 @@ public class Bootstrap {
             return null;
         }
 
-        bootstrapConfig =
-                Helpers.bootstrapConfigDefaults(bootstrapConfig).setMode(mode).build();
+        bootstrapConfig = Helpers.bootstrapConfigDefaults(bootstrapConfig).build();
         Helpers.validateBootstrapConfig(bootstrapConfig);
 
         Kernel.Config frontendConfig = resolveConfig(bootstrapConfig);
@@ -131,58 +147,6 @@ public class Bootstrap {
         }
 
         return new ResolvedConfig(bootstrapConfig, frontendConfig);
-    }
-
-    // ── server startup ───────────────────────────────────────────────────
-    private static void startServer(
-            String[] args, Hazelcast.NodeMode mode, Function<ResolvedConfig, Dependencies> depsFactory) throws Exception {
-        ResolvedConfig resolved = resolveConfigs(args, mode);
-        if (resolved == null) return;
-
-        LogbackConfigurator.install(null);
-        boolean isCore = mode != Hazelcast.NodeMode.NODE_MODE_EDGE;
-        boolean isEdge = mode != Hazelcast.NodeMode.NODE_MODE_CORE;
-        String modeName = isCore && isEdge ? "core-edge" : isCore ? "core" : "edge";
-        logger.info(
-                "Starting {} node: listener={}, cluster={}",
-                modeName,
-                resolved.bootstrap().getListener(),
-                resolved.bootstrap().getClusterName());
-
-        Dependencies deps = depsFactory.apply(resolved);
-
-        ClusterServer server;
-        try {
-            server = new ClusterServer(
-                    resolved.bootstrap(),
-                    resolved.frontend(),
-                    deps.persistence(),
-                    deps.lockProvider(),
-                    deps.raftCloseable());
-        } catch (Exception e) {
-            logger.error("Failed to initialize ClusterServer — shutting down", e);
-            System.exit(1);
-            return;
-        }
-
-        try {
-            server.start();
-        } catch (IOException e) {
-            logger.error("Failed to start gRPC server — shutting down", e);
-            server.shutdown();
-            System.exit(1);
-            return;
-        }
-
-        logger.info("{} node ready — gRPC {}", modeName, resolved.bootstrap().getListener());
-
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            logger.info("Shutting down...");
-            server.shutdown();
-            logger.info("Shut down");
-        }));
-
-        server.awaitTermination();
     }
 
     // ── helpers ──────────────────────────────────────────────────────────
@@ -325,90 +289,6 @@ public class Bootstrap {
                 || config.getPartitionCount() != 0
                 || !config.getPersistenceDir().isEmpty()
                 || config.getPersistenceFormatValue() != 0
-                || config.getRaftPort() != 0
                 || config.getConfigCase() != Kernel.BootstrapConfig.ConfigCase.CONFIG_NOT_SET;
-    }
-
-    /**
-     * Peeks at config to determine mode without fully resolving.
-     * Returns NODE_MODE_CORE_EDGE if no mode is specified (default).
-     */
-    private static Hazelcast.NodeMode peekMode(String[] args) throws IOException {
-        String configPath = parseConfigArg(args);
-        Kernel.BootstrapConfig fileConfig = loadConfigFile(configPath);
-        if (fileConfig != null && fileConfig.getMode() != Hazelcast.NodeMode.NODE_MODE_CORE_EDGE) {
-            return fileConfig.getMode();
-        }
-        var envConfig = Helpers.bootstrapConfigFromEnvVar(System.getenv()).build();
-        if (envConfig.getMode() != Hazelcast.NodeMode.NODE_MODE_CORE_EDGE) {
-            return envConfig.getMode();
-        }
-        if (fileConfig != null) {
-            return fileConfig.getMode();
-        }
-        return Hazelcast.NodeMode.NODE_MODE_CORE_EDGE;
-    }
-
-    /**
-     * Builds core dependencies: Raft consensus + persistence.
-     * Used for CORE and CORE_EDGE modes.
-     */
-    private static Dependencies buildCoreDeps(ResolvedConfig resolved) {
-        Kernel.BootstrapConfig cfg = resolved.bootstrap();
-        var members = cfg.getMembersList();
-        int grpcPort = cfg.getListener().getPort();
-
-        String hostname = System.getenv("HOSTNAME");
-        if (hostname == null || hostname.isEmpty()) {
-            hostname = cfg.getListener().getHost();
-        }
-        String raftHost = hostname;
-        if ("0.0.0.0".equals(raftHost) || raftHost == null || raftHost.isEmpty()) {
-            if (!members.isEmpty()) {
-                int idx = grpcPort - members.get(0).getPort() + 1;
-                if (idx >= 0 && idx < members.size()) {
-                    raftHost = members.get(idx).getHost();
-                } else {
-                    raftHost = members.get(0).getHost();
-                }
-            }
-        }
-
-        String instanceName = (hostname != null && !hostname.isEmpty() && !hostname.equals("0.0.0.0"))
-                ? "node-" + hostname
-                : "node-" + (grpcPort + 1);
-
-        RatisLockManager ratisLockManager;
-        try {
-            ratisLockManager = new RatisLockManager(
-                    raftHost,
-                    cfg.getRaftPort(),
-                    members,
-                    new File(cfg.getPersistenceDir(), "raft"),
-                    cfg.getTls(),
-                    cfg.getLoaderCaList());
-            ratisLockManager.start();
-            try {
-                ratisLockManager.waitForLeader();
-            } catch (IOException e) {
-                logger.warn(
-                        "Raft leader election timed out — cluster will start without "
-                                + "consensus. Atomic operations blocked until Raft quorum forms.",
-                        e);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("Interrupted during Raft startup", e);
-            }
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to start RatisLockManager", e);
-        }
-
-        PersistenceManager.PersistenceConfig persistenceConfig = PersistenceManager.PersistenceConfig.fromEnv();
-        PersistenceManager persistence =
-                new PersistenceManager(Path.of(cfg.getPersistenceDir()), instanceName, persistenceConfig);
-
-        return new Dependencies(persistence, ratisLockManager::getLock, ratisLockManager::close);
     }
 }

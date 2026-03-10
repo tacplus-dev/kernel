@@ -173,20 +173,19 @@ public class StateRestorer {
     }
 
     /**
-     * Restores only convergent data from local dump and redo logs.
-     * Used when quorum is unavailable — loads convergent state so the node
-     * can serve reads immediately, while atomic data waits for quorum.
+     * Restores all data from local dump and redo logs.
+     * All boundaries are convergent.
      */
     public void restoreConvergentOnly() throws IOException {
         long dumpTimestamp = 0;
 
-        // 1. Load convergent entries from latest dump
+        // 1. Load entries from latest dump
         List<Path> dumps = FullDumper.listDumpFiles(dataDir, nodeId);
         int loadedCount = 0;
         if (!dumps.isEmpty()) {
             Path latestDump = dumps.getLast();
             dumpTimestamp = FullDumper.extractTimestamp(latestDump);
-            logger.info("Loading convergent data from dump: {}", latestDump.getFileName());
+            logger.info("Loading data from dump: {}", latestDump.getFileName());
 
             try (InputStream is = new GZIPInputStream(new BufferedInputStream(Files.newInputStream(latestDump)))) {
                 byte[] firstRecord = readRecord(is);
@@ -194,27 +193,23 @@ public class StateRestorer {
                     DbDump dbDump = DbDump.parseFrom(firstRecord);
                     if (dbDump.getEntriesCount() > 0 || dbDump.getTimestampMs() > 0) {
                         for (KitchenSink ks : dbDump.getEntriesList()) {
-                            if (ks.getConsistency() != KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_ATOMIC) {
-                                applyKitchenSink(ks);
-                                loadedCount++;
-                            }
+                            applyKitchenSink(ks);
+                            loadedCount++;
                         }
                     }
                 } catch (InvalidProtocolBufferException e) {
-                    // Legacy format — load all entries (legacy doesn't distinguish consistency)
+                    // Legacy format
                     byte[] recordData;
                     while ((recordData = readRecordOrNull(is)) != null) {
                         RedoLogEntry entry = RedoLogEntry.parseFrom(recordData);
-                        if (entry.getConsistency() != Hazelcast.ConsistencyType.CONSISTENCY_ATOMIC) {
-                            applyEntry(entry);
-                            loadedCount++;
-                        }
+                        applyEntry(entry);
+                        loadedCount++;
                     }
                 }
             }
         }
 
-        // 2. Replay convergent entries from redo logs newer than dump
+        // 2. Replay entries from redo logs newer than dump
         List<Path> redos = RedoLog.listSegments(dataDir, nodeId);
         for (Path redo : redos) {
             long fileTs = RedoLog.extractTimestamp(redo, "redo-" + nodeId + "-", ".log");
@@ -222,8 +217,7 @@ public class StateRestorer {
                 List<KitchenSink> entries = readRedoLogKitchenSink(redo);
                 entries.sort(Comparator.comparingLong(KitchenSink::getTimestampMs));
                 for (KitchenSink ks : entries) {
-                    if (ks.getTimestampMs() > dumpTimestamp
-                            && ks.getConsistency() != KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_ATOMIC) {
+                    if (ks.getTimestampMs() > dumpTimestamp) {
                         applyKitchenSink(ks);
                         loadedCount++;
                     }
@@ -231,7 +225,7 @@ public class StateRestorer {
             }
         }
 
-        logger.info("Convergent-only restore complete: {} entries loaded", loadedCount);
+        logger.info("Restore complete: {} entries loaded", loadedCount);
     }
 
     /**
@@ -372,12 +366,8 @@ public class StateRestorer {
             builder.setOp(KitchenSinkOuterClass.OpType.OP_TYPE_PUT);
         }
 
-        // Map ConsistencyType
-        if (entry.getConsistency() == Hazelcast.ConsistencyType.CONSISTENCY_ATOMIC) {
-            builder.setConsistency(KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_ATOMIC);
-        } else {
-            builder.setConsistency(KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_CONVERGENT);
-        }
+        // All boundaries are convergent
+        builder.setConsistency(KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_CONVERGENT);
 
         // Note: legacy entries have opaque bytes, not typed payload.
         // The caller must use the registry parser to deserialize.

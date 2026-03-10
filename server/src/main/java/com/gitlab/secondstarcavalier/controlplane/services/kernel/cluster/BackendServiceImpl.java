@@ -24,7 +24,7 @@ import org.slf4j.LoggerFactory;
  *
  * <ul>
  *   <li><b>Log</b>: registers the client's stream observer with {@link BackendServer}
- *       for server-pushed log messages (rate-limit warnings, quorum changes).</li>
+ *       for server-pushed log messages (rate-limit warnings).</li>
  *   <li><b>Ping</b>: returns the member identity (endpoint, status, org, region, zone, cluster).</li>
  *   <li><b>Subscribe</b>: streams {@link ClusterState} updates whenever membership or priorities change.</li>
  * </ul>

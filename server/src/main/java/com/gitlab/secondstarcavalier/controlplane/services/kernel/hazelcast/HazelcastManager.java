@@ -13,34 +13,29 @@ import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Manager;
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.MultiMap;
 import com.hazelcast.core.HazelcastInstance;
-import java.util.function.Function;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
 /**
  * HazelcastManager implements {@link Manager} by delegating to a
- * {@link HazelcastInstance}. Maps are wrapped in {@link HazelcastMap} and locks
- * in {@link HazelcastLock} so that generated code never touches Hazelcast types
- * directly.
+ * {@link HazelcastInstance}. Maps are wrapped in {@link HazelcastMap} so that
+ * generated code never touches Hazelcast types directly.
  *
  * <p>
- * When a {@link PersistenceProvider} is provided, convergent and atomic maps
- * have a cluster-wide persistence listener registered for redo logging.
+ * All boundaries are convergent. Locks are always no-ops.
+ * When a {@link PersistenceProvider} is provided, maps have a cluster-wide
+ * persistence listener registered for redo logging.
  */
 public class HazelcastManager implements Manager {
 
     private final HazelcastInstance hazelcast;
     private final PersistenceProvider persistence;
-    private final Function<String, Lock> lockProvider;
 
     public HazelcastManager(HazelcastInstance hazelcast) {
-        this(hazelcast, null, null);
+        this(hazelcast, null);
     }
 
-    public HazelcastManager(
-            HazelcastInstance hazelcast, PersistenceProvider persistence, Function<String, Lock> lockProvider) {
+    public HazelcastManager(HazelcastInstance hazelcast, PersistenceProvider persistence) {
         this.hazelcast = hazelcast;
         this.persistence = persistence;
-        this.lockProvider = lockProvider;
     }
 
     @Override
@@ -55,12 +50,8 @@ public class HazelcastManager implements Manager {
 
     @Override
     public <K, V> IMap<K, V> getAtomicMap(String name) {
-        com.hazelcast.map.IMap<K, V> hzMap = hazelcast.getMap(name);
-        IMap<K, V> base = new HazelcastMap<>(hzMap);
-        if (persistence != null) {
-            persistence.registerMap(name, hzMap, base, ConsistencyType.CONSISTENCY_ATOMIC);
-        }
-        return base;
+        // All boundaries are convergent — atomic maps delegate to convergent.
+        return getConvergentMap(name);
     }
 
     @Override
@@ -100,9 +91,6 @@ public class HazelcastManager implements Manager {
 
     @Override
     public <E> IPriorityQueue<E> getPriorityQueue(String name) {
-        // TODO: Implement when a proto uses (spec.priority_queue). Hazelcast has no native
-        // priority queue — will need an IMap-backed sorted structure with client-side ordering.
-        // No proto currently uses this annotation so this is not reachable.
         throw new UnsupportedOperationException(
                 "Priority queue not yet implemented — no proto uses (spec.priority_queue)");
     }
@@ -115,10 +103,6 @@ public class HazelcastManager implements Manager {
 
     @Override
     public Lock getLock(String name) {
-        if (lockProvider != null) {
-            return lockProvider.apply(name);
-        }
-        // Edge nodes don't own data partitions, so locks are no-ops.
         return NO_OP_LOCK;
     }
 

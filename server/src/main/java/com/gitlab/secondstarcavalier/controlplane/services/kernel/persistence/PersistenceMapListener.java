@@ -106,9 +106,7 @@ public class PersistenceMapListener
     }
 
     private KitchenSinkOuterClass.ConsistencyType mapConsistency() {
-        return consistency == Hazelcast.ConsistencyType.CONSISTENCY_ATOMIC
-                ? KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_ATOMIC
-                : KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_CONVERGENT;
+        return KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_CONVERGENT;
     }
 
     private void detectParser(MessageLite msg) {

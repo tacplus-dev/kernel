@@ -9,7 +9,7 @@
 	<artifactId>kernel-server</artifactId>
 	<packaging>jar</packaging>
 	<name>Kernel Server</name>
-	<description>Kernel server: cluster, hazelcast, persistence, raft, generated types</description>
+	<description>Kernel server: cluster, hazelcast, persistence, generated types</description>
 	<dependencies>
 		<!-- Protocol Buffers -->
 		<dependency>
@@ -84,22 +84,6 @@
 			<groupId>com.hazelcast</groupId>
 			<artifactId>hazelcast</artifactId>
 			<version>${hazelcast.version}</version>
-		</dependency>
-		<!-- Ratis (Raft consensus for distributed locks) -->
-		<dependency>
-			<groupId>org.apache.ratis</groupId>
-			<artifactId>ratis-server</artifactId>
-			<version>${ratis.version}</version>
-		</dependency>
-		<dependency>
-			<groupId>org.apache.ratis</groupId>
-			<artifactId>ratis-grpc</artifactId>
-			<version>${ratis.version}</version>
-		</dependency>
-		<dependency>
-			<groupId>org.apache.ratis</groupId>
-			<artifactId>ratis-metrics-default</artifactId>
-			<version>${ratis.version}</version>
 		</dependency>
 		<!-- Logging -->
 		<dependency>

@@ -84,9 +84,7 @@ public class FullDumper {
         for (Map.Entry<String, MapRegistry.MapInfo> mapEntry : allMaps.entrySet()) {
             String mapName = mapEntry.getKey();
             MapRegistry.MapInfo info = mapEntry.getValue();
-            ConsistencyType ksConsistency = info.consistency() == Hazelcast.ConsistencyType.CONSISTENCY_ATOMIC
-                    ? ConsistencyType.CONSISTENCY_ATOMIC
-                    : ConsistencyType.CONSISTENCY_CONVERGENT;
+            ConsistencyType ksConsistency = ConsistencyType.CONSISTENCY_CONVERGENT;
 
             for (Map.Entry<String, ?> entry : info.map().entrySet()) {
                 KitchenSink.Builder ksBuilder = KitchenSink.newBuilder()

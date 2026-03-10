@@ -2,8 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.services.kernel;
 
 /**
- * Single entry point for the kernel. Mode (CORE, EDGE, CORE_EDGE) is
- * determined at runtime from the bootstrap config.
+ * Entry point for the kernel. All boundaries are convergent.
  */
 public class Main {
 

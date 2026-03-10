@@ -94,10 +94,8 @@ public class PersistenceManager implements PersistenceProvider {
      * <ol>
      * <li>Each node publishes its latest persistence timestamp</li>
      * <li>Wait for quorum (with timeout)</li>
-     * <li>If quorum reached: winner negotiation → full restore (convergent +
-     * atomic)</li>
-     * <li>If quorum NOT reached: restore convergent data only from local files,
-     * atomic data waits until quorum forms</li>
+     * <li>If quorum reached: winner negotiation → full restore</li>
+     * <li>If quorum NOT reached: restore from local files</li>
      * </ol>
      */
     @Override
@@ -136,18 +134,16 @@ public class PersistenceManager implements PersistenceProvider {
         boolean hasQuorum = timestampsMap.size() >= quorum;
 
         if (!hasQuorum) {
-            // No quorum — restore convergent data only from local persistence.
-            // The node comes online with convergent state available immediately.
-            // Atomic data will be restored when quorum forms.
+            // No quorum — restore from local persistence.
+            // The node comes online with local state available immediately.
             logger.warn(
-                    "Quorum not reached ({}/{} nodes) — restoring convergent data only. "
-                            + "Atomic writes blocked until quorum forms.",
+                    "Quorum not reached ({}/{} nodes) — restoring from local data.",
                     timestampsMap.size(),
                     quorum);
             nodeRole = "DEGRADED";
             restorer.restoreConvergentOnly();
             scheduleDumps();
-            logger.info("Persistence initialization complete (role=DEGRADED, convergent only)");
+            logger.info("Persistence initialization complete (role=DEGRADED)");
             return;
         }
 
@@ -174,7 +170,7 @@ public class PersistenceManager implements PersistenceProvider {
         com.hazelcast.map.IMap<String, String> readyMap = hazelcast.getMap(READY_MAP);
 
         if (isWinner) {
-            // Winner: restore from dump + redo logs (convergent + atomic)
+            // Winner: restore from dump + redo logs
             if (winnerTimestamp > 0) {
                 Map<String, Long> entryTimestamps = restorer.restore();
                 // Publish entry timestamps for convergent merge
@@ -195,11 +191,11 @@ public class PersistenceManager implements PersistenceProvider {
             while (!readyMap.containsKey(READY_KEY)) {
                 if (System.currentTimeMillis() >= restoreDeadline) {
                     logger.warn(
-                            "Timed out waiting for persistence winner — " + "falling back to convergent-only restore.");
+                            "Timed out waiting for persistence winner — falling back to local restore.");
                     nodeRole = "DEGRADED";
                     restorer.restoreConvergentOnly();
                     scheduleDumps();
-                    logger.info("Persistence initialization complete (role=DEGRADED, convergent only)");
+                    logger.info("Persistence initialization complete (role=DEGRADED)");
                     return;
                 }
                 try {

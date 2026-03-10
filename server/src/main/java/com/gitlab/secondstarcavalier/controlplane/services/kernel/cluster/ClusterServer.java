@@ -15,7 +15,6 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.wrappers.views.JwkVerifyingKeysViewServer;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.BackendServers;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.SerializerRegistry;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Lock;
 import com.hazelcast.cluster.MembershipEvent;
 import com.hazelcast.cluster.MembershipListener;
 import com.hazelcast.config.TcpIpConfig;
@@ -40,7 +39,6 @@ import io.grpc.netty.shaded.io.netty.handler.ssl.SslContextBuilder;
 import io.grpc.protobuf.services.HealthStatusManager;
 import java.io.IOException;
 import java.util.List;
-import java.util.function.Function;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,10 +49,8 @@ import org.slf4j.LoggerFactory;
  * serving and {@link #shutdown()} to tear down.
  *
  * <p>
- * Dependencies that differ between core and edge (persistence, distributed
- * locks) are injected via {@link PersistenceProvider} and a lock provider
- * function. Core nodes pass real implementations; edge nodes pass
- * {@link PersistenceProvider#disabled()} and null.
+ * All kernel boundaries are convergent. There are no distributed locks,
+ * no Raft consensus, and no core/edge distinction.
  */
 public class ClusterServer {
 
@@ -72,32 +68,22 @@ public class ClusterServer {
     private final KeyRotator keyRotator;
     private final ExternalJwkResolver externalJwkResolver;
     private final CaKeyHolder caKeyHolder;
-    private final AutoCloseable raftCloseable;
 
     /**
      * @param protoConfig    the bootstrap configuration
      * @param frontendConfig the frontend configuration (nullable)
-     * @param persistence    persistence provider (use
-     *                       {@link PersistenceProvider#disabled()} for edge)
-     * @param lockProvider   distributed lock provider (nullable — null for edge)
-     * @param raftCloseable  closeable for the Raft subsystem (nullable — null for
-     *                       edge)
+     * @param persistence    persistence provider
      */
     public ClusterServer(
             Kernel.BootstrapConfig protoConfig,
             Kernel.Config frontendConfig,
-            PersistenceProvider persistence,
-            Function<String, Lock> lockProvider,
-            AutoCloseable raftCloseable) {
+            PersistenceProvider persistence) {
 
         // Apply all defaults (including sub-message defaults) in one shot
         Kernel.BootstrapConfig cfg =
                 Helpers.bootstrapConfigDefaults(protoConfig).build();
-        boolean isCore = cfg.getMode() != Hazelcast.NodeMode.NODE_MODE_EDGE;
-        boolean isEdge = cfg.getMode() != Hazelcast.NodeMode.NODE_MODE_CORE;
 
         this.persistence = persistence;
-        this.raftCloseable = raftCloseable;
 
         // Extract values from proto config with defaults
         this.grpcPort = cfg.getListener().getPort();
@@ -124,12 +110,6 @@ public class ClusterServer {
         hzConfig.setProperty("hazelcast.logging.type", "slf4j");
         hzConfig.setProperty("hazelcast.phone.home.enabled", "false");
 
-        // Non-core nodes join as lite members — no data partitions, no partition
-        // ownership.
-        if (!isCore) {
-            hzConfig.setLiteMember(true);
-        }
-
         // Network configuration
         var networkConfig = hzConfig.getNetworkConfig();
         networkConfig.setPort(hzPort);
@@ -148,21 +128,18 @@ public class ClusterServer {
         SerializerRegistry.register(hzConfig);
         this.hazelcast = com.hazelcast.core.Hazelcast.newHazelcastInstance(hzConfig);
 
-        String modeName = isCore && isEdge ? "core-edge" : isCore ? "core" : "edge";
         logger.info(
-                "Hazelcast {} started (mode={}, lite={}, cluster size={})",
+                "Hazelcast {} started (cluster size={})",
                 instanceName,
-                modeName,
-                hazelcast.getCluster().getLocalMember().isLiteMember(),
                 hazelcast.getCluster().getMembers().size());
 
         // 2. Health management (start as NOT_SERVING until restore completes)
         this.healthManager = new HealthStatusManager();
         healthManager.setStatus("", ServingStatus.NOT_SERVING);
 
-        // 3. Initialize persistence (core only)
+        // 3. Initialize persistence
         int nodeCount = cfg.getNodeCount() > 0 ? cfg.getNodeCount() : members.size();
-        if (isCore && persistence.isEnabled()) {
+        if (persistence.isEnabled()) {
             int initialQuorumForPersistence = nodeCount / 2 + 1;
             try {
                 persistence.initialize(hazelcast, initialQuorumForPersistence);
@@ -175,16 +152,11 @@ public class ClusterServer {
         }
 
         // 4. Create backend servers
-        HazelcastManager manager =
-                isCore ? new HazelcastManager(hazelcast, persistence, lockProvider) : new HazelcastManager(hazelcast);
+        HazelcastManager manager = new HazelcastManager(hazelcast, persistence);
         this.backendServers = new BackendServers(manager);
 
-        // Set initial quorum state
-        long initialCoreCount = hazelcast.getCluster().getMembers().stream()
-                .filter(m -> !m.isLiteMember())
-                .count();
-        int quorumSize = nodeCount / 2 + 1;
-        backendServers.services().setQuorumAvailable(!isCore || initialCoreCount >= quorumSize);
+        // All boundaries are convergent — quorum is always available
+        backendServers.services().setQuorumAvailable(true);
 
         // Create JWK verifying keys view server
         this.jwkViewServer = new JwkVerifyingKeysViewServer(
@@ -257,61 +229,27 @@ public class ClusterServer {
         // ClusterState SetLogLevel handler
         this.clusterSetLogLevelHandler = new ClusterSetLogLevelHandler();
 
-        // 5. Dynamic quorum monitoring
-        final int quorumThreshold = quorumSize;
-        final boolean coreMode = isCore;
+        // 5. Membership listener for cluster state publishing
         hazelcast.getCluster().addMembershipListener(new MembershipListener() {
-            private volatile boolean hadQuorum = true;
-
             @Override
             public void memberAdded(MembershipEvent e) {
-                long coreCount = hazelcast.getCluster().getMembers().stream()
-                        .filter(m -> !m.isLiteMember())
-                        .count();
                 int totalSize = hazelcast.getCluster().getMembers().size();
-                boolean hasQuorum = !coreMode || coreCount >= quorumThreshold;
                 logger.info(
-                        "[node:{}] Member joined: {} (lite={}) — cluster size={}, core count={}",
+                        "[node:{}] Member joined: {} — cluster size={}",
                         grpcPort,
                         e.getMember().getAddress(),
-                        e.getMember().isLiteMember(),
-                        totalSize,
-                        coreCount);
-                if (hasQuorum && !hadQuorum) {
-                    logger.info(
-                            "[node:{}] QUORUM RESTORED ({} core members, need {}) — atomic operations re-enabled",
-                            grpcPort,
-                            coreCount,
-                            quorumThreshold);
-                }
-                hadQuorum = hasQuorum;
-                backendServers.services().setQuorumAvailable(hasQuorum);
+                        totalSize);
                 clusterPublisher.onMembershipChange();
             }
 
             @Override
             public void memberRemoved(MembershipEvent e) {
-                long coreCount = hazelcast.getCluster().getMembers().stream()
-                        .filter(m -> !m.isLiteMember())
-                        .count();
                 int totalSize = hazelcast.getCluster().getMembers().size();
-                boolean hasQuorum = !coreMode || coreCount >= quorumThreshold;
                 logger.warn(
-                        "[node:{}] Member left: {} (lite={}) — cluster size={}, core count={}",
+                        "[node:{}] Member left: {} — cluster size={}",
                         grpcPort,
                         e.getMember().getAddress(),
-                        e.getMember().isLiteMember(),
-                        totalSize,
-                        coreCount);
-                if (!hasQuorum && hadQuorum) {
-                    logger.warn(
-                            "[node:{}] QUORUM LOST ({} core members, need {}) — atomic writes blocked, cluster remains online",
-                            grpcPort,
-                            coreCount,
-                            quorumThreshold);
-                }
-                hadQuorum = hasQuorum;
-                backendServers.services().setQuorumAvailable(hasQuorum);
+                        totalSize);
                 clusterPublisher.onMembershipChange();
             }
         });
@@ -399,31 +337,28 @@ public class ClusterServer {
                         .setTimestampMs(System.currentTimeMillis())
                         .build());
 
-        if (isEdge) {
-            // --- Edge mode: register ALL gRPC services for microservice clients ---
-            String clusterStateSvcName = "kernel.ClusterStateBackendService";
-            for (ServerServiceDefinition svc : backendServers.services().getGrpcServices()) {
-                if (svc.getServiceDescriptor().getName().equals(clusterStateSvcName)) {
-                    serverBuilder.addService(clusterSetLogLevelHandler.wrapWithSetLogLevel(svc));
-                } else {
-                    serverBuilder.addService(svc);
-                }
-            }
-            // Register libs gRPC services (ServiceConfigStateBackendService, etc.)
-            for (ServerServiceDefinition svc : backendServers.libs().getGrpcServices()) {
+        // Register all gRPC services
+        String clusterStateSvcName = "kernel.ClusterStateBackendService";
+        for (ServerServiceDefinition svc : backendServers.services().getGrpcServices()) {
+            if (svc.getServiceDescriptor().getName().equals(clusterStateSvcName)) {
+                serverBuilder.addService(clusterSetLogLevelHandler.wrapWithSetLogLevel(svc));
+            } else {
                 serverBuilder.addService(svc);
             }
-            serverBuilder.addService(new BackendServiceImpl(backendServer, grpcPort, hazelcast, cfg.getClusterName()));
-            serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
-                    jwkViewServer.bindService(),
-                    backendServers.getAuthenticator().callerInterceptor()));
         }
+        // Register libs gRPC services (ServiceConfigStateBackendService, etc.)
+        for (ServerServiceDefinition svc : backendServers.libs().getGrpcServices()) {
+            serverBuilder.addService(svc);
+        }
+        serverBuilder.addService(new BackendServiceImpl(backendServer, grpcPort, hazelcast, cfg.getClusterName()));
+        serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
+                jwkViewServer.bindService(),
+                backendServers.getAuthenticator().callerInterceptor()));
+
         // Health service is always registered
         serverBuilder.addService(healthManager.getHealthService());
 
-        // Create and register the token exchanger on all nodes (CORE and EDGE).
-        // EDGE nodes serve microservice clients directly; CORE nodes must also
-        // run the exchanger so that EDGE nodes can obtain tokens via the cluster.
+        // Create and register the token exchanger.
         if (frontendConfig.getDelegatesCount() > 0) {
             var exchangerState = backendServers.services().getTokenExchangerStateMap();
 
@@ -467,7 +402,7 @@ public class ClusterServer {
             this.externalJwkResolver = null;
         }
 
-        // Create and register the X509 cert exchanger on all nodes (CORE and EDGE).
+        // Create and register the X509 cert exchanger.
         // Every node generates its own CA keypair so it can sign certs locally.
         {
             var caState = backendServers.services().getCaStateMap();
@@ -485,7 +420,7 @@ public class ClusterServer {
         }
 
         this.grpcServer = serverBuilder.build();
-        logger.info("Kernel node configured as {} (grpcPort={})", modeName.toUpperCase(), grpcPort);
+        logger.info("Kernel node configured (grpcPort={})", grpcPort);
     }
 
     private void installTrustedCas(List<X509.X509Cert> configCas) {
@@ -544,13 +479,6 @@ public class ClusterServer {
         jwkViewServer.close();
         backendServers.services().close();
         persistence.close();
-        if (raftCloseable != null) {
-            try {
-                raftCloseable.close();
-            } catch (Exception e) {
-                logger.warn("Failed to close Raft subsystem", e);
-            }
-        }
         hazelcast.shutdown();
         logger.info("Node {} shut down", grpcPort);
     }

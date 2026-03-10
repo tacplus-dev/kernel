@@ -13,7 +13,6 @@ import com.hazelcast.config.MapConfig;
 import com.hazelcast.config.NetworkConfig;
 import com.hazelcast.config.SSLConfig;
 import com.hazelcast.config.TcpIpConfig;
-import com.hazelcast.config.cp.CPSubsystemConfig;
 import com.hazelcast.core.HazelcastInstance;
 import java.io.FileOutputStream;
 import java.nio.file.Files;
@@ -129,20 +128,6 @@ public class HazelcastFactory {
             } catch (Exception e) {
                 throw new RuntimeException("Failed to configure Hazelcast mTLS", e);
             }
-        }
-
-        // CP Subsystem (needed for FencedLock / ATOMIC boundaries)
-        if (cfg.hasCpSubsystem() && cfg.getCpSubsystem().getEnabled()) {
-            Hazelcast.CPSubsystemConfig cpCfg =
-                    com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Helpers.cPSubsystemConfigDefaults(cfg.getCpSubsystem()).build();
-
-            CPSubsystemConfig hzCp = hzConfig.getCPSubsystemConfig();
-            hzCp.setCPMemberCount(cpCfg.getCpMemberCount());
-            hzCp.setSessionTimeToLiveSeconds((int) cpCfg.getSessionTimeoutSeconds());
-            hzCp.setSessionHeartbeatIntervalSeconds((int) cpCfg.getSessionHeartbeatIntervalSeconds());
-            hzCp.setMissingCPMemberAutoRemovalSeconds((int) cpCfg.getMissingCpMemberAutoRemovalSeconds());
-
-            logger.info("CP subsystem enabled, cp_member_count={}", cpCfg.getCpMemberCount());
         }
 
         // Data replication: ensure data exists on MIN_DATA_COPIES nodes.

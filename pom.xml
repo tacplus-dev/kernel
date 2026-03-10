@@ -27,7 +27,6 @@
 		<spotless-maven-plugin.version>3.2.1</spotless-maven-plugin.version>
 		<shade-plugin.version>3.6.1</shade-plugin.version>
 		<exec-plugin.version>3.5.0</exec-plugin.version>
-		<ratis.version>3.2.1</ratis.version>
 	</properties>
 	<repositories>
 		<repository>

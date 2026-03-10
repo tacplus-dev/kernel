@@ -171,8 +171,7 @@ public class ClusterStatePublisher {
         var cluster = hazelcast.getCluster();
         var partitionService = hazelcast.getPartitionService();
         int totalSize = cluster.getMembers().size();
-        // Quorum is computed from core (non-lite) members only.
-        // Edge (lite) members don't own data partitions and don't count toward quorum.
+        // Core count tracks non-lite members for health reporting.
         long coreCount =
                 cluster.getMembers().stream().filter(m -> !m.isLiteMember()).count();
 

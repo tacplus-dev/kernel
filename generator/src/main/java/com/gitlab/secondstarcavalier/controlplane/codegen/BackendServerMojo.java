@@ -176,6 +176,9 @@ public class BackendServerMojo extends AbstractMojo {
             // Step 7: Generate aggregators (including backend RPC services)
             BackendServersGenerator.generate(new ArrayList<>(infoMap.keySet()), infoMap, rpcServices, ctx);
 
+            // Step 8: Generate epoch expiration helper for StateRestorer
+            EpochExpirationHelperGenerator.generate(infoMap, ctx);
+
             getLog().info("Backend server codegen complete: generated " + infoMap.size() + " services");
 
         } catch (IOException e) {

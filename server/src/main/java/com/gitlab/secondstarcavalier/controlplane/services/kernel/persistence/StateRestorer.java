@@ -2,6 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.EpochExpirationHelper;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.FullDumpHeader;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.RedoLogEntry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass;
@@ -273,7 +274,9 @@ public class StateRestorer {
 		logger.info("Convergent merge: pushed {} entries from local redo logs", mergedCount);
 	}
 
-	/** Applies a single KitchenSink entry to the appropriate IMap. */
+	/** Applies a single KitchenSink entry to the appropriate IMap.
+	 *  Skips entries with epoch_expiration that have already expired.
+	 *  Uses TTL-aware put for entries with a future epoch_expiration. */
 	@SuppressWarnings("unchecked")
 	private void applyKitchenSink(KitchenSink entry) {
 		MapRegistry.MapInfo info = registry.get(entry.getMapName());
@@ -289,7 +292,17 @@ public class StateRestorer {
 			// Extract the typed payload from the oneof
 			MessageLite value = KitchenSinkHelper.getPayload(entry);
 			if (value != null) {
-				map.put(entry.getKey(), value);
+				// Skip expired entries; apply TTL for entries with future expiration
+				if (EpochExpirationHelper.isExpired(entry.getMapName(), value)) {
+					logger.debug("Skipping expired entry: map={} key={}", entry.getMapName(), entry.getKey());
+					return;
+				}
+				long ttl = EpochExpirationHelper.computeTtlSeconds(entry.getMapName(), value);
+				if (ttl > 0) {
+					map.put(entry.getKey(), value, ttl, java.util.concurrent.TimeUnit.SECONDS);
+				} else {
+					map.put(entry.getKey(), value);
+				}
 			} else {
 				logger.error("No payload in KitchenSink entry for map={} key={}", entry.getMapName(), entry.getKey());
 			}

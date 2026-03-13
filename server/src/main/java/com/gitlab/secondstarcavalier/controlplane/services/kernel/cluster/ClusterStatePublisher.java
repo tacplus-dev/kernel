@@ -3,9 +3,10 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.PersistenceProvider;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.Registry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.wrappers.backendclients.Registry;
+
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.services.kernel.ClusterStateMap;
 import com.hazelcast.cluster.Member;
 import com.hazelcast.core.HazelcastInstance;
@@ -391,9 +392,8 @@ public class ClusterStatePublisher {
 	 * service="services/kernel/ClusterState", boundary="NodeMetrics" →
 	 * "kernel.NodeMetrics"
 	 */
-	private static String deriveDisplayName(Registry.BoundaryInfo info) {
-		String svc = info.getService(); // "services/kernel/ClusterState"
-		String[] parts = svc.split("/");
+	private static String deriveDisplayName(String servicePath, Registry.BoundaryInfo info) {
+		String[] parts = servicePath.split("/");
 		if (parts.length < 3) {
 			return info.getBoundary();
 		}
@@ -414,13 +414,11 @@ public class ClusterStatePublisher {
 		return pkg + "." + info.getBoundary();
 	}
 
-	private static Hazelcast.AdminGraphType toAdminGraphType(String graphType) {
+	private static Hazelcast.AdminGraphType graphTypeFromString(String graphType) {
+		if (graphType == null) return Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION;
 		return switch (graphType) {
 			case "singleton" -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_SINGLETON;
 			case "collection" -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION;
-			case "queue" -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_QUEUE;
-			case "priority_queue" -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_PRIORITY_QUEUE;
-			case "topic" -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_TOPIC;
 			default -> Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION;
 		};
 	}
@@ -440,15 +438,11 @@ public class ClusterStatePublisher {
 				String shortName = shortMapName(mapName);
 
 				Registry.BoundaryInfo info = Registry.lookupByShortName(shortName);
-				String displayName = info != null ? deriveDisplayName(info) : shortName;
-				String valueType = info != null ? info.getValueType() : "";
-				String qualifiedName = info != null ? info.getService() + "." + info.getBoundary() : shortName;
-				String stateRoot = "";
-				if (info != null) {
-					String svc = info.getService();
-					int lastSlash = svc.lastIndexOf('/');
-					stateRoot = lastSlash >= 0 ? svc.substring(lastSlash + 1) : svc;
-				}
+				String servicePath = info != null ? info.getService() : "";
+				String displayName = info != null ? deriveDisplayName(servicePath, info) : shortName;
+				String valueType = info != null ? info.getTypeFqn() : "";
+				String qualifiedName = info != null ? servicePath + "." + info.getBoundary() : shortName;
+				String stateRoot = info != null ? info.getBackendRoot() : "";
 
 				clusterStateMap.putMapStats(
 						mapName,
@@ -457,7 +451,7 @@ public class ClusterStatePublisher {
 								.setValueType(valueType)
 								.setGraphType(
 										info != null
-												? toAdminGraphType(info.getGraphType())
+												? graphTypeFromString(info.getGraphType())
 												: Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION)
 								.setQualifiedName(qualifiedName)
 								.setStateRoot(stateRoot)

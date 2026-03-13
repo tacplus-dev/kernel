@@ -1,82 +1,67 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
-import com.google.protobuf.Descriptors;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.PersistenceEntry;
+import com.google.protobuf.Any;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.Message;
 import com.google.protobuf.MessageLite;
-import java.util.HashMap;
-import java.util.Map;
+import com.google.protobuf.Parser;
 
 /**
- * Helper for mapping between Hazelcast map names and KitchenSink oneof
- * payload fields.
- *
- * <p>The oneof field names follow the pattern {@code {package}_{snake_type}},
- * e.g., {@code baseball_team_roster} for the {@code baseball.TeamRoster} type.
- * Map names in kernel follow the pattern {@code {Service}_{FieldName}},
- * e.g., {@code BaseballState_roster}.
- *
- * <p>This helper builds a lookup table at class load time by inspecting the
- * KitchenSink descriptor.
+ * Helper for packing and unpacking protobuf messages into
+ * {@link PersistenceEntry} records using {@link Any}.
  */
 public final class KitchenSinkHelper {
-
-    /**
-     * Map from proto type URL (full name) to the corresponding oneof field descriptor.
-     */
-    private static final Map<String, Descriptors.FieldDescriptor> TYPE_TO_FIELD = new HashMap<>();
-
-    static {
-        Descriptors.OneofDescriptor payloadOneof = KitchenSink.getDescriptor().getOneofs().stream()
-                .filter(o -> o.getName().equals("payload"))
-                .findFirst()
-                .orElse(null);
-        if (payloadOneof != null) {
-            for (Descriptors.FieldDescriptor fd : payloadOneof.getFields()) {
-                if (fd.getType() == Descriptors.FieldDescriptor.Type.MESSAGE) {
-                    TYPE_TO_FIELD.put(fd.getMessageType().getFullName(), fd);
-                }
-            }
-        }
-    }
 
     private KitchenSinkHelper() {}
 
     /**
-     * Sets the typed payload on a KitchenSink builder based on the message type.
-     * Uses the protobuf descriptor to find the matching oneof field.
+     * Packs a protobuf message into the payload field of a PersistenceEntry builder.
      *
-     * @return true if the payload was set successfully (type found in oneof),
-     *         false if the type is not in the KitchenSink oneof
+     * @return true if the payload was packed successfully, false if the message
+     *         is not a full {@link Message} (e.g. lite-only)
      */
-    public static boolean setPayload(KitchenSink.Builder builder, String mapName, MessageLite msg) {
-        if (msg instanceof com.google.protobuf.Message fullMsg) {
-            String typeName = fullMsg.getDescriptorForType().getFullName();
-            Descriptors.FieldDescriptor fd = TYPE_TO_FIELD.get(typeName);
-            if (fd != null) {
-                builder.setField(fd, fullMsg);
-                return true;
-            }
+    public static boolean setPayload(PersistenceEntry.Builder builder, String mapName, MessageLite msg) {
+        if (msg instanceof Message fullMsg) {
+            builder.setPayload(Any.pack(fullMsg));
+            return true;
         }
         return false;
     }
 
     /**
-     * Extracts the typed payload from a KitchenSink message.
-     * Returns the active oneof field value, or null if no payload is set.
+     * Unpacks the payload from a PersistenceEntry using the given parser.
+     *
+     * @return the deserialized message, or null if no payload is set
      */
-    public static MessageLite getPayload(KitchenSink ks) {
-        KitchenSink.PayloadCase payloadCase = ks.getPayloadCase();
-        if (payloadCase == KitchenSink.PayloadCase.PAYLOAD_NOT_SET) {
+    public static <T extends Message> T getPayload(PersistenceEntry entry, Parser<T> parser)
+            throws InvalidProtocolBufferException {
+        if (!entry.hasPayload()) {
             return null;
         }
-        Descriptors.FieldDescriptor fd = ks.getDescriptorForType().findFieldByNumber(payloadCase.getNumber());
-        if (fd != null) {
-            Object value = ks.getField(fd);
-            if (value instanceof MessageLite ml) {
-                return ml;
-            }
+        return entry.getPayload().unpack((Class<T>) parser.parseFrom(new byte[0]).getClass());
+    }
+
+    /**
+     * Unpacks the payload from a PersistenceEntry as raw bytes using the parser
+     * registered in the MapRegistry.
+     *
+     * @return the deserialized message, or null if no payload or parser unavailable
+     */
+    public static MessageLite getPayload(PersistenceEntry entry,
+            com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry registry) {
+        if (!entry.hasPayload()) {
+            return null;
         }
-        return null;
+        var info = registry.get(entry.getMapName());
+        if (info == null || info.parser() == null) {
+            return null;
+        }
+        try {
+            return info.parser().parseFrom(entry.getPayload().getValue());
+        } catch (InvalidProtocolBufferException e) {
+            return null;
+        }
     }
 }

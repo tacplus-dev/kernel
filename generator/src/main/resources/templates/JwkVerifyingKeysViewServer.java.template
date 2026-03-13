@@ -1,0 +1,173 @@
+{{HEADER}}
+
+package {{PACKAGE}};
+
+import {{JWK_OUTER_CLASS}};
+import {{JWK_VIEW_GRPC_CLASS}};
+import {{JWK_VIEW_PROTO_CLASS}};
+import {{SECURITY_AUTH_CLASS}};
+import com.google.protobuf.Empty;
+import io.grpc.Status;
+import io.grpc.stub.ServerCallStreamObserver;
+import io.grpc.stub.StreamObserver;
+import java.io.Closeable;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * JwkVerifyingKeysViewServer implements the JwkVerifyingKeysViewService gRPC service.
+ *
+ * <p>Aggregates all collections annotated with (spec.view_member) = "JwkVerifyingKeysView"
+ * into a single read-only view. Watch RPCs use polling-based change detection (500ms).
+ */
+public class JwkVerifyingKeysViewServer
+        extends JwkVerifyingKeysViewServiceGrpc.JwkVerifyingKeysViewServiceImplBase
+        implements Closeable {
+
+    private static final Logger logger = LoggerFactory.getLogger(JwkVerifyingKeysViewServer.class);
+
+    private final ScheduledExecutorService scheduler =
+        Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "JwkVerifyingKeysViewWatcher");
+            t.setDaemon(true);
+            return t;
+        });
+
+    private final SecurityAuthenticator authenticator;
+    private final List<Supplier<Map<String, JwkOuterClass.Jwk>>> memberMaps;
+    private final List<WatcherEntry> watchers = new CopyOnWriteArrayList<>();
+
+    @SafeVarargs
+    public JwkVerifyingKeysViewServer(SecurityAuthenticator authenticator,
+            Supplier<Map<String, JwkOuterClass.Jwk>>... memberMapSuppliers) {
+        this.authenticator = authenticator;
+        this.memberMaps = List.of(memberMapSuppliers);
+        scheduler.scheduleAtFixedRate(this::pollAll, 500, 500, TimeUnit.MILLISECONDS);
+    }
+
+    @Override
+    public void watch(Empty request, StreamObserver<Jwkview.JwkViewResponse> observer) {
+        try {
+            authenticator.checkAccess("*", "jwk_verifying_keys_view", SecurityAuthenticator.OperationType.READ);
+        } catch (Exception e) {
+            observer.onError(Status.PERMISSION_DENIED
+                .withDescription("access denied to JwkVerifyingKeysView")
+                .asRuntimeException());
+            return;
+        }
+
+        Jwkview.JwkViewResponse snapshot = buildMergedResponse();
+        if (snapshot.getEntriesCount() > 0) {
+            observer.onNext(snapshot);
+        }
+
+        WatcherEntry entry = new WatcherEntry(observer, snapshot);
+        watchers.add(entry);
+
+        if (observer instanceof ServerCallStreamObserver) {
+            ((ServerCallStreamObserver<Jwkview.JwkViewResponse>) observer)
+                .setOnCancelHandler(() -> watchers.remove(entry));
+        }
+    }
+
+    @Override
+    public void get(Jwkview.JwkViewGetRequest request,
+            StreamObserver<Jwkview.JwkViewGetResponse> observer) {
+        try {
+            authenticator.checkAccess("*", "jwk_verifying_keys_view", SecurityAuthenticator.OperationType.READ);
+        } catch (Exception e) {
+            observer.onError(Status.PERMISSION_DENIED
+                .withDescription("access denied to JwkVerifyingKeysView")
+                .asRuntimeException());
+            return;
+        }
+
+        String kid = request.getKid();
+        for (Supplier<Map<String, JwkOuterClass.Jwk>> source : memberMaps) {
+            try {
+                Map<String, JwkOuterClass.Jwk> map = source.get();
+                JwkOuterClass.Jwk value = map.get(kid);
+                if (value != null) {
+                    observer.onNext(Jwkview.JwkViewGetResponse.newBuilder()
+                        .setValue(value)
+                        .setFound(true)
+                        .build());
+                    observer.onCompleted();
+                    return;
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to read from member map: {}", e.getMessage());
+            }
+        }
+
+        observer.onNext(Jwkview.JwkViewGetResponse.newBuilder()
+            .setFound(false)
+            .build());
+        observer.onCompleted();
+    }
+
+    private void pollAll() {
+        if (watchers.isEmpty()) {
+            return;
+        }
+        Jwkview.JwkViewResponse current = buildMergedResponse();
+        for (WatcherEntry entry : watchers) {
+            try {
+                Jwkview.JwkViewResponse lastSent = entry.lastSent.get();
+                if (!current.equals(lastSent)) {
+                    entry.observer.onNext(current);
+                    entry.lastSent.set(current);
+                }
+            } catch (Exception e) {
+                logger.debug("Removing failed watcher: {}", e.getMessage());
+                watchers.remove(entry);
+            }
+        }
+    }
+
+    private Jwkview.JwkViewResponse buildMergedResponse() {
+        Map<String, JwkOuterClass.Jwk> merged = new LinkedHashMap<>();
+        for (Supplier<Map<String, JwkOuterClass.Jwk>> source : memberMaps) {
+            try {
+                merged.putAll(source.get());
+            } catch (Exception e) {
+                logger.warn("Failed to read from member map: {}", e.getMessage());
+            }
+        }
+        return Jwkview.JwkViewResponse.newBuilder()
+            .putAllEntries(merged)
+            .build();
+    }
+
+    @Override
+    public void close() {
+        scheduler.shutdownNow();
+        for (WatcherEntry entry : watchers) {
+            try {
+                entry.observer.onCompleted();
+            } catch (Exception ignored) {
+            }
+        }
+        watchers.clear();
+    }
+
+    private static class WatcherEntry {
+        final StreamObserver<Jwkview.JwkViewResponse> observer;
+        final AtomicReference<Jwkview.JwkViewResponse> lastSent;
+
+        WatcherEntry(StreamObserver<Jwkview.JwkViewResponse> observer,
+                     Jwkview.JwkViewResponse initial) {
+            this.observer = observer;
+            this.lastSent = new AtomicReference<>(initial);
+        }
+    }
+}

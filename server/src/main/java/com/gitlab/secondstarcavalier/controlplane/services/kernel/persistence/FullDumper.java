@@ -4,10 +4,10 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.FullDumpHeader;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.RedoLogEntry;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.ConsistencyType;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.DbDump;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.OpType;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.PersistenceEntry;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.PersistenceDump;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.ConsistencyType;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.OpType;
 import com.google.protobuf.MessageLite;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
@@ -56,8 +56,8 @@ public class FullDumper {
 
 	/**
 	 * Performs a full dump of all registered IMaps.
-	 * Writes a single {@link DbDump} protobuf message containing all entries
-	 * as typed {@link KitchenSink} records.
+	 * Writes a single {@link PersistenceDump} protobuf message containing all entries
+	 * as typed {@link PersistenceEntry} records.
 	 *
 	 * @return a {@link DumpResult} with the timestamp, entry count, and
 	 *         duration
@@ -73,8 +73,8 @@ public class FullDumper {
 			totalEntries += info.map().size();
 		}
 
-		// Build the DbDump message with all entries
-		DbDump.Builder dumpBuilder = DbDump.newBuilder()
+		// Build the PersistenceDump message with all entries
+		PersistenceDump.Builder dumpBuilder = PersistenceDump.newBuilder()
 				.setTimestampMs(dumpTimestamp)
 				.setEntryCount(totalEntries)
 				.setNodeId(nodeId);
@@ -85,7 +85,7 @@ public class FullDumper {
 			ConsistencyType ksConsistency = ConsistencyType.CONSISTENCY_CONVERGENT;
 
 			for (Map.Entry<String, ?> entry : info.map().entrySet()) {
-				KitchenSink.Builder ksBuilder = KitchenSink.newBuilder()
+				PersistenceEntry.Builder ksBuilder = PersistenceEntry.newBuilder()
 						.setMapName(mapName)
 						.setKey(entry.getKey())
 						.setOp(OpType.OP_TYPE_PUT)

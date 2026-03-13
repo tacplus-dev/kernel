@@ -2,7 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.RedoLogEntry;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.PersistenceEntry;
 import com.google.protobuf.MessageLite;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
@@ -81,15 +81,15 @@ public class RedoLog {
 	}
 
 	/**
-	 * Appends a typed KitchenSink entry to the current redo log segment.
+	 * Appends a typed PersistenceEntry to the current redo log segment.
 	 */
-	public void append(KitchenSink entry) {
+	public void append(PersistenceEntry entry) {
 		appendMessage(entry);
 	}
 
 	/**
 	 * Appends a legacy RedoLogEntry to the current redo log segment.
-	 * Used as fallback when the value type is not in the KitchenSink oneof.
+	 * Used as fallback when the value type cannot be packed into Any.
 	 */
 	public void appendLegacy(RedoLogEntry entry) {
 		appendMessage(entry);

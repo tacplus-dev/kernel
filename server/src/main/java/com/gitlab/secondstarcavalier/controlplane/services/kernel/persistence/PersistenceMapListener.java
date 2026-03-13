@@ -3,8 +3,7 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.RedoLogEntry;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.PersistenceEntry;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.MessageLite;
 import com.hazelcast.core.EntryEvent;
@@ -79,16 +78,15 @@ public class PersistenceMapListener
 	}
 
 	private void logPut(String key, Object value) {
-		KitchenSink.Builder builder = KitchenSink.newBuilder()
+		PersistenceEntry.Builder builder = PersistenceEntry.newBuilder()
 				.setMapName(mapName)
 				.setKey(key)
-				.setOp(KitchenSinkOuterClass.OpType.OP_TYPE_PUT)
+				.setOp(Hazelcast.OpType.OP_TYPE_PUT)
 				.setTimestampMs(System.currentTimeMillis())
 				.setConsistency(mapConsistency());
 		if (value instanceof MessageLite msg) {
-			// Try to set the typed oneof field via the registry
 			if (!KitchenSinkHelper.setPayload(builder, mapName, msg)) {
-				// Fallback: type not in KitchenSink oneof, use legacy RedoLogEntry
+				// Fallback: type not packable (lite-only), use legacy RedoLogEntry
 				redoLog.appendLegacy(RedoLogEntry.newBuilder()
 						.setMapName(mapName)
 						.setKey(key)
@@ -105,8 +103,8 @@ public class PersistenceMapListener
 		redoLog.append(builder.build());
 	}
 
-	private KitchenSinkOuterClass.ConsistencyType mapConsistency() {
-		return KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_CONVERGENT;
+	private Hazelcast.ConsistencyType mapConsistency() {
+		return Hazelcast.ConsistencyType.CONSISTENCY_CONVERGENT;
 	}
 
 	private void detectParser(MessageLite msg) {
@@ -117,10 +115,10 @@ public class PersistenceMapListener
 	}
 
 	private void logDelete(String key) {
-		redoLog.append(KitchenSink.newBuilder()
+		redoLog.append(PersistenceEntry.newBuilder()
 				.setMapName(mapName)
 				.setKey(key)
-				.setOp(KitchenSinkOuterClass.OpType.OP_TYPE_DELETE)
+				.setOp(Hazelcast.OpType.OP_TYPE_DELETE)
 				.setTimestampMs(System.currentTimeMillis())
 				.setConsistency(mapConsistency())
 				.build());

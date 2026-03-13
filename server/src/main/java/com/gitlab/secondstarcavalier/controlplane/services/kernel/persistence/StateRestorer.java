@@ -5,9 +5,8 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapR
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.EpochExpirationHelper;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.FullDumpHeader;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.RedoLogEntry;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.DbDump;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kitchen_sink.KitchenSinkOuterClass.KitchenSink;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.PersistenceEntry;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.PersistenceDump;
 import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IMap;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageLite;
@@ -93,8 +92,8 @@ public class StateRestorer {
 	 * entries, used by non-winners for convergent merge comparison.
 	 *
 	 * <p>
-	 * Supports both new KitchenSink format and legacy RedoLogEntry format.
-	 * New dumps use DbDump wrapper; legacy dumps use FullDumpHeader + RedoLogEntry.
+	 * Supports both new PersistenceEntry/PersistenceDump format and legacy RedoLogEntry format.
+	 * New dumps use PersistenceDump wrapper; legacy dumps use FullDumpHeader + RedoLogEntry.
 	 */
 	public Map<String, Long> restore() throws IOException {
 		Map<String, Long> entryTimestamps = new HashMap<>();
@@ -111,20 +110,20 @@ public class StateRestorer {
 				// Peek at first record to determine format
 				byte[] firstRecord = readRecord(is);
 
-				// Try parsing as DbDump (new format — single message)
+				// Try parsing as PersistenceDump (new format — single message)
 				try {
-					DbDump dbDump = DbDump.parseFrom(firstRecord);
-					if (dbDump.getEntriesCount() > 0 || dbDump.getTimestampMs() > 0) {
+					PersistenceDump persistenceDump = PersistenceDump.parseFrom(firstRecord);
+					if (persistenceDump.getEntriesCount() > 0 || persistenceDump.getTimestampMs() > 0) {
 						logger.info(
-								"Dump format: DbDump ({} entries, node={}, timestamp={})",
-								dbDump.getEntryCount(),
-								dbDump.getNodeId(),
-								dbDump.getTimestampMs());
-						for (KitchenSink ks : dbDump.getEntriesList()) {
-							applyKitchenSink(ks);
-							entryTimestamps.put(ks.getMapName() + ":" + ks.getKey(), ks.getTimestampMs());
+								"Dump format: PersistenceDump ({} entries, node={}, timestamp={})",
+								persistenceDump.getEntryCount(),
+								persistenceDump.getNodeId(),
+								persistenceDump.getTimestampMs());
+						for (PersistenceEntry pe : persistenceDump.getEntriesList()) {
+							applyPersistenceEntry(pe);
+							entryTimestamps.put(pe.getMapName() + ":" + pe.getKey(), pe.getTimestampMs());
 						}
-						logger.info("Loaded {} entries from DbDump", dbDump.getEntriesCount());
+						logger.info("Loaded {} entries from PersistenceDump", persistenceDump.getEntriesCount());
 					}
 				} catch (InvalidProtocolBufferException e) {
 					// Not a DbDump — fall back to legacy format
@@ -156,12 +155,12 @@ public class StateRestorer {
 		for (Path redo : redos) {
 			long fileTs = RedoLog.extractTimestamp(redo, "redo-" + nodeId + "-", ".log");
 			if (fileTs >= dumpTimestamp) {
-				List<KitchenSink> entries = readRedoLogKitchenSink(redo);
-				entries.sort(Comparator.comparingLong(KitchenSink::getTimestampMs));
-				for (KitchenSink ks : entries) {
-					if (ks.getTimestampMs() > dumpTimestamp) {
-						applyKitchenSink(ks);
-						entryTimestamps.put(ks.getMapName() + ":" + ks.getKey(), ks.getTimestampMs());
+				List<PersistenceEntry> entries = readRedoLogPersistenceEntry(redo);
+				entries.sort(Comparator.comparingLong(PersistenceEntry::getTimestampMs));
+				for (PersistenceEntry pe : entries) {
+					if (pe.getTimestampMs() > dumpTimestamp) {
+						applyPersistenceEntry(pe);
+						entryTimestamps.put(pe.getMapName() + ":" + pe.getKey(), pe.getTimestampMs());
 						replayCount++;
 					}
 				}
@@ -190,10 +189,10 @@ public class StateRestorer {
 			try (InputStream is = new GZIPInputStream(new BufferedInputStream(Files.newInputStream(latestDump)))) {
 				byte[] firstRecord = readRecord(is);
 				try {
-					DbDump dbDump = DbDump.parseFrom(firstRecord);
-					if (dbDump.getEntriesCount() > 0 || dbDump.getTimestampMs() > 0) {
-						for (KitchenSink ks : dbDump.getEntriesList()) {
-							applyKitchenSink(ks);
+					PersistenceDump persistenceDump = PersistenceDump.parseFrom(firstRecord);
+					if (persistenceDump.getEntriesCount() > 0 || persistenceDump.getTimestampMs() > 0) {
+						for (PersistenceEntry pe : persistenceDump.getEntriesList()) {
+							applyPersistenceEntry(pe);
 							loadedCount++;
 						}
 					}
@@ -214,11 +213,11 @@ public class StateRestorer {
 		for (Path redo : redos) {
 			long fileTs = RedoLog.extractTimestamp(redo, "redo-" + nodeId + "-", ".log");
 			if (fileTs >= dumpTimestamp) {
-				List<KitchenSink> entries = readRedoLogKitchenSink(redo);
-				entries.sort(Comparator.comparingLong(KitchenSink::getTimestampMs));
-				for (KitchenSink ks : entries) {
-					if (ks.getTimestampMs() > dumpTimestamp) {
-						applyKitchenSink(ks);
+				List<PersistenceEntry> entries = readRedoLogPersistenceEntry(redo);
+				entries.sort(Comparator.comparingLong(PersistenceEntry::getTimestampMs));
+				for (PersistenceEntry pe : entries) {
+					if (pe.getTimestampMs() > dumpTimestamp) {
+						applyPersistenceEntry(pe);
 						loadedCount++;
 					}
 				}
@@ -242,15 +241,15 @@ public class StateRestorer {
 		int mergedCount = 0;
 
 		// Collect all convergent entries, keeping only the latest per key
-		Map<String, KitchenSink> latestByKey = new HashMap<>();
+		Map<String, PersistenceEntry> latestByKey = new HashMap<>();
 		for (Path redo : redos) {
-			List<KitchenSink> entries = readRedoLogKitchenSink(redo);
-			for (KitchenSink entry : entries) {
-				if (entry.getConsistency() != KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_CONVERGENT) {
+			List<PersistenceEntry> entries = readRedoLogPersistenceEntry(redo);
+			for (PersistenceEntry entry : entries) {
+				if (entry.getConsistency() != Hazelcast.ConsistencyType.CONSISTENCY_CONVERGENT) {
 					continue;
 				}
 				String compositeKey = entry.getMapName() + ":" + entry.getKey();
-				KitchenSink existing = latestByKey.get(compositeKey);
+				PersistenceEntry existing = latestByKey.get(compositeKey);
 				if (existing == null || entry.getTimestampMs() > existing.getTimestampMs()) {
 					latestByKey.put(compositeKey, entry);
 				}
@@ -258,15 +257,15 @@ public class StateRestorer {
 		}
 
 		// Compare with winner timestamps and push newer entries
-		for (Map.Entry<String, KitchenSink> entry : latestByKey.entrySet()) {
+		for (Map.Entry<String, PersistenceEntry> entry : latestByKey.entrySet()) {
 			String compositeKey = entry.getKey();
-			KitchenSink ksEntry = entry.getValue();
+			PersistenceEntry peEntry = entry.getValue();
 
 			Long winnerTs = winnerTimestamps.get(compositeKey);
-			if (winnerTs == null || ksEntry.getTimestampMs() > winnerTs) {
-				applyKitchenSink(ksEntry);
+			if (winnerTs == null || peEntry.getTimestampMs() > winnerTs) {
+				applyPersistenceEntry(peEntry);
 				// Update the timestamp in the shared map
-				winnerTimestamps.put(compositeKey, ksEntry.getTimestampMs());
+				winnerTimestamps.put(compositeKey, peEntry.getTimestampMs());
 				mergedCount++;
 			}
 		}
@@ -274,11 +273,11 @@ public class StateRestorer {
 		logger.info("Convergent merge: pushed {} entries from local redo logs", mergedCount);
 	}
 
-	/** Applies a single KitchenSink entry to the appropriate IMap.
+	/** Applies a single PersistenceEntry to the appropriate IMap.
 	 *  Skips entries with epoch_expiration that have already expired.
 	 *  Uses TTL-aware put for entries with a future epoch_expiration. */
 	@SuppressWarnings("unchecked")
-	private void applyKitchenSink(KitchenSink entry) {
+	private void applyPersistenceEntry(PersistenceEntry entry) {
 		MapRegistry.MapInfo info = registry.get(entry.getMapName());
 		if (info == null) {
 			logger.warn("Skipping entry for unknown map: {}", entry.getMapName());
@@ -286,11 +285,11 @@ public class StateRestorer {
 		}
 
 		IMap<String, Object> map = (IMap<String, Object>) info.map();
-		if (entry.getOp() == KitchenSinkOuterClass.OpType.OP_TYPE_DELETE) {
+		if (entry.getOp() == Hazelcast.OpType.OP_TYPE_DELETE) {
 			map.delete(entry.getKey());
 		} else {
-			// Extract the typed payload from the oneof
-			MessageLite value = KitchenSinkHelper.getPayload(entry);
+			// Extract the typed payload via the map registry parser
+			MessageLite value = KitchenSinkHelper.getPayload(entry, registry);
 			if (value != null) {
 				// Skip expired entries; apply TTL for entries with future expiration
 				if (EpochExpirationHelper.isExpired(entry.getMapName(), value)) {
@@ -304,7 +303,7 @@ public class StateRestorer {
 					map.put(entry.getKey(), value);
 				}
 			} else {
-				logger.error("No payload in KitchenSink entry for map={} key={}", entry.getMapName(), entry.getKey());
+				logger.error("No payload in PersistenceEntry for map={} key={}", entry.getMapName(), entry.getKey());
 			}
 		}
 	}
@@ -335,14 +334,14 @@ public class StateRestorer {
 		}
 	}
 
-	/** Reads all entries from a redo log file as KitchenSink messages. */
-	static List<KitchenSink> readRedoLogKitchenSink(Path file) throws IOException {
-		List<KitchenSink> entries = new ArrayList<>();
+	/** Reads all entries from a redo log file as PersistenceEntry messages. */
+	static List<PersistenceEntry> readRedoLogPersistenceEntry(Path file) throws IOException {
+		List<PersistenceEntry> entries = new ArrayList<>();
 		try (InputStream is = new BufferedInputStream(Files.newInputStream(file))) {
 			byte[] recordData;
 			while ((recordData = readRecordOrNull(is)) != null) {
 				try {
-					entries.add(KitchenSink.parseFrom(recordData));
+					entries.add(PersistenceEntry.parseFrom(recordData));
 				} catch (InvalidProtocolBufferException e) {
 					// Try legacy format
 					entries.add(convertLegacyEntry(RedoLogEntry.parseFrom(recordData)));
@@ -364,22 +363,18 @@ public class StateRestorer {
 		return entries;
 	}
 
-	/** Converts a legacy RedoLogEntry to a KitchenSink message. */
-	private static KitchenSink convertLegacyEntry(RedoLogEntry entry) {
-		KitchenSink.Builder builder = KitchenSink.newBuilder()
+	/** Converts a legacy RedoLogEntry to a PersistenceEntry. */
+	private static PersistenceEntry convertLegacyEntry(RedoLogEntry entry) {
+		PersistenceEntry.Builder builder = PersistenceEntry.newBuilder()
 				.setMapName(entry.getMapName())
 				.setKey(entry.getKey())
 				.setTimestampMs(entry.getTimestampMs());
 
-		// Map OpType
-		if (entry.getOp() == Hazelcast.OpType.OP_TYPE_DELETE) {
-			builder.setOp(KitchenSinkOuterClass.OpType.OP_TYPE_DELETE);
-		} else {
-			builder.setOp(KitchenSinkOuterClass.OpType.OP_TYPE_PUT);
-		}
+		// Map OpType (same enum now — both in hazelcast package)
+		builder.setOp(entry.getOp());
 
 		// All boundaries are convergent
-		builder.setConsistency(KitchenSinkOuterClass.ConsistencyType.CONSISTENCY_CONVERGENT);
+		builder.setConsistency(Hazelcast.ConsistencyType.CONSISTENCY_CONVERGENT);
 
 		// Note: legacy entries have opaque bytes, not typed payload.
 		// The caller must use the registry parser to deserialize.

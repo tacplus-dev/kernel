@@ -173,10 +173,13 @@ public class BackendServerMojo extends AbstractMojo {
             // Step 6: Generate SecurityAuthenticator (once per project)
             SecurityAuthenticatorGenerator.generate(ctx);
 
-            // Step 7: Generate aggregators (including backend RPC services)
+            // Step 7: Generate service-specific view servers.
+            ViewServerGenerator.generate(ctx);
+
+            // Step 8: Generate aggregators (including backend RPC services)
             BackendServersGenerator.generate(new ArrayList<>(infoMap.keySet()), infoMap, rpcServices, ctx);
 
-            // Step 8: Generate epoch expiration helper for StateRestorer
+            // Step 9: Generate epoch expiration helper for StateRestorer
             EpochExpirationHelperGenerator.generate(infoMap, ctx);
 
             getLog().info("Backend server codegen complete: generated " + infoMap.size() + " services");

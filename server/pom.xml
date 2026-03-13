@@ -190,13 +190,11 @@
 						</goals>
 						<configuration>
 							<sources>
-								<source>src/main/java</source>
-								<source>${project.build.directory}/generated-sources/tacplus-backend/src/main/java</source>
-								<source>${project.build.directory}/generated-sources/protobuf/java</source>
-								<source>${project.build.directory}/generated-sources/protobuf/grpc-java</source>
-							</sources>
-						</configuration>
-					</execution>
+ 								<source>src/main/java</source>
+ 								<source>${project.build.directory}/generated-sources/tacplus-backend/src/main/java</source>
+ 							</sources>
+ 						</configuration>
+ 					</execution>
 				</executions>
 			</plugin>
 			<plugin>
@@ -263,25 +261,6 @@
 					<peerContextClass>com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster.PeerContext</peerContextClass>
 					<!-- typesPackageBase, interfacesPackage read from codegen-config.json -->
 				</configuration>
-			</plugin>
-			<plugin>
-				<groupId>org.xolstice.maven.plugins</groupId>
-				<artifactId>protobuf-maven-plugin</artifactId>
-				<version>0.6.1</version>
-				<configuration>
-					<protocArtifact>com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
-					<pluginId>grpc-java</pluginId>
-					<pluginArtifact>io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}</pluginArtifact>
-					<protoSourceRoot>${project.basedir}/src/main/proto</protoSourceRoot>
-				</configuration>
-				<executions>
-					<execution>
-						<goals>
-							<goal>compile</goal>
-							<goal>compile-custom</goal>
-						</goals>
-					</execution>
-				</executions>
 			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>

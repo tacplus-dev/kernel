@@ -18,6 +18,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,10 +79,21 @@ public class SecurityInterceptor implements ServerInterceptor {
     /** Graphs that skip authentication (backend_disable_auth annotation). */
     private static final Set<String> NO_AUTH_GRAPHS = {{NO_AUTH_GRAPHS_INIT}};
 
+    /**
+     * Service name → list of RPC method names.
+     * Used by TokenExchangerService to populate the "entitlements" claim in S2S tokens,
+     * and by this interceptor to validate entitlements on incoming requests.
+     */
+    public static final Map<String, List<String>> SERVICE_ENTITLEMENTS;
+
     static {
         Map<String, Policy> policies = new HashMap<>();
 {{POLICY_MAP_INIT}}
         GRAPH_POLICIES = Map.copyOf(policies);
+
+        Map<String, List<String>> m = new HashMap<>();
+{{SERVICE_ENTITLEMENTS_INIT}}
+        SERVICE_ENTITLEMENTS = Map.copyOf(m);
     }
 
     /** Cache of validated tokens: raw JWT string -> cached caller info. */
@@ -144,8 +156,8 @@ public class SecurityInterceptor implements ServerInterceptor {
 
         logger.debug("[auth] {} — authenticated as {}", method, caller.subject);
 
-        // Authorize: check graph access policies
-        String denial = authorizeCall(method, caller.subject);
+        // Authorize: check graph access policies and entitlements
+        String denial = authorizeCall(method, caller);
         if (denial != null) {
             logger.warn("[authz] {} — denied for {}: {}", method, caller.subject, denial);
             call.close(Status.PERMISSION_DENIED.withDescription(denial), new Metadata());
@@ -191,7 +203,7 @@ public class SecurityInterceptor implements ServerInterceptor {
         return false;
     }
 
-    private String authorizeCall(String method, String subject) {
+    private String authorizeCall(String method, CachedCaller caller) {
         int slashIdx = method.indexOf('/');
         if (slashIdx < 0) {
             return null;
@@ -234,6 +246,7 @@ public class SecurityInterceptor implements ServerInterceptor {
             return null;
         }
 
+        String subject = caller.subject;
         if (isWrite) {
             if (!matchesAny(policy.rw, subject)) {
                 return subject + " does not have write access to " + graphName;
@@ -241,6 +254,15 @@ public class SecurityInterceptor implements ServerInterceptor {
         } else {
             if (!matchesAny(policy.rw, subject) && !matchesAny(policy.ro, subject)) {
                 return subject + " does not have read access to " + graphName;
+            }
+        }
+
+        // Check entitlements claim (if present).
+        // During rollout, absent entitlements are allowed — graph ACLs still protect.
+        // Once all services exchange with entitlements, tighten to require the claim.
+        if (caller.entitlements != null && !caller.entitlements.contains("*")) {
+            if (!caller.entitlements.contains(operation)) {
+                return subject + " lacks entitlement for " + operation + " on " + graphName;
             }
         }
 
@@ -305,9 +327,10 @@ public class SecurityInterceptor implements ServerInterceptor {
 
         String subject = tw.getSubject();
         String instanceId = tw.getInstanceId();
+        List<String> entitlements = extractEntitlements(tw);
 
         long exp = tw.getExpiration();
-        CachedCaller result = new CachedCaller(subject, instanceId, exp);
+        CachedCaller result = new CachedCaller(subject, instanceId, exp, entitlements);
         if (exp > 0) {
             tokenCache.put(rawToken, result);
         }
@@ -352,6 +375,27 @@ public class SecurityInterceptor implements ServerInterceptor {
         return null;
     }
 
+    /**
+     * Extracts the "entitlements" claim from a parsed token as a list of strings.
+     * Returns null if the claim is absent.
+     */
+    private static List<String> extractEntitlements(TokenWrapper tw) {
+        Object raw = tw.getCustomField("entitlements");
+        if (raw == null) {
+            return null;
+        }
+        if (raw instanceof java.util.Collection<?> col) {
+            List<String> result = new ArrayList<>();
+            for (Object item : col) {
+                if (item != null) {
+                    result.add(item.toString());
+                }
+            }
+            return result;
+        }
+        return null;
+    }
+
     /** Helper to build a policy from lists. Used by the static initializer. */
     private static Policy buildPolicy(String name, List<String> rw, List<String> ro, List<String> exec) {
         return new Policy(rw, ro);
@@ -371,11 +415,13 @@ public class SecurityInterceptor implements ServerInterceptor {
         final String subject;
         final String instanceId;
         final long expiresAt;
+        final List<String> entitlements;
 
-        CachedCaller(String subject, String instanceId, long expiresAt) {
+        CachedCaller(String subject, String instanceId, long expiresAt, List<String> entitlements) {
             this.subject = subject;
             this.instanceId = instanceId;
             this.expiresAt = expiresAt;
+            this.entitlements = entitlements;
         }
     }
 }

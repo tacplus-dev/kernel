@@ -6,7 +6,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Parses codegen-config.json written by tacplus.
@@ -35,6 +37,8 @@ public class CodegenConfig {
     public String javaPackageBase;
     public String interfacesPackage;
     public List<AccessPolicy> securityPolicies = new ArrayList<>();
+    /** Service name → list of RPC method names, for entitlements enforcement. */
+    public Map<String, List<String>> serviceRPCMappings = new HashMap<>();
 
     /**
      * Parses a codegen-config.json file.
@@ -55,6 +59,17 @@ public class CodegenConfig {
             if (arrayStart >= 0 && arrayEnd > arrayStart) {
                 String arrayContent = content.substring(arrayStart + 1, arrayEnd);
                 config.securityPolicies = parsePolicies(arrayContent);
+            }
+        }
+
+        // Parse serviceRPCMappings array
+        int mappingsStart = content.indexOf("\"serviceRPCMappings\"");
+        if (mappingsStart >= 0) {
+            int arrayStart = content.indexOf('[', mappingsStart);
+            int arrayEnd = findMatchingBracket(content, arrayStart);
+            if (arrayStart >= 0 && arrayEnd > arrayStart) {
+                String arrayContent = content.substring(arrayStart + 1, arrayEnd);
+                config.serviceRPCMappings = parseServiceRPCMappings(arrayContent);
             }
         }
 
@@ -162,5 +177,29 @@ public class CodegenConfig {
             else if (s.charAt(i) == '}') { depth--; if (depth == 0) return i; }
         }
         return -1;
+    }
+
+    /**
+     * Parses the serviceRPCMappings array from codegen-config.json.
+     * Each entry has "serviceName" (string) and "rpcs" (string array).
+     */
+    private static Map<String, List<String>> parseServiceRPCMappings(String arrayContent) {
+        Map<String, List<String>> result = new HashMap<>();
+        int pos = 0;
+        while (pos < arrayContent.length()) {
+            int objStart = arrayContent.indexOf('{', pos);
+            if (objStart < 0) break;
+            int objEnd = findMatchingBrace(arrayContent, objStart);
+            if (objEnd < 0) break;
+
+            String obj = arrayContent.substring(objStart, objEnd + 1);
+            String serviceName = extractStringField(obj, "serviceName");
+            List<String> rpcs = extractStringArray(obj, "rpcs");
+            if (serviceName != null && !serviceName.isEmpty()) {
+                result.put(serviceName, rpcs);
+            }
+            pos = objEnd + 1;
+        }
+        return result;
     }
 }

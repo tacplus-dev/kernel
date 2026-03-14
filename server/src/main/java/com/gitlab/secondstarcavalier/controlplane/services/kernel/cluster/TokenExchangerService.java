@@ -57,18 +57,21 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
 	private final KeyRotator keyRotator;
 	private final Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader;
 	private final Supplier<List<Kernel.Delegate>> delegatesReader;
+	private final Map<String, List<String>> serviceEntitlements;
 
 	public TokenExchangerService(
 			long defaultTokenExpirySeconds,
 			ExternalJwkResolver externalJwkResolver,
 			KeyRotator keyRotator,
 			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
-			Supplier<List<Kernel.Delegate>> delegatesReader) {
+			Supplier<List<Kernel.Delegate>> delegatesReader,
+			Map<String, List<String>> serviceEntitlements) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.externalJwkResolver = externalJwkResolver;
 		this.keyRotator = keyRotator;
 		this.verifyingKeysReader = verifyingKeysReader;
 		this.delegatesReader = delegatesReader;
+		this.serviceEntitlements = serviceEntitlements != null ? serviceEntitlements : Map.of();
 	}
 
 	@Override
@@ -348,6 +351,17 @@ public class TokenExchangerService extends TokenExchangerServiceGrpc.TokenExchan
 				if (instanceIdVal != null && instanceIdVal.getKindCase() == Value.KindCase.STRING_VALUE) {
 					newToken.setCustomField("instance_id", instanceIdVal.getStringValue());
 				}
+			}
+
+			// Add entitlements for the target service
+			String targetAud = request.getAud();
+			List<String> rpcs = serviceEntitlements.get(targetAud);
+			if (rpcs != null) {
+				newToken.setCustomField("entitlements", rpcs);
+			} else {
+				// Target may not have service_frontend (e.g. kernel itself) —
+				// grant wildcard for backward compat; target's own ACLs still apply.
+				newToken.setCustomField("entitlements", List.of("*"));
 			}
 
 			logger.info("Minted service token (S2S): sub={}, aud={}, exp={}", subject, request.getAud(), exp);

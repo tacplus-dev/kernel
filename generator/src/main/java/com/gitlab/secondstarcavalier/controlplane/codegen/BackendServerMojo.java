@@ -89,6 +89,7 @@ public class BackendServerMojo extends AbstractMojo {
         // Explicit Maven parameters override config file values.
         // Security policies are embedded inline in the JSON (computed from proto annotations).
         List<AccessPolicy> securityPolicies = List.of();
+        Map<String, List<String>> serviceRPCMappings = new java.util.HashMap<>();
         File configFile = new File(protoDir, "codegen-config.json");
         if (configFile.exists()) {
             try {
@@ -97,9 +98,11 @@ public class BackendServerMojo extends AbstractMojo {
                 if (typesPackageBase == null) typesPackageBase = cc.javaPackageBase;
                 if (interfacesPackage == null) interfacesPackage = cc.interfacesPackage;
                 securityPolicies = cc.securityPolicies;
+                serviceRPCMappings = cc.serviceRPCMappings;
                 getLog().info("Loaded codegen-config.json: javaPackageBase=" + javaPackageBase
                               + ", interfacesPackage=" + interfacesPackage
-                              + ", policies=" + securityPolicies.size());
+                              + ", policies=" + securityPolicies.size()
+                              + ", serviceRPCMappings=" + serviceRPCMappings.size());
             } catch (IOException e) {
                 throw new MojoExecutionException("Failed to read codegen-config.json", e);
             }
@@ -135,7 +138,7 @@ public class BackendServerMojo extends AbstractMojo {
 
             // Step 3: Analyze boundaries for each service
             Path outPath = outputDir.toPath();
-            GeneratorContext ctx = new GeneratorContext(javaPackageBase, typesPackageBase, interfacesPackage, peerContextClass, outPath, protoDir.toPath(), parser, securityPolicies);
+            GeneratorContext ctx = new GeneratorContext(javaPackageBase, typesPackageBase, interfacesPackage, peerContextClass, outPath, protoDir.toPath(), parser, securityPolicies, serviceRPCMappings);
 
             Map<BackendServiceInfo, SharedBackendInfo> infoMap = new LinkedHashMap<>();
             for (BackendServiceInfo svc : services) {

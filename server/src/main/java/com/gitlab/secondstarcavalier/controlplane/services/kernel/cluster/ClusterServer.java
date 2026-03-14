@@ -395,7 +395,8 @@ public class ClusterServer {
 					externalJwkResolver,
 					keyRotator,
 					allKeysSupplier,
-					() -> delegates);
+					() -> delegates,
+					com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.SecurityInterceptor.SERVICE_ENTITLEMENTS);
 
 			backendServers.services().registerTokenExchangerService(exchangerService);
 			serverBuilder.addService(exchangerService);

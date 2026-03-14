@@ -2,8 +2,10 @@ package com.gitlab.secondstarcavalier.controlplane.codegen.generator;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import com.gitlab.secondstarcavalier.controlplane.codegen.ProtoDescriptorParser;
@@ -28,15 +30,22 @@ public class GeneratorContext {
     private final Path protoAnnotatedDir;
     private final ProtoDescriptorParser parser;
     private final List<AccessPolicy> securityPolicies;
+    private final Map<String, List<String>> serviceRPCMappings;
 
     public GeneratorContext(String javaPackageBase, String typesPackageBase, String interfacesPackage,
             String peerContextClass, Path outputDir, Path protoAnnotatedDir, ProtoDescriptorParser parser) {
-        this(javaPackageBase, typesPackageBase, interfacesPackage, peerContextClass, outputDir, protoAnnotatedDir, parser, List.of());
+        this(javaPackageBase, typesPackageBase, interfacesPackage, peerContextClass, outputDir, protoAnnotatedDir, parser, List.of(), Map.of());
     }
 
     public GeneratorContext(String javaPackageBase, String typesPackageBase, String interfacesPackage,
             String peerContextClass, Path outputDir, Path protoAnnotatedDir, ProtoDescriptorParser parser,
             List<AccessPolicy> securityPolicies) {
+        this(javaPackageBase, typesPackageBase, interfacesPackage, peerContextClass, outputDir, protoAnnotatedDir, parser, securityPolicies, Map.of());
+    }
+
+    public GeneratorContext(String javaPackageBase, String typesPackageBase, String interfacesPackage,
+            String peerContextClass, Path outputDir, Path protoAnnotatedDir, ProtoDescriptorParser parser,
+            List<AccessPolicy> securityPolicies, Map<String, List<String>> serviceRPCMappings) {
         this.javaPackageBase = javaPackageBase;
         this.typesPackageBase = typesPackageBase;
         this.interfacesPackage = interfacesPackage;
@@ -45,6 +54,7 @@ public class GeneratorContext {
         this.protoAnnotatedDir = protoAnnotatedDir;
         this.parser = parser;
         this.securityPolicies = securityPolicies;
+        this.serviceRPCMappings = serviceRPCMappings != null ? serviceRPCMappings : Map.of();
     }
 
     public String getJavaPackageBase() {
@@ -261,6 +271,10 @@ public class GeneratorContext {
 
     public List<AccessPolicy> getSecurityPolicies() {
         return securityPolicies;
+    }
+
+    public Map<String, List<String>> getServiceRPCMappings() {
+        return serviceRPCMappings;
     }
 
     /**

@@ -52,6 +52,7 @@ public class SecurityAuthenticatorGenerator {
         // Build the policy map initialization code and no-auth set from policies
         String policyMapInit = buildPolicyMapInit(ctx.getSecurityPolicies());
         String noAuthGraphsInit = buildNoAuthGraphsInit(ctx.getSecurityPolicies());
+        String serviceEntitlementsInit = buildServiceEntitlementsInit(ctx.getServiceRPCMappings());
 
         Map<String, String> vars = new LinkedHashMap<>();
         vars.put("HEADER", GeneratorContext.header("security_interceptor"));
@@ -63,6 +64,7 @@ public class SecurityAuthenticatorGenerator {
         vars.put("BACKENDDB_TYPES_PACKAGE", ctx.getBackenddbTypesPackage());
         vars.put("POLICY_MAP_INIT", policyMapInit);
         vars.put("NO_AUTH_GRAPHS_INIT", noAuthGraphsInit);
+        vars.put("SERVICE_ENTITLEMENTS_INIT", serviceEntitlementsInit);
 
         String content = TemplateEngine.render("SecurityInterceptor.java.template", vars);
         Files.writeString(dir.resolve("SecurityInterceptor.java"), content);
@@ -101,6 +103,20 @@ public class SecurityAuthenticatorGenerator {
             return "Set.of()";
         }
         return "Set.of(" + String.join(", ", noAuthGraphs) + ")";
+    }
+
+    /**
+     * Builds Java source code for initializing the SERVICE_ENTITLEMENTS map.
+     * Maps service name → list of RPC method names for token entitlements.
+     */
+    private static String buildServiceEntitlementsInit(Map<String, List<String>> mappings) {
+        StringBuilder sb = new StringBuilder();
+        for (var entry : new java.util.TreeMap<>(mappings).entrySet()) {
+            sb.append("        m.put(\"").append(entry.getKey()).append("\", ");
+            sb.append(toJavaList(entry.getValue()));
+            sb.append(");\n");
+        }
+        return sb.toString();
     }
 
     private static String toJavaList(List<String> items) {

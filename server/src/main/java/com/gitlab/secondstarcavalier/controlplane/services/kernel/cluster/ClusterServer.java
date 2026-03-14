@@ -86,8 +86,8 @@ public class ClusterServer {
 
 		this.persistence = persistence;
 
-		this.grpcPort = cfg.getGrpcPort();
-		int hzPort = cfg.getHazelcastPort();
+		this.grpcPort = cfg.getListener().getPort();
+		int hzPort = cfg.getHazelcastListener().getPort();
 		var members = cfg.getMembersList();
 
 		String hostname = System.getenv("HOSTNAME");

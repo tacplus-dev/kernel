@@ -60,7 +60,7 @@ public class Bootstrap {
 
 		// Create persistence
 		Kernel.BootstrapConfig cfg = resolved.bootstrap();
-		int grpcPort = cfg.getGrpcPort();
+		int grpcPort = cfg.getListener().getPort();
 
 		String hostname = System.getenv("HOSTNAME");
 		if (hostname == null || hostname.isEmpty()) {

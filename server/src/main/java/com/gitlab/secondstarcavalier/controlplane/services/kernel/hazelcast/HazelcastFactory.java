@@ -62,7 +62,7 @@ public class HazelcastFactory {
 
 		TcpIpConfig tcpIpConfig = joinConfig.getTcpIpConfig();
 		tcpIpConfig.setEnabled(true);
-		int hzPort = cfg.getHazelcastPort();
+		int hzPort = cfg.getHazelcastListener().getPort();
 		for (var member : cfg.getMembersList()) {
 			tcpIpConfig.addMember(member.getHost() + ":" + hzPort);
 		}

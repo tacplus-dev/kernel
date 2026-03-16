@@ -4,8 +4,7 @@ stages:
 
 variables:
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
-  TACPLUS_PROJECT_ID: "78207479"
-  PROTO_REPO: https://gitlab.com/secondstarcavalier/controlplane/services/proto.git
+  TACPLUS_IMAGE: "${CI_REGISTRY}/secondstarcavalier/controlplane/services/tacplus/tacplus-1-1:latest"
 
 .parse-version: &parse-version
   - |
@@ -16,7 +15,7 @@ variables:
 
 build:
   stage: build
-  image: maven:3-eclipse-temurin-21
+  image: $TACPLUS_IMAGE
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
   cache:
@@ -25,39 +24,7 @@ build:
       - .m2/repository
   before_script:
     - *parse-version
-    - apt-get update -qq && apt-get install -y -qq git unzip > /dev/null
-    - |
-      ARCH=$(dpkg --print-architecture)
-      if [ "$ARCH" = "arm64" ]; then PROTOC_ARCH="linux-aarch_64"; else PROTOC_ARCH="linux-x86_64"; fi
-      curl -fsSL -o /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-${PROTOC_ARCH}.zip"
-      unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
-      chmod +x /usr/local/bin/protoc
-    - |
-      GRPC_ARCH="linux-x86_64"
-      if [ "$ARCH" = "arm64" ]; then GRPC_ARCH="linux-aarch_64"; fi
-      curl -fsSL -o /usr/local/bin/protoc-gen-grpc-java \
-        "https://repo1.maven.org/maven2/io/grpc/protoc-gen-grpc-java/1.79.0/protoc-gen-grpc-java-1.79.0-${GRPC_ARCH}.exe"
-      chmod +x /usr/local/bin/protoc-gen-grpc-java
-    - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
-    - |
-      if [ "$ARCH" = "arm64" ]; then TACPLUS_ARCH="linux-arm64"; else TACPLUS_ARCH="linux-amd64"; fi
-      TACPLUS_PATCH=$(curl --header "JOB-TOKEN: $CI_JOB_TOKEN" -fsSL \
-        "${CI_API_V4_URL}/projects/${TACPLUS_PROJECT_ID}/repository/tags" | \
-        grep -oP '"name":"v\K[0-9]+\.[0-9]+\.[0-9]+' | \
-        awk -F. -v major="$MAJOR" -v minor="$MINOR" '$1==major && $2==minor {print $3}' | \
-        sort -V | tail -1)
-      if [ -z "$TACPLUS_PATCH" ]; then
-        echo "Error: No matching tacplus version found for ${MAJOR}.${MINOR}.x"
-        exit 1
-      fi
-      echo "Using tacplus version: ${MAJOR}.${MINOR}.${TACPLUS_PATCH}"
-      TACPLUS_PKG="tacplus-${MAJOR}-${MINOR}"
-      curl --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-           -fsSL -o /usr/local/bin/tacplus \
-           "${CI_API_V4_URL}/projects/${TACPLUS_PROJECT_ID}/packages/generic/${TACPLUS_PKG}/${TACPLUS_PATCH}/${TACPLUS_PKG}-${TACPLUS_PATCH}-${TACPLUS_ARCH}"
-      chmod +x /usr/local/bin/tacplus
-    - git clone --depth 1 "$PROTO_REPO" /tmp/proto
-    - (cd server && tacplus build --src /tmp/proto --tag "${CI_COMMIT_TAG#v}")
+    - (cd server && tacplus build --no-container --tag "${CI_COMMIT_TAG#v}")
   script:
     - mvn package -DskipTests -B -s ci_settings.xml
   artifacts:

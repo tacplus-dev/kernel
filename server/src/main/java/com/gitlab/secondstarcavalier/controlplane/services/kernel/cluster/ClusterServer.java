@@ -5,7 +5,7 @@ import static com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.HazelcastManager;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.PersistenceProvider;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.backendclient.BackendServer;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.stateclient.StateServer;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertPair;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
@@ -258,7 +258,7 @@ public class ClusterServer {
 		healthManager.setStatus("", ServingStatus.SERVING);
 
 		// 6. Build gRPC server
-		BackendServer backendServer = new BackendServer();
+		StateServer backendServer = new StateServer();
 
 		Hazelcast.RateLimitConfig rateLimit = effectiveFrontendConfig.getRateLimit();
 		var rateLimiter = new RateLimitInterceptor(
@@ -340,7 +340,7 @@ public class ClusterServer {
 						.build());
 
 		// Register all gRPC services
-		String clusterStateSvcName = "kernel.ClusterStateBackendService";
+		String clusterStateSvcName = "kernel.ClusterStateStateService";
 		for (ServerServiceDefinition svc : backendServers.services().getGrpcServices()) {
 			if (svc.getServiceDescriptor().getName().equals(clusterStateSvcName)) {
 				serverBuilder.addService(clusterSetLogLevelHandler.wrapWithSetLogLevel(svc));

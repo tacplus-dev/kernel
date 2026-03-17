@@ -3,7 +3,7 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.ClusterStateBackendServiceGrpc;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.ClusterStateStateServiceGrpc;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.google.protobuf.Empty;
 import io.grpc.ServerMethodDefinition;
@@ -39,12 +39,12 @@ public class ClusterSetLogLevelHandler {
         ServerServiceDefinition.Builder builder = ServerServiceDefinition.builder(original.getServiceDescriptor());
 
         String setLogLevelMethodName =
-                ClusterStateBackendServiceGrpc.getSetLogLevelMethod().getFullMethodName();
+                ClusterStateStateServiceGrpc.getSetLogLevelMethod().getFullMethodName();
 
         for (ServerMethodDefinition<?, ?> method : original.getMethods()) {
             if (method.getMethodDescriptor().getFullMethodName().equals(setLogLevelMethodName)) {
                 builder.addMethod(
-                        ClusterStateBackendServiceGrpc.getSetLogLevelMethod(),
+                        ClusterStateStateServiceGrpc.getSetLogLevelMethod(),
                         ServerCalls.asyncUnaryCall(this::handleSetLogLevel));
             } else {
                 builder.addMethod((ServerMethodDefinition<?, ?>) method);

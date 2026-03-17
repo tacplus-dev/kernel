@@ -143,12 +143,12 @@ public class ProtoDescriptorParser {
             ServiceDescriptor svc = new ServiceDescriptor();
             svc.setName(svcName);
 
-            // Parse service-level options (e.g., service_backend_rpc)
+            // Parse service-level options (e.g., service_grpc)
             Matcher optMatcher = SERVICE_OPTION_PATTERN.matcher(svcBody);
             while (optMatcher.find()) {
                 String optName = optMatcher.group(1);
                 String optValue = optMatcher.group(2);
-                if ("service_backend_rpc".equals(optName)) {
+                if ("service_grpc".equals(optName)) {
                     svc.setBackendRpcName(optValue);
                 }
             }

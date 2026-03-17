@@ -31,7 +31,7 @@ public class BackendServiceDiscovery {
 
             // Find messages with service_backend annotation
             for (MessageDescriptor msg : fileDesc.getMessages()) {
-                AnnotationValue ann = msg.getAnnotations().get("service_backend");
+                AnnotationValue ann = msg.getAnnotations().get("service_state");
                 if (ann == null || ann.getStringValue() == null || ann.getStringValue().isEmpty()) {
                     continue;
                 }
@@ -42,7 +42,7 @@ public class BackendServiceDiscovery {
                 BackendServiceInfo svc = new BackendServiceInfo();
                 svc.setProtoFile(relPath);
                 svc.setPackageName(packageName);
-                svc.setServiceName(backendName + "BackendService");
+                svc.setServiceName(backendName + "StateService");
                 svc.setBackendName(backendName);
                 svc.setBackendRootMsg(msg.getName());
                 services.add(svc);

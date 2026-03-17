@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.backendclient.BackendServer;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.stateclient.StateServer;
 import io.grpc.ForwardingServerCall;
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.Grpc;
@@ -71,7 +71,7 @@ public class RateLimitInterceptor implements ServerInterceptor {
 	private final ConcurrentHashMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
 	private final ConcurrentHashMap<String, Boolean> warnedKeys = new ConcurrentHashMap<>();
 	private final ScheduledExecutorService cleaner;
-	private final BackendServer backendServer;
+	private final StateServer stateServer;
 
 	private final AtomicLong totalRpcs = new AtomicLong();
 	private final AtomicLong rateLimitedCount = new AtomicLong();
@@ -91,10 +91,10 @@ public class RateLimitInterceptor implements ServerInterceptor {
 	 *                      to clients (nullable)
 	 */
 	public RateLimitInterceptor(
-			double pollingRate, double unaryRate, List<ServerServiceDefinition> services, BackendServer backendServer) {
+			double pollingRate, double unaryRate, List<ServerServiceDefinition> services, StateServer stateServer) {
 		this.pollingRate = pollingRate;
 		this.unaryRate = unaryRate;
-		this.backendServer = backendServer;
+		this.stateServer = stateServer;
 		this.methodCategories = classifyMethods(services);
 		this.cleaner = Executors.newSingleThreadScheduledExecutor(r -> {
 			Thread t = new Thread(r, "RateLimitCleaner");
@@ -158,8 +158,8 @@ public class RateLimitInterceptor implements ServerInterceptor {
 					warnMsg = "Polling " + fullMethodName + " — no streaming alternative exists";
 					logger.warn("Peer {} is polling {} — no streaming alternative exists", peer, fullMethodName);
 				}
-				if (backendServer != null) {
-					backendServer.warnPeer(peer, warnMsg);
+				if (stateServer != null) {
+					stateServer.warnPeer(peer, warnMsg);
 				}
 			}
 

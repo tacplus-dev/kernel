@@ -187,8 +187,8 @@ public class SecurityInterceptor implements ServerInterceptor {
         int dotIdx = serviceName.lastIndexOf('.');
         String simpleName = serviceName.substring(dotIdx + 1);
         for (String graph : NO_AUTH_GRAPHS) {
-            // Match state backend service: TokenExchangerState → TokenExchangerStateBackendService
-            if (simpleName.equals(graph + "BackendService")) {
+            // Match state service: TokenExchangerState → TokenExchangerStateStateService
+            if (simpleName.equals(graph + "StateService")) {
                 return true;
             }
             // Match associated RPC service: TokenExchangerState → TokenExchangerService
@@ -212,13 +212,13 @@ public class SecurityInterceptor implements ServerInterceptor {
         String serviceName = method.substring(0, slashIdx);
         String operation = method.substring(slashIdx + 1);
 
-        if (!serviceName.endsWith("BackendService")) {
+        if (!serviceName.endsWith("StateService")) {
             return null;
         }
 
         int dotIdx = serviceName.lastIndexOf('.');
         String graphName = serviceName.substring(dotIdx + 1,
-                serviceName.length() - "BackendService".length());
+                serviceName.length() - "StateService".length());
 
         Policy policy = GRAPH_POLICIES.get(graphName);
         if (policy == null) {

@@ -19,8 +19,8 @@ public class BackendServiceServerGenerator {
         String pkg = ctx.getFullPackage(svc);
         String outerClassName = ctx.getOuterClassName(svc);
         String servicePrefix = info.getServicePrefix();
-        String className = servicePrefix + "BackendServiceServer";
-        String grpcBase = servicePrefix + "BackendServiceGrpc." + servicePrefix + "BackendServiceImplBase";
+        String className = servicePrefix + "StateServiceServer";
+        String grpcBase = servicePrefix + "StateServiceGrpc." + servicePrefix + "StateServiceImplBase";
 
         List<SharedBoundary> singletons = info.getSingletons().stream()
                 .filter(b -> !b.isPrivateField()).toList();
@@ -338,7 +338,7 @@ public class BackendServiceServerGenerator {
         mainVars.put("OUTER_CLASS", outerClassName);
         mainVars.put("CLASS_NAME", className);
         mainVars.put("SERVICE_PREFIX", servicePrefix);
-        mainVars.put("TARGET_SERVICE", svc.getPackageName() + ".BackendService");
+        mainVars.put("TARGET_SERVICE", svc.getPackageName() + ".StateService");
         mainVars.put("GRPC_BASE", grpcBase);
         mainVars.put("BACKEND_MAP_CLASS_NAME", info.getClassName());
         mainVars.put("LEADER_CONSTANTS", hasLeaders

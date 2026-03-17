@@ -442,7 +442,7 @@ public class ClusterStatePublisher {
 				String displayName = info != null ? deriveDisplayName(servicePath, info) : shortName;
 				String valueType = info != null ? info.getTypeFqn() : "";
 				String qualifiedName = info != null ? servicePath + "." + info.getBoundary() : shortName;
-				String stateRoot = info != null ? info.getBackendRoot() : "";
+				String stateRoot = info != null ? info.getStateRoot() : "";
 
 				clusterStateMap.putMapStats(
 						mapName,

@@ -190,7 +190,7 @@
 						</goals>
 						<configuration>
 							<transformers>
-								<transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+								<transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
 							</transformers>
 							<filters>
 								<filter>
@@ -224,12 +224,12 @@
 						</goals>
 						<configuration>
 							<target xmlns:unless="ant:unless" xmlns:if="ant:if">
-								<available file="${project.build.directory}/generated-sources/tacplus/src/main/java" type="dir" property="tacplus.skip" />
-								<echo unless:set="tacplus.skip" message="Running tacplus build (generated sources not found)..." />
+								<available file="${project.build.directory}/generated-sources/tacplus/src/main/java" type="dir" property="tacplus.skip"/>
+								<echo unless:set="tacplus.skip" message="Running tacplus build (generated sources not found)..."/>
 								<exec executable="tacplus" failonerror="true" unless:set="tacplus.skip">
-									<arg value="build" />
+									<arg value="build"/>
 								</exec>
-								<echo if:set="tacplus.skip" message="Skipping tacplus build (generated sources already exist)" />
+								<echo if:set="tacplus.skip" message="Skipping tacplus build (generated sources already exist)"/>
 							</target>
 						</configuration>
 					</execution>

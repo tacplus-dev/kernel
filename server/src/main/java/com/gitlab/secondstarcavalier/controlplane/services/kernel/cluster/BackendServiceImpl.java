@@ -3,15 +3,15 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
 import static com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster.PeerContext.PEER_KEY;
 
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.backendclient.BackendServer;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.stateclient.StateServer;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.host.HostOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.BackendServiceGrpc;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.ClusterInfo;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.ClusterMember;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.ClusterState;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.LogMessage;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.MemberStatus;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.serviceconfig.Serviceconfig.PingResponse;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.grpcconfig.ClusterServiceGrpc;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.ClusterInfo;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.ClusterMember;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.ClusterState;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.LogMessage;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.MemberStatus;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.PingResponse;
 import com.hazelcast.core.HazelcastInstance;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
@@ -29,18 +29,18 @@ import org.slf4j.LoggerFactory;
  *   <li><b>Subscribe</b>: streams {@link ClusterState} updates whenever membership or priorities change.</li>
  * </ul>
  */
-public class BackendServiceImpl extends BackendServiceGrpc.BackendServiceImplBase {
+public class BackendServiceImpl extends ClusterServiceGrpc.ClusterServiceImplBase {
 
     private static final Logger logger = LoggerFactory.getLogger(BackendServiceImpl.class);
 
-    private final BackendServer backendServer;
+    private final StateServer stateServer;
     private final int grpcPort;
     private final HazelcastInstance hazelcast;
     private final String clusterName;
 
     public BackendServiceImpl(
-            BackendServer backendServer, int grpcPort, HazelcastInstance hazelcast, String clusterName) {
-        this.backendServer = backendServer;
+            StateServer stateServer, int grpcPort, HazelcastInstance hazelcast, String clusterName) {
+        this.stateServer = stateServer;
         this.grpcPort = grpcPort;
         this.hazelcast = hazelcast;
         this.clusterName = clusterName;
@@ -53,13 +53,13 @@ public class BackendServiceImpl extends BackendServiceGrpc.BackendServiceImplBas
             peer = "unknown";
         }
 
-        backendServer.addLogObserver(peer, responseObserver);
+        stateServer.addLogObserver(peer, responseObserver);
 
         // Register cancellation handler to clean up when client disconnects
         final String peerKey = peer;
         if (responseObserver instanceof ServerCallStreamObserver) {
             ((ServerCallStreamObserver<LogMessage>) responseObserver).setOnCancelHandler(() -> {
-                backendServer.removeLogObserver(peerKey);
+                stateServer.removeLogObserver(peerKey);
             });
         }
     }

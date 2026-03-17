@@ -39,7 +39,7 @@ public class ViewServerGenerator {
     private static boolean hasJwkVerifyingKeysView(GeneratorContext ctx) {
         for (FileDescriptor fileDesc : ctx.getParser().getAllFiles().values()) {
             for (MessageDescriptor msg : fileDesc.getMessages()) {
-                AnnotationValue backendRoot = msg.getAnnotations().get("service_backend");
+                AnnotationValue backendRoot = msg.getAnnotations().get("service_state");
                 if (backendRoot == null || backendRoot.getStringValue() == null || backendRoot.getStringValue().isEmpty()) {
                     continue;
                 }

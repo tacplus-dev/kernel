@@ -194,7 +194,7 @@ public class BoundaryAnalyzer {
         }
         // Fallback: find first message with service_backend annotation
         for (MessageDescriptor msg : fileDesc.getMessages()) {
-            AnnotationValue ann = msg.getAnnotations().get("service_backend");
+            AnnotationValue ann = msg.getAnnotations().get("service_state");
             if (ann != null && ann.getStringValue() != null && !ann.getStringValue().isEmpty()) {
                 return msg;
             }

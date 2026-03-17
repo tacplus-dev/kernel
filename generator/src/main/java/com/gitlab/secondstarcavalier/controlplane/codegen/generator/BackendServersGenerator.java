@@ -83,7 +83,7 @@ public class BackendServersGenerator {
             if (info == null) continue;
             String svcPkg = ctx.getFullPackage(svc);
             String stateMapClass = svcPkg + "." + info.getClassName();
-            String svcServerClass = svcPkg + "." + info.getServicePrefix() + "BackendServiceServer";
+            String svcServerClass = svcPkg + "." + info.getServicePrefix() + "StateServiceServer";
             String fieldName = StringUtils.toLowerCamelCase(info.getClassName());
             String svcFieldName = fieldName + "BackendSvc";
             fields.append("    private final ").append(stateMapClass).append(" ").append(fieldName).append(";\n");
@@ -106,7 +106,7 @@ public class BackendServersGenerator {
             String svcPkg = ctx.getFullPackage(svc);
             String fieldName = StringUtils.toLowerCamelCase(info.getClassName());
             String svcFieldName = fieldName + "BackendSvc";
-            String svcServerClass = info.getServicePrefix() + "BackendServiceServer";
+            String svcServerClass = info.getServicePrefix() + "StateServiceServer";
             ctor.append("        this.").append(fieldName).append(" = new ").append(svcPkg).append(".").append(info.getClassName()).append("(manager);\n");
             ctor.append("        this.").append(svcFieldName).append(" = new ").append(svcPkg).append(".").append(svcServerClass).append("(manager, authenticator);\n");
         }

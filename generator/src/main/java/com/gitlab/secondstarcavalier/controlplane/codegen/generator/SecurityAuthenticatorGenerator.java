@@ -26,6 +26,10 @@ public class SecurityAuthenticatorGenerator {
     public static void generate(GeneratorContext ctx) throws IOException {
         String pkg = ctx.getJavaPackageBase();
 
+        // Build the no-auth service skip condition from proto annotations
+        List<String> noAuthServices = ctx.getNoAuthServiceNames();
+        String noAuthSkipCondition = buildNoAuthSkipCondition(noAuthServices);
+
         Map<String, String> vars = new LinkedHashMap<>();
         vars.put("HEADER", GeneratorContext.header("security_authenticator"));
         vars.put("PACKAGE", pkg);
@@ -33,6 +37,7 @@ public class SecurityAuthenticatorGenerator {
         vars.put("TOKEN_PACKAGE", ctx.getTokenPackage());
         vars.put("JWK_LIB_PACKAGE", ctx.getJwkLibPackage());
         vars.put("JWK_TYPES_PACKAGE", ctx.getJwkTypesPackage());
+        vars.put("NO_AUTH_SKIP", noAuthSkipCondition);
 
         String content = TemplateEngine.render("SecurityAuthenticator.java.template", vars);
 
@@ -115,6 +120,22 @@ public class SecurityAuthenticatorGenerator {
             sb.append("        m.put(\"").append(entry.getKey()).append("\", ");
             sb.append(toJavaList(entry.getValue()));
             sb.append(");\n");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Builds the Java condition for skipping auth on no-auth services.
+     * Generates: method.contains("ServiceA") || method.contains("ServiceB")
+     */
+    private static String buildNoAuthSkipCondition(List<String> serviceNames) {
+        if (serviceNames.isEmpty()) {
+            return "false";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < serviceNames.size(); i++) {
+            if (i > 0) sb.append("\n                    || ");
+            sb.append("method.contains(\"").append(serviceNames.get(i)).append("\")");
         }
         return sb.toString();
     }

@@ -13,6 +13,7 @@ import com.gitlab.secondstarcavalier.controlplane.codegen.StringUtils;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.AccessPolicy;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.FileDescriptor;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.MessageDescriptor;
+import com.gitlab.secondstarcavalier.controlplane.codegen.model.ServiceDescriptor;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.SharedBoundary;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.SharedBackendInfo;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendServiceInfo;
@@ -267,6 +268,23 @@ public class GeneratorContext {
         String outerClass = resolveCrossOuterClass(b.getCrossPkg());
         String javaPkg = typesPackageBase + ".types." + typeDir + "." + b.getCrossPkg();
         return "import " + javaPkg + "." + outerClass + ";\n";
+    }
+
+    /**
+     * Returns the names of gRPC services that have disable_auth_service = true.
+     * These services handle their own authentication and should be skipped
+     * by the caller interceptor in SecurityAuthenticator.
+     */
+    public List<String> getNoAuthServiceNames() {
+        List<String> names = new ArrayList<>();
+        for (FileDescriptor fd : parser.getAllFiles().values()) {
+            for (ServiceDescriptor svc : fd.getServices()) {
+                if (svc.isDisableAuth()) {
+                    names.add(svc.getName());
+                }
+            }
+        }
+        return names;
     }
 
     public List<AccessPolicy> getSecurityPolicies() {

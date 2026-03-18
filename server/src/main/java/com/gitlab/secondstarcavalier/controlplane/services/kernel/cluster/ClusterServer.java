@@ -5,7 +5,7 @@ import static com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.HazelcastManager;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.PersistenceProvider;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.stateclient.StateServer;
+// StateServer is in this package
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertPair;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
@@ -57,11 +57,18 @@ public class ClusterServer {
 
 	private static final Logger logger = LoggerFactory.getLogger(ClusterServer.class);
 
+	/** Context key for the raw Bearer token (available for all methods, including auth-exempt). */
+	static final Context.Key<String> RAW_AUTH_TOKEN_KEY = Context.key("raw-auth-token");
+
+	private static final Metadata.Key<String> AUTH_HEADER_KEY =
+			Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+
 	private final int grpcPort;
 	private final HazelcastInstance hazelcast;
 	private final PersistenceProvider persistence;
 	private final BackendServers backendServers;
 	private final JwkVerifyingKeysViewServer jwkViewServer;
+	private final EntitlementProfileViewServer profileViewServer;
 	private final ClusterStatePublisher clusterPublisher;
 	private final ClusterSetLogLevelHandler clusterSetLogLevelHandler;
 	private final HealthStatusManager healthManager;
@@ -164,7 +171,7 @@ public class ClusterServer {
 					try {
 						for (JwkOuterClass.Jwk jwk : backendServers
 								.services()
-								.getIdentityStateMap()
+								.getIdentityMap()
 								.proto()
 								.getVerifyingKeysList()) {
 							String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
@@ -180,7 +187,7 @@ public class ClusterServer {
 					try {
 						for (JwkOuterClass.Jwk jwk : backendServers
 								.services()
-								.getTokenExchangerStateMap()
+								.getIdentityMap()
 								.proto()
 								.getVerifyingKeysList()) {
 							String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
@@ -191,6 +198,11 @@ public class ClusterServer {
 					}
 					return result;
 				});
+
+		// Create entitlement profile view server — publishes entitlement_profiles from Config
+		this.profileViewServer = new EntitlementProfileViewServer(
+				backendServers.getAuthenticator(),
+				effectiveFrontendConfig::getEntitlementProfilesList);
 
 		// Capture delegate public keys from Config
 		final var delegatePublicKeys = new java.util.ArrayList<JwkOuterClass.Jwk>();
@@ -204,7 +216,7 @@ public class ClusterServer {
 			try {
 				keys.addAll(backendServers
 						.services()
-						.getTokenExchangerStateMap()
+						.getIdentityMap()
 						.proto()
 						.getVerifyingKeysList());
 			} catch (Exception e) {
@@ -297,6 +309,12 @@ public class ClusterServer {
 				String peer = remote != null ? remote.toString() : "unknown";
 				logger.info("Node {} — {} from {}", grpcPort, method, peer);
 				Context ctx = Context.current().withValue(PEER_KEY, peer);
+				// Forward raw Bearer token so auth-exempt services (MintService) can
+				// manually validate the caller for specific RPCs like GetServiceCertificate.
+				String authHeader = headers.get(AUTH_HEADER_KEY);
+				if (authHeader != null && authHeader.startsWith("Bearer ")) {
+					ctx = ctx.withValue(RAW_AUTH_TOKEN_KEY, authHeader.substring(7));
+				}
 				return Contexts.interceptCall(ctx, call, headers, next);
 			}
 		};
@@ -328,7 +346,7 @@ public class ClusterServer {
 				"nodeId");
 		this.clusterPublisher = new ClusterStatePublisher(
 				hazelcast,
-				backendServers.services().getClusterStateMap(),
+				backendServers.services().getClusterMap(),
 				persistence,
 				cfg,
 				effectiveFrontendConfig,
@@ -340,7 +358,7 @@ public class ClusterServer {
 						.build());
 
 		// Register all gRPC services
-		String clusterStateSvcName = "kernel.ClusterStateStateService";
+		String clusterStateSvcName = "kernel.ClusterStateService";
 		for (ServerServiceDefinition svc : backendServers.services().getGrpcServices()) {
 			if (svc.getServiceDescriptor().getName().equals(clusterStateSvcName)) {
 				serverBuilder.addService(clusterSetLogLevelHandler.wrapWithSetLogLevel(svc));
@@ -356,61 +374,49 @@ public class ClusterServer {
 		serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
 				jwkViewServer.bindService(),
 				backendServers.getAuthenticator().callerInterceptor()));
+		serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
+				profileViewServer.bindService(),
+				backendServers.getAuthenticator().callerInterceptor()));
 
 		// Health service is always registered
 		serverBuilder.addService(healthManager.getHealthService());
 
-		// Create and register the token exchanger.
-		if (effectiveFrontendConfig.getDelegatesCount() > 0) {
-			var exchangerState = backendServers.services().getTokenExchangerStateMap();
-
-			this.keyRotator = new KeyRotator(
-					effectiveFrontendConfig.getKeyRotationIntervalSeconds() > 0
-							? effectiveFrontendConfig.getKeyRotationIntervalSeconds()
-							: 86400,
-					jwk -> {
-						try {
-							String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
-							exchangerState.putVerifyingKeys(kid, jwk);
-						} catch (Exception e) {
-							throw new RuntimeException("putVerifyingKeys failed", e);
-						}
-					},
-					kid -> exchangerState.deleteVerifyingKeys(Objects.requireNonNull(kid, "kid")),
-					() -> {
-						try {
-							return new java.util.ArrayList<>(
-									exchangerState.proto().getVerifyingKeysList());
-						} catch (Exception e) {
-							logger.warn("Failed to read verifying keys: {}", e.getMessage());
-							return List.of();
-						}
-					});
-
-			this.externalJwkResolver = new ExternalJwkResolver(allKeysSupplier);
-
-			final var delegates = effectiveFrontendConfig.getDelegatesList();
-			var exchangerService = new TokenExchangerService(
-					effectiveFrontendConfig.getDefaultTokenExpirySeconds(),
-					externalJwkResolver,
-					keyRotator,
-					allKeysSupplier,
-					() -> delegates,
-					com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.SecurityInterceptor.SERVICE_ENTITLEMENTS);
-
-			backendServers.services().registerTokenExchangerService(exchangerService);
-			serverBuilder.addService(exchangerService);
-			logger.info("TokenExchangerService registered on gRPC server ({} delegates)", delegates.size());
-		} else {
-			this.keyRotator = null;
-			this.externalJwkResolver = null;
-		}
-
-		// Create and register the X509 cert exchanger.
-		// Every node generates its own CA keypair so it can sign certs locally.
+		// Create and register the identity service (token minting + X509 signing).
 		{
-			var caState = backendServers.services().getCaStateMap();
+			var identityState = backendServers.services().getIdentityMap();
+			var caState = backendServers.services().getCaMap();
 
+			if (effectiveFrontendConfig.getDelegatesCount() > 0) {
+				this.keyRotator = new KeyRotator(
+						effectiveFrontendConfig.getKeyRotationIntervalSeconds() > 0
+								? effectiveFrontendConfig.getKeyRotationIntervalSeconds()
+								: 86400,
+						jwk -> {
+							try {
+								String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
+								identityState.putVerifyingKeys(kid, jwk);
+							} catch (Exception e) {
+								throw new RuntimeException("putVerifyingKeys failed", e);
+							}
+						},
+						kid -> identityState.deleteVerifyingKeys(Objects.requireNonNull(kid, "kid")),
+						() -> {
+							try {
+								return new java.util.ArrayList<>(
+										identityState.proto().getVerifyingKeysList());
+							} catch (Exception e) {
+								logger.warn("Failed to read verifying keys: {}", e.getMessage());
+								return List.of();
+							}
+						});
+
+				this.externalJwkResolver = new ExternalJwkResolver(allKeysSupplier);
+			} else {
+				this.keyRotator = null;
+				this.externalJwkResolver = null;
+			}
+
+			// Every node generates its own CA keypair so it can sign certs locally.
 			this.caKeyHolder = new CaKeyHolder(
 					effectiveFrontendConfig.getCaCertLifetimeSeconds() > 0
 							? effectiveFrontendConfig.getCaCertLifetimeSeconds()
@@ -420,10 +426,21 @@ public class ClusterServer {
 						caState.putCaCerts(certId, cert);
 					});
 
-			var certExchangerService = new X509CertExchangerService(caKeyHolder);
-			backendServers.services().registerX509CertExchangerService(certExchangerService);
-			serverBuilder.addService(certExchangerService);
-			logger.info("X509CertExchangerService registered on gRPC server");
+			final var delegates = effectiveFrontendConfig.getDelegatesList();
+			var identityService = new IdentityServiceImpl(
+					effectiveFrontendConfig.getDefaultTokenExpirySeconds(),
+					externalJwkResolver,
+					keyRotator,
+					allKeysSupplier,
+					() -> delegates,
+					com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.SecurityInterceptor.SERVICE_ENTITLEMENTS,
+					caKeyHolder,
+					serviceName -> caState.getServiceCas(serviceName),
+					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair));
+
+			backendServers.services().registerMintService(identityService);
+			serverBuilder.addService(identityService);
+			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
 		}
 
 		this.grpcServer = serverBuilder.build();
@@ -431,7 +448,7 @@ public class ClusterServer {
 	}
 
 	private void installTrustedCas(List<X509.X509Cert> configCas) {
-		var map = backendServers.services().getTrustedCaStateMap();
+		var map = backendServers.services().getTrustedCaMap();
 		int installed = 0;
 		for (var ca : configCas) {
 			String caId = Objects.requireNonNull(ca.getId(), "trustedCa.id");
@@ -485,6 +502,7 @@ public class ClusterServer {
 		healthManager.enterTerminalState();
 		grpcServer.shutdown();
 		jwkViewServer.close();
+		profileViewServer.close();
 		backendServers.services().close();
 		persistence.close();
 		hazelcast.shutdown();

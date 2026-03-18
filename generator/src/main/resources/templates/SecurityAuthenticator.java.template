@@ -99,9 +99,9 @@ public class SecurityAuthenticator {
                     io.grpc.Metadata headers,
                     io.grpc.ServerCallHandler<ReqT, RespT> next) {
                 String method = call.getMethodDescriptor().getFullMethodName();
-                // TokenExchangerService handles its own auth (validates throwaway JWTs
-                // via CredPair lookup), so skip the caller interceptor for it.
-                if (method.contains("TokenExchangerService")) {
+                // Services with disable_auth_service = true handle their own auth.
+                // Skip the caller interceptor for them.
+                if ({{NO_AUTH_SKIP}}) {
                     return next.startCall(call, headers);
                 }
                 String authHeader = headers.get(AUTH_METADATA_KEY);

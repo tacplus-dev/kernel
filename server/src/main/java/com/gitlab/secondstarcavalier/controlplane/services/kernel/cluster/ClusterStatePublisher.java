@@ -7,7 +7,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.services.kernel.ClusterStateMap;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.services.kernel.ClusterMap;
 import com.hazelcast.cluster.Member;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.map.LocalMapStats;
@@ -40,7 +40,7 @@ public class ClusterStatePublisher {
 	private static final long PUBLISH_INTERVAL_SECONDS = 10;
 
 	private final HazelcastInstance hazelcast;
-	private final ClusterStateMap clusterStateMap;
+	private final ClusterMap clusterStateMap;
 	private final PersistenceProvider persistence;
 	private final Kernel.BootstrapConfig bootstrapConfig;
 	private final int grpcPort;
@@ -52,7 +52,7 @@ public class ClusterStatePublisher {
 
 	public ClusterStatePublisher(
 			HazelcastInstance hazelcast,
-			ClusterStateMap clusterStateMap,
+			ClusterMap clusterStateMap,
 			PersistenceProvider persistence,
 			Kernel.BootstrapConfig bootstrapConfig,
 			Kernel.Config frontendConfig,
@@ -374,7 +374,7 @@ public class ClusterStatePublisher {
 	/**
 	 * Extracts the short name from the full Hazelcast map name.
 	 * Full name:
-	 * "com.gitlab...ClusterStateMap:services.kernel.ClusterState.BootstrapConfig"
+	 * "com.gitlab...ClusterMap:services.kernel.ClusterState.BootstrapConfig"
 	 * Returns: "services.kernel.ClusterState.BootstrapConfig"
 	 */
 	private static String shortMapName(String fullName) {

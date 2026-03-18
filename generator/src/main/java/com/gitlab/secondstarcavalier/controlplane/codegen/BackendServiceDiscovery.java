@@ -29,14 +29,31 @@ public class BackendServiceDiscovery {
             // Skip vendored protos
             if (relPath.startsWith("google/")) continue;
 
-            // Find messages with service_backend annotation
+            // Find messages with service_state annotation
             for (MessageDescriptor msg : fileDesc.getMessages()) {
+                String backendName = null;
+
+                // Check simple string annotation first
                 AnnotationValue ann = msg.getAnnotations().get("service_state");
-                if (ann == null || ann.getStringValue() == null || ann.getStringValue().isEmpty()) {
+                if (ann != null && ann.getStringValue() != null && !ann.getStringValue().isEmpty()) {
+                    backendName = ann.getStringValue();
+                }
+
+                // Check structured annotation (e.g. {name: "IdentityConfigState", store: "kernel"})
+                if (backendName == null) {
+                    List<AnnotationValue> repeated = msg.getRepeatedAnnotations("service_state");
+                    if (!repeated.isEmpty()) {
+                        AnnotationValue first = repeated.get(0);
+                        if (first.isStruct() && first.getStructValue().containsKey("name")) {
+                            backendName = first.getStructValue().get("name");
+                        }
+                    }
+                }
+
+                if (backendName == null || backendName.isEmpty()) {
                     continue;
                 }
 
-                String backendName = ann.getStringValue();
                 String packageName = derivePackageName(fileDesc, relPath);
 
                 BackendServiceInfo svc = new BackendServiceInfo();

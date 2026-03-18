@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.stateclient.StateServer;
+// StateServer is in this package
 import io.grpc.ForwardingServerCall;
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.Grpc;

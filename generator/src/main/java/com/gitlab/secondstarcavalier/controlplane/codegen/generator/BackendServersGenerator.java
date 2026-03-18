@@ -199,7 +199,7 @@ public class BackendServersGenerator {
 
             // Derive Services type reference from libs/generated.proto (package generated).
             if (configHolderType == null) {
-                configHolderType = ctx.getTypesPackageBase() + ".types.libs.generated.Generated.Services";
+                configHolderType = ctx.getTypesPackageBase() + ".types.common.generated_services.GeneratedServices.Services";
             }
 
             // AwsConnectorConfigState → AwsConnector → has/getAwsConnectorConfig()

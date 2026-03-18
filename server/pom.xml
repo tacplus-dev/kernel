@@ -232,8 +232,6 @@
 								<replace file="${project.build.directory}/generated-sources/tacplus-backend/src/main/java/com/gitlab/secondstarcavalier/controlplane/services/kernel/tacplusbackend/services/BackendServers.java" token="services.dgraph.Dgraph.ConfigHolder" value="services.config_holder.ConfigHolderOuterClass.ConfigHolder"/>
 								<!-- Fix tacplus bug: mergeConfig not generated for empty Config messages.
 								     Replace call sites with no-op (idempotent). -->
-								<replace dir="${project.build.directory}/generated-sources/tacplus/src/main/java/com/gitlab/secondstarcavalier/controlplane/services/kernel/tacplus/types/services/policy" includes="Helpers.java" token="mergeConfig(dst.getConfig(), src.getConfig()).build()" value="dst.getConfig()"/>
-								<replace dir="${project.build.directory}/generated-sources/tacplus/src/main/java/com/gitlab/secondstarcavalier/controlplane/services/kernel/tacplus/types/services/policysim" includes="Helpers.java" token="mergeConfig(dst.getConfig(), src.getConfig()).build()" value="dst.getConfig()"/>
 								<replace dir="${project.build.directory}/generated-sources/tacplus/src/main/java/com/gitlab/secondstarcavalier/controlplane/services/kernel/tacplus/types/services/sentinel" includes="Helpers.java" token="mergeConfig(dst.getConfig(), src.getConfig()).build()" value="dst.getConfig()"/>
 								<replace dir="${project.build.directory}/generated-sources/tacplus/src/main/java/com/gitlab/secondstarcavalier/controlplane/services/kernel/tacplus/types/services/dgraph" includes="Helpers.java" token="mergeConfig(dst.getConfig(), src.getConfig()).build()" value="dst.getConfig()"/>
 							</target>

@@ -131,6 +131,9 @@ public class ProtoDescriptorParser {
     private static final Pattern SERVICE_OPTION_PATTERN = Pattern.compile(
             "^\\s*option\\s+\\(spec\\.(\\w+)\\)\\s*=\\s*\"([^\"]+)\"\\s*;", Pattern.MULTILINE);
 
+    private static final Pattern SERVICE_BOOL_OPTION_PATTERN = Pattern.compile(
+            "^\\s*option\\s+\\(spec\\.(\\w+)\\)\\s*=\\s*(true|false)\\s*;", Pattern.MULTILINE);
+
     private void parseServices(String content, FileDescriptor fd) {
         Matcher svcStart = SERVICE_START.matcher(content);
         while (svcStart.find()) {
@@ -143,13 +146,23 @@ public class ProtoDescriptorParser {
             ServiceDescriptor svc = new ServiceDescriptor();
             svc.setName(svcName);
 
-            // Parse service-level options (e.g., service_grpc)
+            // Parse service-level string options (e.g., service_grpc)
             Matcher optMatcher = SERVICE_OPTION_PATTERN.matcher(svcBody);
             while (optMatcher.find()) {
                 String optName = optMatcher.group(1);
                 String optValue = optMatcher.group(2);
                 if ("service_grpc".equals(optName)) {
                     svc.setBackendRpcName(optValue);
+                }
+            }
+
+            // Parse service-level boolean options (e.g., disable_auth_service)
+            Matcher boolOptMatcher = SERVICE_BOOL_OPTION_PATTERN.matcher(svcBody);
+            while (boolOptMatcher.find()) {
+                String optName = boolOptMatcher.group(1);
+                boolean optValue = "true".equals(boolOptMatcher.group(2));
+                if ("disable_auth_service".equals(optName)) {
+                    svc.setDisableAuth(optValue);
                 }
             }
 

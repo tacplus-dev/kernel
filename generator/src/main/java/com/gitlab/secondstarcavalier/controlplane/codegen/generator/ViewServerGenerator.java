@@ -39,10 +39,19 @@ public class ViewServerGenerator {
     private static boolean hasJwkVerifyingKeysView(GeneratorContext ctx) {
         for (FileDescriptor fileDesc : ctx.getParser().getAllFiles().values()) {
             for (MessageDescriptor msg : fileDesc.getMessages()) {
+                // Check both simple and structured service_state annotations
+                boolean hasServiceState = false;
                 AnnotationValue backendRoot = msg.getAnnotations().get("service_state");
-                if (backendRoot == null || backendRoot.getStringValue() == null || backendRoot.getStringValue().isEmpty()) {
-                    continue;
+                if (backendRoot != null && backendRoot.getStringValue() != null && !backendRoot.getStringValue().isEmpty()) {
+                    hasServiceState = true;
                 }
+                if (!hasServiceState) {
+                    java.util.List<AnnotationValue> repeated = msg.getRepeatedAnnotations("service_state");
+                    if (!repeated.isEmpty() && repeated.get(0).isStruct() && repeated.get(0).getStructValue().containsKey("name")) {
+                        hasServiceState = true;
+                    }
+                }
+                if (!hasServiceState) continue;
 
                 for (FieldDescriptor field : msg.getFields()) {
                     AnnotationValue viewMember = field.getAnnotations().get("view_member");

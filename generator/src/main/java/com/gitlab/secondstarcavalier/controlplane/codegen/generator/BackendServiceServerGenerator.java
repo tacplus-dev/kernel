@@ -19,8 +19,11 @@ public class BackendServiceServerGenerator {
         String pkg = ctx.getFullPackage(svc);
         String outerClassName = ctx.getOuterClassName(svc);
         String servicePrefix = info.getServicePrefix();
+        // Proto service name strips redundant "State" suffix: DgraphState→DgraphStateService (not DgraphStateStateService)
+        String grpcServiceBase = servicePrefix.endsWith("State")
+                ? servicePrefix.substring(0, servicePrefix.length() - 5) : servicePrefix;
         String className = servicePrefix + "StateServiceServer";
-        String grpcBase = servicePrefix + "StateServiceGrpc." + servicePrefix + "StateServiceImplBase";
+        String grpcBase = grpcServiceBase + "StateServiceGrpc." + grpcServiceBase + "StateServiceImplBase";
 
         List<SharedBoundary> singletons = info.getSingletons().stream()
                 .filter(b -> !b.isPrivateField()).toList();

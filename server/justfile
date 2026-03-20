@@ -1,27 +1,15 @@
-# Local development builds only — not used in CI/CD.
+# Build kernel-server shaded jar.
 
-registry := "registry.gitlab.com/secondstarcavalier/controlplane/services/kernel"
+tacplus_image := "registry.gitlab.com/secondstarcavalier/controlplane/services/tacplus/tacplus-1-1:latest"
 
-default: binary container
+default: build
 
-generate:
+build:
   #!/usr/bin/env bash
   set -euo pipefail
-  if [ -d "../../proto" ]; then
-    tacplus build --src ../../proto
-  else
-    tacplus build
-  fi
-
-binary: generate
-  cd .. && mvn -pl server -am package -DskipTests
-
-container: generate
-  #!/usr/bin/env bash
-  set -euo pipefail
-  tag=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
-  major=$(echo "$tag" | cut -d. -f1)
-  minor=$(echo "$tag" | cut -d. -f2)
-  image="{{registry}}/kernel-${major}-${minor}:latest"
-  cd .. && mvn -pl server -am package -DskipTests && docker build -t "$image" .
-  echo "Built: $image"
+  docker run --rm \
+    -v "$(cd .. && pwd)":/workspace \
+    -v "${HOME}/.m2:/root/.m2" \
+    -w /workspace \
+    {{tacplus_image}} \
+    mvn -pl server -am package -DskipTests

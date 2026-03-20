@@ -3,9 +3,8 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.jwk.ImmutableJwk;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.key.ImmutableKey;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.key.ImmutablePublicKey;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.token.TokenWrapper;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertPair;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.key.KeyOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.TokenOuterClass;
@@ -13,9 +12,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.MintServiceGrpc;
-import com.google.protobuf.Empty;
 import com.google.protobuf.Value;
-import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.security.KeyPair;
@@ -33,20 +30,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Kernel's identity authority — mints JWT tokens, signs X.509 certificates,
- * and provisions per-service mTLS certificates.
+ * Kernel's identity authority — mints JWT tokens and signs X.509 certificates.
  *
- * <p>Implements three RPCs:
+ * <p>Implements two RPCs:
  * <ul>
  * <li><b>TokenMint:</b> mints signed JWTs. Handles both direct credential
  * exchange (delegate presents cred_pair JWT) and delegation (broker
  * authenticates via header, mints on behalf).</li>
- * <li><b>X509Mint:</b> signs X.509 certificates using the node's CA keypair.
- * Same credential/delegation pattern as TokenMint.</li>
- * <li><b>GetServiceCertificate:</b> returns per-service mTLS certificates.
- * Creates an intermediate CA per service (signed by root CA, pathlen:0),
- * then mints fresh leaf certs on each call. Provides per-service trust
- * isolation — only nodes of the same service can verify each other.</li>
+ * <li><b>X509Mint:</b> signs X.509 certificates under per-service intermediate CAs.
+ * Authenticates caller via bearer token, creates an intermediate CA per
+ * service (signed by root CA, pathlen:0), signs the caller-provided public
+ * key, and returns an X509CertChain (leaf + intermediate). Provides
+ * per-service trust isolation.</li>
  * </ul>
  */
 public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
@@ -61,9 +56,6 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 	/** Intermediate CA lifetime: 10 years. */
 	private static final long INTERMEDIATE_CA_LIFETIME_SECONDS = 10L * 365 * 24 * 3600;
 
-	/** Leaf certificate lifetime: 24 hours (services re-fetch on restart). */
-	private static final long LEAF_CERT_LIFETIME_SECONDS = 24L * 3600;
-
 	private final long defaultTokenExpirySeconds;
 	private final ExternalJwkResolver externalJwkResolver;
 	private final KeyRotator keyRotator;
@@ -71,8 +63,9 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 	private final Supplier<List<Kernel.Delegate>> delegatesReader;
 	private final Map<String, List<String>> serviceEntitlements;
 	private final CaKeyHolder caKeyHolder;
-	private final Function<String, X509.X509CertPair> serviceCaReader;
-	private final BiConsumer<String, X509.X509CertPair> serviceCaWriter;
+	private final Function<String, X509.X509CertChain> serviceCaReader;
+	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
+	private final Supplier<String> trustDomainReader;
 
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
@@ -82,8 +75,9 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 			Supplier<List<Kernel.Delegate>> delegatesReader,
 			Map<String, List<String>> serviceEntitlements,
 			CaKeyHolder caKeyHolder,
-			Function<String, X509.X509CertPair> serviceCaReader,
-			BiConsumer<String, X509.X509CertPair> serviceCaWriter) {
+			Function<String, X509.X509CertChain> serviceCaReader,
+			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
+			Supplier<String> trustDomainReader) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.externalJwkResolver = externalJwkResolver;
 		this.keyRotator = keyRotator;
@@ -93,6 +87,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 		this.caKeyHolder = caKeyHolder;
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
+		this.trustDomainReader = trustDomainReader;
 	}
 
 	// ========================================================================
@@ -118,7 +113,12 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 
 	private TokenOuterClass.Token doTokenMint(Tokenrequest.TokenMintRequest request) throws StatusException {
 		if (request.getInputToken().isEmpty()) {
-			throw new StatusException(Status.INVALID_ARGUMENT, "input_token is required");
+			// Delegation path: caller authenticates via header, mints on behalf.
+			if (request.getSubject().isEmpty()) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"input_token or subject is required");
+			}
+			return delegationMint(request);
 		}
 
 		TokenWrapper inputToken;
@@ -179,7 +179,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 			}
 
 			return mintRefreshToken(
-					delegateName, request, Map.of("instance_id", instanceId));
+					delegateName, delegateName, request, Map.of("instance_id", instanceId));
 		}
 
 		String issuer = inputToken.getIssuer();
@@ -198,11 +198,144 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 
 		String subject = inputToken.getSubject();
 
-		return mintRefreshToken(subject, request, Map.of());
+		return mintRefreshToken(subject, "kernel", request, Map.of());
+	}
+
+	/**
+	 * Delegation path: a trusted broker (e.g. oauth) authenticates via its
+	 * service token in the header and requests a token for a user it has already
+	 * verified. Kernel trusts the broker's attestation.
+	 */
+	private TokenOuterClass.Token delegationMint(Tokenrequest.TokenMintRequest request)
+			throws StatusException {
+
+		// Extract raw bearer token from the caller's auth header.
+		String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
+		if (rawToken == null || rawToken.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"delegation requires authorization header");
+		}
+
+		// Parse and verify the caller's service token against cluster keys.
+		TokenWrapper callerToken;
+		try {
+			callerToken = TokenWrapper.parse(rawToken);
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"invalid caller token: " + e.getMessage());
+		}
+
+		String kid = callerToken.getKid();
+		if (kid == null || kid.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
+		}
+
+		JwkOuterClass.Jwk matchingKey = null;
+		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+			if (kid.equals(jwk.getKid())) {
+				matchingKey = jwk;
+				break;
+			}
+		}
+		if (matchingKey == null) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"caller token signed with unknown key: " + kid);
+		}
+
+		try {
+			callerToken.verify(ImmutableJwk.from(matchingKey));
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"caller token verification failed: " + e.getMessage());
+		}
+
+		// The caller's sub must be a known delegate name.
+		String callerSub = callerToken.getSubject();
+		Kernel.Delegate delegate = findDelegateByName(callerSub);
+		if (delegate == null) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"caller " + callerSub + " is not a registered delegate");
+		}
+
+		// Validate delegate is authorized for the target audience (if specified).
+		if (!request.getAud().isEmpty()) {
+			boolean authorized = false;
+			for (var svcName : delegate.getAuthorizedServicesList()) {
+				String enumName = svcName.name();
+				if (enumName.equals("SERVICE_NAME_ANY")) {
+					authorized = true;
+					break;
+				}
+				String svc = enumName.replace("SERVICE_NAME_", "").toLowerCase();
+				if (svc.equals(request.getAud())) {
+					authorized = true;
+					break;
+				}
+			}
+			if (!authorized) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"delegate " + callerSub + " not authorized for service " + request.getAud());
+			}
+		}
+
+		// Mint the token with the delegated subject and azp = caller's delegate name.
+		ImmutableKey signingKey = keyRotator.getActiveSigningKey();
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+
+		long now = Instant.now().getEpochSecond();
+		long exp;
+		if (request.getExp() > 0) {
+			exp = request.getExp();
+		} else {
+			exp = now + defaultTokenExpirySeconds;
+		}
+
+		boolean isRefresh = request.getTokenPurpose() ==
+				com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.TokenOuterClass.TokenPurpose.TOKEN_PURPOSE_REFRESH;
+
+		TokenWrapper newToken = TokenWrapper.create()
+				.setIssuer("kernel")
+				.setSubject(request.getSubject())
+				.setAudience(request.getAud().isEmpty() ? "kernel" : request.getAud())
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+
+		// azp = the delegate name (e.g. "oauth")
+		newToken.setCustomField("azp", callerSub);
+
+		if (isRefresh) {
+			newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
+		}
+
+		// Set profiles from the request.
+		if (!request.getProfilesList().isEmpty()) {
+			newToken.setCustomField("profiles", request.getProfilesList());
+		}
+
+		// Forward custom claims from the request (e.g., IDP claims like email, name).
+		if (request.hasClaims()) {
+			for (Map.Entry<String, Value> entry : request.getClaims().getFieldsMap().entrySet()) {
+				String key = entry.getKey();
+				if (STANDARD_JWT_CLAIMS.contains(key)) {
+					continue;
+				}
+				newToken.setCustomField(key, entry.getValue());
+			}
+		}
+
+		newToken.sign(signingKey);
+
+		logger.info("Minted delegated token: sub={}, azp={}, exp={}",
+				request.getSubject(), callerSub, exp);
+		return newToken.getProto();
 	}
 
 	private TokenOuterClass.Token mintRefreshToken(
-			String subject, Tokenrequest.TokenMintRequest request, Map<String, Object> extraClaims)
+			String subject, String azp, Tokenrequest.TokenMintRequest request,
+			Map<String, Object> extraClaims)
 			throws StatusException {
 
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey();
@@ -227,7 +360,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 				.setJTI(UUID.randomUUID().toString());
 
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
-		newToken.setCustomField("azp", "kernel");
+		newToken.setCustomField("azp", azp);
 
 		for (Map.Entry<String, Object> entry : extraClaims.entrySet()) {
 			newToken.setCustomField(entry.getKey(), entry.getValue());
@@ -323,7 +456,9 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 
-		newToken.setCustomField("azp", "kernel");
+		// Preserve azp from the input refresh token (set during initial mint).
+		Object inputAzp = inputToken.getCustomField("azp");
+		newToken.setCustomField("azp", inputAzp != null ? inputAzp : "kernel");
 		newToken.setCustomField("principal", subject);
 
 		if (isS2S) {
@@ -437,46 +572,15 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 
 	@Override
 	public void x509Mint(Tokenrequest.X509MintRequest request,
-			StreamObserver<X509.X509Cert> responseObserver) {
-		try {
-			ImmutableCertPair caPair = caKeyHolder.getActiveCaPair();
-			if (caPair == null) {
-				responseObserver.onError(Status.UNAVAILABLE
-						.withDescription("CA keypair not yet initialized")
-						.asRuntimeException());
-				return;
-			}
-
-			X509.X509Cert signed = caPair.sign(request.getCertRequest());
-
-			logger.info("Signed certificate: issuer={}, exp={}",
-					request.getCertRequest().getIssuer(),
-					request.getCertRequest().getExp());
-			responseObserver.onNext(signed);
-			responseObserver.onCompleted();
-		} catch (IllegalArgumentException e) {
-			responseObserver.onError(Status.INVALID_ARGUMENT
-					.withDescription("certificate signing failed: " + e.getMessage())
-					.asRuntimeException());
-		} catch (Exception e) {
-			logger.error("X509Mint failed", e);
-			responseObserver.onError(Status.INTERNAL
-					.withDescription("certificate signing failed: " + e.getMessage())
-					.asRuntimeException());
-		}
-	}
-
-	// ========================================================================
-	// GetServiceCertificate RPC
-	// ========================================================================
-
-	@Override
-	public void getServiceCertificate(Empty request,
-			StreamObserver<Kernel.ServiceCertificateResponse> responseObserver) {
+			StreamObserver<X509.X509CertChain> responseObserver) {
 		try {
 			// Authenticate caller from raw Bearer token (MintService is auth-exempt,
 			// so SecurityInterceptor doesn't validate — we do it manually here).
+			// Fall back to input_token from request body (gateway-mediated calls).
 			String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
+			if ((rawToken == null || rawToken.isEmpty()) && !request.getInputToken().isEmpty()) {
+				rawToken = request.getInputToken();
+			}
 			if (rawToken == null || rawToken.isEmpty()) {
 				responseObserver.onError(Status.UNAUTHENTICATED
 						.withDescription("missing authorization header")
@@ -518,6 +622,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 				return;
 			}
 
+			// Extract service name from token subject.
 			String serviceName = token.getSubject();
 			if (serviceName == null || serviceName.isEmpty()) {
 				responseObserver.onError(Status.INVALID_ARGUMENT
@@ -526,80 +631,49 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 				return;
 			}
 
-			Kernel.ServiceCertificateResponse resp = doGetServiceCertificate(serviceName);
-			responseObserver.onNext(resp);
+			// Get root CA.
+			ImmutableCertChain rootCa = caKeyHolder.getActiveCaPair();
+			if (rootCa == null) {
+				responseObserver.onError(Status.UNAVAILABLE
+						.withDescription("CA keypair not yet initialized")
+						.asRuntimeException());
+				return;
+			}
+
+			// Get or create intermediate CA for this service.
+			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, rootCa);
+
+			// Construct SPIFFE URI SAN from auth context.
+			Object azpObj = token.getCustomField("azp");
+			String azp = (azpObj != null) ? azpObj.toString() : "kernel";
+			String trustDomain = trustDomainReader.get();
+			String spiffeId = "spiffe://" + trustDomain + "/" + azp + "/" + serviceName;
+
+			// Enrich cert request with SPIFFE URI SAN.
+			X509.X509CertRequest enrichedRequest = request.getCertRequest().toBuilder()
+					.addUriSans(spiffeId)
+					.build();
+
+			// Sign the enriched cert request with the intermediate CA.
+			X509.X509Cert leafCert = intermediateCa.sign(enrichedRequest);
+
+			// Build response: leaf cert + intermediate CA cert in chain.
+			X509.X509CertChain certChain = X509.X509CertChain.newBuilder()
+					.addChain(leafCert)
+					.addChain(intermediateCa.leaf().getProto())
+					.build();
+
+			logger.info("X509Mint: service={}, spiffeId={}, keyId={}",
+					serviceName, spiffeId, request.getCertRequest().getKey().getId());
+
+			responseObserver.onNext(certChain);
 			responseObserver.onCompleted();
 		} catch (Exception e) {
-			logger.error("GetServiceCertificate failed", e);
+			logger.error("X509Mint failed", e);
 			responseObserver.onError(Status.INTERNAL
-					.withDescription("service certificate generation failed: " + e.getMessage())
+					.withDescription("certificate signing failed: " + e.getMessage())
 					.asRuntimeException());
 		}
-	}
-
-	private Kernel.ServiceCertificateResponse doGetServiceCertificate(String serviceName) throws Exception {
-		ImmutableCertPair rootCa = caKeyHolder.getActiveCaPair();
-		if (rootCa == null) {
-			throw new IllegalStateException("CA keypair not yet initialized");
-		}
-
-		// Step 1: Get or create the intermediate CA for this service.
-		ImmutableCertPair intermediateCa = getOrCreateIntermediateCa(serviceName, rootCa);
-
-		// Step 2: Generate fresh Ed25519 leaf keypair.
-		KeyPairGenerator kpg = KeyPairGenerator.getInstance("Ed25519");
-		KeyPair leafKeyPair = kpg.generateKeyPair();
-
-		String leafId = UUID.randomUUID().toString();
-		long now = Instant.now().getEpochSecond();
-		long leafExp = now + LEAF_CERT_LIFETIME_SECONDS;
-
-		// Build the public key proto for the cert request.
-		byte[] pubKeyBytes = leafKeyPair.getPublic().getEncoded();
-		String pubKeyBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(pubKeyBytes);
-		KeyOuterClass.PublicKey leafPubKey = KeyOuterClass.PublicKey.newBuilder()
-				.setId(leafId)
-				.setBase64(pubKeyBase64)
-				.build();
-
-		// Step 3: Sign leaf cert with intermediate CA.
-		X509.X509CertRequest leafRequest = X509.X509CertRequest.newBuilder()
-				.setKey(leafPubKey)
-				.setExp(leafExp)
-				.setIssuer(serviceName)
-				.setKeyUsage(X509.X509KeyUsage.X509_KEY_USAGE_DIGITAL_SIGNATURE)
-				.addExtKeyUsage(X509.X509ExtKeyUsage.X509_EXT_KEY_USAGE_SERVER_AUTH)
-				.addExtKeyUsage(X509.X509ExtKeyUsage.X509_EXT_KEY_USAGE_CLIENT_AUTH)
-				.addDnsNames(serviceName)
-				.addDnsNames("*." + serviceName)
-				.build();
-
-		X509.X509Cert leafCert = intermediateCa.sign(leafRequest);
-
-		// Step 4: Build PEM responses.
-		// Leaf cert PEM (from base64url-encoded PEM in the proto).
-		String leafCertPem = new String(
-				Base64.getUrlDecoder().decode(leafCert.getBase64()));
-		// Intermediate CA cert PEM.
-		String intermediateCertPem = new String(
-				Base64.getUrlDecoder().decode(intermediateCa.getCert().getProto().getBase64()));
-		// Cert chain: leaf + intermediate.
-		String certChainPem = leafCertPem + intermediateCertPem;
-
-		// Leaf private key PEM.
-		byte[] leafPrivKeyBytes = leafKeyPair.getPrivate().getEncoded();
-		String leafPrivKeyPem = "-----BEGIN PRIVATE KEY-----\n"
-				+ Base64.getMimeEncoder(64, "\n".getBytes()).encodeToString(leafPrivKeyBytes)
-				+ "\n-----END PRIVATE KEY-----\n";
-
-		logger.info("Issued service certificate: service={}, leafId={}, exp={}",
-				serviceName, leafId, leafExp);
-
-		return Kernel.ServiceCertificateResponse.newBuilder()
-				.setCertChainPem(certChainPem)
-				.setPrivateKeyPem(leafPrivKeyPem)
-				.setCaCertPem(intermediateCertPem)
-				.build();
 	}
 
 	/**
@@ -607,13 +681,13 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 	 * The intermediate CA is signed by the root CA with BasicConstraints CA:TRUE, pathlen:0.
 	 * It's stored in the Ca state's service_cas collection, keyed by service name.
 	 */
-	private synchronized ImmutableCertPair getOrCreateIntermediateCa(
-			String serviceName, ImmutableCertPair rootCa) throws Exception {
+	private synchronized ImmutableCertChain getOrCreateIntermediateCa(
+			String serviceName, ImmutableCertChain rootCa) throws Exception {
 
 		// Check if intermediate CA already exists for this service.
-		X509.X509CertPair existing = serviceCaReader.apply(serviceName);
-		if (existing != null && existing.hasCert()) {
-			return ImmutableCertPair.from(existing);
+		X509.X509CertChain existing = serviceCaReader.apply(serviceName);
+		if (existing != null && existing.getChainCount() > 0) {
+			return ImmutableCertChain.from(existing);
 		}
 
 		// Generate Ed25519 keypair for the intermediate CA.
@@ -658,15 +732,15 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 				.build();
 
 		// Store the intermediate CA keypair in the Ca state.
-		X509.X509CertPair intermediateProto = X509.X509CertPair.newBuilder()
+		X509.X509CertChain intermediateProto = X509.X509CertChain.newBuilder()
 				.setKey(intermediateKey)
-				.setCert(intermediateCert)
+				.addChain(intermediateCert)
 				.build();
 
 		serviceCaWriter.accept(serviceName, intermediateProto);
 		logger.info("Created intermediate CA for service: {}", serviceName);
 
-		return ImmutableCertPair.from(intermediateProto);
+		return ImmutableCertChain.from(intermediateProto);
 	}
 
 	// ========================================================================

@@ -1,0 +1,25 @@
+# Build kernel-tacplus: code generation + Java compilation.
+
+tacplus_image := "registry.gitlab.com/secondstarcavalier/controlplane/services/tacplus/tacplus-1-1:latest"
+
+default: build
+
+build:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  proto_mount=""
+  if [ -d "../../proto" ]; then
+    proto_mount="-v $(cd ../../proto && pwd):/proto:ro"
+  fi
+  docker run --rm \
+    -v "$(cd .. && pwd)":/workspace \
+    $proto_mount \
+    -v "${HOME}/.m2:/root/.m2" \
+    -w /workspace \
+    {{tacplus_image}} \
+    bash -c '
+      src=""
+      if [ -d /proto ]; then src="--src /proto"; fi
+      (cd tacplus && tacplus build $src)
+      mvn -pl tacplus package -DskipTests
+    '

@@ -9,131 +9,116 @@
 	<artifactId>kernel-server</artifactId>
 	<packaging>jar</packaging>
 	<name>Kernel Server</name>
+	<properties>
+		<tacplus.skip>true</tacplus.skip>
+	</properties>
 	<description>Kernel server: cluster, hazelcast, persistence, generated types</description>
 	<dependencies>
+		<!-- Tacplus generated types -->
+		<dependency>
+			<groupId>com.gitlab.secondstarcavalier.controlplane.services.kernel</groupId>
+			<artifactId>kernel-tacplus</artifactId>
+		</dependency>
 		<!-- Protocol Buffers -->
 		<dependency>
 			<groupId>com.google.protobuf</groupId>
 			<artifactId>protobuf-java</artifactId>
-			<version>${protobuf.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>com.google.protobuf</groupId>
 			<artifactId>protobuf-java-util</artifactId>
-			<version>${protobuf.version}</version>
 		</dependency>
 		<!-- gRPC -->
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-protobuf</artifactId>
-			<version>${grpc.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-stub</artifactId>
-			<version>${grpc.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-netty-shaded</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-services</artifactId>
 		</dependency>
 		<dependency>
 			<groupId>javax.annotation</groupId>
 			<artifactId>javax.annotation-api</artifactId>
-			<version>1.3.2</version>
 		</dependency>
 		<!-- Serialization -->
 		<dependency>
 			<groupId>org.yaml</groupId>
 			<artifactId>snakeyaml</artifactId>
-			<version>${snakeyaml.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>com.moandjiezana.toml</groupId>
 			<artifactId>toml4j</artifactId>
-			<version>${toml4j.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>com.google.code.gson</groupId>
 			<artifactId>gson</artifactId>
-			<version>${gson.version}</version>
 		</dependency>
 		<!-- JWT -->
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-api</artifactId>
-			<version>${jjwt.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-impl</artifactId>
-			<version>${jjwt.version}</version>
 			<scope>runtime</scope>
 		</dependency>
 		<dependency>
 			<groupId>io.jsonwebtoken</groupId>
 			<artifactId>jjwt-gson</artifactId>
-			<version>${jjwt.version}</version>
 			<scope>runtime</scope>
 		</dependency>
 		<!-- Testing -->
 		<dependency>
 			<groupId>org.junit.jupiter</groupId>
 			<artifactId>junit-jupiter</artifactId>
-			<version>${junit.version}</version>
 			<scope>test</scope>
 		</dependency>
-		<!-- Hazelcast (state management) -->
+		<!-- Hazelcast -->
 		<dependency>
 			<groupId>com.hazelcast</groupId>
 			<artifactId>hazelcast</artifactId>
-			<version>${hazelcast.version}</version>
 		</dependency>
 		<!-- Logging -->
 		<dependency>
 			<groupId>org.slf4j</groupId>
 			<artifactId>slf4j-api</artifactId>
-			<version>2.0.17</version>
 		</dependency>
 		<dependency>
 			<groupId>ch.qos.logback</groupId>
 			<artifactId>logback-classic</artifactId>
-			<version>1.5.29</version>
 		</dependency>
-		<!-- gRPC Netty -->
 		<dependency>
-			<groupId>io.grpc</groupId>
-			<artifactId>grpc-netty-shaded</artifactId>
-			<version>${grpc.version}</version>
-		</dependency>
-		<!-- gRPC Services (reflection, health, etc.) -->
-		<dependency>
-			<groupId>io.grpc</groupId>
-			<artifactId>grpc-services</artifactId>
-			<version>${grpc.version}</version>
+			<groupId>ch.qos.logback</groupId>
+			<artifactId>logback-core</artifactId>
 		</dependency>
 		<!-- HTTP Server -->
 		<dependency>
 			<groupId>io.javalin</groupId>
 			<artifactId>javalin</artifactId>
-			<version>6.7.0</version>
 		</dependency>
-		<!-- BouncyCastle (PEM parsing, X.509 certificates, key management) -->
+		<!-- Crypto -->
 		<dependency>
 			<groupId>org.bouncycastle</groupId>
 			<artifactId>bcprov-jdk18on</artifactId>
-			<version>1.80</version>
 		</dependency>
 		<dependency>
 			<groupId>org.bouncycastle</groupId>
 			<artifactId>bcpkix-jdk18on</artifactId>
-			<version>1.80</version>
 		</dependency>
-		<dependency>
-			<groupId>ch.qos.logback</groupId>
-			<artifactId>logback-core</artifactId>
-			<version>1.5.29</version>
-		</dependency>
+		<!-- Annotations -->
 		<dependency>
 			<groupId>org.apache.tomcat</groupId>
 			<artifactId>annotations-api</artifactId>
-			<version>6.0.53</version>
 		</dependency>
 		<dependency>
 			<groupId>com.google.api.grpc</groupId>
@@ -143,19 +128,17 @@
 		<dependency>
 			<groupId>org.slf4j</groupId>
 			<artifactId>slf4j-simple</artifactId>
-			<version>2.0.17</version>
 		</dependency>
+		<!-- Interfaces -->
 		<dependency>
 			<groupId>com.gitlab.secondstarcavalier.controlplane.services.interfaces</groupId>
 			<artifactId>interfaces-graphs</artifactId>
-			<version>1.0.7</version>
 		</dependency>
 		<dependency>
 			<groupId>com.gitlab.secondstarcavalier.controlplane.services.interfaces</groupId>
 			<artifactId>interfaces-httpclient</artifactId>
-			<version>1.0.5</version>
 		</dependency>
-		<!-- OPA (Open Policy Agent) SDK -->
+		<!-- OPA -->
 		<dependency>
 			<groupId>com.styra</groupId>
 			<artifactId>opa</artifactId>
@@ -163,6 +146,7 @@
 		</dependency>
 	</dependencies>
 	<build>
+		<sourceDirectory>src/main/java</sourceDirectory>
 		<extensions>
 			<extension>
 				<groupId>kr.motd.maven</groupId>
@@ -170,14 +154,13 @@
 				<version>1.7.1</version>
 			</extension>
 		</extensions>
-		<sourceDirectory>target/generated-sources/tacplus/src/main/java</sourceDirectory>
 		<plugins>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
 				<version>${maven-compiler-plugin.version}</version>
 			</plugin>
-				<plugin>
+			<plugin>
 				<groupId>org.codehaus.mojo</groupId>
 				<artifactId>build-helper-maven-plugin</artifactId>
 				<version>3.6.0</version>
@@ -190,58 +173,15 @@
 						</goals>
 						<configuration>
 							<sources>
- 								<source>src/main/java</source>
- 								<source>${project.build.directory}/generated-sources/tacplus-backend/src/main/java</source>
- 							</sources>
- 						</configuration>
- 					</execution>
-				</executions>
-			</plugin>
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-antrun-plugin</artifactId>
-				<version>3.1.0</version>
-				<executions>
-					<execution>
-						<id>tacplus-update</id>
-						<phase>generate-sources</phase>
-						<goals>
-							<goal>run</goal>
-						</goals>
-						<configuration>
-							<target xmlns:unless="ant:unless">
-								<available file="${project.build.directory}/generated-sources/tacplus/src/main/java" type="dir" property="tacplus.skip"/>
-								<echo unless:set="tacplus.skip" message="Running tacplus build (generated sources not found)..."/>
-								<exec executable="tacplus" failonerror="true" unless:set="tacplus.skip">
-									<arg value="build"/>
-								</exec>
-								<echo if:set="tacplus.skip" xmlns:if="ant:if" message="Skipping tacplus build (generated sources already exist)"/>
-							</target>
-						</configuration>
-					</execution>
-					<execution>
-						<id>fix-generated-sources</id>
-						<phase>process-sources</phase>
-						<goals>
-							<goal>run</goal>
-						</goals>
-						<configuration>
-							<target>
-								<!-- Fix codegen bug: ConfigHolder is in config_holder package, not the service package -->
-								<replace file="${project.build.directory}/generated-sources/tacplus-backend/src/main/java/com/gitlab/secondstarcavalier/controlplane/services/kernel/tacplusbackend/services/BackendServers.java" token="services.gateway.Gateway.ConfigHolder" value="services.config_holder.ConfigHolderOuterClass.ConfigHolder"/>
-								<replace file="${project.build.directory}/generated-sources/tacplus-backend/src/main/java/com/gitlab/secondstarcavalier/controlplane/services/kernel/tacplusbackend/services/BackendServers.java" token="services.dgraph.Dgraph.ConfigHolder" value="services.config_holder.ConfigHolderOuterClass.ConfigHolder"/>
-								<!-- Fix tacplus bug: mergeConfig not generated for empty Config messages.
-								     Replace call sites with no-op (idempotent). -->
-								<replace dir="${project.build.directory}/generated-sources/tacplus/src/main/java/com/gitlab/secondstarcavalier/controlplane/services/kernel/tacplus/types/services/sentinel" includes="Helpers.java" token="mergeConfig(dst.getConfig(), src.getConfig()).build()" value="dst.getConfig()"/>
-								<replace dir="${project.build.directory}/generated-sources/tacplus/src/main/java/com/gitlab/secondstarcavalier/controlplane/services/kernel/tacplus/types/services/dgraph" includes="Helpers.java" token="mergeConfig(dst.getConfig(), src.getConfig()).build()" value="dst.getConfig()"/>
-							</target>
+								<source>${project.build.directory}/generated-sources/tacplus-backend/src/main/java</source>
+							</sources>
 						</configuration>
 					</execution>
 				</executions>
 			</plugin>
 			<plugin>
 				<groupId>com.gitlab.secondstarcavalier.controlplane.services.kernel</groupId>
-				<artifactId>codegen-plugin</artifactId>
+				<artifactId>codegen</artifactId>
 				<version>1.0.0</version>
 				<executions>
 					<execution>
@@ -253,11 +193,10 @@
 					</execution>
 				</executions>
 				<configuration>
-					<protoDir>${project.build.directory}/generated-sources/tacplus/proto-annotated</protoDir>
+					<protoDir>${project.basedir}/../tacplus/target/generated-sources/tacplus/proto-annotated</protoDir>
 					<outputDir>${project.build.directory}/generated-sources/tacplus-backend</outputDir>
 					<javaPackageBase>com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend</javaPackageBase>
 					<peerContextClass>com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster.PeerContext</peerContextClass>
-					<!-- typesPackageBase, interfacesPackage read from codegen-config.json -->
 				</configuration>
 			</plugin>
 			<plugin>
@@ -276,7 +215,7 @@
 								<transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
 									<mainClass>com.gitlab.secondstarcavalier.controlplane.services.kernel.Main</mainClass>
 								</transformer>
-								<transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+								<transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
 							</transformers>
 							<filters>
 								<filter>
@@ -292,6 +231,11 @@
 					</execution>
 				</executions>
 			</plugin>
-		<plugin><groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>${exec-plugin.version}</version></plugin></plugins>
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>exec-maven-plugin</artifactId>
+				<version>${exec-plugin.version}</version>
+			</plugin>
+		</plugins>
 	</build>
-<properties><maven.compiler.release>21</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding><protobuf.version>4.34.0</protobuf.version><toml4j.version>0.7.2</toml4j.version><gson.version>2.13.2</gson.version><junit.version>6.0.2</junit.version><maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version><hazelcast.version>5.5.0</hazelcast.version><grpc.version>1.79.0</grpc.version><snakeyaml.version>2.5</snakeyaml.version><jjwt.version>0.13.0</jjwt.version><spotless-maven-plugin.version>3.2.1</spotless-maven-plugin.version><shade-plugin.version>3.6.1</shade-plugin.version><exec-plugin.version>3.5.0</exec-plugin.version></properties><repositories><repository><id>gitlab-maven</id><url>https://gitlab.com/api/v4/projects/79641700/packages/maven</url></repository></repositories><distributionManagement><repository><id>gitlab-maven</id><url>${env.CI_API_V4_URL}/projects/${env.CI_PROJECT_ID}/packages/maven</url></repository></distributionManagement></project>
+</project>

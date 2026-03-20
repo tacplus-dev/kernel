@@ -2,7 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.key.ImmutableKey;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertPair;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.key.KeyOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import java.security.KeyPair;
@@ -37,7 +37,7 @@ public class CaKeyHolder {
     private final Consumer<X509.X509Cert> caCertPublisher;
     private final ScheduledExecutorService scheduler;
 
-    private volatile ImmutableCertPair activeCaPair;
+    private volatile ImmutableCertChain activeCaPair;
 
     /**
      * @param caLifetimeSeconds lifetime for CA certificates in seconds
@@ -89,7 +89,7 @@ public class CaKeyHolder {
     /**
      * Returns the current CA keypair for signing certificate requests.
      */
-    public ImmutableCertPair getActiveCaPair() {
+    public ImmutableCertChain getActiveCaPair() {
         return activeCaPair;
     }
 
@@ -122,8 +122,8 @@ public class CaKeyHolder {
 
         ImmutableKey immutableKey = ImmutableKey.from(protoKey);
 
-        // Create ImmutableCertPair for self-signing
-        ImmutableCertPair forSigning = ImmutableCertPair.forSelfSigning(immutableKey);
+        // Create ImmutableCertChain for self-signing
+        ImmutableCertChain forSigning = ImmutableCertChain.forSelfSigning(immutableKey);
 
         // Self-sign a CA certificate
         long exp = now + caLifetimeSeconds;
@@ -134,11 +134,11 @@ public class CaKeyHolder {
                 List.of());
 
         // Build the full cert pair (key + signed CA cert) for subsequent signing operations
-        X509.X509CertPair certPairProto = X509.X509CertPair.newBuilder()
+        X509.X509CertChain certPairProto = X509.X509CertChain.newBuilder()
                 .setKey(protoKey)
-                .setCert(caCert)
+                .addChain(caCert)
                 .build();
-        this.activeCaPair = ImmutableCertPair.from(certPairProto);
+        this.activeCaPair = ImmutableCertChain.from(certPairProto);
 
         // Publish CA cert to CaState collection
         caCertPublisher.accept(caCert);

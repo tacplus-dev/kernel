@@ -2,7 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCert;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertPair;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.SerializerRegistry;
@@ -82,15 +82,15 @@ public class HazelcastFactory {
 					Objects.requireNonNull(String.valueOf(net.getHeartbeatTimeoutSeconds())));
 		}
 
-		// mTLS using X509CertPair and loader_ca
+		// mTLS using X509CertChain and loader_ca
 		if (cfg.hasTls()) {
 			try {
-				ImmutableCertPair tlsPair = ImmutableCertPair.from(cfg.getTls());
+				ImmutableCertChain tlsChain = ImmutableCertChain.from(cfg.getTls());
 
 				KeyStore keyStore = KeyStore.getInstance("PKCS12");
 				keyStore.load(null, null);
-				keyStore.setKeyEntry("node", tlsPair.getKey().getPrivateKey(), new char[0], new Certificate[] {
-						tlsPair.getCert().getX509Certificate()
+				keyStore.setKeyEntry("node", tlsChain.getEffectiveKey(), new char[0], new Certificate[] {
+						tlsChain.leaf().getX509Certificate()
 				});
 
 				KeyStore trustStore = KeyStore.getInstance("PKCS12");

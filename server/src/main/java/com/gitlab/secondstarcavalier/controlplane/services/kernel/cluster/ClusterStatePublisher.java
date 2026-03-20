@@ -3,7 +3,6 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.PersistenceProvider;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.Registry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 
@@ -46,6 +45,7 @@ public class ClusterStatePublisher {
 	private final int grpcPort;
 	private final RateLimitInterceptor rateLimiter;
 	private final Supplier<Hazelcast.AdminTokenCacheStats> tokenCacheStatsSupplier;
+	private final RegistryReader registryReader;
 
 	private final ScheduledExecutorService scheduler;
 	private ScheduledFuture<?> publishTask;
@@ -58,7 +58,8 @@ public class ClusterStatePublisher {
 			Kernel.Config frontendConfig,
 			int grpcPort,
 			RateLimitInterceptor rateLimiter,
-			Supplier<Hazelcast.AdminTokenCacheStats> tokenCacheStatsSupplier) {
+			Supplier<Hazelcast.AdminTokenCacheStats> tokenCacheStatsSupplier,
+			RegistryReader registryReader) {
 		this.hazelcast = hazelcast;
 		this.clusterStateMap = clusterStateMap;
 		this.persistence = persistence;
@@ -66,6 +67,7 @@ public class ClusterStatePublisher {
 		this.grpcPort = grpcPort;
 		this.rateLimiter = rateLimiter;
 		this.tokenCacheStatsSupplier = tokenCacheStatsSupplier;
+		this.registryReader = registryReader;
 		this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
 			Thread t = new Thread(r, "cluster-state-publisher");
 			t.setDaemon(true);
@@ -392,10 +394,10 @@ public class ClusterStatePublisher {
 	 * service="services/kernel/ClusterState", boundary="NodeMetrics" →
 	 * "kernel.NodeMetrics"
 	 */
-	private static String deriveDisplayName(String servicePath, Registry.BoundaryInfo info) {
+	private static String deriveDisplayName(String servicePath, RegistryReader.BoundaryInfo info) {
 		String[] parts = servicePath.split("/");
 		if (parts.length < 3) {
-			return info.getBoundary();
+			return info.boundary();
 		}
 		String pkg = parts[1]; // "kernel", "config_holder"
 		String stateName = parts[2]; // "ClusterState", "GatewayConfigState"
@@ -408,10 +410,10 @@ public class ClusterStatePublisher {
 			if (!svcName.isEmpty()) {
 				svcName = Character.toLowerCase(svcName.charAt(0)) + svcName.substring(1);
 			}
-			return svcName + "." + info.getBoundary();
+			return svcName + "." + info.boundary();
 		}
 
-		return pkg + "." + info.getBoundary();
+		return pkg + "." + info.boundary();
 	}
 
 	private static Hazelcast.AdminGraphType graphTypeFromString(String graphType) {
@@ -437,12 +439,12 @@ public class ClusterStatePublisher {
 				LocalMapStats local = hzMap.getLocalMapStats();
 				String shortName = shortMapName(mapName);
 
-				Registry.BoundaryInfo info = Registry.lookupByShortName(shortName);
-				String servicePath = info != null ? info.getService() : "";
+				RegistryReader.BoundaryInfo info = registryReader.lookupByShortName(shortName);
+				String servicePath = info != null ? info.service() : "";
 				String displayName = info != null ? deriveDisplayName(servicePath, info) : shortName;
-				String valueType = info != null ? info.getTypeFqn() : "";
-				String qualifiedName = info != null ? servicePath + "." + info.getBoundary() : shortName;
-				String stateRoot = info != null ? info.getStateRoot() : "";
+				String valueType = info != null ? info.typeFqn() : "";
+				String qualifiedName = info != null ? servicePath + "." + info.boundary() : shortName;
+				String stateRoot = info != null ? info.stateRoot() : "";
 
 				clusterStateMap.putMapStats(
 						mapName,
@@ -451,12 +453,12 @@ public class ClusterStatePublisher {
 								.setValueType(valueType)
 								.setGraphType(
 										info != null
-												? graphTypeFromString(info.getGraphType())
+												? graphTypeFromString(info.graphType())
 												: Hazelcast.AdminGraphType.ADMIN_GRAPH_TYPE_COLLECTION)
 								.setQualifiedName(qualifiedName)
 								.setStateRoot(stateRoot)
-								.setConsistency(info != null ? info.getConsistency() : "")
-								.setPersistence(info != null && info.getPersistence())
+								.setConsistency(info != null ? info.consistency() : "")
+								.setPersistence(info != null && info.persistence())
 								.setSize(hzMap.size())
 								.setOwnedEntryCount(local.getOwnedEntryCount())
 								.setBackupEntryCount(local.getBackupEntryCount())

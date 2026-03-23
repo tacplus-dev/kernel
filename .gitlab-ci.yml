@@ -4,7 +4,7 @@ stages:
 
 variables:
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
-  TACPLUS_IMAGE: "${CI_REGISTRY}/secondstarcavalier/controlplane/services/tacplus/tacplus-1-1:latest"
+  TACPLUS_IMAGE: "${CI_REGISTRY}/secondstarcavalier/controlplane/utils/tacplus/tacplus-1-1:latest"
 
 .parse-version: &parse-version
   - |

@@ -4,7 +4,7 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.SecurityAuthenticator;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.entitlementview.EntitlementProfileViewServiceGrpc;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.entitlementview.Entitlementview;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.generated.Generated;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
 
 import com.google.protobuf.Empty;
 import io.grpc.Status;
@@ -45,12 +45,12 @@ public class EntitlementProfileViewServer
         });
 
     private final SecurityAuthenticator authenticator;
-    private final Supplier<List<Generated.EntitlementProfile>> profilesSupplier;
+    private final Supplier<List<Entitlements.EntitlementProfile>> profilesSupplier;
     private final List<WatcherEntry> watchers = new CopyOnWriteArrayList<>();
 
     public EntitlementProfileViewServer(
             SecurityAuthenticator authenticator,
-            Supplier<List<Generated.EntitlementProfile>> profilesSupplier) {
+            Supplier<List<Entitlements.EntitlementProfile>> profilesSupplier) {
         this.authenticator = authenticator;
         this.profilesSupplier = profilesSupplier;
         scheduler.scheduleAtFixedRate(this::pollAll, 500, 500, TimeUnit.MILLISECONDS);
@@ -105,8 +105,8 @@ public class EntitlementProfileViewServer
     private Entitlementview.EntitlementProfileViewResponse buildResponse() {
         var builder = Entitlementview.EntitlementProfileViewResponse.newBuilder();
         try {
-            List<Generated.EntitlementProfile> profiles = profilesSupplier.get();
-            for (Generated.EntitlementProfile profile : profiles) {
+            List<Entitlements.EntitlementProfile> profiles = profilesSupplier.get();
+            for (Entitlements.EntitlementProfile profile : profiles) {
                 builder.putProfiles(profile.getId(), profile);
             }
         } catch (Exception e) {

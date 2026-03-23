@@ -1,195 +1,218 @@
 package com.gitlab.secondstarcavalier.controlplane.codegen;
 
-import com.gitlab.secondstarcavalier.controlplane.codegen.generator.*;
-import com.gitlab.secondstarcavalier.controlplane.codegen.model.*;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugins.annotations.*;
+import org.apache.maven.plugins.annotations.LifecyclePhase;
+import org.apache.maven.plugins.annotations.Mojo;
+import org.apache.maven.plugins.annotations.Parameter;
 
-import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.*;
+import com.gitlab.secondstarcavalier.controlplane.codegen.generator.BackendMapGenerator;
+import com.gitlab.secondstarcavalier.controlplane.codegen.generator.BackendServersGenerator;
+import com.gitlab.secondstarcavalier.controlplane.codegen.generator.BackendServiceServerGenerator;
+import com.gitlab.secondstarcavalier.controlplane.codegen.generator.EpochExpirationHelperGenerator;
+import com.gitlab.secondstarcavalier.controlplane.codegen.generator.GeneratorContext;
+import com.gitlab.secondstarcavalier.controlplane.codegen.generator.SecurityAuthenticatorGenerator;
+import com.gitlab.secondstarcavalier.controlplane.codegen.generator.SerializableWrapperGenerator;
+import com.gitlab.secondstarcavalier.controlplane.codegen.generator.TypedMapGenerator;
+import com.gitlab.secondstarcavalier.controlplane.codegen.generator.ViewServerGenerator;
+import com.gitlab.secondstarcavalier.controlplane.codegen.model.AccessPolicy;
+import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendRpcServiceInfo;
+import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendServiceInfo;
+import com.gitlab.secondstarcavalier.controlplane.codegen.model.SharedBackendInfo;
 
 /**
  * Maven mojo that generates Java backend server code from proto definitions.
  * <p>
- * Reads the annotated proto files written by tacplus (proto-annotated/ directory)
+ * Reads the annotated proto files written by tacplus (proto-annotated/
+ * directory)
  * to discover backend services (via service_backend annotation), analyzes
  * their boundaries, and generates:
  * <ul>
- *   <li>{BackendName}Map.java — typed IMap accessors</li>
- *   <li>{Type}Map.java — per-boundary typed map files</li>
- *   <li>{Prefix}BackendServiceServer.java — gRPC server</li>
- *   <li>BackendServers.java — aggregators at group and root level</li>
+ * <li>{BackendName}Map.java — typed IMap accessors</li>
+ * <li>{Type}Map.java — per-boundary typed map files</li>
+ * <li>{Prefix}BackendServiceServer.java — gRPC server</li>
+ * <li>BackendServers.java — aggregators at group and root level</li>
  * </ul>
  */
 @Mojo(name = "generate-backend-servers", defaultPhase = LifecyclePhase.GENERATE_SOURCES)
 public class BackendServerMojo extends AbstractMojo {
 
-    /**
-     * Directory containing the annotated proto files (with special.* annotations).
-     * This is the proto-annotated/ directory written by tacplus during code generation.
-     */
-    @Parameter(property = "protoDir",
-               defaultValue = "${project.build.directory}/generated-sources/tacplus/proto-annotated")
-    private File protoDir;
+	/**
+	 * Directory containing the annotated proto files (with special.* annotations).
+	 * This is the proto-annotated/ directory written by tacplus during code
+	 * generation.
+	 */
+	@Parameter(property = "protoDir", defaultValue = "${project.build.directory}/generated-sources/tacplus/proto-annotated")
+	private File protoDir;
 
-    /**
-     * Output directory for generated Java sources.
-     */
-    @Parameter(property = "outputDir",
-               defaultValue = "${project.build.directory}/generated-sources/tacplus")
-    private File outputDir;
+	/**
+	 * Output directory for generated Java sources.
+	 */
+	@Parameter(property = "outputDir", defaultValue = "${project.build.directory}/generated-sources/tacplus")
+	private File outputDir;
 
-    /**
-     * Base Java package for generated code.
-     * If not set, read from codegen-config.json in protoDir.
-     */
-    @Parameter(property = "javaPackageBase")
-    private String javaPackageBase;
+	/**
+	 * Base Java package for generated code.
+	 * If not set, read from codegen-config.json in protoDir.
+	 */
+	@Parameter(property = "javaPackageBase")
+	private String javaPackageBase;
 
-    /**
-     * Base Java package for tacplus-generated types (proto types, errors, helpers).
-     * The generated backend code imports types from this base.
-     * If not set, defaults to javaPackageBase (from config or explicit parameter).
-     */
-    @Parameter(property = "typesPackageBase")
-    private String typesPackageBase;
+	/**
+	 * Base Java package for tacplus-generated types (proto types, errors, helpers).
+	 * The generated backend code imports types from this base.
+	 * If not set, defaults to javaPackageBase (from config or explicit parameter).
+	 */
+	@Parameter(property = "typesPackageBase")
+	private String typesPackageBase;
 
-    /**
-     * Package for the interfaces library (Manager, IMap, Lock, Singleton).
-     * If not set, read from codegen-config.json in protoDir.
-     */
-    @Parameter(property = "interfacesPackage")
-    private String interfacesPackage;
+	/**
+	 * Package for the interfaces library (Manager, IMap, Lock, Singleton).
+	 * If not set, read from codegen-config.json in protoDir.
+	 */
+	@Parameter(property = "interfacesPackage")
+	private String interfacesPackage;
 
-    /**
-     * Fully-qualified class name of the PeerContext utility that holds the
-     * gRPC Context.Key for peer address identification. When set, generated
-     * topic publish RPCs will skip sending messages back to the originating peer.
-     * Example: com.gitlab.secondstarcavalier.controlplane.services.backenddb.PeerContext
-     */
-    @Parameter(property = "peerContextClass")
-    private String peerContextClass;
+	/**
+	 * Fully-qualified class name of the PeerContext utility that holds the
+	 * gRPC Context.Key for peer address identification. When set, generated
+	 * topic publish RPCs will skip sending messages back to the originating peer.
+	 * Example:
+	 * com.gitlab.secondstarcavalier.controlplane.services.backenddb.PeerContext
+	 */
+	@Parameter(property = "peerContextClass")
+	private String peerContextClass;
 
-    @Override
-    public void execute() throws MojoExecutionException {
-        getLog().info("Backend server codegen: parsing protos from " + protoDir);
+	@Override
+	public void execute() throws MojoExecutionException {
+		getLog().info("Backend server codegen: parsing protos from " + protoDir);
 
-        if (!protoDir.exists()) {
-            throw new MojoExecutionException(
-                    "Annotated proto directory not found: " + protoDir +
-                    "\nEnsure tacplus has been run first (tacplus update --backend-servers)");
-        }
+		if (!protoDir.exists()) {
+			throw new MojoExecutionException(
+					"Annotated proto directory not found: " + protoDir +
+							"\nEnsure tacplus has been run first (tacplus update --backend-servers)");
+		}
 
-        // Read codegen-config.json from proto-annotated directory for default values.
-        // Explicit Maven parameters override config file values.
-        // Security policies are embedded inline in the JSON (computed from proto annotations).
-        List<AccessPolicy> securityPolicies = List.of();
-        Map<String, List<String>> serviceRPCMappings = new java.util.HashMap<>();
-        File configFile = new File(protoDir, "codegen-config.json");
-        if (configFile.exists()) {
-            try {
-                CodegenConfig cc = CodegenConfig.parse(configFile);
-                if (javaPackageBase == null) javaPackageBase = cc.javaPackageBase;
-                if (typesPackageBase == null) typesPackageBase = cc.javaPackageBase;
-                if (interfacesPackage == null) interfacesPackage = cc.interfacesPackage;
-                securityPolicies = cc.securityPolicies;
-                serviceRPCMappings = cc.serviceRPCMappings;
-                getLog().info("Loaded codegen-config.json: javaPackageBase=" + javaPackageBase
-                              + ", interfacesPackage=" + interfacesPackage
-                              + ", policies=" + securityPolicies.size()
-                              + ", serviceRPCMappings=" + serviceRPCMappings.size());
-            } catch (IOException e) {
-                throw new MojoExecutionException("Failed to read codegen-config.json", e);
-            }
-        }
+		// Read codegen-config.json from proto-annotated directory for default values.
+		// Explicit Maven parameters override config file values.
+		// Security policies are embedded inline in the JSON (computed from proto
+		// annotations).
+		List<AccessPolicy> securityPolicies = List.of();
+		Map<String, List<String>> serviceRPCMappings = new java.util.HashMap<>();
+		File configFile = new File(protoDir, "codegen-config.json");
+		if (configFile.exists()) {
+			try {
+				CodegenConfig cc = CodegenConfig.parse(configFile);
+				if (javaPackageBase == null)
+					javaPackageBase = cc.javaPackageBase;
+				if (typesPackageBase == null)
+					typesPackageBase = cc.javaPackageBase;
+				if (interfacesPackage == null)
+					interfacesPackage = cc.interfacesPackage;
+				securityPolicies = cc.securityPolicies;
+				serviceRPCMappings = cc.serviceRPCMappings;
+				getLog().info("Loaded codegen-config.json: javaPackageBase=" + javaPackageBase
+						+ ", interfacesPackage=" + interfacesPackage
+						+ ", policies=" + securityPolicies.size()
+						+ ", serviceRPCMappings=" + serviceRPCMappings.size());
+			} catch (IOException e) {
+				throw new MojoExecutionException("Failed to read codegen-config.json", e);
+			}
+		}
 
-        if (javaPackageBase == null || typesPackageBase == null || interfacesPackage == null) {
-            throw new MojoExecutionException(
-                    "Missing required configuration: javaPackageBase, typesPackageBase, and interfacesPackage "
-                    + "must be set via codegen-config.json (generated by tacplus) or explicit Maven parameters");
-        }
+		if (javaPackageBase == null || typesPackageBase == null || interfacesPackage == null) {
+			throw new MojoExecutionException(
+					"Missing required configuration: javaPackageBase, typesPackageBase, and interfacesPackage "
+							+ "must be set via codegen-config.json (generated by tacplus) or explicit Maven parameters");
+		}
 
-        try {
-            // Step 1: Parse proto descriptors from annotated protos
-            ProtoDescriptorParser parser = new ProtoDescriptorParser(protoDir.toPath());
-            parser.parseAll();
+		try {
+			// Step 1: Parse proto descriptors from annotated protos
+			ProtoDescriptorParser parser = new ProtoDescriptorParser(protoDir.toPath());
+			parser.parseAll();
 
-            getLog().info("Parsed " + parser.getAllFiles().size() + " proto files");
+			getLog().info("Parsed " + parser.getAllFiles().size() + " proto files");
 
-            // Step 2: Discover backend services (sorted by package name for deterministic output)
-            List<BackendServiceInfo> services = BackendServiceDiscovery.discover(parser);
-            services.sort(Comparator.comparing(BackendServiceInfo::getPackageName));
-            getLog().info("Discovered " + services.size() + " backend state services");
+			// Step 2: Discover backend services (sorted by package name for deterministic
+			// output)
+			List<BackendServiceInfo> services = BackendServiceDiscovery.discover(parser);
+			services.sort(Comparator.comparing(BackendServiceInfo::getPackageName));
+			getLog().info("Discovered " + services.size() + " backend state services");
 
-            // Discover backend RPC services (hand-written, service_backend_rpc annotation)
-            List<BackendRpcServiceInfo> rpcServices = BackendServiceDiscovery.discoverRpcServices(parser);
-            rpcServices.sort(Comparator.comparing(BackendRpcServiceInfo::getPackageName));
-            getLog().info("Discovered " + rpcServices.size() + " backend RPC services");
+			// Discover backend RPC services (hand-written, service_backend_rpc annotation)
+			List<BackendRpcServiceInfo> rpcServices = BackendServiceDiscovery.discoverRpcServices(parser);
+			rpcServices.sort(Comparator.comparing(BackendRpcServiceInfo::getPackageName));
+			getLog().info("Discovered " + rpcServices.size() + " backend RPC services");
 
-            if (services.isEmpty() && rpcServices.isEmpty()) {
-                getLog().info("No backend services found, skipping generation");
-                return;
-            }
+			if (services.isEmpty() && rpcServices.isEmpty()) {
+				getLog().info("No backend services found, skipping generation");
+				return;
+			}
 
-            // Step 3: Analyze boundaries for each service
-            Path outPath = outputDir.toPath();
-            GeneratorContext ctx = new GeneratorContext(javaPackageBase, typesPackageBase, interfacesPackage, peerContextClass, outPath, protoDir.toPath(), parser, securityPolicies, serviceRPCMappings);
+			// Step 3: Analyze boundaries for each service
+			Path outPath = outputDir.toPath();
+			GeneratorContext ctx = new GeneratorContext(javaPackageBase, typesPackageBase, interfacesPackage,
+					peerContextClass, outPath, protoDir.toPath(), parser, securityPolicies, serviceRPCMappings);
 
-            Map<BackendServiceInfo, SharedBackendInfo> infoMap = new LinkedHashMap<>();
-            for (BackendServiceInfo svc : services) {
-                SharedBackendInfo info = BoundaryAnalyzer.analyze(svc, parser);
-                if (info != null) {
-                    infoMap.put(svc, info);
-                    long leaderCount = info.getQueues().stream().filter(b -> b.isLeader()).count()
-                                   + info.getPriorityQueues().stream().filter(b -> b.isLeader()).count()
-                                   + info.getTopics().stream().filter(b -> b.isLeader()).count();
-                    getLog().info("  " + svc.getPackageName() + ": " + info.getSingletons().size()
-                                 + " singletons, " + info.getCollections().size() + " collections, "
-                                 + info.getQueues().size() + " queues, "
-                                 + info.getPriorityQueues().size() + " priority queues, "
-                                 + info.getTopics().size() + " topics, "
-                                 + leaderCount + " leader-enabled boundaries");
-                } else {
-                    getLog().warn("  " + svc.getPackageName() + ": no boundaries found");
-                }
-            }
+			Map<BackendServiceInfo, SharedBackendInfo> infoMap = new LinkedHashMap<>();
+			for (BackendServiceInfo svc : services) {
+				SharedBackendInfo info = BoundaryAnalyzer.analyze(svc, parser);
+				if (info != null) {
+					infoMap.put(svc, info);
+					long leaderCount = info.getQueues().stream().filter(b -> b.isLeader()).count()
+							+ info.getPriorityQueues().stream().filter(b -> b.isLeader()).count()
+							+ info.getTopics().stream().filter(b -> b.isLeader()).count();
+					getLog().info("  " + svc.getPackageName() + ": " + info.getSingletons().size()
+							+ " singletons, " + info.getCollections().size() + " collections, "
+							+ info.getQueues().size() + " queues, "
+							+ info.getPriorityQueues().size() + " priority queues, "
+							+ info.getTopics().size() + " topics, "
+							+ leaderCount + " leader-enabled boundaries");
+				} else {
+					getLog().warn("  " + svc.getPackageName() + ": no boundaries found");
+				}
+			}
 
-            // Step 4: Generate code for each service
-            for (var entry : infoMap.entrySet()) {
-                BackendServiceInfo svc = entry.getKey();
-                SharedBackendInfo info = entry.getValue();
-                getLog().info("Generating backend server for " + svc.getPackageName());
+			// Step 4: Generate code for each service
+			for (var entry : infoMap.entrySet()) {
+				BackendServiceInfo svc = entry.getKey();
+				SharedBackendInfo info = entry.getValue();
+				getLog().info("Generating backend server for " + svc.getPackageName());
 
-                BackendMapGenerator.generate(svc, info, ctx);
-                TypedMapGenerator.generate(svc, info, ctx);
-                BackendServiceServerGenerator.generate(svc, info, ctx);
-            }
+				BackendMapGenerator.generate(svc, info, ctx);
+				TypedMapGenerator.generate(svc, info, ctx);
+				BackendServiceServerGenerator.generate(svc, info, ctx);
+			}
 
-            // Step 5: Generate serializable wrappers, factory, and registry
-            SerializableWrapperGenerator.generate(infoMap, ctx);
+			// Step 5: Generate serializable wrappers, factory, and registry
+			SerializableWrapperGenerator.generate(infoMap, ctx);
 
-            // Step 6: Generate SecurityAuthenticator (once per project)
-            SecurityAuthenticatorGenerator.generate(ctx);
+			// Step 6: Generate SecurityAuthenticator (once per project)
+			SecurityAuthenticatorGenerator.generate(ctx);
 
-            // Step 7: Generate service-specific view servers.
-            ViewServerGenerator.generate(ctx);
+			// Step 7: Generate service-specific view servers.
+			ViewServerGenerator.generate(ctx);
 
-            // Step 8: Generate aggregators (including backend RPC services)
-            BackendServersGenerator.generate(new ArrayList<>(infoMap.keySet()), infoMap, rpcServices, ctx);
+			// Step 8: Generate aggregators (including backend RPC services)
+			BackendServersGenerator.generate(new ArrayList<>(infoMap.keySet()), infoMap, rpcServices, ctx);
 
-            // Step 9: Generate epoch expiration helper for StateRestorer
-            EpochExpirationHelperGenerator.generate(infoMap, ctx);
+			// Step 9: Generate epoch expiration helper for StateRestorer
+			EpochExpirationHelperGenerator.generate(infoMap, ctx);
 
-            getLog().info("Backend server codegen complete: generated " + infoMap.size() + " services");
+			getLog().info("Backend server codegen complete: generated " + infoMap.size() + " services");
 
-        } catch (IOException e) {
-            throw new MojoExecutionException("Backend server codegen failed", e);
-        }
-    }
+		} catch (IOException e) {
+			throw new MojoExecutionException("Backend server codegen failed", e);
+		}
+	}
 
 }

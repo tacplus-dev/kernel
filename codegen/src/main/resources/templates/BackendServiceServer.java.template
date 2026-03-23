@@ -52,7 +52,7 @@ public class {{CLASS_NAME}}
 {{SINGLETON_RPCS}}
     // ==================== Collection RPCs ====================
 {{COLLECTION_RPCS}}
-{{QUEUE_RPCS}}{{TOPIC_RPCS}}{{LEADER_ELECTION_RPCS}}
+{{QUEUE_RPCS}}{{TOPIC_RPCS}}{{LEADER_ELECTION_RPCS}}{{VIEW_RPCS}}
     // ==================== Watch Polling ====================
 
     private void pollAll() {

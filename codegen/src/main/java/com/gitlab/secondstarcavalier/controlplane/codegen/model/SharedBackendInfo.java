@@ -17,6 +17,7 @@ public class SharedBackendInfo {
     private final List<SharedBoundary> queues = new ArrayList<>();
     private final List<SharedBoundary> priorityQueues = new ArrayList<>();
     private final List<SharedBoundary> topics = new ArrayList<>();
+    private final List<SharedView> views = new ArrayList<>();
 
     public String getPackageName() { return packageName; }
     public void setPackageName(String packageName) { this.packageName = packageName; }
@@ -47,4 +48,5 @@ public class SharedBackendInfo {
     public List<SharedBoundary> getQueues() { return queues; }
     public List<SharedBoundary> getPriorityQueues() { return priorityQueues; }
     public List<SharedBoundary> getTopics() { return topics; }
+    public List<SharedView> getViews() { return views; }
 }

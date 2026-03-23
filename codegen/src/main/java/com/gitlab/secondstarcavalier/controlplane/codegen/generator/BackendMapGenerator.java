@@ -85,10 +85,10 @@ public class BackendMapGenerator {
         proto.append("     *\n");
         proto.append("     * @return the reconstructed state proto\n");
         proto.append("     */\n");
-        proto.append("    public ").append(outerClassName).append(".").append(info.getBackendName())
+        proto.append("    public ").append(outerClassName).append(".").append(info.getBackendRootName())
           .append(" proto() throws ProtoException {\n");
-        proto.append("        ").append(outerClassName).append(".").append(info.getBackendName())
-          .append(".Builder builder = ").append(outerClassName).append(".").append(info.getBackendName())
+        proto.append("        ").append(outerClassName).append(".").append(info.getBackendRootName())
+          .append(".Builder builder = ").append(outerClassName).append(".").append(info.getBackendRootName())
           .append(".newBuilder();\n");
         for (SharedBoundary b : info.getSingletons()) {
             proto.append("        builder.set").append(b.getFieldPascal()).append("(get").append(b.getFieldPascal()).append("());\n");

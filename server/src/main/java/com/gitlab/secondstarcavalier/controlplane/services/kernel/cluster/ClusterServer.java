@@ -9,7 +9,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.Pers
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.generated.Generated;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
@@ -77,6 +77,7 @@ public class ClusterServer {
 	private final KeyRotator keyRotator;
 	private final ExternalJwkResolver externalJwkResolver;
 	private final CaKeyHolder caKeyHolder;
+	private final TlsCertServiceImpl tlsCertService;
 
 	/**
 	 * @param protoConfig    the bootstrap configuration
@@ -203,15 +204,18 @@ public class ClusterServer {
 		// Auto-generate entitlement profiles from delegates with authorized_services.
 		// Each delegate gets a profile with id=delegateName, azp=[delegateName],
 		// granting _ANY on each authorized service.
-		final List<Generated.EntitlementProfile> autoProfiles = buildDelegateProfiles(
+		final List<Entitlements.EntitlementProfile> autoProfiles = buildDelegateProfiles(
 				effectiveFrontendConfig.getDelegatesList());
 
-		// Merge explicit profiles from config with auto-generated delegate profiles.
-		final Kernel.Config finalEffectiveFrontendConfig = effectiveFrontendConfig;
+		// Enrich explicit profiles with auto-populated azp from delegate config,
+		// then merge with auto-generated delegate profiles.
+		final List<Entitlements.EntitlementProfile> enrichedExplicitProfiles = populateExplicitProfileAzp(
+				effectiveFrontendConfig.getEntitlementProfilesList(),
+				effectiveFrontendConfig.getDelegatesList());
 		this.profileViewServer = new EntitlementProfileViewServer(
 				backendServers.getAuthenticator(),
 				() -> {
-					var merged = new java.util.ArrayList<>(finalEffectiveFrontendConfig.getEntitlementProfilesList());
+					var merged = new java.util.ArrayList<>(enrichedExplicitProfiles);
 					merged.addAll(autoProfiles);
 					return merged;
 				});
@@ -249,6 +253,11 @@ public class ClusterServer {
 
 		// Install Config.configs into ConfigHolder boundary maps
 		installConfigHolder(effectiveFrontendConfig);
+
+		// Seed GatewayTls configCerts from the node's TLS chain so the gateway
+		// can start serving HTTPS immediately. The domain comes from the FQDN
+		// configured in the cluster config.
+		seedGatewayTlsCerts(cfg.getTls(), effectiveFrontendConfig.getFqdn());
 
 		// ClusterState SetLogLevel handler
 		this.clusterSetLogLevelHandler = new ClusterSetLogLevelHandler();
@@ -457,6 +466,14 @@ public class ClusterServer {
 			String configuredTrustDomain = effectiveFrontendConfig.getTrustDomain();
 			final String trustDomain = (configuredTrustDomain != null && !configuredTrustDomain.isEmpty())
 					? configuredTrustDomain : "cavalier";
+			String fqdn = effectiveFrontendConfig.getFqdn();
+			final String tokenIssuer;
+			if (fqdn != null && !fqdn.isEmpty()) {
+				tokenIssuer = "https://" + fqdn + Helpers.REST_ROOT_PATH;
+				identityState.putFqdn(Kernel.IdentityFqdn.newBuilder().setFqdn(fqdn).build());
+			} else {
+				tokenIssuer = "kernel";
+			}
 			var identityService = new IdentityServiceImpl(
 					effectiveFrontendConfig.getDefaultTokenExpirySeconds(),
 					externalJwkResolver,
@@ -467,11 +484,26 @@ public class ClusterServer {
 					caKeyHolder,
 					serviceName -> caState.getServiceCas(serviceName),
 					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
-					() -> trustDomain);
+					() -> trustDomain,
+					tokenIssuer);
 
-			backendServers.services().registerMintService(identityService);
+			backendServers.services().registerKernelMintService(identityService);
 			serverBuilder.addService(identityService);
-			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
+			logger.info("KernelMintService registered on gRPC server ({} delegates)", delegates.size());
+
+			// TLS certificate lifecycle service (ManageCert bidi stream for auto_tls services).
+			this.tlsCertService = new TlsCertServiceImpl(
+					effectiveFrontendConfig.getTlsCertLifetimeSeconds() > 0
+							? effectiveFrontendConfig.getTlsCertLifetimeSeconds()
+							: 86400,
+					caKeyHolder,
+					serviceName -> caState.getServiceCas(serviceName),
+					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
+					() -> trustDomain);
+			serverBuilder.addService(tlsCertService);
+			logger.info("TlsCertService registered on gRPC server (cert lifetime={}s)",
+					effectiveFrontendConfig.getTlsCertLifetimeSeconds() > 0
+							? effectiveFrontendConfig.getTlsCertLifetimeSeconds() : 86400);
 		}
 
 		this.grpcServer = serverBuilder.build();
@@ -484,10 +516,10 @@ public class ClusterServer {
 	 * profile with id=delegateName, azp=[delegateName], granting _ANY on each
 	 * authorized service.
 	 */
-	private static List<Generated.EntitlementProfile> buildDelegateProfiles(
+	private static List<Entitlements.EntitlementProfile> buildDelegateProfiles(
 			List<Kernel.Delegate> delegates) {
-		var result = new java.util.ArrayList<Generated.EntitlementProfile>();
-		var descriptor = Generated.EntitlementProfile.getDescriptor();
+		var result = new java.util.ArrayList<Entitlements.EntitlementProfile>();
+		var descriptor = Entitlements.EntitlementProfile.getDescriptor();
 
 		for (Kernel.Delegate delegate : delegates) {
 			// Skip delegates that already use explicit profile references.
@@ -499,7 +531,7 @@ public class ClusterServer {
 				continue;
 			}
 
-			var builder = Generated.EntitlementProfile.newBuilder()
+			var builder = Entitlements.EntitlementProfile.newBuilder()
 					.setId(delegate.getName())
 					.addAzp(delegate.getName());
 
@@ -543,6 +575,69 @@ public class ClusterServer {
 		return result;
 	}
 
+	/**
+	 * For each explicit entitlement profile (from config) that has an empty azp list,
+	 * populates azp by scanning delegates: any delegate whose authorized_services
+	 * overlaps with the services granted by the profile is added. "kernel" is always included.
+	 */
+	private static List<Entitlements.EntitlementProfile> populateExplicitProfileAzp(
+			List<Entitlements.EntitlementProfile> explicitProfiles,
+			List<Kernel.Delegate> delegates) {
+		// Build map: service name → set of delegate names authorized for that service
+		var serviceToDelegates = new java.util.HashMap<String, java.util.Set<String>>();
+		for (Kernel.Delegate delegate : delegates) {
+			for (var svcName : delegate.getAuthorizedServicesList()) {
+				String enumName = svcName.name();
+				if (enumName.equals("SERVICE_NAME_UNSPECIFIED")) continue;
+				if (enumName.equals("SERVICE_NAME_ANY")) {
+					serviceToDelegates.computeIfAbsent("_any", k -> new java.util.HashSet<>())
+							.add(delegate.getName());
+					continue;
+				}
+				String svc = enumName.replace("SERVICE_NAME_", "").toLowerCase();
+				serviceToDelegates.computeIfAbsent(svc, k -> new java.util.HashSet<>())
+						.add(delegate.getName());
+			}
+		}
+
+		var result = new java.util.ArrayList<Entitlements.EntitlementProfile>();
+		var descriptor = Entitlements.EntitlementProfile.getDescriptor();
+
+		for (Entitlements.EntitlementProfile profile : explicitProfiles) {
+			if (!profile.getAzpList().isEmpty()) {
+				result.add(profile);
+				continue;
+			}
+
+			java.util.Set<String> authorizedAzp = new java.util.LinkedHashSet<>();
+			authorizedAzp.add("kernel");
+
+			// Delegates authorized for _any service can broker all profiles
+			authorizedAzp.addAll(serviceToDelegates.getOrDefault("_any", java.util.Set.of()));
+
+			// Delegates authorized for the "oauth" service broker user logins —
+			// user tokens carry azp=<broker name>, so include them in all user profiles.
+			authorizedAzp.addAll(serviceToDelegates.getOrDefault("oauth", java.util.Set.of()));
+
+			for (var fd : descriptor.getFields()) {
+				if (fd.getType() != com.google.protobuf.Descriptors.FieldDescriptor.Type.ENUM
+						|| !fd.isRepeated()
+						|| fd.getName().equals("azp")) continue;
+				if (profile.getRepeatedFieldCount(fd) > 0) {
+					String svcName = fd.getName();
+					authorizedAzp.addAll(
+							serviceToDelegates.getOrDefault(svcName, java.util.Set.of()));
+				}
+			}
+
+			result.add(profile.toBuilder()
+					.addAllAzp(authorizedAzp)
+					.build());
+			logger.info("Enriched profile '{}' with azp={}", profile.getId(), authorizedAzp);
+		}
+		return result;
+	}
+
 	private void installTrustedCas(List<X509.X509Cert> configCas) {
 		var map = backendServers.services().getTrustedCaMap();
 		int installed = 0;
@@ -557,6 +652,24 @@ public class ClusterServer {
 		}
 		if (installed > 0) {
 			logger.info("Installed {} trusted CA(s) into TrustedCaState", installed);
+		}
+	}
+
+	private void seedGatewayTlsCerts(X509.X509CertChain tlsChain, String fqdn) {
+		if (tlsChain == null || tlsChain.getChainCount() == 0) {
+			logger.info("No TLS chain in bootstrap — skipping GatewayTls cert seeding");
+			return;
+		}
+		String domain = (fqdn != null && !fqdn.isEmpty()) ? fqdn : "localhost";
+		try {
+			var cert = Kernel.GatewayTlsCert.newBuilder()
+					.setDomain(domain)
+					.setCertChain(tlsChain)
+					.build();
+			backendServers.services().getGatewayTlsMap().putConfigCerts(domain, cert);
+			logger.info("Seeded GatewayTls configCerts for domain={}", domain);
+		} catch (Exception e) {
+			logger.warn("Failed to seed GatewayTls configCerts: {}", e.getMessage());
 		}
 	}
 
@@ -585,6 +698,9 @@ public class ClusterServer {
 	}
 
 	public void shutdown() {
+		if (tlsCertService != null) {
+			tlsCertService.stop();
+		}
 		if (caKeyHolder != null) {
 			caKeyHolder.stop();
 		}

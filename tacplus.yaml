@@ -1,0 +1,8 @@
+language: java-maven
+pkg: com.gitlab.secondstarcavalier.controlplane.services.kernel
+output-dir: tacplus
+post-gen:
+  - cmd: mvn
+    args: [-pl, server, -am, -Dtacplus.skip=true, package]
+container:
+  image: registry.gitlab.com/secondstarcavalier/controlplane/services/kernel/kernel

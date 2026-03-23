@@ -131,8 +131,9 @@ public class ProtoDescriptorParser {
     private static final Pattern SERVICE_OPTION_PATTERN = Pattern.compile(
             "^\\s*option\\s+\\(spec\\.(\\w+)\\)\\s*=\\s*\"([^\"]+)\"\\s*;", Pattern.MULTILINE);
 
-    private static final Pattern SERVICE_BOOL_OPTION_PATTERN = Pattern.compile(
-            "^\\s*option\\s+\\(spec\\.(\\w+)\\)\\s*=\\s*(true|false)\\s*;", Pattern.MULTILINE);
+
+    private static final Pattern SERVICE_STRUCT_OPTION_PATTERN = Pattern.compile(
+            "^\\s*option\\s+\\(spec\\.(\\w+)\\)\\s*=\\s*(\\{[^}]*\\})\\s*;", Pattern.MULTILINE);
 
     private void parseServices(String content, FileDescriptor fd) {
         Matcher svcStart = SERVICE_START.matcher(content);
@@ -146,7 +147,7 @@ public class ProtoDescriptorParser {
             ServiceDescriptor svc = new ServiceDescriptor();
             svc.setName(svcName);
 
-            // Parse service-level string options (e.g., service_grpc)
+            // Parse service-level string options (e.g., service_grpc = "Mint")
             Matcher optMatcher = SERVICE_OPTION_PATTERN.matcher(svcBody);
             while (optMatcher.find()) {
                 String optName = optMatcher.group(1);
@@ -156,15 +157,28 @@ public class ProtoDescriptorParser {
                 }
             }
 
-            // Parse service-level boolean options (e.g., disable_auth_service)
-            Matcher boolOptMatcher = SERVICE_BOOL_OPTION_PATTERN.matcher(svcBody);
-            while (boolOptMatcher.find()) {
-                String optName = boolOptMatcher.group(1);
-                boolean optValue = "true".equals(boolOptMatcher.group(2));
-                if ("disable_auth_service".equals(optName)) {
-                    svc.setDisableAuth(optValue);
+            // Parse service-level structured options (e.g., service_grpc = {name: "Mint", auth_disabled: true})
+            Matcher structOptMatcher = SERVICE_STRUCT_OPTION_PATTERN.matcher(svcBody);
+            while (structOptMatcher.find()) {
+                String optName = structOptMatcher.group(1);
+                String structBody = structOptMatcher.group(2);
+                if ("service_grpc".equals(optName)) {
+                    Matcher fieldMatcher = STRUCT_FIELD_PATTERN.matcher(structBody);
+                    while (fieldMatcher.find()) {
+                        String key = fieldMatcher.group(1);
+                        String value = fieldMatcher.group(2);
+                        if (value.startsWith("\"") && value.endsWith("\"")) {
+                            value = value.substring(1, value.length() - 1);
+                        }
+                        if ("name".equals(key) && svc.getBackendRpcName() == null) {
+                            svc.setBackendRpcName(value);
+                        } else if ("auth_disabled".equals(key)) {
+                            svc.setDisableAuth("true".equals(value));
+                        }
+                    }
                 }
             }
+
 
             Matcher rpcMatcher = RPC_PATTERN.matcher(svcBody);
             while (rpcMatcher.find()) {
@@ -233,7 +247,9 @@ public class ProtoDescriptorParser {
                             field.addRepeatedAnnotation(annName, av);
                         } else if (annValue.startsWith("\"") && annValue.endsWith("\"")) {
                             annValue = annValue.substring(1, annValue.length() - 1);
-                            field.getAnnotations().put(annName, AnnotationValue.ofString(annValue));
+                            AnnotationValue sv = AnnotationValue.ofString(annValue);
+                            field.getAnnotations().put(annName, sv);
+                            field.addRepeatedAnnotation(annName, sv);
                         } else if (annValue.equals("true") || annValue.equals("false")) {
                             field.getAnnotations().put(annName, AnnotationValue.ofBool(Boolean.parseBoolean(annValue)));
                         } else {

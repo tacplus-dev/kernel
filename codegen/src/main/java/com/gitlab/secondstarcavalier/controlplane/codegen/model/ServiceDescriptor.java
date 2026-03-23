@@ -6,7 +6,7 @@ import java.util.List;
 public class ServiceDescriptor {
     private String name;
     private String backendRpcName; // from service_backend_rpc annotation on service
-    private boolean disableAuth;   // from disable_auth_service annotation
+    private boolean disableAuth;   // from auth_disabled in service_grpc annotation
     private final List<RpcDescriptor> rpcs = new ArrayList<>();
 
     public String getName() { return name; }

@@ -7,7 +7,6 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
@@ -23,7 +22,7 @@ import org.slf4j.LoggerFactory;
  * CaKeyHolder manages a per-node CA keypair for signing X.509 certificates.
  *
  * <p>
- * On start, generates an EC P-521 keypair, self-signs a CA certificate,
+ * On start, generates an Ed25519 keypair, self-signs a CA certificate,
  * and publishes the CA cert to the CaState collection. The private key
  * is held in memory only (never persisted). Rotates at half the CA
  * certificate lifetime; old CA certs remain in the collection for trust
@@ -99,9 +98,8 @@ public class CaKeyHolder {
     }
 
     private void generateAndPublish() throws Exception {
-        // Generate EC P-521 keypair
-        KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
-        kpg.initialize(new ECGenParameterSpec("secp521r1"));
+        // Generate Ed25519 keypair
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("Ed25519");
         KeyPair keyPair = kpg.generateKeyPair();
 
         String id = UUID.randomUUID().toString();

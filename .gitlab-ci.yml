@@ -24,12 +24,12 @@ build:
       - .m2/repository
   before_script:
     - *parse-version
-    - (cd server && tacplus build --no-container --tag "${CI_COMMIT_TAG#v}")
+    - (cd kernel/tacplus && tacplus build --no-container --tag "${CI_COMMIT_TAG#v}")
   script:
-    - mvn package -DskipTests -B -s ci_settings.xml
+    - cd kernel && mvn package -DskipTests -B -s ci_settings.xml
   artifacts:
     paths:
-      - server/target/kernel.jar
+      - kernel/server/target/kernel.jar
     expire_in: 1 hour
 
 package:
@@ -52,4 +52,4 @@ package:
         --platform linux/amd64,linux/arm64 \
         -t "${IMAGE}:${PATCH}" \
         -t "${IMAGE}:latest" \
-        --push .
+        --push kernel

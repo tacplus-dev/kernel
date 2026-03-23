@@ -11,8 +11,9 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.MintServiceGrpc;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.KernelMintServiceGrpc;
 import com.google.protobuf.Value;
+import com.google.gson.Gson;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.security.KeyPair;
@@ -44,14 +45,15 @@ import org.slf4j.LoggerFactory;
  * per-service trust isolation.</li>
  * </ul>
  */
-public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
+public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintServiceImplBase {
 
 	private static final Logger logger = LoggerFactory.getLogger(IdentityServiceImpl.class);
 
 	private static final Set<String> STANDARD_JWT_CLAIMS = Set.of("sub", "iss", "aud", "exp", "iat", "azp", "nbf",
-			"jti");
+			"jti", "typ", "profiles");
 
 	private static final String TOKEN_TYPE_REFRESH = "refresh";
+	private static final Gson GSON = new Gson();
 
 	/** Intermediate CA lifetime: 10 years. */
 	private static final long INTERMEDIATE_CA_LIFETIME_SECONDS = 10L * 365 * 24 * 3600;
@@ -66,6 +68,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 	private final Function<String, X509.X509CertChain> serviceCaReader;
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
 	private final Supplier<String> trustDomainReader;
+	private final String tokenIssuer;
 
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
@@ -77,7 +80,8 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 			CaKeyHolder caKeyHolder,
 			Function<String, X509.X509CertChain> serviceCaReader,
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
-			Supplier<String> trustDomainReader) {
+			Supplier<String> trustDomainReader,
+			String tokenIssuer) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.externalJwkResolver = externalJwkResolver;
 		this.keyRotator = keyRotator;
@@ -88,6 +92,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
 		this.trustDomainReader = trustDomainReader;
+		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : "kernel";
 	}
 
 	// ========================================================================
@@ -96,9 +101,9 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 
 	@Override
 	public void tokenMint(Tokenrequest.TokenMintRequest request,
-			StreamObserver<TokenOuterClass.Token> responseObserver) {
+			StreamObserver<Tokenrequest.TokenMintResponse> responseObserver) {
 		try {
-			TokenOuterClass.Token result = doTokenMint(request);
+			Tokenrequest.TokenMintResponse result = doTokenMint(request);
 			responseObserver.onNext(result);
 			responseObserver.onCompleted();
 		} catch (StatusException e) {
@@ -111,7 +116,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 		}
 	}
 
-	private TokenOuterClass.Token doTokenMint(Tokenrequest.TokenMintRequest request) throws StatusException {
+	private Tokenrequest.TokenMintResponse doTokenMint(Tokenrequest.TokenMintRequest request) throws StatusException {
 		if (request.getInputToken().isEmpty()) {
 			// Delegation path: caller authenticates via header, mints on behalf.
 			if (request.getSubject().isEmpty()) {
@@ -128,15 +133,37 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 			throw new StatusException(Status.INVALID_ARGUMENT, "invalid input_token: " + e.getMessage());
 		}
 
-		Object typ = inputToken.getCustomField("typ");
-		if (TOKEN_TYPE_REFRESH.equals(typ)) {
-			return exchangeRefreshToService(request, inputToken);
+		// Route by token origin:
+		// 1. CredPair tokens (throwaway JWTs signed by a delegate's key) go to
+		//    the bootstrap path which generates instance_id and refresh tokens.
+		// 2. Kernel-signed tokens go to the exchange path.
+		// 3. Everything else (external IDP tokens) goes to the bootstrap path.
+		//
+		// CredPair keys must be checked BEFORE verifying keys because CredPair
+		// public keys are also in the verifying keys view (for JWT verification
+		// by other services). Without this ordering, CredPair throwaway JWTs
+		// would match a verifying key and incorrectly route to exchangeKernelToken.
+		String kid = inputToken.getKid();
+		if (!kid.isEmpty()) {
+			for (Kernel.Delegate delegate : delegatesReader.get()) {
+				for (JwkOuterClass.Jwk jwk : delegate.getCredPairsList()) {
+					if (kid.equals(jwk.getKid())) {
+						return exchangeExternalToRefresh(request, inputToken);
+					}
+				}
+			}
+
+			for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+				if (kid.equals(jwk.getKid())) {
+					return exchangeKernelToken(request, inputToken);
+				}
+			}
 		}
 
 		return exchangeExternalToRefresh(request, inputToken);
 	}
 
-	private TokenOuterClass.Token exchangeExternalToRefresh(Tokenrequest.TokenMintRequest request,
+	private Tokenrequest.TokenMintResponse exchangeExternalToRefresh(Tokenrequest.TokenMintRequest request,
 			TokenWrapper inputToken) throws StatusException {
 
 		String kid = inputToken.getKid();
@@ -206,7 +233,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 	 * service token in the header and requests a token for a user it has already
 	 * verified. Kernel trusts the broker's attestation.
 	 */
-	private TokenOuterClass.Token delegationMint(Tokenrequest.TokenMintRequest request)
+	private Tokenrequest.TokenMintResponse delegationMint(Tokenrequest.TokenMintRequest request)
 			throws StatusException {
 
 		// Extract raw bearer token from the caller's auth header.
@@ -296,7 +323,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 				com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.TokenOuterClass.TokenPurpose.TOKEN_PURPOSE_REFRESH;
 
 		TokenWrapper newToken = TokenWrapper.create()
-				.setIssuer("kernel")
+				.setIssuer(tokenIssuer)
 				.setSubject(request.getSubject())
 				.setAudience(request.getAud().isEmpty() ? "kernel" : request.getAud())
 				.setIssuedAt(now)
@@ -310,9 +337,9 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 			newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
 		}
 
-		// Set profiles from the request.
+		// Set profiles from the request (serialize as JSON array for cross-language compat).
 		if (!request.getProfilesList().isEmpty()) {
-			newToken.setCustomField("profiles", request.getProfilesList());
+			newToken.setCustomField("profiles", GSON.toJson(request.getProfilesList()));
 		}
 
 		// Forward custom claims from the request (e.g., IDP claims like email, name).
@@ -322,18 +349,46 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 				if (STANDARD_JWT_CLAIMS.contains(key)) {
 					continue;
 				}
-				newToken.setCustomField(key, entry.getValue());
+				Value val = entry.getValue();
+				if (val.hasStringValue()) {
+					newToken.setCustomField(key, val.getStringValue());
+				} else if (val.hasNumberValue()) {
+					newToken.setCustomField(key, Long.toString((long) val.getNumberValue()));
+				} else if (val.hasBoolValue()) {
+					newToken.setCustomField(key, Boolean.toString(val.getBoolValue()));
+				} else {
+					newToken.setCustomField(key, val.toString());
+				}
+			}
+		}
+
+		// Inject delegate's static custom claims.
+		for (Map.Entry<String, String> entry : delegate.getCustomClaimsMap().entrySet()) {
+			if (!STANDARD_JWT_CLAIMS.contains(entry.getKey())) {
+				newToken.setCustomField(entry.getKey(), entry.getValue());
 			}
 		}
 
 		newToken.sign(signingKey);
 
-		logger.info("Minted delegated token: sub={}, azp={}, exp={}",
-				request.getSubject(), callerSub, exp);
-		return newToken.getProto();
+		logger.info("Minted delegated token: sub={}, aud={}, azp={}, exp={}, isRefresh={}, profiles={}",
+				request.getSubject(), newToken.getAudience(), callerSub, exp, isRefresh,
+				newToken.getCustomField("profiles"));
+
+		if (isRefresh) {
+			// Also mint an access token (clone of refresh without typ).
+			TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
+			return Tokenrequest.TokenMintResponse.newBuilder()
+					.setRefreshToken(newToken.getProto())
+					.setAccessToken(accessProto)
+					.build();
+		}
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setAccessToken(newToken.getProto())
+				.build();
 	}
 
-	private TokenOuterClass.Token mintRefreshToken(
+	private Tokenrequest.TokenMintResponse mintRefreshToken(
 			String subject, String azp, Tokenrequest.TokenMintRequest request,
 			Map<String, Object> extraClaims)
 			throws StatusException {
@@ -352,7 +407,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 		}
 
 		TokenWrapper newToken = TokenWrapper.create()
-				.setIssuer("kernel")
+				.setIssuer(tokenIssuer)
 				.setSubject(subject)
 				.setAudience("kernel")
 				.setIssuedAt(now)
@@ -369,11 +424,25 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 		newToken.sign(signingKey);
 
 		logger.info("Minted refresh token: sub={}, exp={}", subject, exp);
-		return newToken.getProto();
+
+		// Also mint an access token (clone of refresh without typ).
+		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
+
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setRefreshToken(newToken.getProto())
+				.setAccessToken(accessProto)
+				.build();
 	}
 
-	private TokenOuterClass.Token exchangeRefreshToService(Tokenrequest.TokenMintRequest request,
+	/**
+	 * Exchanges a kernel-signed token (refresh or access) for a new token.
+	 * Refresh tokens produce access tokens; access tokens produce service-specific tokens.
+	 * Refresh tokens CANNOT directly produce service-specific tokens (aud must be empty).
+	 */
+	private Tokenrequest.TokenMintResponse exchangeKernelToken(Tokenrequest.TokenMintRequest request,
 			TokenWrapper inputToken) throws StatusException {
+
+		boolean isRefresh = TOKEN_TYPE_REFRESH.equals(inputToken.getCustomField("typ"));
 
 		String kid = inputToken.getKid();
 		if (kid.isEmpty()) {
@@ -422,6 +491,13 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 		Kernel.Delegate delegate = findDelegateByName(subject);
 		boolean isS2S = delegate != null;
 
+		// Refresh tokens cannot directly mint service-specific tokens.
+		// Exchange refresh → access first, then access → service token.
+		if (isRefresh && !request.getAud().isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"refresh tokens cannot mint service-specific tokens; exchange for an access token first");
+		}
+
 		if (isS2S && !request.getAud().isEmpty()) {
 			String targetAud = request.getAud();
 			boolean authorized = targetAud.equals(subject);
@@ -448,58 +524,87 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 			}
 		}
 
-		TokenWrapper newToken = TokenWrapper.create()
-				.setIssuer("kernel")
-				.setSubject(subject)
-				.setAudience(request.getAud())
-				.setIssuedAt(now)
-				.setExpiration(exp)
-				.setJTI(UUID.randomUUID().toString());
-
-		// Preserve azp from the input refresh token (set during initial mint).
-		Object inputAzp = inputToken.getCustomField("azp");
-		newToken.setCustomField("azp", inputAzp != null ? inputAzp : "kernel");
-		newToken.setCustomField("principal", subject);
+		TokenWrapper newToken;
 
 		if (isS2S) {
-			if (inputToken.getProto().hasPayload()) {
-				Map<String, Value> fields = inputToken.getProto().getPayload().getFieldsMap();
-				Value instanceIdVal = fields.get("instance_id");
-				if (instanceIdVal != null && instanceIdVal.getKindCase() == Value.KindCase.STRING_VALUE) {
-					newToken.setCustomField("instance_id", instanceIdVal.getStringValue());
+			// S2S: build token from scratch with delegate-specific profiles.
+			newToken = TokenWrapper.create()
+					.setIssuer(tokenIssuer)
+					.setSubject(subject)
+					.setAudience(request.getAud())
+					.setIssuedAt(now)
+					.setExpiration(exp)
+					.setJTI(UUID.randomUUID().toString());
+
+			String inputAzp = inputToken.getCustomField("azp");
+			newToken.setCustomField("azp", inputAzp != null ? inputAzp : "kernel");
+			newToken.setCustomField("principal", subject);
+
+			{
+				String instanceId = inputToken.getProto().getPayloadMap().get("instance_id");
+				if (instanceId != null) {
+					newToken.setCustomField("instance_id", instanceId);
 				}
 			}
 
-			// Profile-based tokens: carry profile names instead of resolved RPCs.
-			// Authorizers resolve profiles -> RPCs at request time via EntitlementProfileView.
 			List<String> delegateProfiles = delegate.getAuthorizedProfilesList();
 			if (delegateProfiles != null && !delegateProfiles.isEmpty()) {
-				// Delegate uses profile-based authorization.
-				newToken.setCustomField("profiles", delegateProfiles);
+				newToken.setCustomField("profiles", GSON.toJson(delegateProfiles));
 			} else {
-				// S2S delegate with authorized_services: grant builtin_admin (wildcard).
-				newToken.setCustomField("profiles", List.of("builtin_admin"));
+				newToken.setCustomField("profiles", GSON.toJson(List.of(delegate.getName())));
 			}
 
-			logger.info("Minted service token (S2S): sub={}, aud={}, exp={}", subject, request.getAud(), exp);
-		} else {
-			// U2S: copy profiles claim from input token (set by Identity after OPA).
-			if (inputToken.getProto().hasPayload()) {
-				Map<String, Value> fields = inputToken.getProto().getPayload().getFieldsMap();
-				for (Map.Entry<String, Value> entry : fields.entrySet()) {
-					String key = entry.getKey();
-					if (STANDARD_JWT_CLAIMS.contains(key)) {
-						continue;
-					}
-					newToken.setCustomField(key, entry.getValue());
+			for (Map.Entry<String, String> entry : delegate.getCustomClaimsMap().entrySet()) {
+				if (!STANDARD_JWT_CLAIMS.contains(entry.getKey())) {
+					newToken.setCustomField(entry.getKey(), entry.getValue());
 				}
 			}
 
-			logger.info("Minted service token (U2S): sub={}, aud={}, exp={}", subject, request.getAud(), exp);
+			logger.info("Minted service token (S2S): sub={}, aud={}, exp={}, profiles={}",
+					subject, request.getAud(), exp, newToken.getCustomField("profiles"));
+		} else {
+			// U2S: clone the entire input token as a mutable copy.
+			// Preserves all claims (profiles, azp, custom IDP claims) exactly.
+			// Only update the fields that differ for a service token.
+			newToken = TokenWrapper.from(inputToken.getProto().toBuilder()
+					.setSignature("")
+					.setBase64("")
+					.removePayload("typ")
+					.build());
+
+			if (!request.getAud().isEmpty()) {
+				newToken.setAudience(request.getAud());
+			}
+			newToken.setIssuedAt(now)
+					.setExpiration(exp)
+					.setJTI(UUID.randomUUID().toString());
+			newToken.setCustomField("principal", subject);
+
+			logger.info("Minted service token (U2S): sub={}, aud={}, exp={}, profiles={}",
+					subject, newToken.getAudience(), exp, newToken.getCustomField("profiles"));
 		}
 
 		newToken.sign(signingKey);
-		return newToken.getProto();
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setAccessToken(newToken.getProto())
+				.build();
+	}
+
+	/**
+	 * Creates an access token by cloning a signed refresh token, stripping typ=refresh,
+	 * and re-signing with a new jti.
+	 */
+	private TokenOuterClass.Token mintAccessFromRefresh(TokenWrapper refreshToken,
+			ImmutableKey signingKey, long now, long exp) {
+		TokenWrapper accessToken = TokenWrapper.from(refreshToken.getProto().toBuilder()
+				.setSignature("")
+				.setBase64("")
+				.removePayload("typ")
+				.build());
+		accessToken.setIssuedAt(now)
+				.setJTI(UUID.randomUUID().toString());
+		accessToken.sign(signingKey);
+		return accessToken.getProto();
 	}
 
 	private String resolveInstanceIdFromContinuityToken(Tokenrequest.TokenMintRequest request,
@@ -512,7 +617,7 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 			throw new StatusException(Status.INVALID_ARGUMENT, "invalid continuity_token: " + e.getMessage());
 		}
 
-		Object typ = continuityToken.getCustomField("typ");
+		String typ = continuityToken.getCustomField("typ");
 		if (!TOKEN_TYPE_REFRESH.equals(typ)) {
 			throw new StatusException(
 					Status.INVALID_ARGUMENT,
@@ -547,12 +652,10 @@ public class IdentityServiceImpl extends MintServiceGrpc.MintServiceImplBase {
 							+ bootstrapSubject + "'");
 		}
 
-		Object instanceIdObj = continuityToken.getCustomField("instance_id");
-		if (instanceIdObj == null || instanceIdObj.toString().isEmpty()) {
+		String instanceId = continuityToken.getCustomField("instance_id");
+		if (instanceId == null || instanceId.isEmpty()) {
 			throw new StatusException(Status.INVALID_ARGUMENT, "continuity_token missing instance_id claim");
 		}
-
-		String instanceId = instanceIdObj.toString();
 		logger.info("Preserved instance_id={} via continuity token for sub={}", instanceId, bootstrapSubject);
 		return instanceId;
 	}

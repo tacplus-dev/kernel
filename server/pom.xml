@@ -129,15 +129,6 @@
 			<groupId>org.slf4j</groupId>
 			<artifactId>slf4j-simple</artifactId>
 		</dependency>
-		<!-- Interfaces -->
-		<dependency>
-			<groupId>com.gitlab.secondstarcavalier.controlplane.services.interfaces</groupId>
-			<artifactId>interfaces-graphs</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>com.gitlab.secondstarcavalier.controlplane.services.interfaces</groupId>
-			<artifactId>interfaces-httpclient</artifactId>
-		</dependency>
 		<!-- OPA -->
 		<dependency>
 			<groupId>com.styra</groupId>

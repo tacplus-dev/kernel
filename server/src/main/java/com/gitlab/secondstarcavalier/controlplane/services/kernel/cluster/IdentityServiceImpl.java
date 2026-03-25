@@ -58,7 +58,10 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 	/** Intermediate CA lifetime: 10 years. */
 	private static final long INTERMEDIATE_CA_LIFETIME_SECONDS = 10L * 365 * 24 * 3600;
 
+	private static final long DEFAULT_MAX_TOKEN_LIFETIME_SECONDS = 2592000; // 30 days
+
 	private final long defaultTokenExpirySeconds;
+	private final long maxTokenLifetimeSeconds;
 	private final ExternalJwkResolver externalJwkResolver;
 	private final KeyRotator keyRotator;
 	private final Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader;
@@ -72,6 +75,7 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
+			long maxTokenLifetimeSeconds,
 			ExternalJwkResolver externalJwkResolver,
 			KeyRotator keyRotator,
 			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
@@ -83,6 +87,7 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 			Supplier<String> trustDomainReader,
 			String tokenIssuer) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
+		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
 		this.externalJwkResolver = externalJwkResolver;
 		this.keyRotator = keyRotator;
 		this.verifyingKeysReader = verifyingKeysReader;
@@ -312,9 +317,18 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 		}
 
 		long now = Instant.now().getEpochSecond();
+		long maxExp = now + maxTokenLifetimeSeconds;
 		long exp;
 		if (request.getExp() > 0) {
 			exp = request.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > maxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
+			}
 		} else {
 			exp = now + defaultTokenExpirySeconds;
 		}
@@ -399,9 +413,18 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 		}
 
 		long now = Instant.now().getEpochSecond();
+		long maxExp = now + maxTokenLifetimeSeconds;
 		long exp;
 		if (request.getExp() > 0) {
 			exp = request.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > maxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
+			}
 		} else {
 			exp = now + defaultTokenExpirySeconds;
 		}
@@ -473,19 +496,22 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
 		}
 
-		long inputExp = inputToken.getExpiration();
+		long now = Instant.now().getEpochSecond();
+		long maxExp = now + maxTokenLifetimeSeconds;
 		long exp;
 		if (request.getExp() == 0) {
-			exp = inputExp;
-		} else if (request.getExp() > inputExp) {
-			throw new StatusException(
-					Status.INVALID_ARGUMENT,
-					"requested exp " + request.getExp() + " exceeds refresh token exp " + inputExp);
+			exp = now + defaultTokenExpirySeconds;
 		} else {
 			exp = request.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > maxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
+			}
 		}
-
-		long now = Instant.now().getEpochSecond();
 		String subject = inputToken.getSubject();
 
 		Kernel.Delegate delegate = findDelegateByName(subject);

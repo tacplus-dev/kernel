@@ -159,16 +159,6 @@
 				<version>1.80</version>
 			</dependency>
 			<dependency>
-				<groupId>com.gitlab.secondstarcavalier.controlplane.services.interfaces</groupId>
-				<artifactId>interfaces-httpclient</artifactId>
-				<version>1.0.5</version>
-			</dependency>
-			<dependency>
-				<groupId>com.gitlab.secondstarcavalier.controlplane.services.interfaces</groupId>
-				<artifactId>interfaces-graphs</artifactId>
-				<version>1.0.7</version>
-			</dependency>
-			<dependency>
 				<groupId>com.gitlab.secondstarcavalier.controlplane.services.kernel</groupId>
 				<artifactId>kernel-tacplus</artifactId>
 				<version>${project.version}</version>

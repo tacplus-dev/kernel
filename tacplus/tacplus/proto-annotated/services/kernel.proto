@@ -1,0 +1,1959 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+//
+// Kernel configuration, cluster state, and token exchange definitions.
+// Admin and Hazelcast types are defined in common/hazelcast.proto.
+
+syntax = "proto3";
+
+package kernel;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel";
+option java_outer_classname = "Kernel";
+
+import "libs/spec.proto";
+import "libs/host.proto";
+import "libs/logger.proto";
+import "libs/outputformat.proto";
+import "libs/jwk.proto";
+import "libs/x509.proto";
+import "libs/cloudvendor.proto";
+import "common/tokenrequest.proto";
+import "common/hazelcast.proto";
+import "libs/healthreport.proto";
+
+import "generated/services.proto";
+import "generated/entitlements.proto";
+import "generated/services_config.proto";
+import "google/protobuf/empty.proto";
+
+option (spec.service) = {name: "kernel", id: 8, store: true};
+
+// Data must exist on at least 3 nodes (1 primary + 2 backups).
+// Hazelcast backupCount = min(MIN_DATA_COPIES - 1, clusterSize - 1).
+option (spec.int_const) = {name: "MIN_DATA_COPIES", value: 3};
+
+// REST_ROOT_PATH is the base path for all REST endpoints exposed by the gateway.
+// All service methods are exposed at {REST_ROOT_PATH}/{service_grpc}/{MethodName}.
+// Also used by kernel as the token issuer path suffix.
+option (spec.string_const) = {name: "REST_ROOT_PATH", value: "/api/v1"};
+
+// ============================================================================
+// Kernel Configuration
+// ============================================================================
+
+// BootstrapConfig is the top-level configuration for a Kernel node.
+// Kernel provides distributed state management with gRPC access
+// and clustered storage. This configuration is read once at boot and is
+// immutable for the lifetime of the process.
+//
+// The config oneof determines how the gRPC configuration (Config)
+// is sourced: from a URL, or from a local file.
+// Unlike BootstrapConfig, Config can be reloaded at any time.
+message BootstrapConfig {
+
+  // cluster_name is the logical name for this cluster.
+  // All nodes in the same cluster must use the same name.
+  string cluster_name = 1 [(spec.assert_required) = true];
+
+  // listener is the gRPC bind address for the Kernel server. Default port 5000.
+  host.Host listener = 2 [(spec.assert_required) = true, (spec.default_host) = {host: "0.0.0.0", port: 5000}];
+
+  // members is the list of cluster member addresses for discovery (e.g. host=10.0.0.1, port=9443).
+  // At least one member must be specified for the node to join the cluster.
+  repeated host.Host members = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 32];
+
+  // node_count is the expected number of nodes in the cluster.
+  // Used for partition planning and quorum calculations.
+  // Must be at least 1.
+  int32 node_count = 4 [(spec.assert_gt) = 0];
+
+  // partition_count is the number of partitions to distribute data across.
+  // More partitions enable finer-grained distribution but increase metadata overhead.
+  // Default: 271 (prime number for better distribution).
+  // Must be greater than 0.
+  int32 partition_count = 5 [(spec.assert_gt) = 0, (spec.default_int) = 271];
+
+  // network configures cluster networking (timeouts, heartbeats, etc.).
+  hazelcast.NetworkConfig network = 6 [(spec.assert_required) = true];
+
+  // logger configures logging for the Kernel server.
+  logger.LoggerConfig logger = 7 [(spec.assert_required) = true];
+
+  // persistence_dir is the directory where DB dumps and redo logs are stored.
+  // Default: "data/kernel".
+  string persistence_dir = 9 [(spec.default_string) = "data/kernel"];
+
+  // persistence_format configures the serialization format for redo logs and dumps.
+  // Default: OUTPUT_FORMAT_PROTO_WIRE (binary protobuf).
+  outputformat.OutputFormat persistence_format = 10;
+
+  // config determines how gRPC configuration (Config) is sourced.
+  oneof config {
+    // url_loader fetches the config from a URL (HTTPS with optional auth token).
+    UrlLoader url_loader = 11;
+
+    // file_loader loads the config from a local file on disk.
+    FileLoader file_loader = 12;
+  }
+
+  // loader_ca is the CA certificate trusted for TLS verification when
+  // fetching Config via url_loader.
+  repeated x509.X509Cert loader_ca = 13 [(spec.assert_max_size) = 16];
+
+  // tls is the node's X.509 certificate and private key, used for
+  // gRPC server TLS and Hazelcast mTLS.
+  x509.X509CertChain tls = 14 [(spec.assert_required) = true];
+
+  // hazelcast_listener is the bind address for Hazelcast cluster communication. Default port 5001.
+  host.Host hazelcast_listener = 17 [(spec.default_host) = {host: "0.0.0.0", port: 5001}];
+}
+
+// ============================================================================
+// Token Exchanger
+// ============================================================================
+
+// Identity holds the public verifying keys for kernel's token exchange service.
+// Kernel is the sole token authority — all tokens (S2S, U2S, refresh) and
+// X.509 certificates are signed by kernel's keys.
+//
+// Token exchange handles:
+//   1. Direct exchange: delegate presents cred_pair JWT or cloud proof → token/cert
+//   2. Delegation: broker (OAuth, K8S) authenticates via header, mints on behalf
+//
+// Access: RW for kernel, RO for any service that needs to verify tokens.
+message Identity {
+  option (spec.service_state) = {name: "Identity", tag: "kernel"};
+  option (spec.disable_auth_message) = true;
+  // Fields 1-5 are reserved for tacplus framework use.
+
+  // Verification keys — kernel's public keys, rotated periodically.
+  // Kernel holds the corresponding private keys internally.
+  // Used by SecurityInterceptor to validate tokens for cluster calls.
+  repeated jwk.Jwk verifying_keys = 6 [
+    (spec.persistence) = true,
+    (spec.view_member) = "JwkVerifyingKeysView",
+    (spec.assert_max_size) = 16
+  ];
+
+  // fqdn is the cluster's public hostname, published from Config on
+  // each config load. Services (e.g. letsencrypt) watch this to discover
+  // the cluster FQDN without needing it in their own config.
+  IdentityFqdn fqdn = 7;
+}
+
+// IdentityFqdn wraps the cluster's FQDN for publication as a singleton
+// boundary in Identity state.
+message IdentityFqdn {
+  string fqdn = 1;
+}
+
+// TrustedCa stores trusted CA certificates for TLS verification.
+// Installed from Config.trusted_cas on each config load.
+// Services read these (RO) to verify TLS connections.
+message TrustedCa {
+  option (spec.service_state) = {name: "TrustedCa", tag: "kernel"};
+  option (spec.disable_auth_message) = true;
+  // Fields 1-5 are reserved for tacplus framework use.
+
+  repeated x509.X509Cert trusted_cas = 6 [(spec.assert_max_size) = 16];
+}
+
+// MintService is kernel's identity authority — mints tokens and signs
+// certificates. Kernel is the sole signing authority for the cluster.
+// Hand-written implementation; tacplus generates client wrappers and server wiring.
+//
+// Gateway owns the public-facing MintService (OIDC discovery, JWKS, and
+// REST endpoints) and delegates TokenMint/X509Mint to kernel via its
+// direct kernel channel. This service is for S2S use only.
+//
+// Both RPCs handle direct exchange (caller presents credentials in the request)
+// and delegation (broker authenticates via header, specifies subject/profiles).
+// Kernel determines the mode from the request: if subject is set, it's delegation
+// and the caller must be an authorized delegate implementation.
+service KernelMintService {
+  option (spec.service_grpc) = {name: "KernelMint", auth_disabled: true};
+
+  // TokenMint mints a signed JWT token. Handles both direct credential
+  // exchange and delegated minting from brokers (OAuth, K8S brokers).
+  rpc TokenMint(tokenrequest.TokenMintRequest) returns (tokenrequest.TokenMintResponse) {}
+
+  // X509Mint signs an X.509 certificate under a per-service intermediate CA.
+  // Authentication via bearer token in the Authorization header or
+  // input_token in the request body (for gateway-mediated calls).
+  //
+  // On each call, kernel:
+  //   1. Extracts the service name from the token's sub claim.
+  //   2. Gets or creates an intermediate CA for that service
+  //      (signed by root CA, pathlen:0).
+  //   3. Signs the caller-provided public key (cert_request.key)
+  //      under the intermediate CA.
+  //   4. Returns X509CertChain: leaf cert + intermediate CA cert in chain.
+  //
+  // The intermediate CA is unique per service, providing per-service
+  // trust isolation — only nodes of the same service verify each other.
+  rpc X509Mint(tokenrequest.X509MintRequest) returns (x509.X509CertChain) {}
+}
+
+// ============================================================================
+// Delegate — S2S credential holders
+// ============================================================================
+
+// CloudIdentityMatcher configures which cloud identities a delegate accepts.
+// The delegate proves identity using a CloudIdentityProof; this config
+// tells kernel what to expect.
+message CloudIdentityMatcher {
+  // vendor identifies the cloud provider.
+  cloudvendor.CloudVendor vendor = 1 [(spec.assert_enum_defined) = true];
+
+  // expected_identity is the cloud identity to match against.
+  // AWS: IAM role ARN. GCP: service account email. Azure: managed identity client ID.
+  string expected_identity = 2 [(spec.assert_required) = true];
+}
+
+// Delegate holds credentials for a service or machine client that can request tokens.
+// Each delegate is identified by name (becomes "sub" in issued tokens)
+// and authenticates via a signed JWT (verified against cred_pairs) or cloud identity.
+//
+// Two authorization models (mutually exclusive):
+//   - S2S: authorized_services → wildcard entitlements per listed service
+//   - Profile-based: authorized_profiles → EntitlementProfile → per-service RPC lists
+//     Used for machine clients (formerly ApiKey) that need fine-grained access.
+message Delegate {
+  // name is the delegate's identity (becomes sub in issued tokens).
+  string name = 1 [(spec.assert_required) = true];
+
+  // Public keys for verifying the delegate's signed JWT.
+  // Repeated to allow rotation (old + new key during transition).
+  repeated jwk.Jwk cred_pairs = 2 [(spec.assert_max_size) = 8];
+  repeated CloudIdentityMatcher cloud_identities = 3 [(spec.assert_max_size) = 8];
+
+  // authorized_services lists services this delegate can request tokens for.
+  // Values are generated ServiceName enum entries matching service declarations.
+  // The delegate can always request a token for itself (sub=name).
+  // Use SERVICE_NAME_ANY to allow all services.
+  repeated services.ServiceName authorized_services = 4 [(spec.assert_max_size) = 64];
+
+  // authorized_profiles lists entitlement profiles this delegate may use.
+  // When set, TokenMint resolves these profiles to per-service RPC lists
+  // via entitlement_profiles in Config. Mutually exclusive with authorized_services:
+  // a delegate uses either S2S (authorized_services) or profile-based
+  // (authorized_profiles) authorization, not both.
+  repeated string authorized_profiles = 5 [(spec.assert_max_size) = 100];
+
+  // custom_claims are static key-value pairs added to every access token
+  // minted for this delegate. Useful for identity claims (e.g. email).
+  // Standard JWT claims (sub, iss, aud, exp, iat, azp, nbf, jti, typ, profiles)
+  // are reserved and will be skipped.
+  map<string, string> custom_claims = 6 [(spec.assert_max_size) = 20];
+}
+
+// ============================================================================
+// gRPC Configuration
+// ============================================================================
+
+// Config is the gRPC configuration for Kernel.
+// Unlike BootstrapConfig (read once at boot), Config can be reloaded at any time.
+message Config {
+  // trusted_cas lists the trusted CA certificates for TLS verification.
+  repeated x509.X509Cert trusted_cas = 2 [(spec.assert_max_size) = 16];
+
+  // rate_limit configures rate limiting for unary read RPCs to detect polling.
+  hazelcast.RateLimitConfig rate_limit = 5 [(spec.assert_required) = true];
+
+  // configs holds per-service configurations. On each config load,
+  // each entry is written to the corresponding service config state boundary.
+  services_config.Services configs = 7 [(spec.assert_required) = true];
+
+  // --- Token Exchanger ---
+
+  // key_rotation_interval_seconds is how often the exchanger rotates
+  // its own signing keys. Default: 24 hours.
+  int64 key_rotation_interval_seconds = 10 [(spec.default_int) = 86400];
+
+  // default_token_expiry_seconds is the default lifetime for issued
+  // access tokens when the request does not specify an expiry. Default: 1 hour.
+  int64 default_token_expiry_seconds = 11 [(spec.default_int) = 3600];
+
+  // delegates hold credentials for services that can request tokens.
+  // Each delegate identifies a service and its authorized target services.
+  repeated Delegate delegates = 16 [(spec.assert_max_size) = 128];
+
+  // ca_cert_lifetime_seconds is the lifetime for node CA certificates.
+  // Default: 31536000 (1 year). Node CA certs are regenerated on restart.
+  int64 ca_cert_lifetime_seconds = 17 [
+    (spec.default_int) = 31536000,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+
+  // --- User Token Authority (delegated from OAuth) ---
+
+  // entitlement_profiles defines named sets of entitlements for user and machine
+  // authorization. OPA policy in OAuth returns profile names; kernel resolves
+  // those to concrete per-service RPC lists when OAuth calls MintToken.
+  // Also used by TokenMint to resolve Delegate.authorized_profiles for machine clients.
+  repeated entitlements.EntitlementProfile entitlement_profiles = 18 [(spec.assert_max_size) = 128];
+
+  // access_token_lifetime_seconds is the default lifetime for user access tokens
+  // minted via MintToken. Default: 900 (15 minutes).
+  int64 access_token_lifetime_seconds = 20 [
+    (spec.default_int) = 900,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+
+  // refresh_token_lifetime_seconds is the default lifetime for user refresh tokens
+  // minted via MintToken. Default: 86400 (24 hours).
+  int64 refresh_token_lifetime_seconds = 21 [
+    (spec.default_int) = 86400,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+
+  // trust_domain is the SPIFFE trust domain for this cluster.
+  // Used to construct SPIFFE IDs: spiffe://<trust_domain>/<azp>/<service>.
+  // Default: "cavalier".
+  string trust_domain = 22 [(spec.default_string) = "cavalier"];
+
+  // fqdn is the fully qualified domain name for this cluster
+  // (e.g. "api.example.com"). Published to Identity state for
+  // services like letsencrypt. No default — must be set for production.
+  string fqdn = 23 [(spec.assert_fqdn) = true];
+
+  // issuer is the full issuer URL for tokens minted by this cluster.
+  // For local development, computed as https://<fqdn>:<port> (port omitted if 443).
+  // For production behind a load balancer, set explicitly (e.g. "https://api.example.com").
+  string issuer = 24;
+
+  // tls_cert_lifetime_seconds is the lifetime for auto-TLS service certificates.
+  // Kernel sends a renewal request at half-life. Default: 86400 (24 hours).
+  int64 tls_cert_lifetime_seconds = 25 [
+    (spec.default_int) = 86400,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+
+  // max_token_lifetime_seconds is the maximum lifetime kernel will allow for
+  // any minted token. Requests with exp beyond now + this value are rejected.
+  // Delegates control their own exp policy within this ceiling.
+  // Default: 2592000 (30 days).
+  int64 max_token_lifetime_seconds = 26 [
+    (spec.default_int) = 2592000,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+}
+
+// ============================================================================
+// Config Loaders
+// ============================================================================
+
+// UrlLoader fetches gRPC configuration from a URL.
+// Supports HTTPS with optional bearer token authentication.
+// TLS verification uses BootstrapConfig.loader_ca.
+message UrlLoader {
+  // url is the HTTPS URL to fetch the configuration from.
+  string url = 1 [(spec.assert_required) = true];
+
+  // token is the bearer token for authentication.
+  // Sent as "Authorization: Bearer <token>" header.
+  string token = 2;
+}
+
+// FileLoader loads gRPC configuration from a local file on disk.
+message FileLoader {
+  // path is the filesystem path to the configuration file.
+  string path = 1 [(spec.assert_required) = true];
+}
+
+// ============================================================================
+// Cluster State (cluster diagnostics, health, and metrics)
+// ============================================================================
+//
+// Cluster is a state root that exposes cluster diagnostics and
+// operational metrics. A background publisher in each node periodically
+// computes metrics from JVM/Hazelcast APIs and writes them to the maps.
+// Tacplus auto-generates Get/Set/Watch RPCs for each boundary.
+//
+// PATTERNS TO ADDRESS LATER:
+//
+// 1. Filtered queries: GetMapEntries needs key_prefix filter and limit.
+//    The auto-generated collection Get doesn't support ad-hoc filtering.
+//    Needs a hand-wrapped RPC or a new tacplus pattern for parameterized
+//    queries on collections.
+//
+// 2. Transient point-in-time queries: ListLocks returns a snapshot of
+//    lock state that changes too rapidly to publish to maps. Needs a
+//    hand-wrapped RPC. Same applies to thread deadlock detection —
+//    better as on-demand than periodic.
+//
+// 3. Publisher latency vs event-driven updates: Watch fires when maps
+//    update, but the publisher writes on a fixed interval. For membership
+//    changes, consider event-driven publishing (MembershipListener
+//    triggers immediate cluster_info/cluster_health write) alongside
+//    periodic publishing for metrics.
+//
+message Cluster {
+  option (spec.service_state) = {name: "Cluster", tag: "kernel"};
+  // Fields 1-5 are reserved for tacplus framework use.
+
+  // --- Cluster-wide singletons (any node writes, convergent LWW) ---
+
+  // cluster_info captures cluster membership, state, and version.
+  // Updated on membership change events and periodically.
+  hazelcast.AdminClusterInfo cluster_info = 6;
+
+  // cluster_health captures partition safety, quorum, and migration state.
+  // Updated on membership change events and periodically.
+  hazelcast.AdminClusterHealth cluster_health = 7;
+
+  // --- Per-node collections (each node writes its own entry, keyed by node_id) ---
+
+  // node_metrics captures memory, CPU, and disk usage per node.
+  repeated hazelcast.AdminNodeMetrics node_metrics = 8 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 32
+  ];
+
+  // grpc_stats captures gRPC connection and RPC statistics per node.
+  repeated hazelcast.AdminGrpcStats grpc_stats = 9 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 32
+  ];
+
+  // persistence_status captures redo log and dump state per node.
+  repeated hazelcast.AdminPersistenceStatus persistence_status = 10 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 32
+  ];
+
+  // network_stats captures network connections and traffic per node.
+  repeated hazelcast.AdminNetworkStats network_stats = 11 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 32
+  ];
+
+  // thread_info captures JVM thread counts per node.
+  repeated hazelcast.AdminThreadInfo thread_info = 12 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 32
+  ];
+
+  // token_cache_stats captures security token cache statistics per node.
+  repeated hazelcast.AdminTokenCacheStats token_cache_stats = 13 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 32
+  ];
+
+  // map_stats captures per-map statistics. Keyed by map name.
+  // Each node publishes stats for maps it owns partitions of.
+  repeated hazelcast.AdminMapStats map_stats = 14 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 1024
+  ];
+
+  // --- Commands ---
+
+  // set_log_level dynamically changes a logger's level without restart.
+  AdminSetLogLevelRequest set_log_level = 15 [(spec.command) = true];
+
+  // --- Private (no external RPCs — server reads/writes internally) ---
+
+  // config_dump holds the running configuration. Private because it
+  // contains secrets (cluster secret, keys, tokens).
+  AdminConfigDump config_dump = 16 [
+    (spec.private) = true
+  ];
+
+  // reload_config triggers a reload of the gRPC Config from the
+  // configured source (URL or file). Updates token exchange
+  // and per-service config state from the reloaded config.
+  AdminReloadConfigRequest reload_config = 17 [
+    (spec.command) = true,
+    (spec.boundary_callers) = "orchestrator"
+  ];
+
+  // --- Configuration (published on boot / config reload for admin visibility) ---
+
+  // bootstrap_config is the node's BootstrapConfig, published once at boot.
+  // Private because BootstrapConfig contains the node's TLS private key.
+  BootstrapConfig bootstrap_config = 18 [
+    (spec.private) = true
+  ];
+
+  // grpc_config is the current gRPC Config, updated on each config reload.
+  Config grpc_config = 19;
+
+  // --- Graph registry and service connections ---
+
+  // graph_registry contains metadata for all boundaries across all state roots.
+  // Published once at boot from the generated Registry. Keyed by qualified_name.
+  // Consumers use WatchGraphRegistry to discover all graphs in the system.
+  repeated hazelcast.AdminGraphInfo graph_registry = 20 [(spec.assert_max_size) = 1024];
+
+  // service_connections tracks which microservices are connected and what
+  // graphs they are accessing. Published periodically by the security
+  // interceptor based on authenticated peer identity. Keyed by "service_id@node_id".
+  repeated hazelcast.AdminServiceConnection service_connections = 21 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 256
+  ];
+
+  // queue_stats captures per-queue statistics (depth, offer/consume rates).
+  // Published per-queue per-node. Keyed by qualified_name.
+  repeated hazelcast.AdminQueueStats queue_stats = 22 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 1024
+  ];
+
+  // topic_stats captures per-topic statistics (publish rate, subscriber count).
+  // Published per-topic per-node. Keyed by qualified_name.
+  repeated hazelcast.AdminTopicStats topic_stats = 23 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 1024
+  ];
+
+  // watch_health tracks active Watch streams and their consumer health.
+  // Published per-active-watch per-node. Keyed by watch_id.
+  repeated hazelcast.AdminWatchHealth watch_health = 24 [
+    (spec.eviction_ttl_seconds) = 60,
+    (spec.assert_max_size) = 1024
+  ];
+
+  // mutation_rates captures per-boundary write throughput.
+  // Published per-boundary per-node. Keyed by qualified_name.
+  repeated hazelcast.AdminMutationRate mutation_rates = 25 [
+    (spec.eviction_ttl_seconds) = 120,
+    (spec.assert_max_size) = 1024
+  ];
+}
+
+// ============================================================================
+// Admin — Log Level Control
+// ============================================================================
+
+// AdminSetLogLevelRequest dynamically changes a logger's level without restart.
+// Dispatched as a command via Cluster.set_log_level.
+message AdminSetLogLevelRequest {
+  // logger_name is the fully qualified logger name (e.g., "com.example.MyClass").
+  // Empty string targets the root logger.
+  string logger_name = 1;
+
+  // level is the desired log level (e.g., "DEBUG", "INFO", "WARN", "ERROR").
+  string level = 2 [(spec.assert_required) = true];
+}
+
+// AdminReloadConfigRequest triggers a reload of the gRPC Config.
+message AdminReloadConfigRequest {
+  // force_reload forces a reload even if the config hasn't changed.
+  bool force_reload = 1;
+}
+
+// ============================================================================
+// Admin — Config Dump (private — contains secrets)
+// ============================================================================
+
+// AdminConfigDump holds the Hazelcast configuration for diagnostics.
+// Private because the Hazelcast config may contain internal cluster details.
+// Stored as a singleton in Cluster.config_dump.
+message AdminConfigDump {
+  // hazelcast_config_xml is the Hazelcast configuration serialized as XML.
+  string hazelcast_config_xml = 3;
+}
+
+// ============================================================================
+// Service Health State
+// ============================================================================
+
+// ServiceHealth is a state root for service instance health.
+// All microservices have RW access. The server enforces per-instance write
+// isolation via the token's instance_id claim (instance_keyed annotation).
+message ServiceHealth {
+  option (spec.service_state) = {name: "ServiceHealth", tag: "kernel"};
+  // Fields 1-5 are reserved for tacplus framework use.
+
+  // instances holds health data for each running service instance.
+  // Keyed by "service_id@instance_id" (composed by server from token claims).
+  // Entries TTL-expire in 30s if not refreshed, ensuring stale instances
+  // are removed when a process dies.
+  repeated healthreport.ServiceInstanceHealth instances = 6 [
+    (spec.instance_keyed) = true,
+    (spec.eviction_ttl_seconds) = 30,
+    (spec.assert_max_size) = 256
+  ];
+}
+
+// ============================================================================
+// CA State (cluster-internal PKI)
+// ============================================================================
+
+// Ca holds CA certificates for the cluster's internal PKI.
+// Each kernel node generates its own CA keypair (private key in memory)
+// and publishes its CA cert here. Services read ca_certs (RO) for trust.
+message Ca {
+  option (spec.service_state) = {name: "Ca", tag: "kernel"};
+  option (spec.disable_auth_message) = true;
+  // Fields 1-5 are reserved for tacplus framework use.
+
+  // ca_certs is the collection of all node CA certificates.
+  // Each node publishes its own CA cert on boot. Services read these
+  // to build a trust store for verifying certificates signed by any node.
+  repeated x509.X509Cert ca_certs = 6 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 16
+  ];
+
+  // service_cas holds per-service intermediate CA key pairs.
+  // Each entry is keyed by service name (e.g., "eventbus", "dgraph").
+  // The intermediate CA is created on first X509Mint call for a service
+  // and reused for all subsequent calls by that service.
+  // Signed by the cluster root CA with BasicConstraints CA:TRUE, pathlen:0.
+  repeated x509.X509CertChain service_cas = 7 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 64
+  ];
+}
+
+// ============================================================================
+// Gateway TLS — public-facing certificate management
+// ============================================================================
+
+// GatewayTlsState holds TLS certificate chains for the gateway's public-facing
+// HTTPS endpoint. Certificates come from two sources:
+//   - config_certs: manually configured cert chains (kernel writes from config)
+//   - acme_certs: automatically provisioned by LetsEncrypt (RW for letsencrypt)
+//
+// Gateway watches the all_certs view to serve the correct certificate
+// for each domain, regardless of how it was provisioned.
+message GatewayTlsState {
+  option (spec.service_state) = {name: "GatewayTls", tag: "kernel"};
+  // Fields 1-5 are reserved for tacplus framework use.
+
+  // config_certs holds manually configured TLS certificate chains.
+  // Kernel populates these from its bootstrap config.
+  repeated GatewayTlsCert config_certs = 6 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 16
+  ];
+
+  // acme_certs holds certificate chains provisioned by LetsEncrypt.
+  // LetsEncrypt has RW access to write and renew certs here.
+  repeated GatewayTlsCert acme_certs = 7 [
+    (spec.persistence) = true,
+    (spec.boundary_perms) = {target: "letsencrypt.LetsEncryptState", mode: STATE_PERMS_MODE_RW},
+    (spec.assert_max_size) = 16
+  ];
+
+  // all_certs is a read-only view over config_certs and acme_certs.
+  // Gateway watches this to serve TLS certificates for all domains.
+  repeated GatewayTlsCert all_certs = 8 [
+    (spec.view_sources) = "config_certs",
+    (spec.view_sources) = "acme_certs"
+  ];
+}
+
+// GatewayTlsCert binds a domain name to a TLS certificate chain.
+message GatewayTlsCert {
+  // domain is the FQDN this certificate is for (e.g., "api.example.com").
+  string domain = 1 [(spec.indexed) = true, (spec.assert_required) = true];
+
+  // cert_chain is the TLS certificate chain and private key for this domain.
+  x509.X509CertChain cert_chain = 2 [(spec.assert_required) = true];
+}
+
+
+// Collection query types (auto-injected)
+enum ComparisonOp {
+  COMPARISON_OP_UNSPECIFIED = 0;
+  COMPARISON_OP_EQ = 1;
+  COMPARISON_OP_NE = 2;
+  COMPARISON_OP_GT = 3;
+  COMPARISON_OP_GE = 4;
+  COMPARISON_OP_LT = 5;
+  COMPARISON_OP_LE = 6;
+  COMPARISON_OP_IN = 7;
+  COMPARISON_OP_NOT_IN = 8;
+  COMPARISON_OP_LIKE = 9;
+  COMPARISON_OP_IS_NULL = 10;
+  COMPARISON_OP_IS_NOT_NULL = 11;
+}
+enum SortDirection {
+  SORT_DIRECTION_UNSPECIFIED = 0;
+  SORT_DIRECTION_ASC = 1;
+  SORT_DIRECTION_DESC = 2;
+}
+enum LogicalOp {
+  LOGICAL_OP_UNSPECIFIED = 0;
+  LOGICAL_OP_AND = 1;
+  LOGICAL_OP_OR = 2;
+}
+message QueryValue { oneof value { string string_value = 1; int64 int_value = 2; double double_value = 3; bool bool_value = 4; } }
+message Predicate { string field_name = 1; ComparisonOp op = 2; QueryValue value = 3; repeated QueryValue values = 4; }
+message PredicateGroup { LogicalOp op = 1; repeated Predicate predicates = 2; repeated PredicateGroup groups = 3; }
+message SortField { string field_name = 1; SortDirection direction = 2; }
+message CollectionQuery { PredicateGroup where = 1; repeated SortField order_by = 2; int32 limit = 3; int32 offset = 4; }
+
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service IdentityStateService {
+	// Singleton: Fqdn
+	rpc GetFqdn(google.protobuf.Empty) returns (IdentityFqdn);
+	rpc SetFqdn(IdentityFqdn) returns (IdentityFqdn);
+	rpc WatchFqdn(google.protobuf.Empty) returns (stream IdentityFqdn);
+	// Collection: VerifyingKeys
+	rpc GetVerifyingKeys(VerifyingKeysGetRequest) returns (VerifyingKeysValueResponse);
+	rpc PutVerifyingKeys(VerifyingKeysPutRequest) returns (VerifyingKeysValueResponse);
+	rpc SetVerifyingKeys(VerifyingKeysPutRequest) returns (MapEmpty);
+	rpc RemoveVerifyingKeys(VerifyingKeysGetRequest) returns (VerifyingKeysValueResponse);
+	rpc DeleteVerifyingKeys(VerifyingKeysGetRequest) returns (MapEmpty);
+	rpc ContainsKeyVerifyingKeys(VerifyingKeysGetRequest) returns (VerifyingKeysValueResponse);
+	rpc GetAllVerifyingKeys(VerifyingKeysGetAllRequest) returns (VerifyingKeysEntriesResponse);
+	rpc KeySetVerifyingKeys(VerifyingKeysKeysRequest) returns (VerifyingKeysKeysResponse);
+	rpc SizeVerifyingKeys(VerifyingKeysSizeRequest) returns (VerifyingKeysSizeResponse);
+	rpc ClearVerifyingKeys(VerifyingKeysClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentVerifyingKeys(VerifyingKeysPutRequest) returns (VerifyingKeysValueResponse);
+	rpc WatchVerifyingKeys(google.protobuf.Empty) returns (stream VerifyingKeysEntriesResponse);
+	rpc QueryVerifyingKeys(VerifyingKeysQueryRequest) returns (VerifyingKeysQueryResponse);
+	rpc WatchQueryVerifyingKeys(VerifyingKeysQueryRequest) returns (stream VerifyingKeysQueryResponse);
+}
+
+message VerifyingKeysGetRequest { string key = 1; }
+message VerifyingKeysPutRequest { string key = 1; jwk.Jwk value = 2; int64 lock_counter = 3; }
+message VerifyingKeysGetAllRequest {}
+message VerifyingKeysKeysRequest {}
+message VerifyingKeysSizeRequest {}
+message VerifyingKeysClearRequest {}
+message VerifyingKeysValueResponse { jwk.Jwk value = 1; bool found = 2; }
+message VerifyingKeysEntriesResponse { map<string, jwk.Jwk> entries = 1; }
+message VerifyingKeysKeysResponse { repeated string keys = 1; }
+message VerifyingKeysSizeResponse { int32 size = 1; }
+message VerifyingKeysQueryRequest { CollectionQuery query = 1; }
+message VerifyingKeysQueryResponse { repeated jwk.Jwk results = 1; int32 total_count = 2; }
+
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service TrustedCaStateService {
+	// Collection: TrustedCas
+	rpc GetTrustedCas(TrustedCasGetRequest) returns (TrustedCasValueResponse);
+	rpc PutTrustedCas(TrustedCasPutRequest) returns (TrustedCasValueResponse);
+	rpc SetTrustedCas(TrustedCasPutRequest) returns (MapEmpty);
+	rpc RemoveTrustedCas(TrustedCasGetRequest) returns (TrustedCasValueResponse);
+	rpc DeleteTrustedCas(TrustedCasGetRequest) returns (MapEmpty);
+	rpc ContainsKeyTrustedCas(TrustedCasGetRequest) returns (TrustedCasValueResponse);
+	rpc GetAllTrustedCas(TrustedCasGetAllRequest) returns (TrustedCasEntriesResponse);
+	rpc KeySetTrustedCas(TrustedCasKeysRequest) returns (TrustedCasKeysResponse);
+	rpc SizeTrustedCas(TrustedCasSizeRequest) returns (TrustedCasSizeResponse);
+	rpc ClearTrustedCas(TrustedCasClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentTrustedCas(TrustedCasPutRequest) returns (TrustedCasValueResponse);
+	rpc WatchTrustedCas(google.protobuf.Empty) returns (stream TrustedCasEntriesResponse);
+	rpc QueryTrustedCas(TrustedCasQueryRequest) returns (TrustedCasQueryResponse);
+	rpc WatchQueryTrustedCas(TrustedCasQueryRequest) returns (stream TrustedCasQueryResponse);
+}
+
+message TrustedCasGetRequest { string key = 1; }
+message TrustedCasPutRequest { string key = 1; x509.X509Cert value = 2; int64 lock_counter = 3; }
+message TrustedCasGetAllRequest {}
+message TrustedCasKeysRequest {}
+message TrustedCasSizeRequest {}
+message TrustedCasClearRequest {}
+message TrustedCasValueResponse { x509.X509Cert value = 1; bool found = 2; }
+message TrustedCasEntriesResponse { map<string, x509.X509Cert> entries = 1; }
+message TrustedCasKeysResponse { repeated string keys = 1; }
+message TrustedCasSizeResponse { int32 size = 1; }
+message TrustedCasQueryRequest { CollectionQuery query = 1; }
+message TrustedCasQueryResponse { repeated x509.X509Cert results = 1; int32 total_count = 2; }
+
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service ClusterStateService {
+	// Singleton: ClusterInfo
+	rpc GetClusterInfo(google.protobuf.Empty) returns (hazelcast.AdminClusterInfo);
+	rpc SetClusterInfo(hazelcast.AdminClusterInfo) returns (hazelcast.AdminClusterInfo);
+	rpc WatchClusterInfo(google.protobuf.Empty) returns (stream hazelcast.AdminClusterInfo);
+	// Singleton: ClusterHealth
+	rpc GetClusterHealth(google.protobuf.Empty) returns (hazelcast.AdminClusterHealth);
+	rpc SetClusterHealth(hazelcast.AdminClusterHealth) returns (hazelcast.AdminClusterHealth);
+	rpc WatchClusterHealth(google.protobuf.Empty) returns (stream hazelcast.AdminClusterHealth);
+	// Singleton: GrpcConfig
+	rpc GetGrpcConfig(google.protobuf.Empty) returns (Config);
+	rpc SetGrpcConfig(Config) returns (Config);
+	rpc WatchGrpcConfig(google.protobuf.Empty) returns (stream Config);
+	// Collection: NodeMetrics
+	rpc GetNodeMetrics(NodeMetricsGetRequest) returns (NodeMetricsValueResponse);
+	rpc PutNodeMetrics(NodeMetricsPutRequest) returns (NodeMetricsValueResponse);
+	rpc SetNodeMetrics(NodeMetricsPutRequest) returns (MapEmpty);
+	rpc RemoveNodeMetrics(NodeMetricsGetRequest) returns (NodeMetricsValueResponse);
+	rpc DeleteNodeMetrics(NodeMetricsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyNodeMetrics(NodeMetricsGetRequest) returns (NodeMetricsValueResponse);
+	rpc GetAllNodeMetrics(NodeMetricsGetAllRequest) returns (NodeMetricsEntriesResponse);
+	rpc KeySetNodeMetrics(NodeMetricsKeysRequest) returns (NodeMetricsKeysResponse);
+	rpc SizeNodeMetrics(NodeMetricsSizeRequest) returns (NodeMetricsSizeResponse);
+	rpc ClearNodeMetrics(NodeMetricsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentNodeMetrics(NodeMetricsPutRequest) returns (NodeMetricsValueResponse);
+	rpc WatchNodeMetrics(google.protobuf.Empty) returns (stream NodeMetricsEntriesResponse);
+	rpc QueryNodeMetrics(NodeMetricsQueryRequest) returns (NodeMetricsQueryResponse);
+	rpc WatchQueryNodeMetrics(NodeMetricsQueryRequest) returns (stream NodeMetricsQueryResponse);
+	// Collection: GrpcStats
+	rpc GetGrpcStats(GrpcStatsGetRequest) returns (GrpcStatsValueResponse);
+	rpc PutGrpcStats(GrpcStatsPutRequest) returns (GrpcStatsValueResponse);
+	rpc SetGrpcStats(GrpcStatsPutRequest) returns (MapEmpty);
+	rpc RemoveGrpcStats(GrpcStatsGetRequest) returns (GrpcStatsValueResponse);
+	rpc DeleteGrpcStats(GrpcStatsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyGrpcStats(GrpcStatsGetRequest) returns (GrpcStatsValueResponse);
+	rpc GetAllGrpcStats(GrpcStatsGetAllRequest) returns (GrpcStatsEntriesResponse);
+	rpc KeySetGrpcStats(GrpcStatsKeysRequest) returns (GrpcStatsKeysResponse);
+	rpc SizeGrpcStats(GrpcStatsSizeRequest) returns (GrpcStatsSizeResponse);
+	rpc ClearGrpcStats(GrpcStatsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentGrpcStats(GrpcStatsPutRequest) returns (GrpcStatsValueResponse);
+	rpc WatchGrpcStats(google.protobuf.Empty) returns (stream GrpcStatsEntriesResponse);
+	rpc QueryGrpcStats(GrpcStatsQueryRequest) returns (GrpcStatsQueryResponse);
+	rpc WatchQueryGrpcStats(GrpcStatsQueryRequest) returns (stream GrpcStatsQueryResponse);
+	// Collection: PersistenceStatus
+	rpc GetPersistenceStatus(PersistenceStatusGetRequest) returns (PersistenceStatusValueResponse);
+	rpc PutPersistenceStatus(PersistenceStatusPutRequest) returns (PersistenceStatusValueResponse);
+	rpc SetPersistenceStatus(PersistenceStatusPutRequest) returns (MapEmpty);
+	rpc RemovePersistenceStatus(PersistenceStatusGetRequest) returns (PersistenceStatusValueResponse);
+	rpc DeletePersistenceStatus(PersistenceStatusGetRequest) returns (MapEmpty);
+	rpc ContainsKeyPersistenceStatus(PersistenceStatusGetRequest) returns (PersistenceStatusValueResponse);
+	rpc GetAllPersistenceStatus(PersistenceStatusGetAllRequest) returns (PersistenceStatusEntriesResponse);
+	rpc KeySetPersistenceStatus(PersistenceStatusKeysRequest) returns (PersistenceStatusKeysResponse);
+	rpc SizePersistenceStatus(PersistenceStatusSizeRequest) returns (PersistenceStatusSizeResponse);
+	rpc ClearPersistenceStatus(PersistenceStatusClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentPersistenceStatus(PersistenceStatusPutRequest) returns (PersistenceStatusValueResponse);
+	rpc WatchPersistenceStatus(google.protobuf.Empty) returns (stream PersistenceStatusEntriesResponse);
+	rpc QueryPersistenceStatus(PersistenceStatusQueryRequest) returns (PersistenceStatusQueryResponse);
+	rpc WatchQueryPersistenceStatus(PersistenceStatusQueryRequest) returns (stream PersistenceStatusQueryResponse);
+	// Collection: NetworkStats
+	rpc GetNetworkStats(NetworkStatsGetRequest) returns (NetworkStatsValueResponse);
+	rpc PutNetworkStats(NetworkStatsPutRequest) returns (NetworkStatsValueResponse);
+	rpc SetNetworkStats(NetworkStatsPutRequest) returns (MapEmpty);
+	rpc RemoveNetworkStats(NetworkStatsGetRequest) returns (NetworkStatsValueResponse);
+	rpc DeleteNetworkStats(NetworkStatsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyNetworkStats(NetworkStatsGetRequest) returns (NetworkStatsValueResponse);
+	rpc GetAllNetworkStats(NetworkStatsGetAllRequest) returns (NetworkStatsEntriesResponse);
+	rpc KeySetNetworkStats(NetworkStatsKeysRequest) returns (NetworkStatsKeysResponse);
+	rpc SizeNetworkStats(NetworkStatsSizeRequest) returns (NetworkStatsSizeResponse);
+	rpc ClearNetworkStats(NetworkStatsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentNetworkStats(NetworkStatsPutRequest) returns (NetworkStatsValueResponse);
+	rpc WatchNetworkStats(google.protobuf.Empty) returns (stream NetworkStatsEntriesResponse);
+	rpc QueryNetworkStats(NetworkStatsQueryRequest) returns (NetworkStatsQueryResponse);
+	rpc WatchQueryNetworkStats(NetworkStatsQueryRequest) returns (stream NetworkStatsQueryResponse);
+	// Collection: ThreadInfo
+	rpc GetThreadInfo(ThreadInfoGetRequest) returns (ThreadInfoValueResponse);
+	rpc PutThreadInfo(ThreadInfoPutRequest) returns (ThreadInfoValueResponse);
+	rpc SetThreadInfo(ThreadInfoPutRequest) returns (MapEmpty);
+	rpc RemoveThreadInfo(ThreadInfoGetRequest) returns (ThreadInfoValueResponse);
+	rpc DeleteThreadInfo(ThreadInfoGetRequest) returns (MapEmpty);
+	rpc ContainsKeyThreadInfo(ThreadInfoGetRequest) returns (ThreadInfoValueResponse);
+	rpc GetAllThreadInfo(ThreadInfoGetAllRequest) returns (ThreadInfoEntriesResponse);
+	rpc KeySetThreadInfo(ThreadInfoKeysRequest) returns (ThreadInfoKeysResponse);
+	rpc SizeThreadInfo(ThreadInfoSizeRequest) returns (ThreadInfoSizeResponse);
+	rpc ClearThreadInfo(ThreadInfoClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentThreadInfo(ThreadInfoPutRequest) returns (ThreadInfoValueResponse);
+	rpc WatchThreadInfo(google.protobuf.Empty) returns (stream ThreadInfoEntriesResponse);
+	rpc QueryThreadInfo(ThreadInfoQueryRequest) returns (ThreadInfoQueryResponse);
+	rpc WatchQueryThreadInfo(ThreadInfoQueryRequest) returns (stream ThreadInfoQueryResponse);
+	// Collection: TokenCacheStats
+	rpc GetTokenCacheStats(TokenCacheStatsGetRequest) returns (TokenCacheStatsValueResponse);
+	rpc PutTokenCacheStats(TokenCacheStatsPutRequest) returns (TokenCacheStatsValueResponse);
+	rpc SetTokenCacheStats(TokenCacheStatsPutRequest) returns (MapEmpty);
+	rpc RemoveTokenCacheStats(TokenCacheStatsGetRequest) returns (TokenCacheStatsValueResponse);
+	rpc DeleteTokenCacheStats(TokenCacheStatsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyTokenCacheStats(TokenCacheStatsGetRequest) returns (TokenCacheStatsValueResponse);
+	rpc GetAllTokenCacheStats(TokenCacheStatsGetAllRequest) returns (TokenCacheStatsEntriesResponse);
+	rpc KeySetTokenCacheStats(TokenCacheStatsKeysRequest) returns (TokenCacheStatsKeysResponse);
+	rpc SizeTokenCacheStats(TokenCacheStatsSizeRequest) returns (TokenCacheStatsSizeResponse);
+	rpc ClearTokenCacheStats(TokenCacheStatsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentTokenCacheStats(TokenCacheStatsPutRequest) returns (TokenCacheStatsValueResponse);
+	rpc WatchTokenCacheStats(google.protobuf.Empty) returns (stream TokenCacheStatsEntriesResponse);
+	rpc QueryTokenCacheStats(TokenCacheStatsQueryRequest) returns (TokenCacheStatsQueryResponse);
+	rpc WatchQueryTokenCacheStats(TokenCacheStatsQueryRequest) returns (stream TokenCacheStatsQueryResponse);
+	// Collection: MapStats
+	rpc GetMapStats(MapStatsGetRequest) returns (MapStatsValueResponse);
+	rpc PutMapStats(MapStatsPutRequest) returns (MapStatsValueResponse);
+	rpc SetMapStats(MapStatsPutRequest) returns (MapEmpty);
+	rpc RemoveMapStats(MapStatsGetRequest) returns (MapStatsValueResponse);
+	rpc DeleteMapStats(MapStatsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyMapStats(MapStatsGetRequest) returns (MapStatsValueResponse);
+	rpc GetAllMapStats(MapStatsGetAllRequest) returns (MapStatsEntriesResponse);
+	rpc KeySetMapStats(MapStatsKeysRequest) returns (MapStatsKeysResponse);
+	rpc SizeMapStats(MapStatsSizeRequest) returns (MapStatsSizeResponse);
+	rpc ClearMapStats(MapStatsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentMapStats(MapStatsPutRequest) returns (MapStatsValueResponse);
+	rpc WatchMapStats(google.protobuf.Empty) returns (stream MapStatsEntriesResponse);
+	rpc QueryMapStats(MapStatsQueryRequest) returns (MapStatsQueryResponse);
+	rpc WatchQueryMapStats(MapStatsQueryRequest) returns (stream MapStatsQueryResponse);
+	// Collection: GraphRegistry
+	rpc GetGraphRegistry(GraphRegistryGetRequest) returns (GraphRegistryValueResponse);
+	rpc PutGraphRegistry(GraphRegistryPutRequest) returns (GraphRegistryValueResponse);
+	rpc SetGraphRegistry(GraphRegistryPutRequest) returns (MapEmpty);
+	rpc RemoveGraphRegistry(GraphRegistryGetRequest) returns (GraphRegistryValueResponse);
+	rpc DeleteGraphRegistry(GraphRegistryGetRequest) returns (MapEmpty);
+	rpc ContainsKeyGraphRegistry(GraphRegistryGetRequest) returns (GraphRegistryValueResponse);
+	rpc GetAllGraphRegistry(GraphRegistryGetAllRequest) returns (GraphRegistryEntriesResponse);
+	rpc KeySetGraphRegistry(GraphRegistryKeysRequest) returns (GraphRegistryKeysResponse);
+	rpc SizeGraphRegistry(GraphRegistrySizeRequest) returns (GraphRegistrySizeResponse);
+	rpc ClearGraphRegistry(GraphRegistryClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentGraphRegistry(GraphRegistryPutRequest) returns (GraphRegistryValueResponse);
+	rpc WatchGraphRegistry(google.protobuf.Empty) returns (stream GraphRegistryEntriesResponse);
+	rpc QueryGraphRegistry(GraphRegistryQueryRequest) returns (GraphRegistryQueryResponse);
+	rpc WatchQueryGraphRegistry(GraphRegistryQueryRequest) returns (stream GraphRegistryQueryResponse);
+	// Collection: ServiceConnections
+	rpc GetServiceConnections(ServiceConnectionsGetRequest) returns (ServiceConnectionsValueResponse);
+	rpc PutServiceConnections(ServiceConnectionsPutRequest) returns (ServiceConnectionsValueResponse);
+	rpc SetServiceConnections(ServiceConnectionsPutRequest) returns (MapEmpty);
+	rpc RemoveServiceConnections(ServiceConnectionsGetRequest) returns (ServiceConnectionsValueResponse);
+	rpc DeleteServiceConnections(ServiceConnectionsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyServiceConnections(ServiceConnectionsGetRequest) returns (ServiceConnectionsValueResponse);
+	rpc GetAllServiceConnections(ServiceConnectionsGetAllRequest) returns (ServiceConnectionsEntriesResponse);
+	rpc KeySetServiceConnections(ServiceConnectionsKeysRequest) returns (ServiceConnectionsKeysResponse);
+	rpc SizeServiceConnections(ServiceConnectionsSizeRequest) returns (ServiceConnectionsSizeResponse);
+	rpc ClearServiceConnections(ServiceConnectionsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentServiceConnections(ServiceConnectionsPutRequest) returns (ServiceConnectionsValueResponse);
+	rpc WatchServiceConnections(google.protobuf.Empty) returns (stream ServiceConnectionsEntriesResponse);
+	rpc QueryServiceConnections(ServiceConnectionsQueryRequest) returns (ServiceConnectionsQueryResponse);
+	rpc WatchQueryServiceConnections(ServiceConnectionsQueryRequest) returns (stream ServiceConnectionsQueryResponse);
+	// Collection: QueueStats
+	rpc GetQueueStats(QueueStatsGetRequest) returns (QueueStatsValueResponse);
+	rpc PutQueueStats(QueueStatsPutRequest) returns (QueueStatsValueResponse);
+	rpc SetQueueStats(QueueStatsPutRequest) returns (MapEmpty);
+	rpc RemoveQueueStats(QueueStatsGetRequest) returns (QueueStatsValueResponse);
+	rpc DeleteQueueStats(QueueStatsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyQueueStats(QueueStatsGetRequest) returns (QueueStatsValueResponse);
+	rpc GetAllQueueStats(QueueStatsGetAllRequest) returns (QueueStatsEntriesResponse);
+	rpc KeySetQueueStats(QueueStatsKeysRequest) returns (QueueStatsKeysResponse);
+	rpc SizeQueueStats(QueueStatsSizeRequest) returns (QueueStatsSizeResponse);
+	rpc ClearQueueStats(QueueStatsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentQueueStats(QueueStatsPutRequest) returns (QueueStatsValueResponse);
+	rpc WatchQueueStats(google.protobuf.Empty) returns (stream QueueStatsEntriesResponse);
+	rpc QueryQueueStats(QueueStatsQueryRequest) returns (QueueStatsQueryResponse);
+	rpc WatchQueryQueueStats(QueueStatsQueryRequest) returns (stream QueueStatsQueryResponse);
+	// Collection: TopicStats
+	rpc GetTopicStats(TopicStatsGetRequest) returns (TopicStatsValueResponse);
+	rpc PutTopicStats(TopicStatsPutRequest) returns (TopicStatsValueResponse);
+	rpc SetTopicStats(TopicStatsPutRequest) returns (MapEmpty);
+	rpc RemoveTopicStats(TopicStatsGetRequest) returns (TopicStatsValueResponse);
+	rpc DeleteTopicStats(TopicStatsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyTopicStats(TopicStatsGetRequest) returns (TopicStatsValueResponse);
+	rpc GetAllTopicStats(TopicStatsGetAllRequest) returns (TopicStatsEntriesResponse);
+	rpc KeySetTopicStats(TopicStatsKeysRequest) returns (TopicStatsKeysResponse);
+	rpc SizeTopicStats(TopicStatsSizeRequest) returns (TopicStatsSizeResponse);
+	rpc ClearTopicStats(TopicStatsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentTopicStats(TopicStatsPutRequest) returns (TopicStatsValueResponse);
+	rpc WatchTopicStats(google.protobuf.Empty) returns (stream TopicStatsEntriesResponse);
+	rpc QueryTopicStats(TopicStatsQueryRequest) returns (TopicStatsQueryResponse);
+	rpc WatchQueryTopicStats(TopicStatsQueryRequest) returns (stream TopicStatsQueryResponse);
+	// Collection: WatchHealth
+	rpc GetWatchHealth(WatchHealthGetRequest) returns (WatchHealthValueResponse);
+	rpc PutWatchHealth(WatchHealthPutRequest) returns (WatchHealthValueResponse);
+	rpc SetWatchHealth(WatchHealthPutRequest) returns (MapEmpty);
+	rpc RemoveWatchHealth(WatchHealthGetRequest) returns (WatchHealthValueResponse);
+	rpc DeleteWatchHealth(WatchHealthGetRequest) returns (MapEmpty);
+	rpc ContainsKeyWatchHealth(WatchHealthGetRequest) returns (WatchHealthValueResponse);
+	rpc GetAllWatchHealth(WatchHealthGetAllRequest) returns (WatchHealthEntriesResponse);
+	rpc KeySetWatchHealth(WatchHealthKeysRequest) returns (WatchHealthKeysResponse);
+	rpc SizeWatchHealth(WatchHealthSizeRequest) returns (WatchHealthSizeResponse);
+	rpc ClearWatchHealth(WatchHealthClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentWatchHealth(WatchHealthPutRequest) returns (WatchHealthValueResponse);
+	rpc WatchWatchHealth(google.protobuf.Empty) returns (stream WatchHealthEntriesResponse);
+	rpc QueryWatchHealth(WatchHealthQueryRequest) returns (WatchHealthQueryResponse);
+	rpc WatchQueryWatchHealth(WatchHealthQueryRequest) returns (stream WatchHealthQueryResponse);
+	// Collection: MutationRates
+	rpc GetMutationRates(MutationRatesGetRequest) returns (MutationRatesValueResponse);
+	rpc PutMutationRates(MutationRatesPutRequest) returns (MutationRatesValueResponse);
+	rpc SetMutationRates(MutationRatesPutRequest) returns (MapEmpty);
+	rpc RemoveMutationRates(MutationRatesGetRequest) returns (MutationRatesValueResponse);
+	rpc DeleteMutationRates(MutationRatesGetRequest) returns (MapEmpty);
+	rpc ContainsKeyMutationRates(MutationRatesGetRequest) returns (MutationRatesValueResponse);
+	rpc GetAllMutationRates(MutationRatesGetAllRequest) returns (MutationRatesEntriesResponse);
+	rpc KeySetMutationRates(MutationRatesKeysRequest) returns (MutationRatesKeysResponse);
+	rpc SizeMutationRates(MutationRatesSizeRequest) returns (MutationRatesSizeResponse);
+	rpc ClearMutationRates(MutationRatesClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentMutationRates(MutationRatesPutRequest) returns (MutationRatesValueResponse);
+	rpc WatchMutationRates(google.protobuf.Empty) returns (stream MutationRatesEntriesResponse);
+	rpc QueryMutationRates(MutationRatesQueryRequest) returns (MutationRatesQueryResponse);
+	rpc WatchQueryMutationRates(MutationRatesQueryRequest) returns (stream MutationRatesQueryResponse);
+	// Command: SetLogLevel
+	rpc SetLogLevel(AdminSetLogLevelRequest) returns (google.protobuf.Empty);
+	// Command: ReloadConfig
+	rpc ReloadConfig(AdminReloadConfigRequest) returns (google.protobuf.Empty);
+}
+
+message NodeMetricsGetRequest { string key = 1; }
+message NodeMetricsPutRequest { string key = 1; hazelcast.AdminNodeMetrics value = 2; int64 lock_counter = 3; }
+message NodeMetricsGetAllRequest {}
+message NodeMetricsKeysRequest {}
+message NodeMetricsSizeRequest {}
+message NodeMetricsClearRequest {}
+message NodeMetricsValueResponse { hazelcast.AdminNodeMetrics value = 1; bool found = 2; }
+message NodeMetricsEntriesResponse { map<string, hazelcast.AdminNodeMetrics> entries = 1; }
+message NodeMetricsKeysResponse { repeated string keys = 1; }
+message NodeMetricsSizeResponse { int32 size = 1; }
+message NodeMetricsQueryRequest { CollectionQuery query = 1; }
+message NodeMetricsQueryResponse { repeated hazelcast.AdminNodeMetrics results = 1; int32 total_count = 2; }
+
+message GrpcStatsGetRequest { string key = 1; }
+message GrpcStatsPutRequest { string key = 1; hazelcast.AdminGrpcStats value = 2; int64 lock_counter = 3; }
+message GrpcStatsGetAllRequest {}
+message GrpcStatsKeysRequest {}
+message GrpcStatsSizeRequest {}
+message GrpcStatsClearRequest {}
+message GrpcStatsValueResponse { hazelcast.AdminGrpcStats value = 1; bool found = 2; }
+message GrpcStatsEntriesResponse { map<string, hazelcast.AdminGrpcStats> entries = 1; }
+message GrpcStatsKeysResponse { repeated string keys = 1; }
+message GrpcStatsSizeResponse { int32 size = 1; }
+message GrpcStatsQueryRequest { CollectionQuery query = 1; }
+message GrpcStatsQueryResponse { repeated hazelcast.AdminGrpcStats results = 1; int32 total_count = 2; }
+
+message PersistenceStatusGetRequest { string key = 1; }
+message PersistenceStatusPutRequest { string key = 1; hazelcast.AdminPersistenceStatus value = 2; int64 lock_counter = 3; }
+message PersistenceStatusGetAllRequest {}
+message PersistenceStatusKeysRequest {}
+message PersistenceStatusSizeRequest {}
+message PersistenceStatusClearRequest {}
+message PersistenceStatusValueResponse { hazelcast.AdminPersistenceStatus value = 1; bool found = 2; }
+message PersistenceStatusEntriesResponse { map<string, hazelcast.AdminPersistenceStatus> entries = 1; }
+message PersistenceStatusKeysResponse { repeated string keys = 1; }
+message PersistenceStatusSizeResponse { int32 size = 1; }
+message PersistenceStatusQueryRequest { CollectionQuery query = 1; }
+message PersistenceStatusQueryResponse { repeated hazelcast.AdminPersistenceStatus results = 1; int32 total_count = 2; }
+
+message NetworkStatsGetRequest { string key = 1; }
+message NetworkStatsPutRequest { string key = 1; hazelcast.AdminNetworkStats value = 2; int64 lock_counter = 3; }
+message NetworkStatsGetAllRequest {}
+message NetworkStatsKeysRequest {}
+message NetworkStatsSizeRequest {}
+message NetworkStatsClearRequest {}
+message NetworkStatsValueResponse { hazelcast.AdminNetworkStats value = 1; bool found = 2; }
+message NetworkStatsEntriesResponse { map<string, hazelcast.AdminNetworkStats> entries = 1; }
+message NetworkStatsKeysResponse { repeated string keys = 1; }
+message NetworkStatsSizeResponse { int32 size = 1; }
+message NetworkStatsQueryRequest { CollectionQuery query = 1; }
+message NetworkStatsQueryResponse { repeated hazelcast.AdminNetworkStats results = 1; int32 total_count = 2; }
+
+message ThreadInfoGetRequest { string key = 1; }
+message ThreadInfoPutRequest { string key = 1; hazelcast.AdminThreadInfo value = 2; int64 lock_counter = 3; }
+message ThreadInfoGetAllRequest {}
+message ThreadInfoKeysRequest {}
+message ThreadInfoSizeRequest {}
+message ThreadInfoClearRequest {}
+message ThreadInfoValueResponse { hazelcast.AdminThreadInfo value = 1; bool found = 2; }
+message ThreadInfoEntriesResponse { map<string, hazelcast.AdminThreadInfo> entries = 1; }
+message ThreadInfoKeysResponse { repeated string keys = 1; }
+message ThreadInfoSizeResponse { int32 size = 1; }
+message ThreadInfoQueryRequest { CollectionQuery query = 1; }
+message ThreadInfoQueryResponse { repeated hazelcast.AdminThreadInfo results = 1; int32 total_count = 2; }
+
+message TokenCacheStatsGetRequest { string key = 1; }
+message TokenCacheStatsPutRequest { string key = 1; hazelcast.AdminTokenCacheStats value = 2; int64 lock_counter = 3; }
+message TokenCacheStatsGetAllRequest {}
+message TokenCacheStatsKeysRequest {}
+message TokenCacheStatsSizeRequest {}
+message TokenCacheStatsClearRequest {}
+message TokenCacheStatsValueResponse { hazelcast.AdminTokenCacheStats value = 1; bool found = 2; }
+message TokenCacheStatsEntriesResponse { map<string, hazelcast.AdminTokenCacheStats> entries = 1; }
+message TokenCacheStatsKeysResponse { repeated string keys = 1; }
+message TokenCacheStatsSizeResponse { int32 size = 1; }
+message TokenCacheStatsQueryRequest { CollectionQuery query = 1; }
+message TokenCacheStatsQueryResponse { repeated hazelcast.AdminTokenCacheStats results = 1; int32 total_count = 2; }
+
+message MapStatsGetRequest { string key = 1; }
+message MapStatsPutRequest { string key = 1; hazelcast.AdminMapStats value = 2; int64 lock_counter = 3; }
+message MapStatsGetAllRequest {}
+message MapStatsKeysRequest {}
+message MapStatsSizeRequest {}
+message MapStatsClearRequest {}
+message MapStatsValueResponse { hazelcast.AdminMapStats value = 1; bool found = 2; }
+message MapStatsEntriesResponse { map<string, hazelcast.AdminMapStats> entries = 1; }
+message MapStatsKeysResponse { repeated string keys = 1; }
+message MapStatsSizeResponse { int32 size = 1; }
+message MapStatsQueryRequest { CollectionQuery query = 1; }
+message MapStatsQueryResponse { repeated hazelcast.AdminMapStats results = 1; int32 total_count = 2; }
+
+message GraphRegistryGetRequest { string key = 1; }
+message GraphRegistryPutRequest { string key = 1; hazelcast.AdminGraphInfo value = 2; int64 lock_counter = 3; }
+message GraphRegistryGetAllRequest {}
+message GraphRegistryKeysRequest {}
+message GraphRegistrySizeRequest {}
+message GraphRegistryClearRequest {}
+message GraphRegistryValueResponse { hazelcast.AdminGraphInfo value = 1; bool found = 2; }
+message GraphRegistryEntriesResponse { map<string, hazelcast.AdminGraphInfo> entries = 1; }
+message GraphRegistryKeysResponse { repeated string keys = 1; }
+message GraphRegistrySizeResponse { int32 size = 1; }
+message GraphRegistryQueryRequest { CollectionQuery query = 1; }
+message GraphRegistryQueryResponse { repeated hazelcast.AdminGraphInfo results = 1; int32 total_count = 2; }
+
+message ServiceConnectionsGetRequest { string key = 1; }
+message ServiceConnectionsPutRequest { string key = 1; hazelcast.AdminServiceConnection value = 2; int64 lock_counter = 3; }
+message ServiceConnectionsGetAllRequest {}
+message ServiceConnectionsKeysRequest {}
+message ServiceConnectionsSizeRequest {}
+message ServiceConnectionsClearRequest {}
+message ServiceConnectionsValueResponse { hazelcast.AdminServiceConnection value = 1; bool found = 2; }
+message ServiceConnectionsEntriesResponse { map<string, hazelcast.AdminServiceConnection> entries = 1; }
+message ServiceConnectionsKeysResponse { repeated string keys = 1; }
+message ServiceConnectionsSizeResponse { int32 size = 1; }
+message ServiceConnectionsQueryRequest { CollectionQuery query = 1; }
+message ServiceConnectionsQueryResponse { repeated hazelcast.AdminServiceConnection results = 1; int32 total_count = 2; }
+
+message QueueStatsGetRequest { string key = 1; }
+message QueueStatsPutRequest { string key = 1; hazelcast.AdminQueueStats value = 2; int64 lock_counter = 3; }
+message QueueStatsGetAllRequest {}
+message QueueStatsKeysRequest {}
+message QueueStatsSizeRequest {}
+message QueueStatsClearRequest {}
+message QueueStatsValueResponse { hazelcast.AdminQueueStats value = 1; bool found = 2; }
+message QueueStatsEntriesResponse { map<string, hazelcast.AdminQueueStats> entries = 1; }
+message QueueStatsKeysResponse { repeated string keys = 1; }
+message QueueStatsSizeResponse { int32 size = 1; }
+message QueueStatsQueryRequest { CollectionQuery query = 1; }
+message QueueStatsQueryResponse { repeated hazelcast.AdminQueueStats results = 1; int32 total_count = 2; }
+
+message TopicStatsGetRequest { string key = 1; }
+message TopicStatsPutRequest { string key = 1; hazelcast.AdminTopicStats value = 2; int64 lock_counter = 3; }
+message TopicStatsGetAllRequest {}
+message TopicStatsKeysRequest {}
+message TopicStatsSizeRequest {}
+message TopicStatsClearRequest {}
+message TopicStatsValueResponse { hazelcast.AdminTopicStats value = 1; bool found = 2; }
+message TopicStatsEntriesResponse { map<string, hazelcast.AdminTopicStats> entries = 1; }
+message TopicStatsKeysResponse { repeated string keys = 1; }
+message TopicStatsSizeResponse { int32 size = 1; }
+message TopicStatsQueryRequest { CollectionQuery query = 1; }
+message TopicStatsQueryResponse { repeated hazelcast.AdminTopicStats results = 1; int32 total_count = 2; }
+
+message WatchHealthGetRequest { string key = 1; }
+message WatchHealthPutRequest { string key = 1; hazelcast.AdminWatchHealth value = 2; int64 lock_counter = 3; }
+message WatchHealthGetAllRequest {}
+message WatchHealthKeysRequest {}
+message WatchHealthSizeRequest {}
+message WatchHealthClearRequest {}
+message WatchHealthValueResponse { hazelcast.AdminWatchHealth value = 1; bool found = 2; }
+message WatchHealthEntriesResponse { map<string, hazelcast.AdminWatchHealth> entries = 1; }
+message WatchHealthKeysResponse { repeated string keys = 1; }
+message WatchHealthSizeResponse { int32 size = 1; }
+message WatchHealthQueryRequest { CollectionQuery query = 1; }
+message WatchHealthQueryResponse { repeated hazelcast.AdminWatchHealth results = 1; int32 total_count = 2; }
+
+message MutationRatesGetRequest { string key = 1; }
+message MutationRatesPutRequest { string key = 1; hazelcast.AdminMutationRate value = 2; int64 lock_counter = 3; }
+message MutationRatesGetAllRequest {}
+message MutationRatesKeysRequest {}
+message MutationRatesSizeRequest {}
+message MutationRatesClearRequest {}
+message MutationRatesValueResponse { hazelcast.AdminMutationRate value = 1; bool found = 2; }
+message MutationRatesEntriesResponse { map<string, hazelcast.AdminMutationRate> entries = 1; }
+message MutationRatesKeysResponse { repeated string keys = 1; }
+message MutationRatesSizeResponse { int32 size = 1; }
+message MutationRatesQueryRequest { CollectionQuery query = 1; }
+message MutationRatesQueryResponse { repeated hazelcast.AdminMutationRate results = 1; int32 total_count = 2; }
+
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service ServiceHealthStateService {
+	// Collection (instance-keyed): Instances
+	rpc SetInstances(healthreport.ServiceInstanceHealth) returns (MapEmpty);
+	rpc GetInstances(InstancesGetRequest) returns (InstancesValueResponse);
+	rpc GetAllInstances(InstancesGetAllRequest) returns (InstancesEntriesResponse);
+	rpc ContainsKeyInstances(InstancesGetRequest) returns (InstancesValueResponse);
+	rpc KeySetInstances(InstancesKeysRequest) returns (InstancesKeysResponse);
+	rpc SizeInstances(InstancesSizeRequest) returns (InstancesSizeResponse);
+	rpc WatchInstances(google.protobuf.Empty) returns (stream InstancesEntriesResponse);
+	rpc QueryInstances(InstancesQueryRequest) returns (InstancesQueryResponse);
+	rpc WatchQueryInstances(InstancesQueryRequest) returns (stream InstancesQueryResponse);
+}
+
+message InstancesGetRequest { string key = 1; }
+message InstancesGetAllRequest {}
+message InstancesKeysRequest {}
+message InstancesSizeRequest {}
+message InstancesValueResponse { healthreport.ServiceInstanceHealth value = 1; bool found = 2; }
+message InstancesEntriesResponse { map<string, healthreport.ServiceInstanceHealth> entries = 1; }
+message InstancesKeysResponse { repeated string keys = 1; }
+message InstancesSizeResponse { int32 size = 1; }
+message InstancesQueryRequest { CollectionQuery query = 1; }
+message InstancesQueryResponse { repeated healthreport.ServiceInstanceHealth results = 1; int32 total_count = 2; }
+
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service CaStateService {
+	// Collection: CaCerts
+	rpc GetCaCerts(CaCertsGetRequest) returns (CaCertsValueResponse);
+	rpc PutCaCerts(CaCertsPutRequest) returns (CaCertsValueResponse);
+	rpc SetCaCerts(CaCertsPutRequest) returns (MapEmpty);
+	rpc RemoveCaCerts(CaCertsGetRequest) returns (CaCertsValueResponse);
+	rpc DeleteCaCerts(CaCertsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyCaCerts(CaCertsGetRequest) returns (CaCertsValueResponse);
+	rpc GetAllCaCerts(CaCertsGetAllRequest) returns (CaCertsEntriesResponse);
+	rpc KeySetCaCerts(CaCertsKeysRequest) returns (CaCertsKeysResponse);
+	rpc SizeCaCerts(CaCertsSizeRequest) returns (CaCertsSizeResponse);
+	rpc ClearCaCerts(CaCertsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentCaCerts(CaCertsPutRequest) returns (CaCertsValueResponse);
+	rpc WatchCaCerts(google.protobuf.Empty) returns (stream CaCertsEntriesResponse);
+	rpc QueryCaCerts(CaCertsQueryRequest) returns (CaCertsQueryResponse);
+	rpc WatchQueryCaCerts(CaCertsQueryRequest) returns (stream CaCertsQueryResponse);
+	// Collection: ServiceCas
+	rpc GetServiceCas(ServiceCasGetRequest) returns (ServiceCasValueResponse);
+	rpc PutServiceCas(ServiceCasPutRequest) returns (ServiceCasValueResponse);
+	rpc SetServiceCas(ServiceCasPutRequest) returns (MapEmpty);
+	rpc RemoveServiceCas(ServiceCasGetRequest) returns (ServiceCasValueResponse);
+	rpc DeleteServiceCas(ServiceCasGetRequest) returns (MapEmpty);
+	rpc ContainsKeyServiceCas(ServiceCasGetRequest) returns (ServiceCasValueResponse);
+	rpc GetAllServiceCas(ServiceCasGetAllRequest) returns (ServiceCasEntriesResponse);
+	rpc KeySetServiceCas(ServiceCasKeysRequest) returns (ServiceCasKeysResponse);
+	rpc SizeServiceCas(ServiceCasSizeRequest) returns (ServiceCasSizeResponse);
+	rpc ClearServiceCas(ServiceCasClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentServiceCas(ServiceCasPutRequest) returns (ServiceCasValueResponse);
+	rpc WatchServiceCas(google.protobuf.Empty) returns (stream ServiceCasEntriesResponse);
+	rpc QueryServiceCas(ServiceCasQueryRequest) returns (ServiceCasQueryResponse);
+	rpc WatchQueryServiceCas(ServiceCasQueryRequest) returns (stream ServiceCasQueryResponse);
+}
+
+message CaCertsGetRequest { string key = 1; }
+message CaCertsPutRequest { string key = 1; x509.X509Cert value = 2; int64 lock_counter = 3; }
+message CaCertsGetAllRequest {}
+message CaCertsKeysRequest {}
+message CaCertsSizeRequest {}
+message CaCertsClearRequest {}
+message CaCertsValueResponse { x509.X509Cert value = 1; bool found = 2; }
+message CaCertsEntriesResponse { map<string, x509.X509Cert> entries = 1; }
+message CaCertsKeysResponse { repeated string keys = 1; }
+message CaCertsSizeResponse { int32 size = 1; }
+message CaCertsQueryRequest { CollectionQuery query = 1; }
+message CaCertsQueryResponse { repeated x509.X509Cert results = 1; int32 total_count = 2; }
+
+message ServiceCasGetRequest { string key = 1; }
+message ServiceCasPutRequest { string key = 1; x509.X509CertChain value = 2; int64 lock_counter = 3; }
+message ServiceCasGetAllRequest {}
+message ServiceCasKeysRequest {}
+message ServiceCasSizeRequest {}
+message ServiceCasClearRequest {}
+message ServiceCasValueResponse { x509.X509CertChain value = 1; bool found = 2; }
+message ServiceCasEntriesResponse { map<string, x509.X509CertChain> entries = 1; }
+message ServiceCasKeysResponse { repeated string keys = 1; }
+message ServiceCasSizeResponse { int32 size = 1; }
+message ServiceCasQueryRequest { CollectionQuery query = 1; }
+message ServiceCasQueryResponse { repeated x509.X509CertChain results = 1; int32 total_count = 2; }
+
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service GatewayTlsStateService {
+	// Collection: ConfigCerts
+	rpc GetConfigCerts(ConfigCertsGetRequest) returns (ConfigCertsValueResponse);
+	rpc PutConfigCerts(ConfigCertsPutRequest) returns (ConfigCertsValueResponse);
+	rpc SetConfigCerts(ConfigCertsPutRequest) returns (MapEmpty);
+	rpc RemoveConfigCerts(ConfigCertsGetRequest) returns (ConfigCertsValueResponse);
+	rpc DeleteConfigCerts(ConfigCertsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyConfigCerts(ConfigCertsGetRequest) returns (ConfigCertsValueResponse);
+	rpc GetAllConfigCerts(ConfigCertsGetAllRequest) returns (ConfigCertsEntriesResponse);
+	rpc KeySetConfigCerts(ConfigCertsKeysRequest) returns (ConfigCertsKeysResponse);
+	rpc SizeConfigCerts(ConfigCertsSizeRequest) returns (ConfigCertsSizeResponse);
+	rpc ClearConfigCerts(ConfigCertsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentConfigCerts(ConfigCertsPutRequest) returns (ConfigCertsValueResponse);
+	rpc WatchConfigCerts(google.protobuf.Empty) returns (stream ConfigCertsEntriesResponse);
+	rpc QueryConfigCerts(ConfigCertsQueryRequest) returns (ConfigCertsQueryResponse);
+	rpc WatchQueryConfigCerts(ConfigCertsQueryRequest) returns (stream ConfigCertsQueryResponse);
+	// Collection: AcmeCerts
+	rpc GetAcmeCerts(AcmeCertsGetRequest) returns (AcmeCertsValueResponse);
+	rpc PutAcmeCerts(AcmeCertsPutRequest) returns (AcmeCertsValueResponse);
+	rpc SetAcmeCerts(AcmeCertsPutRequest) returns (MapEmpty);
+	rpc RemoveAcmeCerts(AcmeCertsGetRequest) returns (AcmeCertsValueResponse);
+	rpc DeleteAcmeCerts(AcmeCertsGetRequest) returns (MapEmpty);
+	rpc ContainsKeyAcmeCerts(AcmeCertsGetRequest) returns (AcmeCertsValueResponse);
+	rpc GetAllAcmeCerts(AcmeCertsGetAllRequest) returns (AcmeCertsEntriesResponse);
+	rpc KeySetAcmeCerts(AcmeCertsKeysRequest) returns (AcmeCertsKeysResponse);
+	rpc SizeAcmeCerts(AcmeCertsSizeRequest) returns (AcmeCertsSizeResponse);
+	rpc ClearAcmeCerts(AcmeCertsClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentAcmeCerts(AcmeCertsPutRequest) returns (AcmeCertsValueResponse);
+	rpc WatchAcmeCerts(google.protobuf.Empty) returns (stream AcmeCertsEntriesResponse);
+	rpc QueryAcmeCerts(AcmeCertsQueryRequest) returns (AcmeCertsQueryResponse);
+	rpc WatchQueryAcmeCerts(AcmeCertsQueryRequest) returns (stream AcmeCertsQueryResponse);
+	// View (read-only): AllCerts [sources: config_certs, acme_certs]
+	rpc GetAllCerts(AllCertsGetRequest) returns (AllCertsValueResponse);
+	rpc ContainsKeyAllCerts(AllCertsGetRequest) returns (AllCertsValueResponse);
+	rpc GetAllAllCerts(AllCertsGetAllRequest) returns (AllCertsEntriesResponse);
+	rpc KeySetAllCerts(AllCertsKeysRequest) returns (AllCertsKeysResponse);
+	rpc SizeAllCerts(AllCertsSizeRequest) returns (AllCertsSizeResponse);
+	rpc WatchAllCerts(google.protobuf.Empty) returns (stream AllCertsEntriesResponse);
+	rpc QueryAllCerts(AllCertsQueryRequest) returns (AllCertsQueryResponse);
+	rpc WatchQueryAllCerts(AllCertsQueryRequest) returns (stream AllCertsQueryResponse);
+}
+
+message ConfigCertsGetRequest { string key = 1; }
+message ConfigCertsPutRequest { string key = 1; GatewayTlsCert value = 2; int64 lock_counter = 3; }
+message ConfigCertsGetAllRequest {}
+message ConfigCertsKeysRequest {}
+message ConfigCertsSizeRequest {}
+message ConfigCertsClearRequest {}
+message ConfigCertsValueResponse { GatewayTlsCert value = 1; bool found = 2; }
+message ConfigCertsEntriesResponse { map<string, GatewayTlsCert> entries = 1; }
+message ConfigCertsKeysResponse { repeated string keys = 1; }
+message ConfigCertsSizeResponse { int32 size = 1; }
+message ConfigCertsQueryRequest { CollectionQuery query = 1; }
+message ConfigCertsQueryResponse { repeated GatewayTlsCert results = 1; int32 total_count = 2; }
+
+message AcmeCertsGetRequest { string key = 1; }
+message AcmeCertsPutRequest { string key = 1; GatewayTlsCert value = 2; int64 lock_counter = 3; }
+message AcmeCertsGetAllRequest {}
+message AcmeCertsKeysRequest {}
+message AcmeCertsSizeRequest {}
+message AcmeCertsClearRequest {}
+message AcmeCertsValueResponse { GatewayTlsCert value = 1; bool found = 2; }
+message AcmeCertsEntriesResponse { map<string, GatewayTlsCert> entries = 1; }
+message AcmeCertsKeysResponse { repeated string keys = 1; }
+message AcmeCertsSizeResponse { int32 size = 1; }
+message AcmeCertsQueryRequest { CollectionQuery query = 1; }
+message AcmeCertsQueryResponse { repeated GatewayTlsCert results = 1; int32 total_count = 2; }
+
+message AllCertsGetRequest { string key = 1; }
+message AllCertsGetAllRequest {}
+message AllCertsKeysRequest {}
+message AllCertsSizeRequest {}
+message AllCertsValueResponse { GatewayTlsCert value = 1; bool found = 2; }
+message AllCertsEntriesResponse { map<string, GatewayTlsCert> entries = 1; }
+message AllCertsKeysResponse { repeated string keys = 1; }
+message AllCertsSizeResponse { int32 size = 1; }
+message AllCertsQueryRequest { CollectionQuery query = 1; }
+message AllCertsQueryResponse { repeated GatewayTlsCert results = 1; int32 total_count = 2; }
+
+message MapEmpty {}
+
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_BOOTSTRAP_CONFIG = 1;
+  TYPE_ID_IDENTITY = 2;
+  TYPE_ID_IDENTITY_FQDN = 3;
+  TYPE_ID_TRUSTED_CA = 4;
+  TYPE_ID_CLOUD_IDENTITY_MATCHER = 5;
+  TYPE_ID_DELEGATE = 6;
+  TYPE_ID_CONFIG = 7;
+  TYPE_ID_URL_LOADER = 8;
+  TYPE_ID_FILE_LOADER = 9;
+  TYPE_ID_CLUSTER = 10;
+  TYPE_ID_ADMIN_SET_LOG_LEVEL_REQUEST = 11;
+  TYPE_ID_ADMIN_RELOAD_CONFIG_REQUEST = 12;
+  TYPE_ID_ADMIN_CONFIG_DUMP = 13;
+  TYPE_ID_SERVICE_HEALTH = 14;
+  TYPE_ID_CA = 15;
+  TYPE_ID_GATEWAY_TLS_STATE = 16;
+  TYPE_ID_GATEWAY_TLS_CERT = 17;
+  TYPE_ID_QUERY_VALUE = 18;
+  TYPE_ID_PREDICATE = 19;
+  TYPE_ID_PREDICATE_GROUP = 20;
+  TYPE_ID_SORT_FIELD = 21;
+  TYPE_ID_COLLECTION_QUERY = 22;
+  TYPE_ID_VERIFYING_KEYS_GET_REQUEST = 23;
+  TYPE_ID_VERIFYING_KEYS_PUT_REQUEST = 24;
+  TYPE_ID_VERIFYING_KEYS_GET_ALL_REQUEST = 25;
+  TYPE_ID_VERIFYING_KEYS_KEYS_REQUEST = 26;
+  TYPE_ID_VERIFYING_KEYS_SIZE_REQUEST = 27;
+  TYPE_ID_VERIFYING_KEYS_CLEAR_REQUEST = 28;
+  TYPE_ID_VERIFYING_KEYS_VALUE_RESPONSE = 29;
+  TYPE_ID_VERIFYING_KEYS_ENTRIES_RESPONSE = 30;
+  TYPE_ID_VERIFYING_KEYS_KEYS_RESPONSE = 31;
+  TYPE_ID_VERIFYING_KEYS_SIZE_RESPONSE = 32;
+  TYPE_ID_VERIFYING_KEYS_QUERY_REQUEST = 33;
+  TYPE_ID_VERIFYING_KEYS_QUERY_RESPONSE = 34;
+  TYPE_ID_TRUSTED_CAS_GET_REQUEST = 35;
+  TYPE_ID_TRUSTED_CAS_PUT_REQUEST = 36;
+  TYPE_ID_TRUSTED_CAS_GET_ALL_REQUEST = 37;
+  TYPE_ID_TRUSTED_CAS_KEYS_REQUEST = 38;
+  TYPE_ID_TRUSTED_CAS_SIZE_REQUEST = 39;
+  TYPE_ID_TRUSTED_CAS_CLEAR_REQUEST = 40;
+  TYPE_ID_TRUSTED_CAS_VALUE_RESPONSE = 41;
+  TYPE_ID_TRUSTED_CAS_ENTRIES_RESPONSE = 42;
+  TYPE_ID_TRUSTED_CAS_KEYS_RESPONSE = 43;
+  TYPE_ID_TRUSTED_CAS_SIZE_RESPONSE = 44;
+  TYPE_ID_TRUSTED_CAS_QUERY_REQUEST = 45;
+  TYPE_ID_TRUSTED_CAS_QUERY_RESPONSE = 46;
+  TYPE_ID_NODE_METRICS_GET_REQUEST = 47;
+  TYPE_ID_NODE_METRICS_PUT_REQUEST = 48;
+  TYPE_ID_NODE_METRICS_GET_ALL_REQUEST = 49;
+  TYPE_ID_NODE_METRICS_KEYS_REQUEST = 50;
+  TYPE_ID_NODE_METRICS_SIZE_REQUEST = 51;
+  TYPE_ID_NODE_METRICS_CLEAR_REQUEST = 52;
+  TYPE_ID_NODE_METRICS_VALUE_RESPONSE = 53;
+  TYPE_ID_NODE_METRICS_ENTRIES_RESPONSE = 54;
+  TYPE_ID_NODE_METRICS_KEYS_RESPONSE = 55;
+  TYPE_ID_NODE_METRICS_SIZE_RESPONSE = 56;
+  TYPE_ID_NODE_METRICS_QUERY_REQUEST = 57;
+  TYPE_ID_NODE_METRICS_QUERY_RESPONSE = 58;
+  TYPE_ID_GRPC_STATS_GET_REQUEST = 59;
+  TYPE_ID_GRPC_STATS_PUT_REQUEST = 60;
+  TYPE_ID_GRPC_STATS_GET_ALL_REQUEST = 61;
+  TYPE_ID_GRPC_STATS_KEYS_REQUEST = 62;
+  TYPE_ID_GRPC_STATS_SIZE_REQUEST = 63;
+  TYPE_ID_GRPC_STATS_CLEAR_REQUEST = 64;
+  TYPE_ID_GRPC_STATS_VALUE_RESPONSE = 65;
+  TYPE_ID_GRPC_STATS_ENTRIES_RESPONSE = 66;
+  TYPE_ID_GRPC_STATS_KEYS_RESPONSE = 67;
+  TYPE_ID_GRPC_STATS_SIZE_RESPONSE = 68;
+  TYPE_ID_GRPC_STATS_QUERY_REQUEST = 69;
+  TYPE_ID_GRPC_STATS_QUERY_RESPONSE = 70;
+  TYPE_ID_PERSISTENCE_STATUS_GET_REQUEST = 71;
+  TYPE_ID_PERSISTENCE_STATUS_PUT_REQUEST = 72;
+  TYPE_ID_PERSISTENCE_STATUS_GET_ALL_REQUEST = 73;
+  TYPE_ID_PERSISTENCE_STATUS_KEYS_REQUEST = 74;
+  TYPE_ID_PERSISTENCE_STATUS_SIZE_REQUEST = 75;
+  TYPE_ID_PERSISTENCE_STATUS_CLEAR_REQUEST = 76;
+  TYPE_ID_PERSISTENCE_STATUS_VALUE_RESPONSE = 77;
+  TYPE_ID_PERSISTENCE_STATUS_ENTRIES_RESPONSE = 78;
+  TYPE_ID_PERSISTENCE_STATUS_KEYS_RESPONSE = 79;
+  TYPE_ID_PERSISTENCE_STATUS_SIZE_RESPONSE = 80;
+  TYPE_ID_PERSISTENCE_STATUS_QUERY_REQUEST = 81;
+  TYPE_ID_PERSISTENCE_STATUS_QUERY_RESPONSE = 82;
+  TYPE_ID_NETWORK_STATS_GET_REQUEST = 83;
+  TYPE_ID_NETWORK_STATS_PUT_REQUEST = 84;
+  TYPE_ID_NETWORK_STATS_GET_ALL_REQUEST = 85;
+  TYPE_ID_NETWORK_STATS_KEYS_REQUEST = 86;
+  TYPE_ID_NETWORK_STATS_SIZE_REQUEST = 87;
+  TYPE_ID_NETWORK_STATS_CLEAR_REQUEST = 88;
+  TYPE_ID_NETWORK_STATS_VALUE_RESPONSE = 89;
+  TYPE_ID_NETWORK_STATS_ENTRIES_RESPONSE = 90;
+  TYPE_ID_NETWORK_STATS_KEYS_RESPONSE = 91;
+  TYPE_ID_NETWORK_STATS_SIZE_RESPONSE = 92;
+  TYPE_ID_NETWORK_STATS_QUERY_REQUEST = 93;
+  TYPE_ID_NETWORK_STATS_QUERY_RESPONSE = 94;
+  TYPE_ID_THREAD_INFO_GET_REQUEST = 95;
+  TYPE_ID_THREAD_INFO_PUT_REQUEST = 96;
+  TYPE_ID_THREAD_INFO_GET_ALL_REQUEST = 97;
+  TYPE_ID_THREAD_INFO_KEYS_REQUEST = 98;
+  TYPE_ID_THREAD_INFO_SIZE_REQUEST = 99;
+  TYPE_ID_THREAD_INFO_CLEAR_REQUEST = 100;
+  TYPE_ID_THREAD_INFO_VALUE_RESPONSE = 101;
+  TYPE_ID_THREAD_INFO_ENTRIES_RESPONSE = 102;
+  TYPE_ID_THREAD_INFO_KEYS_RESPONSE = 103;
+  TYPE_ID_THREAD_INFO_SIZE_RESPONSE = 104;
+  TYPE_ID_THREAD_INFO_QUERY_REQUEST = 105;
+  TYPE_ID_THREAD_INFO_QUERY_RESPONSE = 106;
+  TYPE_ID_TOKEN_CACHE_STATS_GET_REQUEST = 107;
+  TYPE_ID_TOKEN_CACHE_STATS_PUT_REQUEST = 108;
+  TYPE_ID_TOKEN_CACHE_STATS_GET_ALL_REQUEST = 109;
+  TYPE_ID_TOKEN_CACHE_STATS_KEYS_REQUEST = 110;
+  TYPE_ID_TOKEN_CACHE_STATS_SIZE_REQUEST = 111;
+  TYPE_ID_TOKEN_CACHE_STATS_CLEAR_REQUEST = 112;
+  TYPE_ID_TOKEN_CACHE_STATS_VALUE_RESPONSE = 113;
+  TYPE_ID_TOKEN_CACHE_STATS_ENTRIES_RESPONSE = 114;
+  TYPE_ID_TOKEN_CACHE_STATS_KEYS_RESPONSE = 115;
+  TYPE_ID_TOKEN_CACHE_STATS_SIZE_RESPONSE = 116;
+  TYPE_ID_TOKEN_CACHE_STATS_QUERY_REQUEST = 117;
+  TYPE_ID_TOKEN_CACHE_STATS_QUERY_RESPONSE = 118;
+  TYPE_ID_MAP_STATS_GET_REQUEST = 119;
+  TYPE_ID_MAP_STATS_PUT_REQUEST = 120;
+  TYPE_ID_MAP_STATS_GET_ALL_REQUEST = 121;
+  TYPE_ID_MAP_STATS_KEYS_REQUEST = 122;
+  TYPE_ID_MAP_STATS_SIZE_REQUEST = 123;
+  TYPE_ID_MAP_STATS_CLEAR_REQUEST = 124;
+  TYPE_ID_MAP_STATS_VALUE_RESPONSE = 125;
+  TYPE_ID_MAP_STATS_ENTRIES_RESPONSE = 126;
+  TYPE_ID_MAP_STATS_KEYS_RESPONSE = 127;
+  TYPE_ID_MAP_STATS_SIZE_RESPONSE = 128;
+  TYPE_ID_MAP_STATS_QUERY_REQUEST = 129;
+  TYPE_ID_MAP_STATS_QUERY_RESPONSE = 130;
+  TYPE_ID_GRAPH_REGISTRY_GET_REQUEST = 131;
+  TYPE_ID_GRAPH_REGISTRY_PUT_REQUEST = 132;
+  TYPE_ID_GRAPH_REGISTRY_GET_ALL_REQUEST = 133;
+  TYPE_ID_GRAPH_REGISTRY_KEYS_REQUEST = 134;
+  TYPE_ID_GRAPH_REGISTRY_SIZE_REQUEST = 135;
+  TYPE_ID_GRAPH_REGISTRY_CLEAR_REQUEST = 136;
+  TYPE_ID_GRAPH_REGISTRY_VALUE_RESPONSE = 137;
+  TYPE_ID_GRAPH_REGISTRY_ENTRIES_RESPONSE = 138;
+  TYPE_ID_GRAPH_REGISTRY_KEYS_RESPONSE = 139;
+  TYPE_ID_GRAPH_REGISTRY_SIZE_RESPONSE = 140;
+  TYPE_ID_GRAPH_REGISTRY_QUERY_REQUEST = 141;
+  TYPE_ID_GRAPH_REGISTRY_QUERY_RESPONSE = 142;
+  TYPE_ID_SERVICE_CONNECTIONS_GET_REQUEST = 143;
+  TYPE_ID_SERVICE_CONNECTIONS_PUT_REQUEST = 144;
+  TYPE_ID_SERVICE_CONNECTIONS_GET_ALL_REQUEST = 145;
+  TYPE_ID_SERVICE_CONNECTIONS_KEYS_REQUEST = 146;
+  TYPE_ID_SERVICE_CONNECTIONS_SIZE_REQUEST = 147;
+  TYPE_ID_SERVICE_CONNECTIONS_CLEAR_REQUEST = 148;
+  TYPE_ID_SERVICE_CONNECTIONS_VALUE_RESPONSE = 149;
+  TYPE_ID_SERVICE_CONNECTIONS_ENTRIES_RESPONSE = 150;
+  TYPE_ID_SERVICE_CONNECTIONS_KEYS_RESPONSE = 151;
+  TYPE_ID_SERVICE_CONNECTIONS_SIZE_RESPONSE = 152;
+  TYPE_ID_SERVICE_CONNECTIONS_QUERY_REQUEST = 153;
+  TYPE_ID_SERVICE_CONNECTIONS_QUERY_RESPONSE = 154;
+  TYPE_ID_QUEUE_STATS_GET_REQUEST = 155;
+  TYPE_ID_QUEUE_STATS_PUT_REQUEST = 156;
+  TYPE_ID_QUEUE_STATS_GET_ALL_REQUEST = 157;
+  TYPE_ID_QUEUE_STATS_KEYS_REQUEST = 158;
+  TYPE_ID_QUEUE_STATS_SIZE_REQUEST = 159;
+  TYPE_ID_QUEUE_STATS_CLEAR_REQUEST = 160;
+  TYPE_ID_QUEUE_STATS_VALUE_RESPONSE = 161;
+  TYPE_ID_QUEUE_STATS_ENTRIES_RESPONSE = 162;
+  TYPE_ID_QUEUE_STATS_KEYS_RESPONSE = 163;
+  TYPE_ID_QUEUE_STATS_SIZE_RESPONSE = 164;
+  TYPE_ID_QUEUE_STATS_QUERY_REQUEST = 165;
+  TYPE_ID_QUEUE_STATS_QUERY_RESPONSE = 166;
+  TYPE_ID_TOPIC_STATS_GET_REQUEST = 167;
+  TYPE_ID_TOPIC_STATS_PUT_REQUEST = 168;
+  TYPE_ID_TOPIC_STATS_GET_ALL_REQUEST = 169;
+  TYPE_ID_TOPIC_STATS_KEYS_REQUEST = 170;
+  TYPE_ID_TOPIC_STATS_SIZE_REQUEST = 171;
+  TYPE_ID_TOPIC_STATS_CLEAR_REQUEST = 172;
+  TYPE_ID_TOPIC_STATS_VALUE_RESPONSE = 173;
+  TYPE_ID_TOPIC_STATS_ENTRIES_RESPONSE = 174;
+  TYPE_ID_TOPIC_STATS_KEYS_RESPONSE = 175;
+  TYPE_ID_TOPIC_STATS_SIZE_RESPONSE = 176;
+  TYPE_ID_TOPIC_STATS_QUERY_REQUEST = 177;
+  TYPE_ID_TOPIC_STATS_QUERY_RESPONSE = 178;
+  TYPE_ID_WATCH_HEALTH_GET_REQUEST = 179;
+  TYPE_ID_WATCH_HEALTH_PUT_REQUEST = 180;
+  TYPE_ID_WATCH_HEALTH_GET_ALL_REQUEST = 181;
+  TYPE_ID_WATCH_HEALTH_KEYS_REQUEST = 182;
+  TYPE_ID_WATCH_HEALTH_SIZE_REQUEST = 183;
+  TYPE_ID_WATCH_HEALTH_CLEAR_REQUEST = 184;
+  TYPE_ID_WATCH_HEALTH_VALUE_RESPONSE = 185;
+  TYPE_ID_WATCH_HEALTH_ENTRIES_RESPONSE = 186;
+  TYPE_ID_WATCH_HEALTH_KEYS_RESPONSE = 187;
+  TYPE_ID_WATCH_HEALTH_SIZE_RESPONSE = 188;
+  TYPE_ID_WATCH_HEALTH_QUERY_REQUEST = 189;
+  TYPE_ID_WATCH_HEALTH_QUERY_RESPONSE = 190;
+  TYPE_ID_MUTATION_RATES_GET_REQUEST = 191;
+  TYPE_ID_MUTATION_RATES_PUT_REQUEST = 192;
+  TYPE_ID_MUTATION_RATES_GET_ALL_REQUEST = 193;
+  TYPE_ID_MUTATION_RATES_KEYS_REQUEST = 194;
+  TYPE_ID_MUTATION_RATES_SIZE_REQUEST = 195;
+  TYPE_ID_MUTATION_RATES_CLEAR_REQUEST = 196;
+  TYPE_ID_MUTATION_RATES_VALUE_RESPONSE = 197;
+  TYPE_ID_MUTATION_RATES_ENTRIES_RESPONSE = 198;
+  TYPE_ID_MUTATION_RATES_KEYS_RESPONSE = 199;
+  TYPE_ID_MUTATION_RATES_SIZE_RESPONSE = 200;
+  TYPE_ID_MUTATION_RATES_QUERY_REQUEST = 201;
+  TYPE_ID_MUTATION_RATES_QUERY_RESPONSE = 202;
+  TYPE_ID_INSTANCES_GET_REQUEST = 203;
+  TYPE_ID_INSTANCES_GET_ALL_REQUEST = 204;
+  TYPE_ID_INSTANCES_KEYS_REQUEST = 205;
+  TYPE_ID_INSTANCES_SIZE_REQUEST = 206;
+  TYPE_ID_INSTANCES_VALUE_RESPONSE = 207;
+  TYPE_ID_INSTANCES_ENTRIES_RESPONSE = 208;
+  TYPE_ID_INSTANCES_KEYS_RESPONSE = 209;
+  TYPE_ID_INSTANCES_SIZE_RESPONSE = 210;
+  TYPE_ID_INSTANCES_QUERY_REQUEST = 211;
+  TYPE_ID_INSTANCES_QUERY_RESPONSE = 212;
+  TYPE_ID_CA_CERTS_GET_REQUEST = 213;
+  TYPE_ID_CA_CERTS_PUT_REQUEST = 214;
+  TYPE_ID_CA_CERTS_GET_ALL_REQUEST = 215;
+  TYPE_ID_CA_CERTS_KEYS_REQUEST = 216;
+  TYPE_ID_CA_CERTS_SIZE_REQUEST = 217;
+  TYPE_ID_CA_CERTS_CLEAR_REQUEST = 218;
+  TYPE_ID_CA_CERTS_VALUE_RESPONSE = 219;
+  TYPE_ID_CA_CERTS_ENTRIES_RESPONSE = 220;
+  TYPE_ID_CA_CERTS_KEYS_RESPONSE = 221;
+  TYPE_ID_CA_CERTS_SIZE_RESPONSE = 222;
+  TYPE_ID_CA_CERTS_QUERY_REQUEST = 223;
+  TYPE_ID_CA_CERTS_QUERY_RESPONSE = 224;
+  TYPE_ID_SERVICE_CAS_GET_REQUEST = 225;
+  TYPE_ID_SERVICE_CAS_PUT_REQUEST = 226;
+  TYPE_ID_SERVICE_CAS_GET_ALL_REQUEST = 227;
+  TYPE_ID_SERVICE_CAS_KEYS_REQUEST = 228;
+  TYPE_ID_SERVICE_CAS_SIZE_REQUEST = 229;
+  TYPE_ID_SERVICE_CAS_CLEAR_REQUEST = 230;
+  TYPE_ID_SERVICE_CAS_VALUE_RESPONSE = 231;
+  TYPE_ID_SERVICE_CAS_ENTRIES_RESPONSE = 232;
+  TYPE_ID_SERVICE_CAS_KEYS_RESPONSE = 233;
+  TYPE_ID_SERVICE_CAS_SIZE_RESPONSE = 234;
+  TYPE_ID_SERVICE_CAS_QUERY_REQUEST = 235;
+  TYPE_ID_SERVICE_CAS_QUERY_RESPONSE = 236;
+  TYPE_ID_CONFIG_CERTS_GET_REQUEST = 237;
+  TYPE_ID_CONFIG_CERTS_PUT_REQUEST = 238;
+  TYPE_ID_CONFIG_CERTS_GET_ALL_REQUEST = 239;
+  TYPE_ID_CONFIG_CERTS_KEYS_REQUEST = 240;
+  TYPE_ID_CONFIG_CERTS_SIZE_REQUEST = 241;
+  TYPE_ID_CONFIG_CERTS_CLEAR_REQUEST = 242;
+  TYPE_ID_CONFIG_CERTS_VALUE_RESPONSE = 243;
+  TYPE_ID_CONFIG_CERTS_ENTRIES_RESPONSE = 244;
+  TYPE_ID_CONFIG_CERTS_KEYS_RESPONSE = 245;
+  TYPE_ID_CONFIG_CERTS_SIZE_RESPONSE = 246;
+  TYPE_ID_CONFIG_CERTS_QUERY_REQUEST = 247;
+  TYPE_ID_CONFIG_CERTS_QUERY_RESPONSE = 248;
+  TYPE_ID_ACME_CERTS_GET_REQUEST = 249;
+  TYPE_ID_ACME_CERTS_PUT_REQUEST = 250;
+  TYPE_ID_ACME_CERTS_GET_ALL_REQUEST = 251;
+  TYPE_ID_ACME_CERTS_KEYS_REQUEST = 252;
+  TYPE_ID_ACME_CERTS_SIZE_REQUEST = 253;
+  TYPE_ID_ACME_CERTS_CLEAR_REQUEST = 254;
+  TYPE_ID_ACME_CERTS_VALUE_RESPONSE = 255;
+  TYPE_ID_ACME_CERTS_ENTRIES_RESPONSE = 256;
+  TYPE_ID_ACME_CERTS_KEYS_RESPONSE = 257;
+  TYPE_ID_ACME_CERTS_SIZE_RESPONSE = 258;
+  TYPE_ID_ACME_CERTS_QUERY_REQUEST = 259;
+  TYPE_ID_ACME_CERTS_QUERY_RESPONSE = 260;
+  TYPE_ID_ALL_CERTS_GET_REQUEST = 261;
+  TYPE_ID_ALL_CERTS_GET_ALL_REQUEST = 262;
+  TYPE_ID_ALL_CERTS_KEYS_REQUEST = 263;
+  TYPE_ID_ALL_CERTS_SIZE_REQUEST = 264;
+  TYPE_ID_ALL_CERTS_VALUE_RESPONSE = 265;
+  TYPE_ID_ALL_CERTS_ENTRIES_RESPONSE = 266;
+  TYPE_ID_ALL_CERTS_KEYS_RESPONSE = 267;
+  TYPE_ID_ALL_CERTS_SIZE_RESPONSE = 268;
+  TYPE_ID_ALL_CERTS_QUERY_REQUEST = 269;
+  TYPE_ID_ALL_CERTS_QUERY_RESPONSE = 270;
+  TYPE_ID_MAP_EMPTY = 271;
+}
+
+enum KernelMintServiceRpcId {
+  KERNEL_MINT_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  KERNEL_MINT_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  KERNEL_MINT_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  KERNEL_MINT_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  KERNEL_MINT_SERVICE_RPC_ID_TOKEN_MINT = 4;
+  KERNEL_MINT_SERVICE_RPC_ID_X509_MINT = 5;
+}
+
+enum IdentityStateServiceRpcId {
+  IDENTITY_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  IDENTITY_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  IDENTITY_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  IDENTITY_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  IDENTITY_STATE_SERVICE_RPC_ID_GET_FQDN = 4;
+  IDENTITY_STATE_SERVICE_RPC_ID_SET_FQDN = 5;
+  IDENTITY_STATE_SERVICE_RPC_ID_WATCH_FQDN = 6;
+  IDENTITY_STATE_SERVICE_RPC_ID_GET_VERIFYING_KEYS = 7;
+  IDENTITY_STATE_SERVICE_RPC_ID_PUT_VERIFYING_KEYS = 8;
+  IDENTITY_STATE_SERVICE_RPC_ID_SET_VERIFYING_KEYS = 9;
+  IDENTITY_STATE_SERVICE_RPC_ID_REMOVE_VERIFYING_KEYS = 10;
+  IDENTITY_STATE_SERVICE_RPC_ID_DELETE_VERIFYING_KEYS = 11;
+  IDENTITY_STATE_SERVICE_RPC_ID_CONTAINS_KEY_VERIFYING_KEYS = 12;
+  IDENTITY_STATE_SERVICE_RPC_ID_GET_ALL_VERIFYING_KEYS = 13;
+  IDENTITY_STATE_SERVICE_RPC_ID_KEY_SET_VERIFYING_KEYS = 14;
+  IDENTITY_STATE_SERVICE_RPC_ID_SIZE_VERIFYING_KEYS = 15;
+  IDENTITY_STATE_SERVICE_RPC_ID_CLEAR_VERIFYING_KEYS = 16;
+  IDENTITY_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_VERIFYING_KEYS = 17;
+  IDENTITY_STATE_SERVICE_RPC_ID_WATCH_VERIFYING_KEYS = 18;
+  IDENTITY_STATE_SERVICE_RPC_ID_QUERY_VERIFYING_KEYS = 19;
+  IDENTITY_STATE_SERVICE_RPC_ID_WATCH_QUERY_VERIFYING_KEYS = 20;
+}
+
+enum TrustedCaStateServiceRpcId {
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_GET_TRUSTED_CAS = 4;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_PUT_TRUSTED_CAS = 5;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_SET_TRUSTED_CAS = 6;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_REMOVE_TRUSTED_CAS = 7;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_DELETE_TRUSTED_CAS = 8;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_CONTAINS_KEY_TRUSTED_CAS = 9;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_GET_ALL_TRUSTED_CAS = 10;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_KEY_SET_TRUSTED_CAS = 11;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_SIZE_TRUSTED_CAS = 12;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_CLEAR_TRUSTED_CAS = 13;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_TRUSTED_CAS = 14;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_WATCH_TRUSTED_CAS = 15;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_QUERY_TRUSTED_CAS = 16;
+  TRUSTED_CA_STATE_SERVICE_RPC_ID_WATCH_QUERY_TRUSTED_CAS = 17;
+}
+
+enum ClusterStateServiceRpcId {
+  CLUSTER_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  CLUSTER_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  CLUSTER_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  CLUSTER_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_CLUSTER_INFO = 4;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_CLUSTER_INFO = 5;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_CLUSTER_INFO = 6;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_CLUSTER_HEALTH = 7;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_CLUSTER_HEALTH = 8;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_CLUSTER_HEALTH = 9;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_GRPC_CONFIG = 10;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_GRPC_CONFIG = 11;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_GRPC_CONFIG = 12;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_NODE_METRICS = 13;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_NODE_METRICS = 14;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_NODE_METRICS = 15;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_NODE_METRICS = 16;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_NODE_METRICS = 17;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_NODE_METRICS = 18;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_NODE_METRICS = 19;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_NODE_METRICS = 20;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_NODE_METRICS = 21;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_NODE_METRICS = 22;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_NODE_METRICS = 23;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_NODE_METRICS = 24;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_NODE_METRICS = 25;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_NODE_METRICS = 26;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_GRPC_STATS = 27;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_GRPC_STATS = 28;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_GRPC_STATS = 29;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_GRPC_STATS = 30;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_GRPC_STATS = 31;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_GRPC_STATS = 32;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_GRPC_STATS = 33;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_GRPC_STATS = 34;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_GRPC_STATS = 35;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_GRPC_STATS = 36;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_GRPC_STATS = 37;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_GRPC_STATS = 38;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_GRPC_STATS = 39;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_GRPC_STATS = 40;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_PERSISTENCE_STATUS = 41;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_PERSISTENCE_STATUS = 42;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_PERSISTENCE_STATUS = 43;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_PERSISTENCE_STATUS = 44;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_PERSISTENCE_STATUS = 45;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_PERSISTENCE_STATUS = 46;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_PERSISTENCE_STATUS = 47;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_PERSISTENCE_STATUS = 48;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_PERSISTENCE_STATUS = 49;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_PERSISTENCE_STATUS = 50;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_PERSISTENCE_STATUS = 51;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_PERSISTENCE_STATUS = 52;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_PERSISTENCE_STATUS = 53;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_PERSISTENCE_STATUS = 54;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_NETWORK_STATS = 55;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_NETWORK_STATS = 56;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_NETWORK_STATS = 57;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_NETWORK_STATS = 58;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_NETWORK_STATS = 59;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_NETWORK_STATS = 60;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_NETWORK_STATS = 61;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_NETWORK_STATS = 62;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_NETWORK_STATS = 63;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_NETWORK_STATS = 64;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_NETWORK_STATS = 65;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_NETWORK_STATS = 66;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_NETWORK_STATS = 67;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_NETWORK_STATS = 68;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_THREAD_INFO = 69;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_THREAD_INFO = 70;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_THREAD_INFO = 71;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_THREAD_INFO = 72;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_THREAD_INFO = 73;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_THREAD_INFO = 74;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_THREAD_INFO = 75;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_THREAD_INFO = 76;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_THREAD_INFO = 77;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_THREAD_INFO = 78;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_THREAD_INFO = 79;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_THREAD_INFO = 80;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_THREAD_INFO = 81;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_THREAD_INFO = 82;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_TOKEN_CACHE_STATS = 83;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_TOKEN_CACHE_STATS = 84;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_TOKEN_CACHE_STATS = 85;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_TOKEN_CACHE_STATS = 86;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_TOKEN_CACHE_STATS = 87;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_TOKEN_CACHE_STATS = 88;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_TOKEN_CACHE_STATS = 89;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_TOKEN_CACHE_STATS = 90;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_TOKEN_CACHE_STATS = 91;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_TOKEN_CACHE_STATS = 92;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_TOKEN_CACHE_STATS = 93;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_TOKEN_CACHE_STATS = 94;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_TOKEN_CACHE_STATS = 95;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_TOKEN_CACHE_STATS = 96;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_MAP_STATS = 97;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_MAP_STATS = 98;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_MAP_STATS = 99;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_MAP_STATS = 100;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_MAP_STATS = 101;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_MAP_STATS = 102;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_MAP_STATS = 103;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_MAP_STATS = 104;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_MAP_STATS = 105;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_MAP_STATS = 106;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_MAP_STATS = 107;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_MAP_STATS = 108;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_MAP_STATS = 109;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_MAP_STATS = 110;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_GRAPH_REGISTRY = 111;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_GRAPH_REGISTRY = 112;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_GRAPH_REGISTRY = 113;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_GRAPH_REGISTRY = 114;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_GRAPH_REGISTRY = 115;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_GRAPH_REGISTRY = 116;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_GRAPH_REGISTRY = 117;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_GRAPH_REGISTRY = 118;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_GRAPH_REGISTRY = 119;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_GRAPH_REGISTRY = 120;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_GRAPH_REGISTRY = 121;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_GRAPH_REGISTRY = 122;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_GRAPH_REGISTRY = 123;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_GRAPH_REGISTRY = 124;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_SERVICE_CONNECTIONS = 125;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_SERVICE_CONNECTIONS = 126;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_SERVICE_CONNECTIONS = 127;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_SERVICE_CONNECTIONS = 128;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_SERVICE_CONNECTIONS = 129;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_SERVICE_CONNECTIONS = 130;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_SERVICE_CONNECTIONS = 131;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_SERVICE_CONNECTIONS = 132;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_SERVICE_CONNECTIONS = 133;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_SERVICE_CONNECTIONS = 134;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_SERVICE_CONNECTIONS = 135;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_SERVICE_CONNECTIONS = 136;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_SERVICE_CONNECTIONS = 137;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_SERVICE_CONNECTIONS = 138;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_QUEUE_STATS = 139;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_QUEUE_STATS = 140;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_QUEUE_STATS = 141;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_QUEUE_STATS = 142;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_QUEUE_STATS = 143;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_QUEUE_STATS = 144;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_QUEUE_STATS = 145;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_QUEUE_STATS = 146;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_QUEUE_STATS = 147;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_QUEUE_STATS = 148;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_QUEUE_STATS = 149;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUEUE_STATS = 150;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_QUEUE_STATS = 151;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_QUEUE_STATS = 152;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_TOPIC_STATS = 153;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_TOPIC_STATS = 154;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_TOPIC_STATS = 155;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_TOPIC_STATS = 156;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_TOPIC_STATS = 157;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_TOPIC_STATS = 158;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_TOPIC_STATS = 159;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_TOPIC_STATS = 160;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_TOPIC_STATS = 161;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_TOPIC_STATS = 162;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_TOPIC_STATS = 163;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_TOPIC_STATS = 164;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_TOPIC_STATS = 165;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_TOPIC_STATS = 166;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_WATCH_HEALTH = 167;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_WATCH_HEALTH = 168;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_WATCH_HEALTH = 169;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_WATCH_HEALTH = 170;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_WATCH_HEALTH = 171;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_WATCH_HEALTH = 172;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_WATCH_HEALTH = 173;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_WATCH_HEALTH = 174;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_WATCH_HEALTH = 175;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_WATCH_HEALTH = 176;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_WATCH_HEALTH = 177;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_WATCH_HEALTH = 178;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_WATCH_HEALTH = 179;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_WATCH_HEALTH = 180;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_MUTATION_RATES = 181;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_MUTATION_RATES = 182;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_MUTATION_RATES = 183;
+  CLUSTER_STATE_SERVICE_RPC_ID_REMOVE_MUTATION_RATES = 184;
+  CLUSTER_STATE_SERVICE_RPC_ID_DELETE_MUTATION_RATES = 185;
+  CLUSTER_STATE_SERVICE_RPC_ID_CONTAINS_KEY_MUTATION_RATES = 186;
+  CLUSTER_STATE_SERVICE_RPC_ID_GET_ALL_MUTATION_RATES = 187;
+  CLUSTER_STATE_SERVICE_RPC_ID_KEY_SET_MUTATION_RATES = 188;
+  CLUSTER_STATE_SERVICE_RPC_ID_SIZE_MUTATION_RATES = 189;
+  CLUSTER_STATE_SERVICE_RPC_ID_CLEAR_MUTATION_RATES = 190;
+  CLUSTER_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_MUTATION_RATES = 191;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_MUTATION_RATES = 192;
+  CLUSTER_STATE_SERVICE_RPC_ID_QUERY_MUTATION_RATES = 193;
+  CLUSTER_STATE_SERVICE_RPC_ID_WATCH_QUERY_MUTATION_RATES = 194;
+  CLUSTER_STATE_SERVICE_RPC_ID_SET_LOG_LEVEL = 195;
+  CLUSTER_STATE_SERVICE_RPC_ID_RELOAD_CONFIG = 196;
+}
+
+enum ServiceHealthStateServiceRpcId {
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_SET_INSTANCES = 4;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_GET_INSTANCES = 5;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_GET_ALL_INSTANCES = 6;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_CONTAINS_KEY_INSTANCES = 7;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_KEY_SET_INSTANCES = 8;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_SIZE_INSTANCES = 9;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_WATCH_INSTANCES = 10;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_QUERY_INSTANCES = 11;
+  SERVICE_HEALTH_STATE_SERVICE_RPC_ID_WATCH_QUERY_INSTANCES = 12;
+}
+
+enum CaStateServiceRpcId {
+  CA_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  CA_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  CA_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  CA_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  CA_STATE_SERVICE_RPC_ID_GET_CA_CERTS = 4;
+  CA_STATE_SERVICE_RPC_ID_PUT_CA_CERTS = 5;
+  CA_STATE_SERVICE_RPC_ID_SET_CA_CERTS = 6;
+  CA_STATE_SERVICE_RPC_ID_REMOVE_CA_CERTS = 7;
+  CA_STATE_SERVICE_RPC_ID_DELETE_CA_CERTS = 8;
+  CA_STATE_SERVICE_RPC_ID_CONTAINS_KEY_CA_CERTS = 9;
+  CA_STATE_SERVICE_RPC_ID_GET_ALL_CA_CERTS = 10;
+  CA_STATE_SERVICE_RPC_ID_KEY_SET_CA_CERTS = 11;
+  CA_STATE_SERVICE_RPC_ID_SIZE_CA_CERTS = 12;
+  CA_STATE_SERVICE_RPC_ID_CLEAR_CA_CERTS = 13;
+  CA_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_CA_CERTS = 14;
+  CA_STATE_SERVICE_RPC_ID_WATCH_CA_CERTS = 15;
+  CA_STATE_SERVICE_RPC_ID_QUERY_CA_CERTS = 16;
+  CA_STATE_SERVICE_RPC_ID_WATCH_QUERY_CA_CERTS = 17;
+  CA_STATE_SERVICE_RPC_ID_GET_SERVICE_CAS = 18;
+  CA_STATE_SERVICE_RPC_ID_PUT_SERVICE_CAS = 19;
+  CA_STATE_SERVICE_RPC_ID_SET_SERVICE_CAS = 20;
+  CA_STATE_SERVICE_RPC_ID_REMOVE_SERVICE_CAS = 21;
+  CA_STATE_SERVICE_RPC_ID_DELETE_SERVICE_CAS = 22;
+  CA_STATE_SERVICE_RPC_ID_CONTAINS_KEY_SERVICE_CAS = 23;
+  CA_STATE_SERVICE_RPC_ID_GET_ALL_SERVICE_CAS = 24;
+  CA_STATE_SERVICE_RPC_ID_KEY_SET_SERVICE_CAS = 25;
+  CA_STATE_SERVICE_RPC_ID_SIZE_SERVICE_CAS = 26;
+  CA_STATE_SERVICE_RPC_ID_CLEAR_SERVICE_CAS = 27;
+  CA_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_SERVICE_CAS = 28;
+  CA_STATE_SERVICE_RPC_ID_WATCH_SERVICE_CAS = 29;
+  CA_STATE_SERVICE_RPC_ID_QUERY_SERVICE_CAS = 30;
+  CA_STATE_SERVICE_RPC_ID_WATCH_QUERY_SERVICE_CAS = 31;
+}
+
+enum GatewayTlsStateServiceRpcId {
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_GET_CONFIG_CERTS = 4;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_PUT_CONFIG_CERTS = 5;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_SET_CONFIG_CERTS = 6;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_REMOVE_CONFIG_CERTS = 7;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_DELETE_CONFIG_CERTS = 8;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_CONTAINS_KEY_CONFIG_CERTS = 9;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_GET_ALL_CONFIG_CERTS = 10;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_KEY_SET_CONFIG_CERTS = 11;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_SIZE_CONFIG_CERTS = 12;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_CLEAR_CONFIG_CERTS = 13;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_CONFIG_CERTS = 14;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_WATCH_CONFIG_CERTS = 15;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_QUERY_CONFIG_CERTS = 16;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_WATCH_QUERY_CONFIG_CERTS = 17;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_GET_ACME_CERTS = 18;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_PUT_ACME_CERTS = 19;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_SET_ACME_CERTS = 20;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_REMOVE_ACME_CERTS = 21;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_DELETE_ACME_CERTS = 22;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_CONTAINS_KEY_ACME_CERTS = 23;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_GET_ALL_ACME_CERTS = 24;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_KEY_SET_ACME_CERTS = 25;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_SIZE_ACME_CERTS = 26;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_CLEAR_ACME_CERTS = 27;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_ACME_CERTS = 28;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_WATCH_ACME_CERTS = 29;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_QUERY_ACME_CERTS = 30;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_WATCH_QUERY_ACME_CERTS = 31;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_GET_ALL_CERTS = 32;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_CONTAINS_KEY_ALL_CERTS = 33;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_GET_ALL_ALL_CERTS = 34;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_KEY_SET_ALL_CERTS = 35;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_SIZE_ALL_CERTS = 36;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_WATCH_ALL_CERTS = 37;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_QUERY_ALL_CERTS = 38;
+  GATEWAY_TLS_STATE_SERVICE_RPC_ID_WATCH_QUERY_ALL_CERTS = 39;
+}

@@ -1,0 +1,203 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// Package fleetwood provides protobuf definitions for the Fleetwood service.
+//
+// Fleetwood is a token broker for non-browser clients (cavalierctl, agents).
+// It bridges browser-based OAuth authentication to CLI/device clients using
+// bidirectional streaming and acts as a delegate to kernel for token minting.
+//
+// The authentication flow:
+//
+//   1. cavalierctl generates a session ID, opens a bidi stream to Fleetwood,
+//      and launches the browser to the OAuth login URL with the session ID
+//      encoded as a query parameter.
+//
+//   2. The user completes OAuth in the browser. After callback, the webapp
+//      obtains a short-lived refresh token and calls Fleetwood's InstallToken
+//      RPC with the session ID and the short-lived token.
+//
+//   3. Fleetwood (as a delegate) exchanges the short-lived token with kernel
+//      for a long-lived refresh token with CLI-appropriate lifetime policies.
+//
+//   4. Fleetwood delivers the long-lived refresh token to cavalierctl over
+//      the bidi stream. cavalierctl never sees the short-lived token.
+//
+//   5. cavalierctl closes the unauthenticated stream and opens a new
+//      authenticated stream for ongoing token management (daemon mode).
+//      Fleetwood can push refreshed tokens proactively over this stream.
+
+syntax = "proto3";
+
+package fleetwood;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.fleetwood";
+option java_outer_classname = "Fleetwood";
+
+import "libs/spec.proto";
+import "google/protobuf/empty.proto";
+
+option (spec.service) = {name: "fleetwood", id: 21};
+
+// ============================================================================
+// Config
+// ============================================================================
+
+message Config {
+
+  option (spec.grpc_config) = {service_name: "fleetwood", id: 21};
+  // Fields 1-5 are reserved for tacplus framework use.
+
+  // session_timeout_seconds is how long an unauthenticated bidi session
+  // waits for token delivery before timing out.
+  // Minimum: 30 seconds. Maximum: 600 (10 minutes). Default: 300 (5 minutes).
+  int64 session_timeout_seconds = 6 [(spec.assert_duration) = DURATION_TYPE_POSITIVE, (spec.assert_duration_min) = 30, (spec.assert_duration_max) = 600, (spec.default_int) = 300];
+
+  // refresh_token_lifetime_seconds is the lifetime for long-lived refresh
+  // tokens issued to CLI clients. Longer than browser sessions because
+  // laptops may be offline for extended periods.
+  // Minimum: 3600 (1 hour). Maximum: 2592000 (30 days). Default: 604800 (7 days).
+  int64 refresh_token_lifetime_seconds = 7 [(spec.assert_duration) = DURATION_TYPE_POSITIVE, (spec.assert_duration_min) = 3600, (spec.assert_duration_max) = 2592000, (spec.default_int) = 604800];
+
+  // auto_refresh_before_seconds is how far before token expiry the service
+  // proactively refreshes tokens for connected daemon clients.
+  // Minimum: 60 (1 minute). Maximum: 86400 (1 day). Default: 3600 (1 hour).
+  int64 auto_refresh_before_seconds = 8 [(spec.assert_duration) = DURATION_TYPE_POSITIVE, (spec.assert_duration_min) = 60, (spec.assert_duration_max) = 86400, (spec.default_int) = 3600];
+}
+
+// ============================================================================
+// Service
+// ============================================================================
+
+// FleetwoodSessionService handles session establishment for CLI clients.
+// Auth is disabled (auth_disabled) because the client doesn't have a
+// token yet — the whole point of this flow is to obtain one.
+service FleetwoodSessionService {
+  option (spec.service_grpc) = {name: "fleetwood_session", auth_disabled: true};
+
+  // Session is a bidirectional stream between cavalierctl and Fleetwood.
+  // The client sends a session_id, then waits for token delivery.
+  // Fleetwood holds the stream open until InstallToken is called with a
+  // matching session_id or the session times out.
+  rpc Session(stream SessionRequest) returns (stream SessionResponse);
+}
+
+// FleetwoodTokenService handles authenticated token installation.
+// Auth requires any valid user (auth_any_user) so that only authenticated
+// callers (the webapp) can inject tokens into pending sessions.
+service FleetwoodTokenService {
+  option (spec.service_grpc) = {name: "fleetwood", auth_any_user: true};
+
+  // InstallToken is called by the webapp after OAuth completes for a
+  // CLI-originated flow. The webapp provides the session_id (from the
+  // OAuth state) and the short-lived refresh token. Fleetwood exchanges
+  // the short-lived token (as a delegate) for a long-lived refresh token
+  // and delivers it to the matching bidi stream.
+  rpc InstallToken(InstallTokenRequest) returns (google.protobuf.Empty);
+}
+
+// ============================================================================
+// Stream Messages
+// ============================================================================
+
+// SessionRequest is sent by the client on the bidi stream.
+message SessionRequest {
+  oneof msg {
+    // session_id initiates the session (first message on the stream).
+    // Must be a cryptographically random identifier (min 32 bytes, hex-encoded).
+    string session_id = 1 [(spec.assert_min_length) = 64, (spec.assert_max_length) = 128];
+  }
+}
+
+// SessionResponse is sent by the server on the bidi stream.
+message SessionResponse {
+  oneof msg {
+    // token delivers a long-lived refresh token to the client.
+    // Sent when InstallToken completes the initial auth flow, or
+    // when the service proactively refreshes in daemon mode.
+    string token = 1 [(spec.assert_min_length) = 1, (spec.assert_max_length) = 8192];
+
+    // error signals a terminal error (session timeout, auth failure, etc.).
+    string error = 2 [(spec.assert_min_length) = 1, (spec.assert_max_length) = 1024];
+  }
+}
+
+// ============================================================================
+// Request/Response Types
+// ============================================================================
+
+// InstallTokenRequest is sent by the webapp to deliver a short-lived
+// refresh token for a pending CLI auth session.
+message InstallTokenRequest {
+  // session_id identifies the pending bidi stream to deliver the token to.
+  string session_id = 1 [(spec.assert_required) = true, (spec.assert_min_length) = 64, (spec.assert_max_length) = 128];
+
+  // token is the short-lived refresh token obtained from the OAuth flow.
+  string token = 2 [(spec.assert_required) = true, (spec.assert_min_length) = 1, (spec.assert_max_length) = 8192];
+}
+
+// FleetwoodConfigState is the state boundary for fleetwood service configuration.
+// Auto-injected by tacplus from (spec.grpc_config) annotation.
+message FleetwoodConfigState {
+  option (spec.service_state) = {name: "FleetwoodConfigState", store: "kernel"};
+  option (spec.state_consistency) = CONSISTENCY_CONVERGENT;
+
+  // Fields 1-5 are reserved for tacplus framework use.
+
+  fleetwood.Config config = 6 [
+    (spec.consistency) = CONSISTENCY_CONVERGENT,
+    (spec.persistence) = true
+  ];
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service FleetwoodConfigStateService {
+	// Singleton: Config
+	rpc GetConfig(google.protobuf.Empty) returns (Config);
+	rpc SetConfig(Config) returns (Config);
+	rpc WatchConfig(google.protobuf.Empty) returns (stream Config);
+}
+
+message MapEmpty {}
+
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_CONFIG = 1;
+  TYPE_ID_SESSION_REQUEST = 2;
+  TYPE_ID_SESSION_RESPONSE = 3;
+  TYPE_ID_INSTALL_TOKEN_REQUEST = 4;
+  TYPE_ID_FLEETWOOD_CONFIG_STATE = 5;
+  TYPE_ID_MAP_EMPTY = 6;
+}
+
+enum FleetwoodSessionServiceRpcId {
+  FLEETWOOD_SESSION_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  FLEETWOOD_SESSION_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  FLEETWOOD_SESSION_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  FLEETWOOD_SESSION_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  FLEETWOOD_SESSION_SERVICE_RPC_ID_SESSION = 4;
+}
+
+enum FleetwoodTokenServiceRpcId {
+  FLEETWOOD_TOKEN_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  FLEETWOOD_TOKEN_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  FLEETWOOD_TOKEN_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  FLEETWOOD_TOKEN_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  FLEETWOOD_TOKEN_SERVICE_RPC_ID_INSTALL_TOKEN = 4;
+}
+
+enum FleetwoodConfigStateServiceRpcId {
+  FLEETWOOD_CONFIG_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  FLEETWOOD_CONFIG_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  FLEETWOOD_CONFIG_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  FLEETWOOD_CONFIG_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  FLEETWOOD_CONFIG_STATE_SERVICE_RPC_ID_GET_CONFIG = 4;
+  FLEETWOOD_CONFIG_STATE_SERVICE_RPC_ID_SET_CONFIG = 5;
+  FLEETWOOD_CONFIG_STATE_SERVICE_RPC_ID_WATCH_CONFIG = 6;
+}

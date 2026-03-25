@@ -1,0 +1,40 @@
+// Package cavalier defines configuration constants for the cavalier CLI tool.
+//
+// Cavalier is the cluster initialization and management tool. It generates
+// deployment configurations (credentials, service configs, docker-compose)
+// from source config files and deployment profiles.
+
+syntax = "proto3";
+
+package cavalier;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.utils.cavalier";
+option java_outer_classname = "Cavalier";
+
+import "libs/spec.proto";
+import "libs/host.proto";
+import "libs/x509.proto";
+
+// Directory constants — BOOTSTRAP_DIR is relative to cwd or $HOME.
+option (spec.string_const) = { name: "BOOTSTRAP_DIR" value: "bootstrap" };
+
+message WebServerConfig {
+  // Fields 1-5 reserved for tacplus framework.
+
+  // TCP listener address. Default 0.0.0.0:8080.
+  host.Host listener = 6 [(spec.default_host) = {host: "0.0.0.0", port: 8080}];
+
+  // TLS certificate chain + key. If omitted, serves plain HTTP.
+  x509.X509CertChain tls = 7;
+
+  // Filesystem path to serve as the web root.
+  string root_path = 8 [(spec.default_string) = "."];
+}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_WEB_SERVER_CONFIG = 1;
+}

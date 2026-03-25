@@ -1,4 +1,4 @@
-language: java-maven
+language: java
 pkg: com.gitlab.secondstarcavalier.controlplane.services.kernel
 output-dir: tacplus
 post-gen:

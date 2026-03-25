@@ -1,0 +1,105 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// ============================================================================
+// DO NOT MODIFY THIS FILE
+// ============================================================================
+// This file defines the TLS certificate lifecycle service used by auto_tls.
+// Services with auto_tls: true open a bidi stream to this service.
+// Kernel implements the server side.
+// ============================================================================
+
+syntax = "proto3";
+
+package tlscert;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.tlscert";
+
+import "libs/x509.proto";
+import "libs/key.proto";
+
+// TlsCertService provides automatic TLS certificate lifecycle management.
+// Kernel implements the server side. Services with auto_tls: true open a
+// bidi stream via the generated ServiceManager.
+//
+// Flow:
+//   1. Service sends Init (identifies itself) + Csr (public key)
+//   2. Kernel signs cert under service's intermediate CA, returns CertDelivery
+//   3. At half-life, kernel sends Renew
+//   4. Service generates new keypair, sends Csr
+//   5. Kernel signs, returns CertDelivery
+//   6. Repeat from 3
+service TlsCertService {
+  rpc ManageCert(stream TlsCertClientMsg) returns (stream TlsCertServerMsg);
+}
+
+// TlsCertClientMsg is sent by the service on the bidi stream.
+message TlsCertClientMsg {
+  oneof msg {
+    // init identifies the service instance (first message).
+    TlsCertInit init = 1;
+    // csr provides a public key for kernel to sign.
+    TlsCertCsr csr = 2;
+  }
+}
+
+// TlsCertInit identifies a service instance opening a cert management stream.
+message TlsCertInit {
+  // service_name is the canonical service name (from registry).
+  string service_name = 1;
+  // instance_id is the unique identifier for this service instance.
+  string instance_id = 2;
+}
+
+// TlsCertCsr provides a public key for kernel to sign.
+message TlsCertCsr {
+  // public_key is the public key to be certified (Ed25519 or ECDSA P-256).
+  // The corresponding private key stays on the service — never sent to kernel.
+  key.PublicKey public_key = 1;
+}
+
+// TlsCertServerMsg is sent by kernel on the bidi stream.
+message TlsCertServerMsg {
+  oneof msg {
+    // cert delivers a signed certificate chain (no private key).
+    TlsCertDelivery cert = 1;
+    // renew signals the service to generate a new keypair and send a Csr.
+    TlsCertRenew renew = 2;
+    // error signals a terminal error.
+    string error = 3;
+  }
+}
+
+// TlsCertDelivery carries a signed certificate chain from kernel to the service.
+message TlsCertDelivery {
+  // chain contains the signed cert chain: leaf (service cert) + intermediate CA.
+  // No private key — the service generated the keypair locally.
+  x509.X509CertChain chain = 1;
+}
+
+// TlsCertRenew signals that the service should generate a new keypair and
+// send a Csr. Kernel sends this when the current cert reaches half-life.
+message TlsCertRenew {
+  // reason is a human-readable reason for the renewal (e.g., "half-life reached").
+  string reason = 1;
+}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_TLS_CERT_CLIENT_MSG = 1;
+  TYPE_ID_TLS_CERT_INIT = 2;
+  TYPE_ID_TLS_CERT_CSR = 3;
+  TYPE_ID_TLS_CERT_SERVER_MSG = 4;
+  TYPE_ID_TLS_CERT_DELIVERY = 5;
+  TYPE_ID_TLS_CERT_RENEW = 6;
+}
+
+enum TlsCertServiceRpcId {
+  TLS_CERT_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  TLS_CERT_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  TLS_CERT_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  TLS_CERT_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  TLS_CERT_SERVICE_RPC_ID_MANAGE_CERT = 4;
+}

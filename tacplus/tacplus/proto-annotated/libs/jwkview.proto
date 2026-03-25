@@ -1,0 +1,63 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// ============================================================================
+// DO NOT MODIFY THIS FILE
+// ============================================================================
+// This file defines the cross-boundary JWK verifying keys view service.
+// grpcserver subscribes to this service for token signature verification.
+// the cluster automatically implements this service by aggregating all
+// collections annotated with (spec.view_member) = "JwkVerifyingKeysView".
+// ============================================================================
+
+syntax = "proto3";
+
+package jwkview;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwkview";
+
+import "libs/jwk.proto";
+import "libs/spec.proto";
+import "google/protobuf/empty.proto";
+
+// JwkVerifyingKeysViewService provides a read-only aggregated view of all
+// JWK verifying keys across all state services that registered via
+// (spec.view_member) = "JwkVerifyingKeysView".
+//
+// This service is automatically implemented by the cluster.
+// grpcserver subscribes to it for token signature verification.
+service JwkVerifyingKeysViewService {
+  rpc Watch(google.protobuf.Empty) returns (stream JwkViewResponse);
+  rpc Get(JwkViewGetRequest) returns (JwkViewGetResponse);
+}
+
+message JwkViewResponse {
+  map<string, jwk.Jwk> entries = 1 [(spec.assert_max_size) = 256];  // kid -> Jwk
+}
+
+message JwkViewGetRequest {
+  string kid = 1;
+}
+
+message JwkViewGetResponse {
+  jwk.Jwk value = 1;
+  bool found = 2;
+}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_JWK_VIEW_RESPONSE = 1;
+  TYPE_ID_JWK_VIEW_GET_REQUEST = 2;
+  TYPE_ID_JWK_VIEW_GET_RESPONSE = 3;
+}
+
+enum JwkVerifyingKeysViewServiceRpcId {
+  JWK_VERIFYING_KEYS_VIEW_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  JWK_VERIFYING_KEYS_VIEW_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  JWK_VERIFYING_KEYS_VIEW_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  JWK_VERIFYING_KEYS_VIEW_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  JWK_VERIFYING_KEYS_VIEW_SERVICE_RPC_ID_WATCH = 4;
+  JWK_VERIFYING_KEYS_VIEW_SERVICE_RPC_ID_GET = 5;
+}

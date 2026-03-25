@@ -1,0 +1,38 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+syntax = "proto3";
+
+package lock;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.lock";
+
+// Lock provides optimistic concurrency control for atomic state boundaries.
+// Clients acquire a lock via GetLock, include it in mutations, and release via ReleaseLock.
+// The server uses the counter to verify the client still holds the lock.
+message Lock {
+  string id = 1;
+  int64 counter = 2;
+}
+
+// LockService manages distributed locks for atomic state operations.
+service LockService {
+  rpc GetLock(Lock) returns (Lock);
+  rpc ReleaseLock(Lock) returns (Lock);
+}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_LOCK = 1;
+}
+
+enum LockServiceRpcId {
+  LOCK_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  LOCK_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  LOCK_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  LOCK_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  LOCK_SERVICE_RPC_ID_GET_LOCK = 4;
+  LOCK_SERVICE_RPC_ID_RELEASE_LOCK = 5;
+}

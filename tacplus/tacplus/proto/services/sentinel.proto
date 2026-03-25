@@ -1,0 +1,168 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+syntax = "proto3";
+
+package sentinel;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.sentinel";
+option java_outer_classname = "Sentinel";
+
+import "libs/spec.proto";
+import "common/hazelcast.proto";
+
+import "google/protobuf/empty.proto";
+
+// ============================================================================
+// Config
+// ============================================================================
+
+message Config {
+  // Fields 1-5 are reserved for tacplus framework use.
+}
+
+// ============================================================================
+// State
+// ============================================================================
+
+// SentinelState is an empty state root — sentinel reads Cluster via
+// security policy RO grant, not via its own state.
+message SentinelState {
+  // Fields 1-5 are reserved for tacplus framework use.
+}
+
+// ============================================================================
+// Frontend Service
+// ============================================================================
+
+service SentinelService {
+
+  // Cluster-wide singletons
+  rpc GetClusterInfo(google.protobuf.Empty) returns (hazelcast.AdminClusterInfo) {}
+  rpc GetClusterHealth(google.protobuf.Empty) returns (hazelcast.AdminClusterHealth) {}
+
+  // Per-node collections
+  rpc GetNodeMetrics(google.protobuf.Empty) returns (NodeMetricsResponse) {}
+  rpc GetGrpcStats(google.protobuf.Empty) returns (GrpcStatsResponse) {}
+  rpc GetPersistenceStatus(google.protobuf.Empty) returns (PersistenceStatusResponse) {}
+  rpc GetNetworkStats(google.protobuf.Empty) returns (NetworkStatsResponse) {}
+  rpc GetThreadInfo(google.protobuf.Empty) returns (ThreadInfoResponse) {}
+  rpc GetTokenCacheStats(google.protobuf.Empty) returns (TokenCacheStatsResponse) {}
+  rpc GetMapStats(google.protobuf.Empty) returns (MapStatsResponse) {}
+
+  // Full snapshot (all data in one call)
+  rpc GetDashboard(google.protobuf.Empty) returns (DashboardResponse) {}
+
+  // Server-streaming dashboard — pushes updates at a regular interval.
+  rpc WatchDashboard(WatchDashboardRequest) returns (stream DashboardResponse) {}
+}
+
+// ============================================================================
+// Watch types
+// ============================================================================
+
+message WatchDashboardRequest {
+  // interval_seconds is how often to push updates. Default 5, min 1, max 60.
+  int32 interval_seconds = 1;
+}
+
+// ============================================================================
+// Request/Response Types
+// ============================================================================
+
+// Wrapper responses for per-node collections
+message NodeMetricsResponse { repeated hazelcast.AdminNodeMetrics items = 1; }
+message GrpcStatsResponse { repeated hazelcast.AdminGrpcStats items = 1; }
+message PersistenceStatusResponse { repeated hazelcast.AdminPersistenceStatus items = 1; }
+message NetworkStatsResponse { repeated hazelcast.AdminNetworkStats items = 1; }
+message ThreadInfoResponse { repeated hazelcast.AdminThreadInfo items = 1; }
+message TokenCacheStatsResponse { repeated hazelcast.AdminTokenCacheStats items = 1; }
+message MapStatsResponse { repeated hazelcast.AdminMapStats items = 1; }
+
+message DashboardResponse {
+  hazelcast.AdminClusterInfo cluster_info = 1;
+  hazelcast.AdminClusterHealth cluster_health = 2;
+  repeated hazelcast.AdminNodeMetrics node_metrics = 3;
+  repeated hazelcast.AdminGrpcStats grpc_stats = 4;
+  repeated hazelcast.AdminPersistenceStatus persistence_status = 5;
+  repeated hazelcast.AdminNetworkStats network_stats = 6;
+  repeated hazelcast.AdminThreadInfo thread_info = 7;
+  repeated hazelcast.AdminTokenCacheStats token_cache_stats = 8;
+  repeated hazelcast.AdminMapStats map_stats = 9;
+}
+
+// SentinelConfigState is the state boundary for sentinel service configuration.
+// Auto-injected by tacplus from (spec.grpc_config) annotation.
+message SentinelConfigState {
+
+  // Fields 1-5 are reserved for tacplus framework use.
+
+  sentinel.Config config = 6;
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service SentinelStateService {
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service SentinelConfigStateService {
+	// Singleton: Config
+	rpc GetConfig(google.protobuf.Empty) returns (Config);
+	rpc SetConfig(Config) returns (Config);
+	rpc WatchConfig(google.protobuf.Empty) returns (stream Config);
+}
+
+message MapEmpty {}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_CONFIG = 1;
+  TYPE_ID_SENTINEL_STATE = 2;
+  TYPE_ID_WATCH_DASHBOARD_REQUEST = 3;
+  TYPE_ID_NODE_METRICS_RESPONSE = 4;
+  TYPE_ID_GRPC_STATS_RESPONSE = 5;
+  TYPE_ID_PERSISTENCE_STATUS_RESPONSE = 6;
+  TYPE_ID_NETWORK_STATS_RESPONSE = 7;
+  TYPE_ID_THREAD_INFO_RESPONSE = 8;
+  TYPE_ID_TOKEN_CACHE_STATS_RESPONSE = 9;
+  TYPE_ID_MAP_STATS_RESPONSE = 10;
+  TYPE_ID_DASHBOARD_RESPONSE = 11;
+  TYPE_ID_SENTINEL_CONFIG_STATE = 12;
+  TYPE_ID_MAP_EMPTY = 13;
+}
+
+enum SentinelServiceRpcId {
+  SENTINEL_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  SENTINEL_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  SENTINEL_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  SENTINEL_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  SENTINEL_SERVICE_RPC_ID_GET_CLUSTER_INFO = 4;
+  SENTINEL_SERVICE_RPC_ID_GET_CLUSTER_HEALTH = 5;
+  SENTINEL_SERVICE_RPC_ID_GET_NODE_METRICS = 6;
+  SENTINEL_SERVICE_RPC_ID_GET_GRPC_STATS = 7;
+  SENTINEL_SERVICE_RPC_ID_GET_PERSISTENCE_STATUS = 8;
+  SENTINEL_SERVICE_RPC_ID_GET_NETWORK_STATS = 9;
+  SENTINEL_SERVICE_RPC_ID_GET_THREAD_INFO = 10;
+  SENTINEL_SERVICE_RPC_ID_GET_TOKEN_CACHE_STATS = 11;
+  SENTINEL_SERVICE_RPC_ID_GET_MAP_STATS = 12;
+  SENTINEL_SERVICE_RPC_ID_GET_DASHBOARD = 13;
+  SENTINEL_SERVICE_RPC_ID_WATCH_DASHBOARD = 14;
+}
+
+enum SentinelConfigStateServiceRpcId {
+  SENTINEL_CONFIG_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  SENTINEL_CONFIG_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  SENTINEL_CONFIG_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  SENTINEL_CONFIG_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  SENTINEL_CONFIG_STATE_SERVICE_RPC_ID_GET_CONFIG = 4;
+  SENTINEL_CONFIG_STATE_SERVICE_RPC_ID_SET_CONFIG = 5;
+  SENTINEL_CONFIG_STATE_SERVICE_RPC_ID_WATCH_CONFIG = 6;
+}

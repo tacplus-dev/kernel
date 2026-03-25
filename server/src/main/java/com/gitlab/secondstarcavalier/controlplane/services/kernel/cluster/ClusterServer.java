@@ -422,10 +422,14 @@ public class ClusterServer {
 			var caState = backendServers.services().getCaMap();
 
 			if (effectiveFrontendConfig.getDelegatesCount() > 0) {
+				long maxTokenLifetime = effectiveFrontendConfig.getMaxTokenLifetimeSeconds() > 0
+					? effectiveFrontendConfig.getMaxTokenLifetimeSeconds()
+					: 2592000; // 30 days default
 				this.keyRotator = new KeyRotator(
 						effectiveFrontendConfig.getKeyRotationIntervalSeconds() > 0
 								? effectiveFrontendConfig.getKeyRotationIntervalSeconds()
 								: 86400,
+						maxTokenLifetime,
 						jwk -> {
 							try {
 								String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
@@ -476,6 +480,7 @@ public class ClusterServer {
 			}
 			var identityService = new IdentityServiceImpl(
 					effectiveFrontendConfig.getDefaultTokenExpirySeconds(),
+					effectiveFrontendConfig.getMaxTokenLifetimeSeconds(),
 					externalJwkResolver,
 					keyRotator,
 					allKeysSupplier,

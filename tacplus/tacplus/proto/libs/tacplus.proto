@@ -1,0 +1,433 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+syntax = "proto3";
+
+package tacplus;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.tacplus";
+
+import "libs/spec.proto";
+
+// ============================================================================
+// Dependencies Configuration Schema
+// ============================================================================
+// These messages define the schema for dependencies.yaml.
+// The YAML file remains the source of truth; these messages provide
+// a formal definition of its structure.
+
+// LanguageDependencies holds the dependency configuration for a single language.
+message LanguageDependencies {
+  // dependencies maps package identifiers to version strings.
+  // Keys are language-specific: Go module paths, Maven groupId:artifactId,
+  // npm package names, PyPI package names, or Rust crate names.
+  map<string, string> dependencies = 1;
+}
+
+// DependenciesRegistry holds package registry configuration.
+message DependenciesRegistry {
+  // gitlab_project_id is the GitLab project ID for the package registry.
+  string gitlab_project_id = 1;
+
+  // interfaces maps language names to their interfaces package identifier.
+  // Keys: "go", "java", "typescript", "python", "rust"
+  map<string, string> interfaces = 2;
+
+  // imports maps language names to their import base package.
+  // Currently only "java" is used (Maven groupId differs from Java import package).
+  map<string, string> imports = 3;
+}
+
+// DependenciesConfig is the top-level schema for dependencies.yaml.
+message DependenciesConfig {
+  // registry holds package registry configuration.
+  DependenciesRegistry registry = 1;
+
+  // tools maps tool names to minimum version strings.
+  // Example: {"go": "1.23", "java": "17", "node": ">=18.0.0"}
+  map<string, string> tools = 2;
+
+  // lang holds per-language dependency configurations.
+  // Keys: "go", "java", "typescript", "python", "rust"
+  map<string, LanguageDependencies> lang = 3;
+}
+
+// ServiceName is a placeholder enum used by BoundaryInfo and RpcInfo fields.
+// The full project-specific ServiceName enum (with all service entries) is
+// generated into generated/services.proto (package services) by tacplus.
+enum ServiceName {
+  SERVICE_NAME_UNSPECIFIED = 0;
+  SERVICE_NAME_ANY = 99;
+}
+
+// RpcCategory classifies an RPC by its verb convention.
+enum RpcCategory {
+  RPC_CATEGORY_UNSPECIFIED = 0;
+  RPC_CATEGORY_ACCESSOR = 1;
+  RPC_CATEGORY_MUTATOR = 2;
+  RPC_CATEGORY_EXECUTOR = 3;
+}
+
+// StatePermEntry describes a single state-to-state access grant.
+message StatePermEntry {
+  // target is the fully qualified state root being accessed (e.g., "identity.IdentityState").
+  string target = 1;
+
+  // mode is the access level: RO, RW, WORM, or CALL.
+  spec.StatePermsMode mode = 2;
+}
+
+// BoundaryInfo describes a state boundary in a tacplus build.
+// This is language-neutral metadata exposed by generated registry code.
+message BoundaryInfo {
+  // Owning service.
+  ServiceName service = 1;
+
+  // State root message name, e.g. "ClusterState".
+  string state_root = 2;
+
+  // Boundary field name, e.g. "ClusterInfo".
+  string boundary = 3;
+
+  // Consistency model for map-backed boundaries.
+  spec.ConsistencyModel consistency = 4;
+
+  // True when the boundary is persisted.
+  bool persistence = 5;
+
+  // True when the boundary is uncached (fetch-on-demand).
+  bool uncached = 6;
+
+  // True when the boundary is a collection (repeated field).
+  bool collection = 7;
+
+  // Fully qualified type name of the boundary message.
+  string type_fqn = 8;
+
+  // Cross-namespace callers allowed on this boundary field.
+  repeated string boundary_callers = 9;
+
+  // Per-field access overrides (from boundary_perms annotation).
+  repeated StatePermEntry boundary_perms = 10;
+
+  // State-level access grants to other state roots (from state_perms annotation).
+  repeated StatePermEntry state_perms = 12;
+
+  // RPCs that operate on this boundary (derived from naming convention).
+  repeated string rpcs = 13;
+
+  // True when this boundary is a configuration boundary (ConfigState pattern).
+  bool is_config = 14;
+
+  // Routing tag from service_state annotation (e.g., "kernel", "eventbus").
+  string tag = 15;
+
+  // Graph type of this boundary: "singleton", "collection", "topic",
+  // "queue", "priority_queue", "command", "view", "state_import", "private".
+  string graph_type = 16;
+
+  // auto_tls_key_type is the key algorithm when auto_tls is enabled ("ed25519" or "ecdsa").
+  // Empty means auto_tls is disabled.
+  string auto_tls_key_type = 17;
+
+  // TODO: Field-level config exposure control. Not all config fields should be
+  // user-facing. For example, an OAUTH provider URL may be user-configurable
+  // but token expiration time should not be. Needs a (spec.user_configurable)
+  // or similar annotation on individual config fields, and a corresponding
+  // field in FieldInfo to indicate visibility to end users vs admin-only.
+}
+
+// SubscriptionInfo describes an event-bus topic subscription declared
+// via (spec.subscribe) on a service_state message.
+message SubscriptionInfo {
+  // source is the original annotation value, e.g. "aegis.AegisState.event_stream".
+  string source = 1;
+
+  // source_package is the proto package of the source state root, e.g. "aegis".
+  string source_package = 2;
+
+  // source_state_root is the state root message name, e.g. "AegisState".
+  string source_state_root = 3;
+
+  // source_field is the topic field name, e.g. "event_stream".
+  string source_field = 4;
+
+  // source_type_fqn is the fully-qualified proto type of the topic message,
+  // e.g. "aegis.TopologyEvent".
+  string source_type_fqn = 5;
+}
+
+// EnumValueInfo describes a single enum value in type metadata.
+message EnumValueInfo {
+  string name = 1;
+  int32 number = 2;
+  string description = 3;
+}
+
+// FieldInfo describes a field in type metadata.
+message FieldInfo {
+  string name = 1;
+  spec.TypeKind type = 2;
+  string description = 3;
+  bool required = 4;
+  bool repeated = 5;
+  string default_json = 6;
+  repeated string constraints = 7;
+  TypeInfo message = 8;
+  repeated EnumValueInfo enum_values = 9;
+  string map_key_type = 10;
+  string map_value_type = 11;
+  // graph index directives from (spec.graph_index), e.g. "exact", "int", "term,fulltext".
+  string graph_index = 12;
+}
+
+// TypeInfo describes a protobuf message type in the generated registry.
+message TypeInfo {
+  string fqn = 1;
+  string name = 2;
+  string package = 3;
+  string description = 4;
+  string schema_json = 5;
+  repeated FieldInfo fields = 6;
+  // graph type name from (spec.graph_type), e.g. "Entity", "Edge".
+  string graph_type = 7;
+  // Field used for upsert xid from (spec.graph_type).xid_field, e.g. "id".
+  // When set, subscribe-gen generates NQuad upserts. When empty, JSON inserts.
+  string graph_xid_field = 8;
+
+  // bigdata_name from (spec.bigdata).name. Present when annotated.
+  string bigdata_name = 9;
+  // bigdata_key from (spec.bigdata).key. Primary key field name.
+  string bigdata_key = 10;
+}
+
+// RpcInfo describes a protobuf RPC in the generated registry.
+message RpcInfo {
+  ServiceName service = 1;
+  string service_name = 2;
+  string rpc = 3;
+  string input_type = 4;
+  string output_type = 5;
+  bool client_streaming = 6;
+  bool server_streaming = 7;
+  string description = 8;
+  reserved 9;  // was disable_auth
+  reserved 10; // was allowed_callers
+  reserved 11; // was allow_user
+  RpcCategory category = 12;
+
+  // Full gRPC method path, e.g. "/policy.PolicyService/GetApiCatalog".
+  string grpc_path = 13;
+
+  reserved 14; // was auth_models
+
+  // Reserved: was http_method (string), replaced by http_methods.
+  reserved 16;
+
+  // HTTP REST convention path, e.g. "/api/v1/identity/ListProviders".
+  // Always present for gateway-exposed RPCs: {REST_ROOT_PATH}/{service_grpc}/{MethodName}.
+  string http_path = 15;
+
+  // HTTP methods for REST access. POST is always present for convention routes.
+  // Additional methods come from spec.rest_method (e.g. ["POST", "GET"]).
+  repeated string http_methods = 17;
+
+  // HTTP alias path from spec.rest_path, relative to REST_ROOT_PATH.
+  // When present, creates an additional route (e.g. "/api/v1/.well-known/openid-configuration").
+  // Same http_methods apply to the alias.
+  string http_alias_path = 18;
+
+  reserved 19; // was defer_auth
+
+  // Auth policy — inherited from service-level ServiceGrpcAnnotation.
+  bool auth_disabled = 20;
+  repeated string auth_services = 21;
+  bool auth_entitled_users = 22;
+  bool auth_any_user = 23;
+}
+
+// EnumInfo describes a top-level protobuf enum definition.
+message EnumInfo {
+  string name = 1;
+  string package = 2;
+  string description = 3;
+  repeated EnumValueInfo values = 4;
+}
+
+// ServiceInfo describes a gRPC service as a first-class object.
+message ServiceInfo {
+  // Service name, e.g. "PolicyService".
+  string name = 1;
+
+  // Human-readable description from proto comments.
+  string description = 2;
+
+  // Proto package this service belongs to.
+  string package = 3;
+
+  // Full gRPC service path, e.g. "policy.PolicyService".
+  string grpc_service = 4;
+
+  // RPCs defined on this service.
+  repeated RpcInfo rpcs = 5;
+
+  // Boundary names owned by this service's state root.
+  repeated string boundaries = 6;
+
+  // Services this service depends on (derived from state_perms).
+  repeated string dependencies = 7;
+
+  // event_tag is the routing label for gateway-exposed event services.
+  string event_tag = 8;
+}
+
+// GrpcServerEntry configures a single gRPC server in a tacplus build.
+// Used in tacplus.yaml grpc-servers to specify per-server options.
+message GrpcServerEntry {
+  // service is the fully qualified proto service path
+  // (e.g. "common/sensor.AgenticCodeEventBus").
+  string service = 1;
+
+  // auth_disabled skips authorization on the generated server wrapper.
+  // Use for local-only servers where file permissions are the access boundary
+  // (e.g. Unix socket daemons). The proto-level auth annotations are preserved
+  // for other consumers of the same service definition.
+  bool auth_disabled = 2;
+}
+
+// BuildInfo contains version and build metadata for the registry.
+message BuildInfo {
+  // tacplus version that generated this registry.
+  string tacplus_version = 1;
+
+  // Timestamp when the registry was generated (RFC 3339).
+  string build_timestamp = 2;
+
+  // Git SHA of the source proto directory, if available.
+  string source_git_sha = 3;
+}
+
+// VerificationHarness describes a single proof harness for a message.
+message VerificationHarness {
+  // message_fqn is the fully qualified proto message name.
+  string message_fqn = 1;
+
+  // harness_name is the tool-specific harness identifier
+  // (e.g. "verify_token_validate" for Kani).
+  string harness_name = 2;
+
+  // assumptions are the preconditions assumed before verification.
+  repeated string assumptions = 3;
+
+  // contracts are the postconditions being verified.
+  repeated string contracts = 4;
+
+  // status is the verification result: "verified", "failed", "error", "skipped".
+  string status = 5;
+
+  // detail contains tool output on failure/error (empty on success).
+  string detail = 6;
+}
+
+// VerificationReport summarizes formal verification results for a build.
+message VerificationReport {
+  // tool is the verifier name: "kani", "jbmc", "openjml".
+  string tool = 1;
+
+  // tool_version is the version string reported by the tool.
+  string tool_version = 2;
+
+  // language is "rust", "go", or "java".
+  string language = 3;
+
+  // harnesses are the individual proof results.
+  repeated VerificationHarness harnesses = 4;
+
+  // passed is the count of verified harnesses.
+  int32 passed = 5;
+
+  // failed is the count of failed harnesses.
+  int32 failed = 6;
+
+  // total is the total harness count.
+  int32 total = 7;
+
+  // duration_ms is wall-clock time for the full verification run.
+  int64 duration_ms = 8;
+}
+
+// PackageNode is a node in the hierarchical registry tree.
+// The root node represents the tacplus build; children are proto packages
+// (libs/, services/, common/, utils/). Each node carries its own types,
+// RPCs, and boundaries and recursively contains sub-packages.
+message PackageNode {
+  // name is the short package name (e.g. "identity", "spec", "libs").
+  string name = 1;
+
+  // full_path is the slash-separated path from the root (e.g. "services/identity").
+  string full_path = 2;
+
+  // children are sub-packages contained in this node.
+  repeated PackageNode children = 3;
+
+  // types are the message type descriptors defined in this package.
+  repeated TypeInfo types = 4;
+
+  // rpcs are the RPC descriptors defined in this package.
+  repeated RpcInfo rpcs = 5;
+
+  // boundaries are the state boundaries owned by this package's service.
+  repeated BoundaryInfo boundaries = 6;
+
+  // docs is a map of documentation file name → content.
+  // Populated on the root node only; contains embedded project documentation.
+  map<string, string> docs = 7;
+
+  // schema describes the structure of this document for self-reference.
+  // Populated on the root node only; points readers to the type definitions
+  // under libs/tacplus that define PackageNode, TypeInfo, FieldInfo, RpcInfo,
+  // BoundaryInfo, EnumValueInfo, and StatePermEntry.
+  string schema = 8;
+
+  // enums are the top-level enum definitions in this package.
+  repeated EnumInfo enums = 9;
+
+  // services are first-class service descriptors (populated on leaf nodes with RPCs).
+  repeated ServiceInfo services = 10;
+
+  // build contains version and build metadata. Populated on the root node only.
+  BuildInfo build = 11;
+
+  // subscriptions are event-bus topic subscriptions declared on state roots
+  // in this package (from spec.subscribe annotations).
+  repeated SubscriptionInfo subscriptions = 12;
+
+  // constants are file-level named constants (string, int, float, bool)
+  // defined via spec.string_const, spec.int_const, etc.
+  // Key is the constant name, value is the constant value as a string.
+  map<string, string> constants = 13;
+
+}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_LANGUAGE_DEPENDENCIES = 1;
+  TYPE_ID_DEPENDENCIES_REGISTRY = 2;
+  TYPE_ID_DEPENDENCIES_CONFIG = 3;
+  TYPE_ID_STATE_PERM_ENTRY = 4;
+  TYPE_ID_BOUNDARY_INFO = 5;
+  TYPE_ID_SUBSCRIPTION_INFO = 6;
+  TYPE_ID_ENUM_VALUE_INFO = 7;
+  TYPE_ID_FIELD_INFO = 8;
+  TYPE_ID_TYPE_INFO = 9;
+  TYPE_ID_RPC_INFO = 10;
+  TYPE_ID_ENUM_INFO = 11;
+  TYPE_ID_SERVICE_INFO = 12;
+  TYPE_ID_GRPC_SERVER_ENTRY = 13;
+  TYPE_ID_BUILD_INFO = 14;
+  TYPE_ID_VERIFICATION_HARNESS = 15;
+  TYPE_ID_VERIFICATION_REPORT = 16;
+  TYPE_ID_PACKAGE_NODE = 17;
+}

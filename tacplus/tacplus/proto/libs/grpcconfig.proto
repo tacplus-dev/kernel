@@ -1,0 +1,250 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// ============================================================================
+// DO NOT MODIFY THIS FILE
+// ============================================================================
+// This file defines the unified service configuration combining cluster client
+// connectivity and RPC server settings, along with the ClusterService
+// contract and GrpcServerService health endpoints.
+// Changes to these definitions will break the compiler's code generation
+// and service scaffolding for all languages.
+// ============================================================================
+
+syntax = "proto3";
+
+package grpcconfig;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.grpcconfig";
+
+import "libs/host.proto";
+import "libs/jwk.proto";
+import "libs/key.proto";
+import "libs/logger.proto";
+import "libs/spec.proto";
+import "libs/x509.proto";
+import "google/protobuf/empty.proto";
+
+// Environment variable name for bootstrap config file path.
+
+// ============================================================================
+// Unified Service Configuration
+// ============================================================================
+
+// Config is the single configuration type for all services.
+//
+// Bootstrap fields (endpoints, instance_id, private_key, trusted_cas) are loaded
+// from YAML at boot and used to connect to the cluster.
+//
+// Runtime fields (ping_interval_ms, rebalance_interval_ms, listen_address,
+// max_request_size, request_timeout_seconds, logger, shutdown_timeout_seconds)
+// are delivered by the cluster via ServiceConfigState and can change at any time.
+//
+// TLS certificates are obtained automatically by the servicemanager via X509Mint
+// after token exchange — they are not part of the config.
+message Config {
+
+  // ============================================================================
+  // Bootstrap (loaded from file, used to connect to cluster)
+  // ============================================================================
+
+  // Cluster endpoints. Set in bootstrap file; can be updated at runtime
+  // via ServiceConfigState to add/remove endpoints dynamically.
+  repeated host.Host endpoints = 1;
+
+  // instance_id uniquely identifies this running instance/replica.
+  // Used for leader elections on boundaries with (spec.leader) = true.
+  // If empty, a random ID is generated at client creation time.
+  string instance_id = 2;
+
+  // private_key is used to mint throwaway bootstrap JWTs for the
+  // token exchange flow. The kid is in private_key.id;
+  // identity (subject/audience) comes from the delegate looked up
+  // by TokenExchanger using the matching kid.
+  // If absent, cloud-native authentication is attempted.
+  key.Key private_key = 3;
+
+  // ============================================================================
+  // Cluster Client — Connection Tuning
+  // ============================================================================
+
+  // ping_interval_ms controls how often each endpoint is pinged for latency measurement.
+  // Default: 5000 (5 seconds)
+  int32 ping_interval_ms = 4;
+
+  // rebalance_interval_ms controls how often the active connection is re-evaluated
+  // based on latency. Default: 10000 (10 seconds)
+  int32 rebalance_interval_ms = 5;
+
+  // ============================================================================
+  // RPC Server — Network
+  // ============================================================================
+
+  // listen_address is the bind address for the gRPC server. Default port 8443.
+  host.Host listen_address = 6;
+
+  // ============================================================================
+  // RPC Server — Request Limits
+  // ============================================================================
+
+  // max_request_size is the maximum request size in bytes.
+  // Must be greater than 0. Default: 10MB (10485760 bytes)
+  int64 max_request_size = 7;
+
+  // request_timeout_seconds is the timeout for client requests.
+  // Must be positive. Default: 30 seconds.
+  int64 request_timeout_seconds = 8;
+
+  // ============================================================================
+  // Observability
+  // ============================================================================
+
+  // logger configures the logger for the service.
+  // Controls log format (JSON/console), level, output paths, and more.
+  logger.LoggerConfig logger = 9;
+
+  // shutdown_timeout_seconds is the maximum time (in seconds) to wait for graceful
+  // shutdown after SIGTERM before forcing immediate shutdown.
+  // Must be positive. Default: 30 seconds.
+  int64 shutdown_timeout_seconds = 10;
+
+  // ============================================================================
+  // Bootstrap — TLS Trust
+  // ============================================================================
+
+  // trusted_cas is the list of CA certificates trusted for TLS verification
+  // when connecting to cluster endpoints. If empty, system root CAs are used.
+  repeated x509.X509Cert trusted_cas = 11;
+
+}
+
+// ============================================================================
+// Cluster Service — Cluster Messages
+// ============================================================================
+
+// LogMessage is a log entry sent from the cluster to the service for logging.
+message LogMessage {
+  // level is the severity level for this log message.
+  logger.Level level = 1;
+
+  // message is the log message text.
+  string message = 2;
+}
+
+// MemberStatus represents the lifecycle state of a cluster member.
+enum MemberStatus {
+  MEMBER_STATUS_UNKNOWN = 0;
+  MEMBER_STATUS_STARTING = 1;
+  MEMBER_STATUS_READY = 2;
+  MEMBER_STATUS_DRAINING = 3;
+  MEMBER_STATUS_SHUTTING_DOWN = 4;
+  MEMBER_STATUS_UNREACHABLE = 5;
+}
+
+// ClusterMember describes a single member (pod/node) within a cluster.
+message ClusterMember {
+  // endpoint is the host:port address of this member.
+  host.Host endpoint = 1;
+  MemberStatus status = 2;
+  int32 priority = 3;
+}
+
+// ClusterInfo describes a single Kubernetes cluster and its members.
+message ClusterInfo {
+  string org_id = 1;
+  string region = 2;
+  string zone = 3;
+  string cluster_name = 4;
+  repeated ClusterMember members = 5;
+}
+
+// ClusterState is a snapshot of the full multi-region, multi-cluster topology.
+message ClusterState {
+  repeated ClusterInfo clusters = 1;
+}
+
+// PingResponse is returned by Ping to confirm the member is reachable.
+message PingResponse {
+  MemberStatus status = 1;
+}
+
+// ============================================================================
+// Services
+// ============================================================================
+
+// ClusterService provides service-to-service communication between
+// cluster members and clients (services).
+service ClusterService {
+  // Log opens a server-streaming channel for the cluster to push log messages.
+  rpc Log(google.protobuf.Empty) returns (stream LogMessage);
+
+  // Ping verifies that a member is reachable and returns its identity.
+  rpc Ping(google.protobuf.Empty) returns (PingResponse);
+
+  // Subscribe streams cluster state updates across all clusters and regions.
+  rpc Subscribe(google.protobuf.Empty) returns (stream ClusterState);
+
+  // WatchJwks streams the current JWKS (JSON Web Key Set) used for token verification.
+  // The server sends an updated Jwks message whenever the key set changes.
+  rpc WatchJwks(google.protobuf.Empty) returns (stream jwk.Jwks);
+}
+
+// ============================================================================
+// ServiceConfigState — shared runtime config for all gRPC services
+// ============================================================================
+
+// ServiceConfigState delivers runtime configuration (OPA policy, TLS, logging)
+// to all RPC services. The cluster writes the config; services subscribe
+// via OnChange to receive updates.
+message ServiceConfigState {
+
+  Config config = 1;
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service ServiceConfigStateService {
+	// Singleton: Config
+	rpc GetConfig(google.protobuf.Empty) returns (Config);
+	rpc SetConfig(Config) returns (Config);
+	rpc WatchConfig(google.protobuf.Empty) returns (stream Config);
+}
+
+message MapEmpty {}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_CONFIG = 1;
+  TYPE_ID_LOG_MESSAGE = 2;
+  TYPE_ID_CLUSTER_MEMBER = 3;
+  TYPE_ID_CLUSTER_INFO = 4;
+  TYPE_ID_CLUSTER_STATE = 5;
+  TYPE_ID_PING_RESPONSE = 6;
+  TYPE_ID_SERVICE_CONFIG_STATE = 7;
+  TYPE_ID_MAP_EMPTY = 8;
+}
+
+enum ClusterServiceRpcId {
+  CLUSTER_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  CLUSTER_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  CLUSTER_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  CLUSTER_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  CLUSTER_SERVICE_RPC_ID_LOG = 4;
+  CLUSTER_SERVICE_RPC_ID_PING = 5;
+  CLUSTER_SERVICE_RPC_ID_SUBSCRIBE = 6;
+  CLUSTER_SERVICE_RPC_ID_WATCH_JWKS = 7;
+}
+
+enum ServiceConfigStateServiceRpcId {
+  SERVICE_CONFIG_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  SERVICE_CONFIG_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  SERVICE_CONFIG_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  SERVICE_CONFIG_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  SERVICE_CONFIG_STATE_SERVICE_RPC_ID_GET_CONFIG = 4;
+  SERVICE_CONFIG_STATE_SERVICE_RPC_ID_SET_CONFIG = 5;
+  SERVICE_CONFIG_STATE_SERVICE_RPC_ID_WATCH_CONFIG = 6;
+}

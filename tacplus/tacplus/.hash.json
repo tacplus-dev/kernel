@@ -1,0 +1,29 @@
+{
+  "binary_hash": "b5a51d45ce00061043335d78316e374c4c8b80cf6d57955e22648efb377d67e4",
+  "config_hash": "eaffb0eeffbc380cf00ba318a0e2b29793d7c9c2de7fca19bb8165a798a93046",
+  "structure_hash": "868bddd2bf9f21da8a6e8fef5dd8264bb493f9186cd446989434400356af76ff",
+  "files": {
+    "clients/cavalierctl.proto": "e0e9cd29db91351e0a519d67faa203c335bfb315afc95bcefb5fd829e00eef36",
+    "common/hazelcast.proto": "da24e978af380e6f74506c9bb8dc754781e9908d6342e7af435cfe9a286f8858",
+    "common/openai.proto": "bb2772214149af3f0c92d63f036e45b1a1e770d5dc5eaacde5ea00b18bacce21",
+    "common/sensor.proto": "6e3e0d7f61644d0401c6814cdcf9793eb9b3b94296fcf42898ebef29806ee657",
+    "common/tokenrequest.proto": "55471fde84c48288dc640606df74877d6273e9f16911a7ae3b83f4a781ba1db6",
+    "dependencies.yaml": "f256e9c751612ae21a9e6fb64a01eec5bd32999427237f8b66b2ac3a3660c030",
+    "services/aegis.proto": "b33cd92f4698e019ada89f910f6b8ed47e9abeed0b92587490ebac5c421fa1e6",
+    "services/anthropic.proto": "e327ec506bcfb5bf4b2a31115520c7fb3c7e8bedd048f8a4cca29d7737eb16d8",
+    "services/bigdata.proto": "9f8f930ebc39e30012ee2b8e638aad7d18264799ac665159d3613a1af71cf22c",
+    "services/clickhouse.proto": "d06b53a5f7d3880b12687c5acb7dd57c4ceabfe209f366b21ca56225a30143af",
+    "services/dgraph.proto": "0985d3f0168c34be6847bec8961fcaed75d37bdfb5252317423fa8a44505d1e2",
+    "services/eventbus.proto": "015ed1dfa58c3d196b9cee1017d5692b800e4f2b7be7e850851c679b62802ba6",
+    "services/fleetwood.proto": "4994d7e97f578d3ebf2d6f6fefacb3bb29884bd0f6e6344a11cf17a93d832066",
+    "services/gateway.proto": "a33ad8f469aebfd351a3c54bd21f5300908b7e879756d4c59fd782edf2881335",
+    "services/github.proto": "1d541dbb0226c3dcf0d6c8f3d114dcb14d571198b5dc64451f8e2dc58c624183",
+    "services/gitlab.proto": "02676bf38d60881c3667054dff72e8ac226a26629d46716b049f61edd4f40af5",
+    "services/kernel.proto": "ef005d6f8ad703d5efcd9ec45417a46451389b0382ecea52f133eb567e262f09",
+    "services/letsencrypt.proto": "83eb9eb84104d4bf32d65d58907c6aec9590163bd1701af6cf8f7b3bfcf95776",
+    "services/mcp.proto": "284226b6b1fe99e16578f2ea135203aa853fd6f4f18881a2be545773aa1b7f2b",
+    "services/oauth.proto": "b6e3e6287e77c92b732d5c8a36300d3b10c99b0541b707205db8a5f31fc755e4",
+    "services/sentinel.proto": "078cc66d034d88cf155d37b6929a0bbf1b037de6c602299eb284940ff16ad2a6",
+    "utils/cavalier.proto": "ec3605b9cc23e0d52020e7a155706d5b87e663fa7ca812b5280de9289b9492e8"
+  }
+}

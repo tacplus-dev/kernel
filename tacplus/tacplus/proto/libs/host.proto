@@ -1,0 +1,43 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// ============================================================================
+// DO NOT MODIFY THIS FILE
+// ============================================================================
+// This file defines constants and types used by the protobuf compiler and
+// code generation tooling (grpcserver).
+// Changes to these definitions will break the compiler's code generation
+// and service scaffolding for all languages.
+// ============================================================================
+
+syntax = "proto3";
+
+package host;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.host";
+
+// Transport protocol for a network endpoint.
+enum Protocol {
+  TCP = 0;   // TCP transport (default zero value).
+  UDP = 1;   // UDP transport.
+}
+
+// Host identifies a network endpoint by hostname/IP and port.
+// The host field accepts either an FQDN or an IP address (v4/v6).
+message Host {
+  // Hostname or IP address (e.g. "api.example.com" or "10.0.0.1").
+  string host = 1;
+
+  // Port number (1-65535).
+  int32 port = 2;
+
+  // Transport protocol. Default TCP (zero value).
+  Protocol protocol = 3;
+}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_HOST = 1;
+}

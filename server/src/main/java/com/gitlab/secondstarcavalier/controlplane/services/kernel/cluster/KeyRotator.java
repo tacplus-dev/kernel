@@ -31,6 +31,7 @@ public class KeyRotator {
     private static final Logger logger = LoggerFactory.getLogger(KeyRotator.class);
 
     private final long rotationIntervalSeconds;
+    private final long keyRetentionSeconds;
     private final Consumer<JwkOuterClass.Jwk> keyPublisher;
     private final Consumer<String> keyRemover;
     private final Supplier<java.util.List<JwkOuterClass.Jwk>> keyReader;
@@ -41,16 +42,19 @@ public class KeyRotator {
 
     /**
      * @param rotationIntervalSeconds interval between key rotations
+     * @param keyRetentionSeconds     how long to retain old keys after rotation (must be ≥ max token lifetime)
      * @param keyPublisher            writes a JWK to the verifying_keys boundary
      * @param keyRemover              removes a JWK by kid from verifying_keys
      * @param keyReader               reads current verifying_keys
      */
     public KeyRotator(
             long rotationIntervalSeconds,
+            long keyRetentionSeconds,
             Consumer<JwkOuterClass.Jwk> keyPublisher,
             Consumer<String> keyRemover,
             Supplier<java.util.List<JwkOuterClass.Jwk>> keyReader) {
         this.rotationIntervalSeconds = rotationIntervalSeconds;
+        this.keyRetentionSeconds = keyRetentionSeconds;
         this.keyPublisher = keyPublisher;
         this.keyRemover = keyRemover;
         this.keyReader = keyReader;
@@ -85,7 +89,8 @@ public class KeyRotator {
                 rotationIntervalSeconds,
                 TimeUnit.SECONDS);
 
-        logger.info("KeyRotator started: rotation every {}s, active kid={}", rotationIntervalSeconds, activeKid);
+        logger.info("KeyRotator started: rotation every {}s, key retention {}s, active kid={}",
+                rotationIntervalSeconds, keyRetentionSeconds, activeKid);
     }
 
     public void stop() {
@@ -124,8 +129,9 @@ public class KeyRotator {
 
         generateAndPublishKey();
 
-        // Remove keys older than 2 × rotation interval
-        long cutoff = Instant.now().getEpochSecond() - (2 * rotationIntervalSeconds);
+        // Remove keys older than the retention period (max token lifetime).
+        // Tokens signed with a rotated key must remain verifiable until they expire.
+        long cutoff = Instant.now().getEpochSecond() - keyRetentionSeconds;
         var keys = keyReader.get();
         for (JwkOuterClass.Jwk jwk : keys) {
             if (jwk.getCreated() > 0

@@ -1,0 +1,101 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// Package tokenrequest defines unified mint request messages used by kernel's
+// IdentityService and by delegate implementations (Identity, K8S brokers, etc.).
+
+syntax = "proto3";
+
+package tokenrequest;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.tokenrequest";
+option java_outer_classname = "Tokenrequest";
+
+import "libs/spec.proto";
+import "libs/cloudidentity.proto";
+import "libs/token.proto";
+import "libs/x509.proto";
+import "google/protobuf/struct.proto";
+
+// TokenMintRequest is the unified input for the TokenMint RPC.
+// Covers both direct exchange (caller presents credentials) and delegation
+// (broker mints on behalf of another principal).
+//
+// Direct exchange: input_token or cloud_proof authenticates the caller.
+//   Subject is derived from the credentials. Profiles are resolved from
+//   the Delegate's authorized_profiles.
+//
+// Delegation: caller authenticates via header (service token). Subject,
+//   profiles, and claims are specified explicitly. Kernel verifies the
+//   caller is authorized to delegate.
+message TokenMintRequest {
+  // --- Credentials (for direct exchange; omit when delegating via header) ---
+
+  // input_token is a JWT to validate (delegate cred_pair JWT or refresh token).
+  string input_token = 1 [(spec.assert_max_size) = 65536];
+
+  // cloud_proof is a cloud-native identity proof (AWS STS, GCP, Azure).
+  // Used instead of input_token for cloud-native auth.
+  cloudidentity.CloudIdentityProof cloud_proof = 2;
+
+  // continuity_token is a non-expired refresh token proving instance continuity
+  // across restarts. Optional.
+  string continuity_token = 3 [(spec.assert_max_size) = 65536];
+
+  // --- What to mint ---
+
+  // aud is the target service for the issued token.
+  string aud = 4 [(spec.assert_min_length) = 1, (spec.assert_max_length) = 256];
+
+  // exp is the desired expiry epoch (optional; 0 = use default, capped by server policy).
+  int64 exp = 5 [(spec.assert_ge) = 0];
+
+  // token_purpose selects refresh or access token semantics.
+  token.TokenPurpose token_purpose = 6 [(spec.assert_enum_defined) = true];
+
+  // --- Delegation (set by brokers acting on behalf of others) ---
+
+  // subject is the token's sub claim. Empty = derive from credentials.
+  // Brokers set this explicitly when minting on behalf of another principal.
+  string subject = 7 [(spec.assert_max_length) = 256];
+
+  // claims are custom claims to embed in the token (e.g., origin IDP claims,
+  // auth_type, azp). Standard JWT claims (sub, iss, aud, exp, iat, jti) are
+  // set by kernel and must not appear here.
+  google.protobuf.Struct claims = 8;
+
+  // profiles are identity profile names to resolve into entitlements.
+  // Kernel resolves each profile via identity_profiles config to get concrete
+  // per-service RPC lists for the target service (aud).
+  repeated string profiles = 9 [(spec.assert_max_size) = 100];
+}
+
+// TokenMintResponse is the response from the TokenMint RPC.
+// Always contains an access token. On initial exchange (cred_pair or cloud
+// bootstrap), also contains a refresh token so callers get both in one call.
+message TokenMintResponse {
+  // access_token is the primary token — a signed JWT for the requested audience.
+  token.Token access_token = 1;
+
+  // refresh_token is only populated on initial exchange (bootstrap).
+  // Callers cache it and use it to obtain new access tokens later.
+  token.Token refresh_token = 2;
+}
+
+// X509MintRequest is the input for the X509Mint RPC.
+// Authentication comes from the caller's bearer token — either in the
+// Authorization header or in the input_token field (for gateway-mediated
+// calls). The token's sub claim identifies the service; kernel creates a
+// per-service intermediate CA and signs the certificate under it.
+message X509MintRequest {
+  // aud is the intended audience / service name for the certificate.
+  string aud = 1 [(spec.assert_min_length) = 1, (spec.assert_max_length) = 256];
+
+  // cert_request contains the public key, expiry, key usage, and other
+  // X.509 certificate parameters. The caller provides its public key;
+  // kernel signs it under the service's intermediate CA.
+  x509.X509CertRequest cert_request = 2 [(spec.assert_required) = true];
+
+  // input_token is the caller's service token (JWT). When gateway mediates
+  // the X509Mint call, the token is passed in the request body instead of
+  // the Authorization header. Matches TokenMintRequest's pattern.
+  string input_token = 3 [(spec.assert_max_size) = 65536];
+}

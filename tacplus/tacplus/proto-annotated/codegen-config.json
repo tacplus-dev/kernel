@@ -1,0 +1,439 @@
+{
+  "javaPackageBase": "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus",
+  "interfacesPackage": "com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs",
+  "securityPolicies": [
+    {
+      "name": "ClickHouseState",
+      "package": "clickhouse",
+      "rw": [
+        "service:clickhouse"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "ClickhouseConfigState",
+      "package": "clickhouse",
+      "rw": [
+        "service:clickhouse"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "GitlabConfigState",
+      "package": "gitlab",
+      "rw": [
+        "service:gitlab"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "Identity",
+      "package": "kernel",
+      "rw": [
+        "service:kernel"
+      ],
+      "ro": [
+        "*"
+      ],
+      "disableAuth": true
+    },
+    {
+      "name": "TrustedCa",
+      "package": "kernel",
+      "rw": [
+        "service:kernel"
+      ],
+      "ro": [
+        "*"
+      ],
+      "disableAuth": true
+    },
+    {
+      "name": "Cluster",
+      "package": "kernel",
+      "rw": [
+        "service:kernel"
+      ],
+      "ro": [
+        "*"
+      ],
+      "boundaryGrants": [
+        {
+          "boundary": "reload_config",
+          "callers": [
+            "orchestrator"
+          ],
+          "type": "command"
+        }
+      ]
+    },
+    {
+      "name": "ServiceHealth",
+      "package": "kernel",
+      "rw": [
+        "*"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "Ca",
+      "package": "kernel",
+      "rw": [
+        "service:kernel"
+      ],
+      "ro": [
+        "*"
+      ],
+      "disableAuth": true
+    },
+    {
+      "name": "GatewayTls",
+      "package": "kernel",
+      "rw": [
+        "service:kernel"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "AgenticCodeEventBus",
+      "package": "sensor",
+      "rw": [
+        "service:sensor"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "SentinelState",
+      "package": "sentinel",
+      "rw": [
+        "service:sentinel"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "SentinelConfigState",
+      "package": "sentinel",
+      "rw": [
+        "service:sentinel"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "GatewayConfigState",
+      "package": "gateway",
+      "rw": [
+        "service:gateway"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "BigDataState",
+      "package": "bigdata",
+      "rw": [
+        "service:bigdata"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "BigdataConfigState",
+      "package": "bigdata",
+      "rw": [
+        "service:bigdata"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "OauthConfigState",
+      "package": "oauth",
+      "rw": [
+        "service:oauth"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "AegisState",
+      "package": "aegis",
+      "rw": [
+        "service:aegis"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "AegisConfigState",
+      "package": "aegis",
+      "rw": [
+        "service:aegis"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "EventbusState",
+      "package": "eventbus",
+      "rw": [
+        "service:eventbus"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "EventbusConfigState",
+      "package": "eventbus",
+      "rw": [
+        "service:eventbus"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "LetsEncryptState",
+      "package": "letsencrypt",
+      "rw": [
+        "service:letsencrypt"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "LetsencryptConfigState",
+      "package": "letsencrypt",
+      "rw": [
+        "service:letsencrypt"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "GithubConfigState",
+      "package": "github",
+      "rw": [
+        "service:github"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "McpConfigState",
+      "package": "mcp",
+      "rw": [
+        "service:mcp"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "AnthropicConfigState",
+      "package": "anthropic",
+      "rw": [
+        "service:anthropic"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "FleetwoodConfigState",
+      "package": "fleetwood",
+      "rw": [
+        "service:fleetwood"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "DgraphState",
+      "package": "dgraph",
+      "rw": [
+        "service:dgraph"
+      ],
+      "ro": [
+        "*"
+      ]
+    },
+    {
+      "name": "DgraphConfigState",
+      "package": "dgraph",
+      "rw": [
+        "service:dgraph"
+      ],
+      "ro": [
+        "*"
+      ]
+    }
+  ],
+  "serviceRPCMappings": [
+    {
+      "serviceName": "sentinel",
+      "rpcs": [
+        "GetClusterInfo",
+        "GetClusterHealth",
+        "GetNodeMetrics",
+        "GetGrpcStats",
+        "GetPersistenceStatus",
+        "GetNetworkStats",
+        "GetThreadInfo",
+        "GetTokenCacheStats",
+        "GetMapStats",
+        "GetDashboard",
+        "WatchDashboard"
+      ]
+    },
+    {
+      "serviceName": "oauth",
+      "rpcs": [
+        "ListProviders",
+        "Authorize",
+        "Callback",
+        "Logout"
+      ]
+    },
+    {
+      "serviceName": "mcp",
+      "rpcs": [
+        "Assist"
+      ]
+    },
+    {
+      "serviceName": "eventbus",
+      "rpcs": [
+        "ListTopics",
+        "GetTopicInfo",
+        "DeleteTopic",
+        "AlterTopicConfig",
+        "GetConsumerGroupLag",
+        "ListConsumerGroups",
+        "ResetConsumerGroupOffsets",
+        "DeleteConsumerGroup",
+        "GetClusterHealth"
+      ]
+    },
+    {
+      "serviceName": "bigdata",
+      "rpcs": [
+        "Query",
+        "GetByKey",
+        "GetTopology",
+        "WatchTopology",
+        "GetEntity",
+        "GetConversation",
+        "GetConversationTurn",
+        "GetTokenTimeline",
+        "GetDelegationTree",
+        "GetSessionHistory",
+        "GetToolUsage",
+        "GetTrace",
+        "GetResourceHistory",
+        "ListDetectionRules",
+        "CreateDetectionRule",
+        "UpdateDetectionRule",
+        "DeleteDetectionRule",
+        "CreateAnnotation",
+        "ListAnnotations",
+        "DeleteAnnotation",
+        "GetStoreHealth"
+      ]
+    },
+    {
+      "serviceName": "fleetwood",
+      "rpcs": [
+        "InstallToken"
+      ]
+    },
+    {
+      "serviceName": "anthropic",
+      "rpcs": [
+        "CreateMessage",
+        "CreateMessageStream"
+      ]
+    },
+    {
+      "serviceName": "github",
+      "rpcs": [
+        "Proxy",
+        "GetRepository",
+        "ListIssues",
+        "GetIssue",
+        "CreateIssue",
+        "UpdateIssue",
+        "CreateIssueComment",
+        "ListPullRequests",
+        "GetPullRequest",
+        "CreatePullRequest",
+        "MergePullRequest",
+        "ListPullRequestFiles",
+        "GetContent",
+        "CreateOrUpdateFile",
+        "ListBranches",
+        "CreateBranch",
+        "ListCommits",
+        "SearchCode"
+      ]
+    },
+    {
+      "serviceName": "gitlab",
+      "rpcs": [
+        "Proxy",
+        "GetProject",
+        "ListIssues",
+        "GetIssue",
+        "CreateIssue",
+        "UpdateIssue",
+        "CreateIssueNote",
+        "ListMergeRequests",
+        "GetMergeRequest",
+        "CreateMergeRequest",
+        "UpdateMergeRequest",
+        "MergeMergeRequest",
+        "ListMergeRequestChanges",
+        "CreateMergeRequestNote",
+        "ListPipelines",
+        "GetPipeline",
+        "CreatePipeline",
+        "CancelPipeline",
+        "RetryPipeline",
+        "ListPipelineJobs",
+        "GetRepositoryFile",
+        "CreateRepositoryFile",
+        "UpdateRepositoryFile",
+        "ListBranches",
+        "CreateBranch",
+        "ListCommits",
+        "SearchBlobs"
+      ]
+    }
+  ]
+}

@@ -96,6 +96,14 @@ public class BackendServerMojo extends AbstractMojo {
 	public void execute() throws MojoExecutionException {
 		getLog().info("Backend server codegen: parsing protos from " + protoDir);
 
+		// Clean output directory to prevent stale files from previous builds.
+		// Without this, renamed or removed state services leave orphan Java files
+		// that fail to compile (e.g., referencing non-existent gRPC base classes).
+		if (outputDir.exists()) {
+			getLog().info("Cleaning output directory: " + outputDir);
+			deleteRecursively(outputDir);
+		}
+
 		if (!protoDir.exists()) {
 			throw new MojoExecutionException(
 					"Annotated proto directory not found: " + protoDir +
@@ -215,4 +223,15 @@ public class BackendServerMojo extends AbstractMojo {
 		}
 	}
 
+	private static void deleteRecursively(File file) {
+		if (file.isDirectory()) {
+			File[] children = file.listFiles();
+			if (children != null) {
+				for (File child : children) {
+					deleteRecursively(child);
+				}
+			}
+		}
+		file.delete();
+	}
 }

@@ -1,0 +1,49 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// ============================================================================
+// DO NOT MODIFY THIS FILE
+// ============================================================================
+// This file defines the cross-boundary entitlement profile view service.
+// grpcserver subscribes to this service for profile-to-RPC resolution.
+// The kernel publishes entitlement_profiles from Config on this service so
+// that each service's authorizer can resolve profile names to concrete
+// RPC entitlements at request time (instead of baking RPCs into tokens).
+// ============================================================================
+
+syntax = "proto3";
+
+package entitlementview;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.entitlementview";
+
+import "generated/entitlements.proto";
+import "google/protobuf/empty.proto";
+
+// EntitlementProfileViewService provides a read-only view of entitlement profiles.
+// Each service's authorizer subscribes to this service via Watch to cache
+// profile definitions locally. Token claims carry profile names; the authorizer
+// resolves those names to per-service RPCs using the cached profiles.
+service EntitlementProfileViewService {
+  rpc Watch(google.protobuf.Empty) returns (stream EntitlementProfileViewResponse);
+}
+
+message EntitlementProfileViewResponse {
+  // profile_id -> EntitlementProfile
+  map<string, entitlements.EntitlementProfile> profiles = 1;
+}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_ENTITLEMENT_PROFILE_VIEW_RESPONSE = 1;
+}
+
+enum EntitlementProfileViewServiceRpcId {
+  ENTITLEMENT_PROFILE_VIEW_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  ENTITLEMENT_PROFILE_VIEW_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  ENTITLEMENT_PROFILE_VIEW_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  ENTITLEMENT_PROFILE_VIEW_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  ENTITLEMENT_PROFILE_VIEW_SERVICE_RPC_ID_WATCH = 4;
+}

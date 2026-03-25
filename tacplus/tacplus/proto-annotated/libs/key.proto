@@ -1,0 +1,75 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// ============================================================================
+// DO NOT MODIFY THIS FILE
+// ============================================================================
+// This file defines cryptographic key types and key pair structures used for
+// authentication, encryption, and signing throughout the system.
+// Changes to these definitions will break cryptographic operations in all
+// services that handle keys, certificates, and secure communications.
+// ============================================================================
+
+syntax = "proto3";
+
+package key;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.key";
+
+import "libs/spec.proto";
+
+// KeyType represents the key type. Valid values are RSA, EC (Elliptic Curve),
+// and OKP (Octet Key Pair for EdDSA).
+enum KeyType {
+  // KtyTypeUndefined represents an unspecified key type
+  KEY_TYPE_UNDEFINED = 0;
+  // KeyTypeRsa represents an RSA key type
+  KEY_TYPE_RSA = 1 [(spec.json_return_value) = "RSA"];
+  // KeyTypeEc represents an Elliptic Curve key type
+  KEY_TYPE_EC = 2 [(spec.json_return_value) = "EC"];
+  // KeyTypeOkp represents an Octet Key Pair (EdDSA) key type
+  KEY_TYPE_OKP = 3 [(spec.json_return_value) = "OKP"];
+}
+
+// PublicKey represents a public cryptographic key.
+// The key is stored as a base64-encoded PEM block in PKIX format.
+// Use NewProtoPublicKey() in Go or similar constructors in other languages to create.
+message PublicKey {
+  // Id is a unique identifier for the key (corresponds to kid in JWK)
+  string id = 1 [(spec.assert_required) = true, (spec.assert_min_length) = 1];
+  // Base64 contains the base64url-encoded PEM public key block
+  string base64 = 2 [(spec.assert_base64) = true, (spec.assert_required) = true];
+  // Created is the Unix epoch timestamp (seconds) when the key was created
+  // Valid range: 1735689600 (2025-01-01) to 8045740800 (2225-01-01)
+  int64 created = 3 [(spec.assert_required) = true, (spec.assert_ge) = 1735689600, (spec.assert_le) = 8045740800];
+}
+
+// Key represents a private cryptographic key (alias for ProtoKey).
+message Key {
+  // Id is a unique identifier for the key (corresponds to kid in JWK)
+  string id = 1 [(spec.assert_required) = true, (spec.assert_min_length) = 1];
+  // Base64 contains the base64url-encoded PEM private key block
+  string base64 = 2 [(spec.assert_base64) = true, (spec.assert_required) = true, (spec.assert_enc_type) = ENC_TYPE_KEY_PRIVATE_ANY];
+  // Created is the Unix epoch timestamp (seconds) when the key was created
+  // Valid range: 1735689600 (2025-01-01) to 8045740800 (2225-01-01)
+  int64 created = 3 [(spec.assert_required) = true, (spec.assert_ge) = 1735689600, (spec.assert_le) = 8045740800];
+}
+
+// UseType represents the intended use of a key.
+// Valid values are "sig" (signature) and "enc" (encryption).
+enum UseType {
+  // UseTypeUndefined represents an unspecified use type
+  USE_TYPE_UNDEFINED = 0;
+  // UseTypeSig represents signature use
+  USE_TYPE_SIG = 1 [(spec.json_return_value) = "sig"];
+  // UseTypeEnc represents encryption use
+  USE_TYPE_ENC = 2 [(spec.json_return_value) = "enc"];
+}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_PUBLIC_KEY = 1;
+  TYPE_ID_KEY = 2;
+}

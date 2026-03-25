@@ -1,0 +1,87 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// Package http defines shared HTTP primitives for REST API proxy services.
+// Any service that proxies gRPC to a remote REST API (GitHub, GitLab, Jira,
+// Slack, etc.) imports these types for the generic fallback proxy RPC and
+// common HTTP metadata.
+
+syntax = "proto3";
+
+package http;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.http";
+
+// ============================================================================
+// HTTP Method
+// ============================================================================
+
+enum HttpMethod {
+  HTTP_METHOD_UNSPECIFIED = 0;
+  HTTP_METHOD_GET = 1;
+  HTTP_METHOD_POST = 2;
+  HTTP_METHOD_PUT = 3;
+  HTTP_METHOD_PATCH = 4;
+  HTTP_METHOD_DELETE = 5;
+  HTTP_METHOD_HEAD = 6;
+}
+
+// ============================================================================
+// HTTP Header
+// ============================================================================
+
+// HttpHeader is a single HTTP header name-value pair.
+message HttpHeader {
+  string name = 1;
+  string value = 2;
+}
+
+// ============================================================================
+// Raw Proxy (Generic Fallback)
+// ============================================================================
+
+// RawProxyRequest forwards an arbitrary HTTP request to a remote REST API.
+// Used as the generic fallback RPC for endpoints that do not yet have typed
+// RPCs. The service implementation should log when this is used, signaling
+// a typed RPC coverage gap.
+message RawProxyRequest {
+  // api_endpoint is the base URL of the remote API (e.g. "https://api.github.com").
+  string api_endpoint = 1;
+
+  // method is the HTTP method to use.
+  HttpMethod method = 2;
+
+  // path is the API path (e.g. "/repos/owner/repo/issues").
+  string path = 3;
+
+  // query_params are URL query parameters appended to the path.
+  map<string, string> query_params = 4;
+
+  // headers are additional HTTP headers to include in the request.
+  // Authentication headers are injected by the service from config.
+  repeated HttpHeader headers = 5;
+
+  // body is the request body (typically JSON).
+  string body = 6;
+}
+
+// RawProxyResponse is the response from a generic proxy request.
+message RawProxyResponse {
+  // status_code is the HTTP status code from the upstream API.
+  int32 status_code = 1;
+
+  // headers are the response headers from the upstream API.
+  repeated HttpHeader headers = 2;
+
+  // body is the response body (typically JSON).
+  string body = 3;
+}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_HTTP_HEADER = 1;
+  TYPE_ID_RAW_PROXY_REQUEST = 2;
+  TYPE_ID_RAW_PROXY_RESPONSE = 3;
+}

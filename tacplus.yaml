@@ -1,6 +1,6 @@
 language: java
 pkg: com.gitlab.secondstarcavalier.controlplane.services.kernel
-output-dir: tacplus
+output-dir: tacplus/target/generated-sources
 post-gen:
   - cmd: mvn
     args: [-pl, server, -am, -Dtacplus.skip=true, package]

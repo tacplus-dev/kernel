@@ -1,0 +1,65 @@
+syntax = "proto3";
+package eventspy;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.eventspy";
+option java_outer_classname = "Eventspy";
+
+import "libs/spec.proto";
+import "google/protobuf/empty.proto";
+
+// Config is the service-level configuration for eventspy.
+message Config {
+}
+
+// EventspyState subscribes to all known event-bus topics for troubleshooting.
+// eventspy logs every event it receives to verify EventBus infrastructure.
+message EventspyState {
+}
+
+// EventspyConfigState is the state boundary for eventspy service configuration.
+// Auto-injected by tacplus from (spec.grpc_config) annotation.
+message EventspyConfigState {
+
+  eventspy.Config config = 1;
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service EventspyStateService {
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service EventspyConfigStateService {
+	// Singleton: Config
+	rpc GetConfig(google.protobuf.Empty) returns (Config);
+	rpc SetConfig(Config) returns (Config);
+	rpc WatchConfig(google.protobuf.Empty) returns (stream Config);
+}
+
+message MapEmpty {}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_CONFIG = 1;
+  TYPE_ID_EVENTSPY_STATE = 2;
+  TYPE_ID_EVENTSPY_CONFIG_STATE = 3;
+  TYPE_ID_MAP_EMPTY = 4;
+}
+
+enum EventspyConfigStateServiceRpcId {
+  EVENTSPY_CONFIG_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  EVENTSPY_CONFIG_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  EVENTSPY_CONFIG_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  EVENTSPY_CONFIG_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  EVENTSPY_CONFIG_STATE_SERVICE_RPC_ID_GET_CONFIG = 4;
+  EVENTSPY_CONFIG_STATE_SERVICE_RPC_ID_SET_CONFIG = 5;
+  EVENTSPY_CONFIG_STATE_SERVICE_RPC_ID_WATCH_CONFIG = 6;
+}

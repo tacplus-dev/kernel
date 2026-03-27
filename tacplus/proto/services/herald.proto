@@ -1,0 +1,141 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+syntax = "proto3";
+
+package herald;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.herald";
+option java_outer_classname = "Herald";
+
+import "libs/spec.proto";
+import "common/sensor.proto";
+import "google/protobuf/empty.proto";
+
+// ============================================================================
+// Config
+// ============================================================================
+
+message Config {
+
+  // visible_event_types restricts which event types are visible to users.
+  // Empty = all visible. Prevents leaking detection heuristics or internal
+  // policy details through the user-facing event stream.
+  repeated sensor.SensorEventType visible_event_types = 1;
+
+  // max_subscribers is the maximum number of concurrent subscriber connections.
+  int32 max_subscribers = 2;
+}
+
+// ============================================================================
+// State
+// ============================================================================
+
+// HeraldState is an empty state root — Herald reads AgenticCodeEventBus via
+// S2S EventBus grant, not via its own state.
+message HeraldState {
+}
+
+// ============================================================================
+// Service
+// ============================================================================
+
+// HeraldService is the user-facing event gateway for coding-agent observability.
+//
+// Users publish sensor events to Herald, which forwards them to EventBus (S2S).
+// Users subscribe through Herald, which scopes events to the subscriber's
+// JWT email claim and applies a curated visibility policy.
+//
+// EventBus remains S2S-only infrastructure — Herald owns the user contract.
+service HeraldService {
+
+  // PublishEvents receives sensor events from users and forwards to EventBus.
+  // Identity is established by the caller's JWT — the SensorEvent.username
+  // field is untrusted metadata.
+  rpc PublishEvents(stream sensor.SensorEvent) returns (PublishEventsResponse) {}
+
+  // SubscribeEvents streams curated events scoped to the caller's JWT email.
+  // The server matches events by comparing the subscriber's email claim
+  // against the caller.email Kafka header stamped by EventBus on publish.
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream sensor.SensorEvent) {}
+}
+
+// ============================================================================
+// Request/Response Types
+// ============================================================================
+
+message PublishEventsResponse {
+  // events_accepted is the number of events successfully forwarded to EventBus.
+  int64 events_accepted = 1;
+}
+
+message SubscribeEventsRequest {
+  // Optional filters (combined with AND, applied after identity scoping).
+
+  // event_type restricts to a specific event type.
+  sensor.SensorEventType event_type = 1;
+
+  // sensor_type restricts to a specific coding-agent sensor.
+  sensor.SensorType sensor_type = 2;
+
+  // session_id restricts to a specific coding-agent session.
+  string session_id = 3;
+}
+
+// HeraldConfigState is the state boundary for herald service configuration.
+// Auto-injected by tacplus from (spec.grpc_config) annotation.
+message HeraldConfigState {
+
+  herald.Config config = 1;
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service HeraldStateService {
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service HeraldConfigStateService {
+	// Singleton: Config
+	rpc GetConfig(google.protobuf.Empty) returns (Config);
+	rpc SetConfig(Config) returns (Config);
+	rpc WatchConfig(google.protobuf.Empty) returns (stream Config);
+}
+
+message MapEmpty {}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_CONFIG = 1;
+  TYPE_ID_HERALD_STATE = 2;
+  TYPE_ID_PUBLISH_EVENTS_RESPONSE = 3;
+  TYPE_ID_SUBSCRIBE_EVENTS_REQUEST = 4;
+  TYPE_ID_HERALD_CONFIG_STATE = 5;
+  TYPE_ID_MAP_EMPTY = 6;
+}
+
+enum HeraldServiceRpcId {
+  HERALD_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  HERALD_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  HERALD_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  HERALD_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  HERALD_SERVICE_RPC_ID_PUBLISH_EVENTS = 4;
+  HERALD_SERVICE_RPC_ID_SUBSCRIBE_EVENTS = 5;
+}
+
+enum HeraldConfigStateServiceRpcId {
+  HERALD_CONFIG_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  HERALD_CONFIG_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  HERALD_CONFIG_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  HERALD_CONFIG_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  HERALD_CONFIG_STATE_SERVICE_RPC_ID_GET_CONFIG = 4;
+  HERALD_CONFIG_STATE_SERVICE_RPC_ID_SET_CONFIG = 5;
+  HERALD_CONFIG_STATE_SERVICE_RPC_ID_WATCH_CONFIG = 6;
+}

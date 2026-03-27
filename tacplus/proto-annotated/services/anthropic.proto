@@ -1,0 +1,420 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// Package anthropic defines typed representations of the Anthropic Messages API.
+// The anthropic service proxies gRPC requests to the remote Anthropic API,
+// providing typed request/response handling, streaming support, and audit
+// event emission for every proxied call.
+
+syntax = "proto3";
+
+package anthropic;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.anthropic";
+option java_outer_classname = "Anthropic";
+
+import "libs/spec.proto";
+import "google/protobuf/empty.proto";
+
+option (spec.service) = {name: "anthropic", id: 22};
+
+// API constants.
+option (spec.string_const) = { name: "MESSAGES_PATH" value: "/v1/messages" };
+option (spec.string_const) = { name: "ANTHROPIC_VERSION" value: "2023-06-01" };
+option (spec.string_const) = { name: "API_KEY_HEADER" value: "x-api-key" };
+option (spec.string_const) = { name: "VERSION_HEADER" value: "anthropic-version" };
+
+// ============================================================================
+// Config
+// ============================================================================
+
+message Config {
+  option (spec.grpc_config) = {service_name: "anthropic", id: 22};
+
+  // anthropic_api_key is the API key for authenticating with the Anthropic API.
+  string anthropic_api_key = 1 [(spec.assert_required) = true];
+
+  // openai_api_key is the API key for proxying to the OpenAI API (cross-provider).
+  string openai_api_key = 2;
+}
+
+// ============================================================================
+// Service
+// ============================================================================
+
+// ProxyRequest wraps a CreateMessageRequest with the destination API endpoint.
+// The endpoint is not stored in service config — callers specify it per-request.
+message ProxyRequest {
+  // api_endpoint is the Anthropic API base URL (e.g. "https://api.anthropic.com").
+  string api_endpoint = 1 [(spec.assert_required) = true, (spec.assert_url) = URL_SCHEME_HTTPS, (spec.assert_max_length) = 2048];
+
+  // request is the Messages API request body.
+  CreateMessageRequest request = 2 [(spec.assert_required) = true];
+
+  // provider selects the upstream API format: "anthropic" (default) or "openai".
+  // When "openai", the service converts the Anthropic request to OpenAI format,
+  // proxies to the OpenAI API, and converts the response back.
+  string provider = 3 [(spec.assert_max_length) = 32];
+}
+
+service AnthropicService {
+  option (spec.service_grpc) = {name: "anthropic", auth_entitled_users: true};
+
+  // CreateMessage sends a non-streaming request to the Anthropic Messages API.
+  rpc CreateMessage(ProxyRequest) returns (CreateMessageResponse);
+
+  // CreateMessageStream sends a streaming request to the Anthropic Messages API.
+  // Returns a server-side stream of SSE events.
+  rpc CreateMessageStream(ProxyRequest) returns (stream StreamEvent);
+}
+
+// ============================================================================
+// Content Blocks
+// ============================================================================
+
+// ContentBlock is a single block of content in a message.
+// The API uses a discriminated union keyed by "type".
+message ContentBlock {
+  // type discriminates the content variant.
+  ContentBlockType type = 1 [(spec.assert_enum_defined) = true];
+
+  // Text content (type = TEXT).
+  string text = 2 [(spec.assert_max_length) = 5242880];
+
+  // Image source (type = IMAGE).
+  ImageSource source = 3;
+
+  // Tool use fields (type = TOOL_USE).
+  string id = 4 [(spec.assert_max_length) = 256];
+  string name = 5 [(spec.assert_max_length) = 256];
+  string input = 6 [(spec.assert_max_length) = 1048576];  // JSON-encoded tool input
+
+  // Tool result fields (type = TOOL_RESULT).
+  string tool_use_id = 7 [(spec.assert_max_length) = 256];
+  repeated ContentBlock content = 8 [(spec.assert_max_size) = 128];  // nested text/image blocks
+  bool is_error = 9;
+
+  // Thinking content (type = THINKING).
+  string thinking = 10 [(spec.assert_max_length) = 5242880];
+
+  // Cache control (optional, for prompt caching).
+  CacheControl cache_control = 15;
+}
+
+enum ContentBlockType {
+  CONTENT_BLOCK_TYPE_UNSPECIFIED = 0;
+  CONTENT_BLOCK_TYPE_TEXT = 1 [(spec.json_return_value) = "text"];
+  CONTENT_BLOCK_TYPE_IMAGE = 2 [(spec.json_return_value) = "image"];
+  CONTENT_BLOCK_TYPE_TOOL_USE = 3 [(spec.json_return_value) = "tool_use"];
+  CONTENT_BLOCK_TYPE_TOOL_RESULT = 4 [(spec.json_return_value) = "tool_result"];
+  CONTENT_BLOCK_TYPE_THINKING = 5 [(spec.json_return_value) = "thinking"];
+}
+
+// ImageSource carries an inline image or URL reference.
+message ImageSource {
+  string type = 1 [(spec.assert_required) = true, (spec.assert_max_length) = 16];       // "base64" or "url"
+  string media_type = 2 [(spec.assert_required) = true, (spec.assert_max_length) = 64]; // e.g. "image/png"
+  string data = 3 [(spec.assert_max_length) = 20971520];                                 // base64 bytes (up to ~15MB image)
+  string url = 4 [(spec.assert_max_length) = 4096, (spec.assert_url) = URL_SCHEME_HTTPS]; // URL reference
+}
+
+// CacheControl enables prompt caching on a content block or tool definition.
+message CacheControl {
+  string type = 1 [(spec.assert_required) = true, (spec.assert_max_length) = 32];  // "ephemeral"
+}
+
+// ============================================================================
+// Messages
+// ============================================================================
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_USER = 1 [(spec.json_return_value) = "user"];
+  ROLE_ASSISTANT = 2 [(spec.json_return_value) = "assistant"];
+}
+
+// Message is a single turn in the conversation.
+message Message {
+  Role role = 1 [(spec.assert_enum_defined) = true];
+  repeated ContentBlock content = 2 [(spec.assert_required) = true, (spec.assert_min_size) = 1, (spec.assert_max_size) = 1024];
+}
+
+// ============================================================================
+// Tools
+// ============================================================================
+
+// ToolDefinition describes a tool the model may invoke.
+// Covers user-defined tools and built-in tools (computer use, web search, etc.)
+// via the type field. For built-in tools, name/input_schema are omitted.
+message ToolDefinition {
+  // type distinguishes user tools from built-in tools.
+  // Omitted or "custom" for user-defined tools. Built-in values include
+  // "computer_20250124", "text_editor_20250124", "bash_20250124",
+  // "web_search_20250305", "code_execution_20250522".
+  string type = 1 [(spec.assert_max_length) = 64];
+
+  // name is the tool's identifier (user-defined tools only).
+  string name = 2 [(spec.assert_max_length) = 256];
+
+  // description tells the model what the tool does.
+  string description = 3 [(spec.assert_max_length) = 16384];
+
+  // input_schema is the JSON Schema for the tool's parameters.
+  string input_schema = 4 [(spec.assert_max_length) = 1048576];
+
+  CacheControl cache_control = 5;
+}
+
+// ToolChoice controls how the model selects tools.
+message ToolChoice {
+  ToolChoiceType type = 1 [(spec.assert_enum_defined) = true];
+  string name = 2 [(spec.assert_max_length) = 256];  // when type = TOOL
+  bool disable_parallel_tool_use = 3;
+}
+
+enum ToolChoiceType {
+  TOOL_CHOICE_TYPE_UNSPECIFIED = 0;
+  TOOL_CHOICE_TYPE_AUTO = 1 [(spec.json_return_value) = "auto"];    // model decides
+  TOOL_CHOICE_TYPE_ANY = 2 [(spec.json_return_value) = "any"];      // must call at least one tool
+  TOOL_CHOICE_TYPE_TOOL = 3 [(spec.json_return_value) = "tool"];    // must call the named tool
+  TOOL_CHOICE_TYPE_NONE = 4 [(spec.json_return_value) = "none"];    // no tool calls
+}
+
+// ============================================================================
+// Thinking
+// ============================================================================
+
+// ThinkingConfig enables extended thinking (chain-of-thought).
+message ThinkingConfig {
+  string type = 1 [(spec.assert_required) = true, (spec.assert_max_length) = 16];  // "enabled" or "disabled"
+  int32 budget_tokens = 2 [(spec.assert_ge) = 0, (spec.assert_le) = 131072];       // max thinking tokens
+}
+
+// ============================================================================
+// Request
+// ============================================================================
+
+// CreateMessageRequest is the request body for POST /v1/messages.
+message CreateMessageRequest {
+  string model = 1 [(spec.assert_required) = true, (spec.assert_min_length) = 1, (spec.assert_max_length) = 128];
+  repeated Message messages = 2 [(spec.assert_required) = true, (spec.assert_min_size) = 1, (spec.assert_max_size) = 4096];
+  int32 max_tokens = 3 [(spec.assert_required) = true, (spec.assert_ge) = 1, (spec.assert_le) = 131072];
+
+  // System prompt — simple string or content blocks with cache control.
+  string system_text = 4 [(spec.assert_max_length) = 1048576];
+  repeated ContentBlock system_blocks = 5 [(spec.assert_max_size) = 64];
+
+  repeated string stop_sequences = 6 [(spec.assert_max_size) = 32, (spec.assert_max_length) = 256];
+  bool stream = 7;
+
+  // Sampling parameters.
+  float temperature = 8 [(spec.assert_ge) = 0, (spec.assert_le) = 1];
+  float top_p = 9 [(spec.assert_ge) = 0, (spec.assert_le) = 1];
+  int32 top_k = 10 [(spec.assert_ge) = 0];
+
+  // Tool configuration.
+  repeated ToolDefinition tools = 11 [(spec.assert_max_size) = 1024];
+  ToolChoice tool_choice = 12;
+
+  ThinkingConfig thinking = 13;
+  RequestMetadata metadata = 14;
+}
+
+// RequestMetadata carries optional metadata for a messages request.
+message RequestMetadata {
+  // user_id is an opaque identifier for the end user (not PII).
+  string user_id = 1 [(spec.assert_max_length) = 256];
+}
+
+// ============================================================================
+// Response
+// ============================================================================
+
+// CreateMessageResponse is the response from POST /v1/messages.
+message CreateMessageResponse {
+  string id = 1 [(spec.assert_max_length) = 256];
+  string type = 2 [(spec.assert_max_length) = 32];
+  Role role = 3 [(spec.assert_enum_defined) = true];
+  repeated ContentBlock content = 4 [(spec.assert_max_size) = 4096];
+  string model = 5 [(spec.assert_max_length) = 128];
+  StopReason stop_reason = 6 [(spec.assert_enum_defined) = true];
+  string stop_sequence = 7 [(spec.assert_max_length) = 256];
+  Usage usage = 8;
+}
+
+enum StopReason {
+  STOP_REASON_UNSPECIFIED = 0;
+  STOP_REASON_END_TURN = 1 [(spec.json_return_value) = "end_turn"];
+  STOP_REASON_MAX_TOKENS = 2 [(spec.json_return_value) = "max_tokens"];
+  STOP_REASON_STOP_SEQUENCE = 3 [(spec.json_return_value) = "stop_sequence"];
+  STOP_REASON_TOOL_USE = 4 [(spec.json_return_value) = "tool_use"];
+}
+
+// Usage reports token consumption.
+message Usage {
+  int32 input_tokens = 1 [(spec.assert_ge) = 0];
+  int32 output_tokens = 2 [(spec.assert_ge) = 0];
+  int32 cache_creation_input_tokens = 3 [(spec.assert_ge) = 0];
+  int32 cache_read_input_tokens = 4 [(spec.assert_ge) = 0];
+}
+
+// ============================================================================
+// Streaming
+// ============================================================================
+
+// StreamEvent is a single server-sent event during streaming.
+message StreamEvent {
+  StreamEventType type = 1 [(spec.assert_enum_defined) = true];
+  CreateMessageResponse message = 2;  // message_start
+  int32 index = 3 [(spec.assert_ge) = 0];
+  ContentBlock content_block = 4;     // content_block_start
+  StreamDelta delta = 5;              // content_block_delta, message_delta
+  Usage usage = 6;                    // message_delta
+}
+
+enum StreamEventType {
+  STREAM_EVENT_TYPE_UNSPECIFIED = 0;
+  STREAM_EVENT_TYPE_MESSAGE_START = 1 [(spec.json_return_value) = "message_start"];
+  STREAM_EVENT_TYPE_CONTENT_BLOCK_START = 2 [(spec.json_return_value) = "content_block_start"];
+  STREAM_EVENT_TYPE_CONTENT_BLOCK_DELTA = 3 [(spec.json_return_value) = "content_block_delta"];
+  STREAM_EVENT_TYPE_CONTENT_BLOCK_STOP = 4 [(spec.json_return_value) = "content_block_stop"];
+  STREAM_EVENT_TYPE_MESSAGE_DELTA = 5 [(spec.json_return_value) = "message_delta"];
+  STREAM_EVENT_TYPE_MESSAGE_STOP = 6 [(spec.json_return_value) = "message_stop"];
+  STREAM_EVENT_TYPE_PING = 7 [(spec.json_return_value) = "ping"];
+  STREAM_EVENT_TYPE_ERROR = 8 [(spec.json_return_value) = "error"];
+}
+
+// StreamDelta carries incremental content in streaming responses.
+message StreamDelta {
+  string type = 1 [(spec.assert_max_length) = 64];
+  string text = 2 [(spec.assert_max_length) = 65536];
+  string thinking = 3 [(spec.assert_max_length) = 65536];
+  string partial_json = 4 [(spec.assert_max_length) = 65536];
+  StopReason stop_reason = 5 [(spec.assert_enum_defined) = true];
+}
+
+// ============================================================================
+// Error
+// ============================================================================
+
+// ErrorResponse is the error envelope returned by the API.
+message ErrorResponse {
+  string type = 1 [(spec.assert_max_length) = 32];
+  ErrorDetail error = 2 [(spec.assert_required) = true];
+}
+
+message ErrorDetail {
+  // type is the error category: "invalid_request_error",
+  // "authentication_error", "permission_error", "not_found_error",
+  // "rate_limit_error", "api_error", "overloaded_error".
+  string type = 1 [(spec.assert_required) = true, (spec.assert_max_length) = 64];
+  string message = 2 [(spec.assert_required) = true, (spec.assert_max_length) = 4096];
+}
+
+// ============================================================================
+// Proxy Event — typed audit record emitted by the LLM proxy
+// ============================================================================
+
+// ProxyEvent captures a single proxied LLM request/response pair.
+// Emitted as a typed event by the LLM proxy for every API call.
+// The identity comes from the caller's bearer token; the proxy injects
+// the real provider API key and records both sides.
+message ProxyEvent {
+  // Identity of the caller (sub claim from the bearer token).
+  string subject = 1 [(spec.assert_required) = true, (spec.assert_min_length) = 1, (spec.assert_max_length) = 256];
+
+  // Request as received by the proxy (before API key injection).
+  CreateMessageRequest request = 2 [(spec.assert_required) = true];
+
+  // Response from the provider. For streaming requests, this is the
+  // assembled final response (accumulated from SSE events).
+  CreateMessageResponse response = 3;
+
+  // Error from the provider, if the request failed.
+  ErrorResponse error = 4;
+
+  // Timing.
+  int64 request_epoch_ms = 5 [(spec.assert_ge) = 0];
+  int64 response_epoch_ms = 6 [(spec.assert_ge) = 0];
+  int64 duration_ms = 7 [(spec.assert_ge) = 0];
+
+  // Whether the request used streaming.
+  bool streamed = 8;
+
+  // HTTP status code from the upstream provider.
+  int32 upstream_status = 9 [(spec.assert_ge) = 100, (spec.assert_le) = 599];
+
+  // Provider identity (for multi-provider proxies).
+  string provider = 10 [(spec.default_string) = "anthropic", (spec.assert_max_length) = 64];
+}
+
+// AnthropicConfigState is the state boundary for anthropic service configuration.
+// Auto-injected by tacplus from (spec.grpc_config) annotation.
+message AnthropicConfigState {
+  option (spec.service_state) = {name: "AnthropicConfigState", store: "kernel"};
+  option (spec.state_consistency) = CONSISTENCY_CONVERGENT;
+
+  anthropic.Config config = 1 [
+    (spec.consistency) = CONSISTENCY_CONVERGENT,
+    (spec.persistence) = true
+  ];
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service AnthropicConfigStateService {
+	// Singleton: Config
+	rpc GetConfig(google.protobuf.Empty) returns (Config);
+	rpc SetConfig(Config) returns (Config);
+	rpc WatchConfig(google.protobuf.Empty) returns (stream Config);
+}
+
+message MapEmpty {}
+
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_CONFIG = 1;
+  TYPE_ID_PROXY_REQUEST = 2;
+  TYPE_ID_CONTENT_BLOCK = 3;
+  TYPE_ID_IMAGE_SOURCE = 4;
+  TYPE_ID_CACHE_CONTROL = 5;
+  TYPE_ID_MESSAGE = 6;
+  TYPE_ID_TOOL_DEFINITION = 7;
+  TYPE_ID_TOOL_CHOICE = 8;
+  TYPE_ID_THINKING_CONFIG = 9;
+  TYPE_ID_CREATE_MESSAGE_REQUEST = 10;
+  TYPE_ID_REQUEST_METADATA = 11;
+  TYPE_ID_CREATE_MESSAGE_RESPONSE = 12;
+  TYPE_ID_USAGE = 13;
+  TYPE_ID_STREAM_EVENT = 14;
+  TYPE_ID_STREAM_DELTA = 15;
+  TYPE_ID_ERROR_RESPONSE = 16;
+  TYPE_ID_ERROR_DETAIL = 17;
+  TYPE_ID_PROXY_EVENT = 18;
+  TYPE_ID_ANTHROPIC_CONFIG_STATE = 19;
+  TYPE_ID_MAP_EMPTY = 20;
+}
+
+enum AnthropicServiceRpcId {
+  ANTHROPIC_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  ANTHROPIC_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  ANTHROPIC_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  ANTHROPIC_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  ANTHROPIC_SERVICE_RPC_ID_CREATE_MESSAGE = 4;
+  ANTHROPIC_SERVICE_RPC_ID_CREATE_MESSAGE_STREAM = 5;
+}
+
+enum AnthropicConfigStateServiceRpcId {
+  ANTHROPIC_CONFIG_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  ANTHROPIC_CONFIG_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  ANTHROPIC_CONFIG_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  ANTHROPIC_CONFIG_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  ANTHROPIC_CONFIG_STATE_SERVICE_RPC_ID_GET_CONFIG = 4;
+  ANTHROPIC_CONFIG_STATE_SERVICE_RPC_ID_SET_CONFIG = 5;
+  ANTHROPIC_CONFIG_STATE_SERVICE_RPC_ID_WATCH_CONFIG = 6;
+}

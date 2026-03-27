@@ -1,0 +1,6 @@
+target/
+tacplus/
+codegen/
+server/
+!server/target/kernel.jar
+.git/

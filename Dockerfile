@@ -15,6 +15,13 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.title="Kernel" \
       org.opencontainers.image.description="Core kernel service for Cavalier control plane"
 
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    GRPCURL_VERSION=1.9.3 && \
+    curl -sSL "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_${TARGETARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin grpcurl && \
+    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd -r kernel && useradd -r -g kernel kernel
 
 COPY server/target/kernel.jar /app/kernel.jar

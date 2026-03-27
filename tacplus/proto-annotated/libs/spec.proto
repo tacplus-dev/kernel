@@ -1,0 +1,1071 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// ============================================================================
+// DO NOT MODIFY THIS FILE
+// ============================================================================
+// This file defines custom protobuf options used by the tacplus compiler.
+// Modifying this file will break code generation for all languages.
+// Changes here require regenerating the compiler's internal descriptor code
+// and may break existing proto definitions that use these options.
+// ============================================================================
+
+syntax = "proto3";
+
+package spec;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.spec";
+
+import "google/protobuf/descriptor.proto";
+
+// File-level string constants.
+// StringConst defines a named string constant that can be used in file-level options.
+message StringConst {
+  // Name is the identifier for the constant
+  string name = 1;
+  // Value is the string value of the constant
+  string value = 2;
+}
+
+// File-level int constants.
+// IntConst defines a named integer constant that can be used in file-level options.
+message IntConst {
+  // Name is the identifier for the constant
+  string name = 1;
+  // Value is the integer value of the constant
+  int64 value = 2;
+}
+
+// File-level float constants.
+// FloatConst defines a named floating-point constant that can be used in file-level options.
+message FloatConst {
+  // Name is the identifier for the constant
+  string name = 1;
+  // Value is the floating-point value of the constant
+  double value = 2;
+}
+
+// File-level bool constants.
+// BoolConst defines a named boolean constant that can be used in file-level options.
+message BoolConst {
+  // Name is the identifier for the constant
+  string name = 1;
+  // Value is the boolean value of the constant
+  bool value = 2;
+}
+
+// DefaultHost provides default values for host.Host fields.
+// Mirrors host.Host structure to avoid circular import with host.proto.
+message DefaultHost {
+  string host = 1;
+  int32 port = 2;
+}
+
+extend google.protobuf.FileOptions {
+  // StringConst defines string constants at the file level
+  repeated StringConst string_const = 50001;
+  // IntConst defines integer constants at the file level
+  repeated IntConst int_const = 50002;
+  // FloatConst defines floating-point constants at the file level
+  repeated FloatConst float_const = 50003;
+  // BoolConst defines boolean constants at the file level
+  repeated BoolConst bool_const = 50004;
+  // GenerateUserApi marks this proto file for user API code generation
+  // When true, tacplus will generate service wrappers, HTTP clients, and example implementations
+  bool generate_user_api = 50010;
+
+  // service declares the owning service identity for this proto file.
+  // This is the source of truth for the generated service schema injected into libs/tacplus.proto.
+  ServiceAnnotation service = 50011;
+}
+
+// Enum value JSON serialization
+extend google.protobuf.EnumValueOptions {
+  // JsonReturnValue specifies the JSON representation for an enum value
+  string json_return_value = 50005;
+}
+
+// IpAddrTypes defines validation types for IP addresses, masks, and networks.
+// Used in field options to enforce IP address format validation.
+enum IpAddrTypes {
+	// IP_ADDR_TYPE_UNSPECIFIED represents an unspecified IP address type
+	IP_ADDR_TYPE_UNSPECIFIED = 0;
+	// IP_ADDR_TYPE_IP_V4 validates IPv4 addresses (e.g., 1.1.1.1)
+	IP_ADDR_TYPE_IP_V4 = 1;
+	// IP_ADDR_TYPE_IP_V6 validates IPv6 addresses (e.g., 2001:0db8:85a3:0000:0000:8a2e:0370:7334)
+	IP_ADDR_TYPE_IP_V6 = 2;
+	// IP_ADDR_TYPE_IP_ANY validates either IPv4 or IPv6 addresses
+	IP_ADDR_TYPE_IP_ANY = 3;
+	// IP_ADDR_TYPE_MASK_V4 validates IPv4 subnet masks (e.g., 0-32)
+	IP_ADDR_TYPE_MASK_V4 = 4;
+	// IP_ADDR_TYPE_MASK_V6 validates IPv6 subnet masks (e.g., 0-128)
+	IP_ADDR_TYPE_MASK_V6 = 5;
+	// IP_ADDR_TYPE_MASK_ANY validates either IPv4 or IPv6 subnet masks
+	IP_ADDR_TYPE_MASK_ANY = 6;
+	// IP_ADDR_TYPE_NET_V4 validates IPv4 CIDR networks (e.g., 1.1.1.1/32)
+	IP_ADDR_TYPE_NET_V4 = 7;
+	// IP_ADDR_TYPE_NET_V6 validates IPv6 CIDR networks (e.g., 2001:0db8:85a3::8a2e:0370:7334/128)
+	IP_ADDR_TYPE_NET_V6 = 8;
+	// IP_ADDR_TYPE_NET_ANY validates either IPv4 or IPv6 CIDR networks
+	IP_ADDR_TYPE_NET_ANY = 9;
+}
+
+// EncType defines validation types for cryptographic keys and certificates.
+// Used in field options to enforce key format and algorithm validation.
+enum EncType {
+  // ENC_TYPE_KEY_UNDEFINED represents an unspecified encryption key type
+  ENC_TYPE_KEY_UNDEFINED = 0;
+  // ENC_TYPE_KEY_PRIVATE_RSA validates private RSA keys in PEM format
+  ENC_TYPE_KEY_PRIVATE_RSA = 1;
+  // ENC_TYPE_KEY_PUBLIC_RSA validates public RSA keys in PEM format
+  ENC_TYPE_KEY_PUBLIC_RSA = 2;
+  // ENC_TYPE_KEY_ANY_RSA validates either private or public RSA keys
+  ENC_TYPE_KEY_ANY_RSA = 3;
+  // ENC_TYPE_KEY_PRIVATE_EC validates private Elliptic Curve keys in PEM format
+  ENC_TYPE_KEY_PRIVATE_EC = 4;
+  // ENC_TYPE_KEY_PUBLIC_EC validates public Elliptic Curve keys in PEM format
+  ENC_TYPE_KEY_PUBLIC_EC = 5;
+  // ENC_TYPE_KEY_ANY_EC validates either private or public EC keys
+  ENC_TYPE_KEY_ANY_EC = 6;
+  // ENC_TYPE_KEY_PRIVATE_ED25519 validates private Ed25519 keys in PEM format
+  ENC_TYPE_KEY_PRIVATE_ED25519 = 7;
+  // ENC_TYPE_KEY_PUBLIC_ED25519 validates public Ed25519 keys in PEM format
+  ENC_TYPE_KEY_PUBLIC_ED25519 = 8;
+  // ENC_TYPE_KEY_ANY_ED25519 validates either private or public Ed25519 keys
+  ENC_TYPE_KEY_ANY_ED25519 = 9;
+  // ENC_TYPE_KEY_PRIVATE_ANY validates private keys of any algorithm (RSA, EC, Ed25519)
+  ENC_TYPE_KEY_PRIVATE_ANY = 10;
+  // ENC_TYPE_KEY_PUBLIC_ANY validates public keys of any algorithm
+  ENC_TYPE_KEY_PUBLIC_ANY = 11;
+  // ENC_TYPE_KEY_ANY validates any key (private or public) of any algorithm
+  ENC_TYPE_KEY_ANY = 12;
+  // ENC_TYPE_X509_CERT_RSA validates X.509 certificates with RSA public keys
+  ENC_TYPE_X509_CERT_RSA = 13;
+  // ENC_TYPE_X509_CERT_EC validates X.509 certificates with EC public keys
+  ENC_TYPE_X509_CERT_EC = 14;
+  // ENC_TYPE_X509_CERT_ED25519 validates X.509 certificates with Ed25519 public keys
+  ENC_TYPE_X509_CERT_ED25519 = 15;
+  // ENC_TYPE_X509_CERT_ANY validates X.509 certificates with any key algorithm
+  ENC_TYPE_X509_CERT_ANY = 16;
+}
+
+enum UrlScheme {
+  URL_SCHEME_UNSPECIFIED = 0;
+  URL_SCHEME_HTTP = 1;          // Allow only http://
+  URL_SCHEME_HTTPS = 2;         // Allow only https://
+  URL_SCHEME_HTTP_OR_HTTPS = 3; // Allow both http:// and https://
+}
+
+// SqlPermit defines validation types for SQL statement fields.
+// Used in field options to enforce SQL syntax validation and statement type restrictions.
+// The validator rejects injection patterns (semicolons, comments, escape sequences)
+// and verifies the statement starts with an allowed keyword.
+enum SqlPermit {
+  // SQL_PERMIT_UNSPECIFIED represents an unspecified SQL permit type
+  SQL_PERMIT_UNSPECIFIED = 0;
+  // SQL_PERMIT_SELECT allows only SELECT statements (including WITH ... SELECT CTEs)
+  SQL_PERMIT_SELECT = 1;
+  // SQL_PERMIT_DML allows SELECT, INSERT, UPDATE, DELETE statements
+  SQL_PERMIT_DML = 2;
+  // SQL_PERMIT_DDL allows CREATE, ALTER, DROP, TRUNCATE statements
+  SQL_PERMIT_DDL = 3;
+  // SQL_PERMIT_ANY allows any valid SQL statement (injection checks still apply)
+  SQL_PERMIT_ANY = 4;
+}
+
+enum DurationType {
+  DURATION_TYPE_UNSPECIFIED = 0;
+  DURATION_TYPE_POSITIVE = 1;      // > 0
+  DURATION_TYPE_NON_NEGATIVE = 2;  // >= 0
+}
+
+enum PathType {
+  PATH_UNSPECIFIED = 0;
+  PATH_ABSOLUTE = 1;   // Absolute file path
+  PATH_RELATIVE = 2;   // Relative file path
+  PATH_ANY = 3;        // Either absolute or relative
+  PATH_DIR = 4;        // Directory path (must exist and be a directory)
+}
+
+// TypeKind classifies protobuf field kinds for generated registry metadata.
+enum TypeKind {
+  TYPE_KIND_UNSPECIFIED = 0;
+  TYPE_KIND_STRING = 1;
+  TYPE_KIND_BOOL = 2;
+  TYPE_KIND_BYTES = 3;
+  TYPE_KIND_INT32 = 4;
+  TYPE_KIND_INT64 = 5;
+  TYPE_KIND_UINT32 = 6;
+  TYPE_KIND_UINT64 = 7;
+  TYPE_KIND_SINT32 = 8;
+  TYPE_KIND_SINT64 = 9;
+  TYPE_KIND_FIXED32 = 10;
+  TYPE_KIND_FIXED64 = 11;
+  TYPE_KIND_SFIXED32 = 12;
+  TYPE_KIND_SFIXED64 = 13;
+  TYPE_KIND_FLOAT = 14;
+  TYPE_KIND_DOUBLE = 15;
+  TYPE_KIND_ENUM = 16;
+  TYPE_KIND_MESSAGE = 17;
+  TYPE_KIND_MAP = 18;
+}
+
+// NumericConstraint defines constraints for integer fields (int32, int64, uint32, uint64)
+// This message supports complex validation scenarios beyond simple comparisons
+message NumericConstraint {
+  // gt: field must be greater than this value
+  optional int64 gt = 1;
+
+  // ge: field must be greater than or equal to this value
+  optional int64 ge = 2;
+
+  // lt: field must be less than this value
+  optional int64 lt = 3;
+
+  // le: field must be less than or equal to this value
+  optional int64 le = 4;
+
+  // eq: field must equal this value
+  optional int64 eq = 5;
+
+  // ne: field must not equal this value
+  optional int64 ne = 6;
+
+  // in: field must be one of these values
+  repeated int64 in = 7;
+
+  // not_in: field must not be one of these values
+  repeated int64 not_in = 8;
+
+  // multiple_of: field must be divisible by this value (field % multiple_of == 0)
+  optional int64 multiple_of = 9;
+}
+
+// FloatConstraint defines constraints for floating-point fields (float, double)
+message FloatConstraint {
+  // gt: field must be greater than this value
+  optional double gt = 1;
+
+  // ge: field must be greater than or equal to this value
+  optional double ge = 2;
+
+  // lt: field must be less than this value
+  optional double lt = 3;
+
+  // le: field must be less than or equal to this value
+  optional double le = 4;
+
+  // epsilon: tolerance for floating-point equality comparisons (default: 1e-9)
+  // Used when comparing floats to avoid precision issues
+  optional double epsilon = 5;
+
+  // in: field must be one of these values (within epsilon)
+  repeated double in = 6;
+
+  // not_in: field must not be one of these values (within epsilon)
+  repeated double not_in = 7;
+}
+
+// ParamMapConfig configures automatic generation of FromMap methods
+// This generates a method that converts a map[string]string to the message type,
+// where the map keys correspond to enum values with json_return_value annotations
+message ParamMapConfig {
+  // The enum type to use for parameter keys (e.g., "TokenParamKey")
+  // The enum must have json_return_value annotations on its values
+  string key_enum = 1;
+
+  // Whether to return an error on unknown keys (default: false, ignore unknown)
+  bool strict = 2;
+
+  // Whether to return an error if required fields are missing (default: true)
+  bool validate_required = 3;
+}
+
+extend google.protobuf.MessageOptions {
+  // Generate a FromMap method that converts map[string]string to this message type
+  // Example: TokenRequestParams with key_enum="TokenParamKey" generates:
+  //   func TokenRequestParamsFromMap(params map[string]string) (*TokenRequestParams, error)
+  ParamMapConfig generate_from_map = 60028;
+
+  // Cross-field validation: when TLS is disabled, gRPC and REST must use different ports
+  // Applied to messages with tls, grpc, and rest sub-messages (e.g., grpcserver.Config)
+  bool port_must_differ_if_no_tls = 60030;
+
+  // service_state marks a message as a state root.
+  // Example: option (spec.service_state) = {name: "BaseballState", tag: "kernel"};
+  StateAnnotation service_state = 60035;
+
+  // state_consistency specifies the consistency model for root-level
+  // primitive fields (stored in a root IMap) on a state root message.
+  ConsistencyModel state_consistency = 60036;
+
+  // state_eviction_policy specifies the default eviction policy for all boundaries
+  // in a state root message. Individual fields can override with (spec.eviction_policy).
+  // Default: EVICTION_POLICY_NONE.
+  EvictionPolicy state_eviction_policy = 60038;
+
+  // state_sync_backup_count specifies the default sync backup count for all boundaries.
+  // Individual fields can override with (spec.sync_backup_count). Default: 1.
+  int32 state_sync_backup_count = 60039;
+
+  // state_async_backup_count specifies the default async backup count for all boundaries.
+  // Individual fields can override with (spec.async_backup_count). Default: 0.
+  int32 state_async_backup_count = 60040;
+
+  // state_perms declares this state service's access to other state roots.
+  // Only valid on messages with option (spec.service_state).
+  // Each entry specifies a state root and the access mode (RO, RW, WORM).
+  // Example:
+  //   option (spec.state_perms) = {target: "woodstock.WoodstockState", mode: STATE_PERMS_MODE_RO};
+  //   option (spec.state_perms) = {target: "jwks.JwksStore", mode: STATE_PERMS_MODE_WORM};
+  repeated StatePerms state_perms = 60041;
+
+  // grpc_config marks this message as a gRPC service's configuration.
+  // tacplus generates a generated.Services message and per-service config state boundaries.
+  GrpcConfigAnnotation grpc_config = 60042;
+
+  // disable_auth_message marks a service_state message as not requiring authentication.
+  // RPCs on this state service skip token validation entirely.
+  // Use for state roots that must be reachable before callers have tokens
+  // (e.g., TokenExchangerState, TrustedCaState).
+  // Example: option (spec.disable_auth_message) = true;
+  bool disable_auth_message = 60044;
+
+  // subscribe declares event-bus topic subscriptions for this state service.
+  // Only valid on messages with option (spec.service_state).
+  // Each entry references a topic field on another service's state root.
+  // Example:
+  //   option (spec.subscribe) = {source: "aegis.AegisState.event_stream"};
+  repeated SubscriptionAnnotation subscribe = 60045;
+
+  // graph_type marks this message as a graph type for schema generation.
+  // Used by subscribe-gen to generate DQL schema and mutation handlers.
+  // Messages with this annotation become graph types with indexed predicates.
+  // Nested messages WITHOUT this annotation are serialized as JSON string predicates
+  // when referenced from a graph type — see D2 in the design doc.
+  // Example:
+  //   option (spec.graph_type) = {name: "Entity", xid_field: "id"};
+  GraphTypeAnnotation graph_type = 60046;
+
+  // dgraph_type is a deprecated alias for graph_type. Use graph_type instead.
+  GraphTypeAnnotation dgraph_type = 60058;
+
+  // bigdata opts this message into the BigData multi-store data platform.
+  // Types annotated with bigdata get generated store-specific code for all
+  // stores indicated by their field-level annotations (cache, timeseries,
+  // graph_index, archive).
+  // Example:
+  //   option (spec.bigdata) = {name: "Entity", key: "id"};
+  BigDataAnnotation bigdata = 60047;
+
+  // queries declares a query interface for a BigData type.
+  // Fields within this message define named SQL queries using (spec.sql).
+  // Example:
+  //   option (spec.queries) = {target: "Entity"};
+  QueriesAnnotation queries = 60048;
+
+  // service_event declares that this state root's topic publish RPCs should be
+  // exposed through the API gateway. tacplus propagates this to the generated
+  // state service as spec.service_grpc and spec.event_tag options.
+  ServiceEventAnnotation service_event = 60060;
+}
+
+// SubscriptionAnnotation declares that this state service subscribes to
+// an event-bus topic from another service's state root.
+message SubscriptionAnnotation {
+  // source is the fully-qualified topic reference: "package.StateRoot.field_name"
+  // e.g., "aegis.AegisState.event_stream"
+  string source = 1;
+}
+
+// GraphTypeAnnotation marks a proto message as a graph type for schema generation.
+// Used by subscribe-gen to generate DQL schema and mutation handlers,
+// and by bigdata-gen for graph store projections.
+//
+// Design decisions (D1, D2, D3 from the graph schema plan):
+//
+// D1: Annotations go on SOURCE messages (e.g. GraphEntity in aegis.proto),
+// not on the consumer. The source messages are the authority on the data model.
+// This follows the same pattern as service_state, topic, and subscribe —
+// the annotation lives where the structure is defined.
+//
+// D2: Nested messages WITHOUT graph_type are serialized as JSON string
+// predicates. Graph storage is for traversal (structural fields), not
+// analytical queries on metadata. JSON storage avoids ~50 null predicates
+// per entity, prevents schema churn, and allows incremental promotion.
+//
+// D3: xid_field controls the mutation strategy. When set, subscribe-gen
+// generates NQuad upsert (query by xid, conditional update-or-insert).
+// When empty, subscribe-gen generates JSON insert (append-only).
+message GraphTypeAnnotation {
+  // name is the graph type name (e.g. "Entity", "Edge").
+  string name = 1;
+  // xid_field is the proto field used as the external ID for upserts.
+  // When set, subscribe-gen generates upsert mutations keyed on this field.
+  // When empty, subscribe-gen generates insert-only JSON mutations.
+  string xid_field = 2;
+}
+
+// BigDataAnnotation opts a proto message into the BigData multi-store platform.
+// The generator scans field-level annotations (cache, timeseries, graph_index,
+// archive) to determine which stores each field is projected into.
+// Fields with no store annotation live only in the source of truth chain
+// (HZ → Cassandra → Iceberg).
+message BigDataAnnotation {
+  // name is the BigData type name (e.g. "Entity", "Host").
+  string name = 1;
+  // key is the proto field name used as the unique identifier across all stores.
+  string key = 2;
+}
+
+// QueriesAnnotation marks a message as a query interface for a BigData type.
+// Each string field within the annotated message defines a named query using
+// the (spec.sql) field annotation. The generator parses the SQL and compiles
+// it into a DAG of store-specific operations.
+message QueriesAnnotation {
+  // target is the BigData type name this query interface operates on.
+  string target = 1;
+}
+
+// ServiceGrpcAnnotation declares a gRPC service with its auth policy.
+// Auth fields are combinable: a service can accept services AND entitled users.
+// Gateway exposure is derived: auth_entitled_users || auth_any_user → gateway.
+message ServiceGrpcAnnotation {
+  // name is the service identity used in routing and config (e.g. "sentinel").
+  string name = 1;
+  // auth_disabled: no token required, anyone can call.
+  bool auth_disabled = 2;
+  // auth_services: authenticated service identities allowed to call.
+  // ["*"] = any service. Named entries restrict to those identities.
+  repeated string auth_services = 3;
+  // auth_entitled_users: users with auto-determined entitlements can call.
+  bool auth_entitled_users = 4;
+  // auth_any_user: any authenticated user can call (no entitlement check).
+  bool auth_any_user = 5;
+}
+
+// ServiceEventAnnotation declares that a state service's topic/queue RPCs
+// are accessible to other services (S2S only, like service_state).
+// Services declare access via tacplus.yaml states: entries with :ro/:rw.
+message ServiceEventAnnotation {
+  // tag is the routing label for service resolution (e.g. "eventbus").
+  string tag = 1;
+  // Field 2 removed — service_event is S2S-only, auth_any_user not applicable.
+  reserved 2;
+}
+
+// ConditionalRequirement defines a conditional requirement for a field.
+// The field is required when a sibling field equals a specific value.
+message ConditionalRequirement {
+  // field is the sibling field name (snake_case) to check
+  string field = 1;
+  // value is the enum value name or string to compare against
+  string value = 2;
+}
+
+extend google.protobuf.FieldOptions {
+  // Validates that a field has a value
+  // For scalar/string fields: must not be empty/zero value
+  // For repeated fields: must have at least one element
+  bool assert_required = 60001;
+  IpAddrTypes assert_ipaddr_type = 60002;
+  EncType assert_enc_type = 60003;
+  bool assert_net_port = 60004;
+
+  // URL/URI validation
+  UrlScheme assert_url = 60005;
+
+  // Email validation
+  bool assert_email = 60006;
+
+  // FQDN validation
+  bool assert_fqdn = 60007;
+
+  // Duration/Timeout validation
+  DurationType assert_duration = 60008;
+  int64 assert_duration_min = 60009;
+  int64 assert_duration_max = 60010;
+
+  // Listen address validation (host:port format)
+  bool assert_listen_addr = 60015;
+
+  // Base64 validation
+  bool assert_base64 = 60016;
+
+  // String length validation
+  uint32 assert_min_length = 60017;
+  uint32 assert_max_length = 60018;
+
+  // Enum non-zero validation (ensures enum is not 0/_UNDEFINED value)
+  bool assert_enum_defined = 60019;
+
+  // File path validation
+  PathType assert_file_path = 60020;
+
+  // Simple numeric comparisons (for most common cases)
+  // These work with int32, int64, uint32, uint64 fields
+  int64 assert_gt = 60021;  // greater than
+  int64 assert_ge = 60022;  // greater than or equal
+  int64 assert_lt = 60023;  // less than
+  int64 assert_le = 60024;  // less than or equal
+
+  // Complex numeric constraints (for advanced validation scenarios)
+  NumericConstraint assert_numeric = 60025;
+
+  // Floating-point constraints (for float and double fields)
+  FloatConstraint assert_float = 60026;
+
+  // Semantic version validation
+  // Validates that a string follows semantic versioning format (e.g., "1.0.0", "v2.3.1")
+  // Supports optional 'v' prefix and follows semver.org specification
+  bool assert_semver = 60028;
+
+  // Parameter key mapping for FromMap generation
+  // Explicitly maps this field to a specific enum value for parameter parsing
+  // Example: [(consts.param_key) = "TOKEN_PARAM_KEY_CLIENT_ID"]
+  string param_key = 60029;
+
+  // Conditional requirement: this field is required when another field equals false
+  // Specifies the name of a boolean field that, when false, makes this field required
+  // Example: [(consts.required_if_false) = "disable_tls"] means this field is required when disable_tls is false
+  string required_if_false = 60030;
+
+  // Conditional requirement: this field is required when another field equals true
+  // Specifies the name of a boolean field that, when true, makes this field required
+  // Example: [(consts.required_if_true) = "enable_cors"] means this field is required when enable_cors is true
+  string required_if_true = 60031;
+
+  // Host validation (IP address OR FQDN)
+  // Validates that a string is either a valid IP address (IPv4/IPv6) or a valid FQDN.
+  // This is an OR check — the value must satisfy at least one of the two formats.
+  // Use this for fields that accept a network host identifier.
+  bool assert_host = 60032;
+
+  // Field-level default value annotations.
+  // Attaches a default constant directly to a field. The code generators will
+  // emit a constant named DEFAULT_{FIELD_NAME_UPPER_SNAKE} in the constants output.
+  // Example: int32 partition_count = 5 [(spec.default_int) = 271];
+  //   -> generates: DEFAULT_PARTITION_COUNT = 271
+  string default_string = 60033;
+  int64  default_int    = 60034;
+  double default_float  = 60035;
+  bool   default_bool   = 60036;
+  double default_double = 60049;
+
+  // key provides a string identifier for mapping on Config fields.
+  // Links a grpcserver.Config or statedb.Config field to its target service/state.
+  // Example: statedb.Config state = 2 [(spec.key) = "BaseballState"];
+  string key = 60037;
+
+  // Conditional requirement: this field is required when another field equals a specific value.
+  // Works with enum or string sibling fields.
+  // Example: [(spec.required_if_eq) = {field: "action", value: "ACTION_PERMIT"}]
+  ConditionalRequirement required_if_eq = 60038;
+
+  // assert_max_size enforces a maximum length/count on string, bytes, repeated, and map fields.
+  // For string/bytes: maximum byte length. Default 32,768 bytes (32 KB) when not set.
+  // For repeated/map: maximum element count. REQUIRED — build fails if missing.
+  // Use this to override the default for fields that need more or less capacity.
+  uint32 assert_max_size = 60039;
+
+  // assert_min_size enforces a minimum length/count on string, bytes, repeated, and map fields.
+  // For string/bytes: minimum byte length. For repeated/map: minimum element count.
+  uint32 assert_min_size = 60052;
+
+  // NOTE: assert_max_items (60040) and assert_min_items (60051) removed — unified into assert_max_size/assert_min_size.
+
+  // SQL statement validation.
+  // Validates that a string is a syntactically valid SQL statement of the permitted type.
+  // Rejects injection patterns: semicolons, comment sequences (-- and /*), escape characters.
+  // Example: string query = 1 [(spec.assert_sql) = SQL_PERMIT_SELECT];
+  SqlPermit assert_sql = 60046;
+
+  // References a file-level constant (int_const, string_const, float_const, bool_const)
+  // as the default value for this field. The Defaults function will use the named constant
+  // directly, so multiple fields can share the same default without duplicating values.
+  // Example: int32 tcp_port = 5 [(spec.default_const) = "DEFAULT_PORT"];
+  string default_const = 60047;
+
+  // Default value for host.Host fields. Generates a Defaults() initialization
+  // and a DEFAULT_{FIELD}_PORT constant.
+  // Mirrors host.Host structure to avoid circular import with host.proto.
+  DefaultHost default_host = 60048;
+
+  // Statedb field indexing: marks a field for Hazelcast index creation
+  bool indexed = 50010;
+
+  // Statedb index type hint for indexed fields
+  string index_type = 50011;  // "HASH", "SORTED", "BITMAP"
+
+  // Statedb consistency model for boundary fields within a state root message.
+  // UNSPECIFIED (default): serialized as part of parent message, not a separate IMap.
+  // ATOMIC: own IMap, requires Lock for mutations.
+  // CONVERGENT: own IMap, lockless (LWW/append-only).
+  // INHERITED: inherits the parent's consistency model.
+  // All direct children of a state root must have an explicit consistency annotation.
+  ConsistencyModel consistency = 50012;
+
+  // Statedb private: field can never be accessed by other services (owner RW only)
+  bool private = 50013;
+
+  // state_import declares that this field's value comes from another service's state.
+  // Example: [(spec.state_import) = "football.FootballState.roster"];
+  string state_import = 50014;
+
+  // queue marks a state root field as a FIFO queue (Hazelcast IQueue).
+  // One consumer receives each item. Operations: offer, poll, peek, size.
+  // Example: TaskItem task_queue = 3 [(spec.queue) = true];
+  bool queue = 50015;
+
+  // priority_queue marks a state root field as a priority queue.
+  // Value is the name of the field used for priority ordering (e.g., "severity").
+  // Items consumed in priority order (highest first).
+  // Example: AlertItem alert_queue = 4 [(spec.priority_queue) = "severity"];
+  string priority_queue = 50016;
+
+  // topic marks a state root field as a pub/sub topic (Hazelcast ITopic).
+  // Every subscriber receives every message. Operations: publish, subscribe.
+  // Example: EventData event_stream = 5 [(spec.topic) = true];
+  bool topic = 50017;
+
+  // leader marks a queue, topic, or priority_queue field as requiring leader election.
+  // When set, the generated code automatically manages election, lease renewal, and
+  // watch streams. Write operations (Offer/Publish) are gated on leader status.
+  // The hand-written code must implement a leader handler callback.
+  // Example: TaskItem task_queue = 3 [(spec.queue) = true, (spec.leader) = true];
+  bool leader = 50018;
+
+  // Statedb storage: number of synchronous backups for this boundary's IMap.
+  // Synchronous backups block writes until complete, providing stronger durability.
+  // Range: 0-6. Default: 1.
+  // Example: TeamRoster roster = 1 [(spec.consistency) = CONSISTENCY_ATOMIC, (spec.sync_backup_count) = 2];
+  int32 sync_backup_count = 50020;
+
+  // Statedb storage: number of asynchronous backups for this boundary's IMap.
+  // Asynchronous backups do not block writes, providing better throughput
+  // at the cost of potential data loss during node failure. Range: 0-6. Default: 0.
+  int32 async_backup_count = 50021;
+
+  // Statedb eviction: which entries to evict when max_size is reached.
+  // Default: EVICTION_POLICY_NONE (no eviction).
+  // Example: SessionData sessions = 2 [(spec.consistency) = CONSISTENCY_CONVERGENT, (spec.eviction_policy) = EVICTION_POLICY_LRU];
+  EvictionPolicy eviction_policy = 50022;
+
+  // Statedb eviction: maximum number of entries (or heap metric) before eviction begins.
+  // Default: 0 (no limit).
+  int32 eviction_max_size = 50023;
+
+  // Statedb eviction: what the eviction_max_size limit refers to.
+  // Default: MAX_SIZE_POLICY_ENTRY_COUNT.
+  MaxSizePolicy eviction_max_size_policy = 50024;
+
+  // Statedb eviction: time-to-live for entries in seconds.
+  // Entries older than this are automatically evicted.
+  // Default: 0 (no TTL, entries live forever).
+  int64 eviction_ttl_seconds = 50025;
+
+  // Statedb eviction: maximum idle time for entries in seconds.
+  // Entries not accessed within this period are automatically evicted.
+  // Default: 0 (no idle expiration).
+  int64 eviction_max_idle_seconds = 50026;
+
+  // epoch_expiration marks an int64 field as a Unix epoch expiration timestamp (seconds).
+  // Collections only: 0 = no expiration; > 0 must be future and within 1 year.
+  // Hazelcast TTL = epoch - now at write time; entry auto-removed on expiry.
+  bool epoch_expiration = 50027;
+
+  // persistence marks a graph boundary (singleton, collection, map) for durable storage.
+  // When true, the cluster persists this boundary's data across restarts.
+  // Can only be set on fields with a (spec.consistency) annotation.
+  // Cannot be set on queues, topics, or priority queues.
+  bool persistence = 50028;
+
+  // uncached marks a boundary as fetch-on-demand.
+  // No local Watch stream, no cached state. All reads go through Fetch(ctx) or Query(ctx).
+  // Valid on fields with (spec.consistency). Cannot combine with queue/topic/priority_queue.
+  bool uncached = 50029;
+
+  // boundary_perms overrides the message-level state_perms for this boundary field.
+  // Only valid on fields with a (spec.consistency) annotation inside a service_state message.
+  // Callers not listed inherit the message-level access mode.
+  // Example:
+  //   TeamRoster roster = 1 [
+  //     (spec.consistency) = CONSISTENCY_ATOMIC,
+  //     (spec.boundary_perms) = {target: "woodstock.WoodstockState", mode: STATE_PERMS_MODE_RW}
+  //   ];
+  repeated StatePerms boundary_perms = 50030;
+
+  // refresh_on_miss names the message type used as the lookup request
+  // for cache-miss-triggered refresh. When set, tacplus generates a
+  // Lookup{FieldName} RPC on the state service.
+  // The implementation checks the boundary for a match, refreshes from
+  // the external source on miss, and returns the updated boundary value.
+  // Only valid on fields with (spec.consistency).
+  // Cannot combine with queue/topic/priority_queue.
+  string refresh_on_miss = 50031;
+
+  // command marks this field as a command RPC on the state service.
+  // The field type is the request message; the response is always google.protobuf.Empty.
+  // Commands are mutations — only RW callers get the accessor.
+  // Use boundary_perms to restrict which callers can invoke the command.
+  bool command = 50032;
+
+  // view_sources marks a field as a read-only view over multiple collection boundaries.
+  // Each entry is the field name of a source collection within the same service_state.
+  // The view unions all source collections into a single read-only boundary.
+  //
+  // Generated RPCs: Get, GetAll, Watch, KeySet, Size, ContainsKey (read-only subset).
+  // No mutator RPCs (Put, Set, Delete, Remove, Clear) are generated.
+  //
+  // The indexed field (kid, node_id, etc.) must be unique across all source collections.
+  // Writes to a source collection that would violate cross-source uniqueness are rejected.
+  //
+  // Requirements:
+  //   - The field must be repeated.
+  //   - All source fields must be collections of the same message type.
+  //   - At least two source fields must be specified.
+  //   - The field must NOT have a (spec.consistency) annotation (it is not stored).
+  //
+  // Example:
+  //   repeated ManagedJwk config_keys = 1 [(spec.consistency) = CONSISTENCY_CONVERGENT];
+  //   repeated ManagedJwk dynamic_keys = 2 [(spec.consistency) = CONSISTENCY_CONVERGENT];
+  //   repeated ManagedJwk all_keys = 3 [
+  //     (spec.view_sources) = "config_keys",
+  //     (spec.view_sources) = "dynamic_keys"
+  //   ];
+  repeated string view_sources = 50033;
+
+  // boundary_callers lists services allowed to call this boundary cross-namespace.
+  // Applies to queue (offer), topic (publish), and command (exec) boundaries.
+  // Requires matching state_perms with STATE_PERMS_MODE_CALL on the caller's
+  // state service (double entry). Both sides must agree for access to be granted.
+  // Example: TaskItem task_queue = 3 [(spec.queue) = true, (spec.boundary_callers) = "woodstock"];
+  repeated string boundary_callers = 50036;
+
+  // view_member registers this collection as a contributing source to a
+  // named cross-boundary view. All collections with the same view_member
+  // value are aggregated by the cluster into a single read-only view service.
+  //
+  // The value must match a view service defined in the embedded protos
+  // (e.g., "JwkVerifyingKeysView" from libs/jwkview.proto).
+  //
+  // Requirements:
+  //   - The field must be repeated with a (spec.consistency) annotation.
+  //   - All members of the same view must have the same message type.
+  //   - The message type must have an (spec.indexed) field for map keying.
+  string view_member = 50035;
+
+  // instance_keyed: server extracts instance_id from the caller's token
+  // and uses "service_id@instance_id" as the map key. The publisher
+  // sees a singleton Set API (no key param). Consumers see a collection.
+  bool instance_keyed = 50034;
+
+  // graph_index specifies graph index directive(s) for this field.
+  // Used by subscribe-gen to generate DQL schema with proper indexes,
+  // and by bigdata-gen for graph store projections.
+  // Comma-separated for multiple: "exact", "term,fulltext", "trigram".
+  // Empty string or absent = predicate is stored but not indexed (not queryable via func()).
+  // Only meaningful on fields within a message annotated with (spec.graph_type).
+  // Example: string id = 1 [(spec.graph_index) = "exact"];
+  string graph_index = 60050;
+
+  // dgraph_index is a deprecated alias for graph_index. Use graph_index instead.
+  string dgraph_index = 60059;
+
+  // assert_invariant declares a formal invariant for this field.
+  // The expression is a boolean predicate in the target language's syntax.
+  // For Rust: used as kani::assume() in proof harnesses and debug_assert! in validate().
+  // For Java: emitted as //@ invariant ... (JML).
+  // Use for cross-field relationships that can't be expressed as single-field constraints.
+  // Example: string token = 1 [(spec.assert_invariant) = "self.ttl > 0 && self.ttl <= 86400"];
+  string assert_invariant = 60053;
+
+  // ── BigData Store Annotations ─────────────────────────────────────────────
+  // These field-level annotations control which stores a field is projected
+  // into within the BigData multi-store platform. Only meaningful on fields
+  // within a message annotated with (spec.bigdata).
+
+  // cache marks this field for projection into the hot cache (Hazelcast).
+  // When true, this field is included in the HZ map entry.
+  // Example: string display_name = 3 [(spec.cache) = true];
+  bool cache = 60054;
+
+  // timeseries marks this field for projection into the timeseries store (ClickHouse).
+  // When true, this field is included in the ClickHouse materialized view.
+  // Example: int64 first_seen_ms = 5 [(spec.timeseries) = true];
+  bool timeseries = 60055;
+
+  // archive marks this field for projection into cold storage (Iceberg).
+  // When true, this field is included in the Iceberg table schema.
+  // Fields without any store annotation are only in the source of truth chain.
+  // Example: bytes raw_payload = 20 [(spec.archive) = true];
+  bool archive = 60056;
+
+  // sql declares a named SQL query on a queries message.
+  // The SQL shape is fixed at build time; only parameter values are mutable.
+  // The generator parses the SQL to determine which stores to query.
+  // Example: string by_type = 1 [(spec.sql) =
+  //   "SELECT * FROM Entity WHERE entity_type = :entity_type"];
+  string sql = 60057;
+
+  // JSON key override: specifies the output key used in JSON serialization.
+  // The generated JSON helpers use this instead of the proto field name.
+  // Use when the proto field was renamed to avoid language keyword conflicts
+  // but the JSON wire format must remain unchanged.
+  // Example: int64 reset_at = 4 [(spec.json_key) = "reset"];
+  string json_key = 60061;
+
+  // JSON aliases: additional keys accepted during JSON deserialization.
+  // Used alongside json_key and the proto field name for flexible input parsing.
+  // Example: string callback_url = 5 [(spec.json_aliases) = "callbackUrl"];
+  repeated string json_aliases = 60062;
+}
+
+// ============================================================================
+// Statedb Boundary Configuration
+// ============================================================================
+
+// ConsistencyModel defines how a boundary field's state is stored and replicated.
+//
+// Storage model:
+//   - UNSPECIFIED (default): serialized as part of the parent message, not a separate IMap.
+//   - ATOMIC: own Hazelcast IMap with synchronous backups and optimistic locking.
+//     Mutations require a Lock (map name = service+field path, counter must match).
+//   - CONVERGENT: own Hazelcast IMap with asynchronous replication.
+//     Mutations are lockless (last-writer-wins / append-only).
+//   - INHERITED: inherits the consistency model of the enclosing parent boundary.
+//
+// Rules:
+//   - All direct children of a state root must specify ATOMIC, CONVERGENT, or INHERITED.
+//   - Map name for each boundary = "service_name+field_name+...n" (path through the state tree).
+//   - Non-repeated boundaries are singletons (IMap key = "").
+//   - Repeated boundaries require an (spec.indexed) field as the IMap key
+//     (validated at build time).
+enum ConsistencyModel {
+  CONSISTENCY_UNSPECIFIED = 0;  // Default: serialized with parent, not a separate IMap
+  CONSISTENCY_ATOMIC = 1;       // Own IMap, sync backups, optimistic locking (requires Lock)
+  CONSISTENCY_CONVERGENT = 2;   // Own IMap, async replication, lockless (LWW/append-only)
+  CONSISTENCY_INHERITED = 3;    // Inherits parent boundary's consistency model
+  CONSISTENCY_REPLICATED = 4;   // Full copy on every member, local reads, async writes
+}
+
+// EvictionPolicy determines which entries to evict when max_size is reached.
+// Used as a field-level annotation on boundary fields and as a message-level
+// default on state root messages.
+enum EvictionPolicy {
+  // EVICTION_POLICY_NONE disables eviction (default). Entries are never evicted by policy.
+  EVICTION_POLICY_NONE = 0;
+
+  // EVICTION_POLICY_LRU evicts least recently used entries.
+  EVICTION_POLICY_LRU = 1;
+
+  // EVICTION_POLICY_LFU evicts least frequently used entries.
+  EVICTION_POLICY_LFU = 2;
+
+  // EVICTION_POLICY_RANDOM evicts entries randomly.
+  EVICTION_POLICY_RANDOM = 3;
+}
+
+// MaxSizePolicy determines what the eviction_max_size limit refers to.
+enum MaxSizePolicy {
+  // MAX_SIZE_POLICY_ENTRY_COUNT limits by total number of entries (default).
+  MAX_SIZE_POLICY_ENTRY_COUNT = 0;
+
+  // MAX_SIZE_POLICY_USED_HEAP_SIZE limits by heap memory used in bytes.
+  MAX_SIZE_POLICY_USED_HEAP_SIZE = 1;
+
+  // MAX_SIZE_POLICY_USED_HEAP_PERCENTAGE limits by percentage of heap memory used.
+  MAX_SIZE_POLICY_USED_HEAP_PERCENTAGE = 2;
+
+  // MAX_SIZE_POLICY_FREE_HEAP_PERCENTAGE evicts when free heap drops below percentage.
+  MAX_SIZE_POLICY_FREE_HEAP_PERCENTAGE = 3;
+}
+
+// ============================================================================
+// Service Deployment Configuration
+// ============================================================================
+
+// StatePermsMode defines the access level a state service has to another state root.
+enum StatePermsMode {
+  // STATE_PERMS_MODE_UNSPECIFIED is the default zero value — invalid, must be set explicitly.
+  STATE_PERMS_MODE_UNSPECIFIED = 0;
+
+  // STATE_PERMS_MODE_RO grants read-only access (get, watch).
+  STATE_PERMS_MODE_RO = 1;
+
+  // STATE_PERMS_MODE_RW grants full read-write access (get, set, lock, delete).
+  STATE_PERMS_MODE_RW = 2;
+
+  // STATE_PERMS_MODE_WORM grants write-once read-many access (get, set, add, publish, offer — no lock/delete).
+  STATE_PERMS_MODE_WORM = 3;
+
+  // STATE_PERMS_MODE_CALL grants cross-namespace queue offer, topic publish, or command exec.
+  // Used with state_perms to declare that this state service needs to call a boundary in another namespace.
+  // Requires matching boundary_callers on the target boundary (double entry).
+  STATE_PERMS_MODE_CALL = 4;
+}
+
+// TlsKeyType specifies the key algorithm for auto-TLS certificate management.
+enum TlsKeyType {
+  // TLS_KEY_TYPE_NONE disables auto-TLS (default).
+  TLS_KEY_TYPE_NONE = 0;
+  // TLS_KEY_TYPE_ED25519 uses Ed25519 (OKP) keys.
+  TLS_KEY_TYPE_ED25519 = 1;
+  // TLS_KEY_TYPE_ECDSA uses ECDSA P-256 keys.
+  TLS_KEY_TYPE_ECDSA = 2;
+}
+
+// StateAnnotation marks a message as a state root and references its backing store.
+message StateAnnotation {
+  // name is the state root name (e.g. "ClusterState", "AegisState").
+  string name = 1;
+  // store is the backing service name (must match a spec.service with store=true).
+  // Deprecated: use tag instead.
+  string store = 2;
+  // tag is the routing label for the backing store (e.g. "kernel", "eventbus").
+  string tag = 3;
+  // auto_tls enables automatic TLS certificate lifecycle management.
+  // When set, tacplus generates a bidi stream subscription to kernel's
+  // TlsCertService and a new_tls_cert Handler method for cert delivery.
+  // The service generates keypairs locally; kernel signs and
+  // delivers certs, triggering renewal at half-life.
+  TlsKeyType auto_tls = 4;
+}
+
+// ServiceAnnotation declares the owning service identity for a proto file.
+message ServiceAnnotation {
+  // name is the canonical service name (e.g. "kernel", "identity").
+  string name = 1;
+  // id is the stable numeric identifier for this service in the generated tacplus service schema.
+  int32 id = 2;
+  // store declares this service as a backing store.
+  // Other services reference it via StateAnnotation.store.
+  bool store = 3;
+  // gateway declares this service as a gateway (reverse proxy).
+  // Changes TLS source to GatewayTlsState (public cert) instead of X509Mint (internal CA).
+  // The generated run() watches GatewayTlsState for cert hot-reload instead of running
+  // a TLS renewal loop.
+  bool gateway = 4;
+}
+
+// GrpcConfigAnnotation marks a message as a gRPC service's configuration.
+// tacplus uses these to auto-generate a generated.Services message that aggregates all
+// gRPC configs, plus per-service config state boundaries.
+message GrpcConfigAnnotation {
+  // service_name is the gRPC service name.
+  // Deprecated: prefer file-level option (spec.service). Kept for compatibility.
+  string service_name = 1;
+  // id is the stable field number for this config in the generated.Services message.
+  // When omitted, tacplus may reuse the file-level service id.
+  int32 id = 2;
+}
+
+// StatePerms declares a state service's access to another state root.
+// Used as a repeated message option on service_state messages so each state
+// can declare all the state roots it accesses and at what level.
+message StatePerms {
+  // target is the fully qualified name of the state root being accessed (e.g., "woodstock.WoodstockState").
+  string target = 1;
+
+  // mode is the access level for this target.
+  StatePermsMode mode = 2;
+}
+
+// RestMethod enumerates additional HTTP methods for REST exposure.
+// POST is always implicit on every convention REST route and does not
+// appear in this enum. These values are used with spec.rest_method to
+// declare additional HTTP methods for an RPC.
+enum RestMethod {
+  REST_METHOD_UNSPECIFIED = 0;
+  REST_METHOD_GET = 1;
+  REST_METHOD_PATCH = 2;
+  REST_METHOD_PUT = 3;
+  REST_METHOD_DELETE = 4;
+}
+
+// RestMethods is a wrapper for repeated RestMethod, used in method options.
+message RestMethods {
+  repeated RestMethod methods = 1;
+}
+
+extend google.protobuf.ServiceOptions {
+  // reads_state is DEPRECATED — use state_perms (MessageOption) instead.
+  repeated string reads_state = 70003;
+
+  // service_grpc declares this service as a gRPC service with its auth policy.
+  // Example: option (spec.service_grpc) = {name: "sentinel", auth_entitled_users: true};
+  // Gateway exposure is derived: auth_entitled_users || auth_any_user → gateway.
+  ServiceGrpcAnnotation service_grpc = 70004;
+
+  // state_access is DEPRECATED — use state_perms (MessageOption) instead.
+  repeated StatePerms state_access = 70005;
+
+  // disable_validation disables proto validation on request and response messages
+  // for all RPCs in this service.
+  bool disable_validation = 70008;
+
+  // event_tag is the routing label for gateway-exposed event services.
+  // Set by tacplus on generated state services that have spec.service_event.
+  // The gateway uses this as the service_id for backend resolution.
+  string event_tag = 70012;
+}
+
+extend google.protobuf.MethodOptions {
+  // disable_validation disables proto validation on request and response
+  // messages for this specific RPC.
+  bool disable_validation_method = 80003;
+
+  // rest_method declares additional HTTP methods for this RPC's REST endpoint.
+  // POST is always implicit on every convention REST route.
+  // Example: option (spec.rest_method) = {methods: [REST_METHOD_GET]};
+  RestMethods rest_method = 80009;
+
+  // rest_path adds an additional alias REST route for this method.
+  // The path is relative to REST_ROOT_PATH (defined in gateway.proto).
+  // The convention path ({ROOT_PATH}/{service_grpc}/{MethodName}) is always
+  // present; rest_path creates a second route with the same HTTP methods.
+  // Example: option (spec.rest_path) = ".well-known/openid-configuration";
+  //          → adds route at /api/v1/.well-known/openid-configuration
+  string rest_path = 80008;
+
+  // proof_requires declares a precondition on an RPC method.
+  // In Rust, emitted as #[kani::requires(...)].
+  // In Java, emitted as //@ requires ... (JML).
+  // Example: option (spec.proof_requires) = "!request.client_id.is_empty()";
+  string proof_requires = 80010;
+
+  // proof_ensures declares a postcondition on an RPC method.
+  // In Rust, emitted as #[kani::ensures(...)].
+  // In Java, emitted as //@ ensures ... (JML).
+  // Example: option (spec.proof_ensures) = "response.token.len() > 0";
+  string proof_ensures = 80011;
+}
+
+// Collection query types are in libs/query.proto.
+// Lock and LockService are in libs/lock.proto.
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_STRING_CONST = 1;
+  TYPE_ID_INT_CONST = 2;
+  TYPE_ID_FLOAT_CONST = 3;
+  TYPE_ID_BOOL_CONST = 4;
+  TYPE_ID_DEFAULT_HOST = 5;
+  TYPE_ID_NUMERIC_CONSTRAINT = 6;
+  TYPE_ID_FLOAT_CONSTRAINT = 7;
+  TYPE_ID_PARAM_MAP_CONFIG = 8;
+  TYPE_ID_SUBSCRIPTION_ANNOTATION = 9;
+  TYPE_ID_GRAPH_TYPE_ANNOTATION = 10;
+  TYPE_ID_BIG_DATA_ANNOTATION = 11;
+  TYPE_ID_QUERIES_ANNOTATION = 12;
+  TYPE_ID_SERVICE_GRPC_ANNOTATION = 13;
+  TYPE_ID_SERVICE_EVENT_ANNOTATION = 14;
+  TYPE_ID_CONDITIONAL_REQUIREMENT = 15;
+  TYPE_ID_STATE_ANNOTATION = 16;
+  TYPE_ID_SERVICE_ANNOTATION = 17;
+  TYPE_ID_GRPC_CONFIG_ANNOTATION = 18;
+  TYPE_ID_STATE_PERMS = 19;
+  TYPE_ID_REST_METHODS = 20;
+}

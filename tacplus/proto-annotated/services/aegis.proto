@@ -1,0 +1,1316 @@
+// Aegis — Agentic topology visualization, postmortem analysis, and simulation.
+//
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║                        DESIGN PHILOSOPHY                                 ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+//
+// Aegis is a "flight recorder for agentic workloads." The core insight
+// is postmortem-first: record everything, reconstruct the graph, assign cause,
+// then write regression rules. The system is NOT a monitoring dashboard — it
+// is a forensic tool that happens to have a real-time view.
+//
+// ── WHY TOKENS ARE THE TELEMETRY ──
+//
+// Traditional observability polls services for health or scrapes metrics
+// endpoints. We do neither. Instead, every service in the control plane
+// already validates OAuth tokens on every RPC. Those tokens contain rich
+// claims: who the caller is (sub), what service they're calling (aud),
+// what they're allowed to do (entitlements), who delegated authority to
+// them (delegation_chain), and what framework they're running
+// (client_component). By capturing the claims (stripping the signature),
+// we get the ENTIRE topology for free — no additional instrumentation,
+// no service mesh sidecars, no polling loops.
+//
+// A single observed token tells us:
+//   - sub → the agent identity → creates an AGENT entity
+//   - aud → the target service → creates an MCP_SERVER entity
+//   - sub + aud → creates a SESSION edge between them
+//   - delegation_chain[0] → the human at the root → creates a USER entity
+//   - delegation_chain[0] → sub → creates an OWNS edge
+//   - delegation_chain[i] → chain[i+1] → creates DELEGATION edges
+//   - observer_host_id → creates a HOST entity + HOSTED_ON edge
+//   - client_component → enriches the agent's framework metadata
+//   - entitlements → what methods this agent is authorized to call
+//   - result (accepted/rejected) → security posture signal
+//
+// This means the graph is DERIVED, not declared. No service registry,
+// no config file listing "these agents exist." If a token shows up with
+// a new sub we haven't seen, a new entity appears. If tokens stop
+// arriving, the entity goes stale (grayed out after stale_entity_seconds).
+//
+// ── WHY MCP CONVERSATION EVENTS ARE THE SECOND STREAM ──
+//
+// Tokens tell us the topology (who talks to whom) but not the content
+// (what they talked about). MCP conversation events fill this gap by
+// capturing the actual prompt → LLM → tool calls → response flow.
+//
+// This second stream is essential for:
+//   1. TOOL VISIBILITY — seeing which tools the LLM chose to call, what
+//      inputs it provided, what outputs it received, and how long each
+//      tool execution took. Without this, tool calls are invisible.
+//   2. TIME SCRUBBING — replaying a conversation turn-by-turn to understand
+//      what happened. The UI provides a scrubber that advances through
+//      ConversationTurns, lighting up edges as each event fires.
+//   3. COST TRACKING — token counts AND estimated costs per LLM call,
+//      aggregated per agent, per user, per model. Answers "what did this
+//      misbehavior cost us?"
+//   4. POSTMORTEM — when an agent misbehaves, you can replay the exact
+//      sequence: what was the prompt? What tools did the LLM call? Did a
+//      tool fail? Did the LLM hallucinate the tool result?
+//
+// ── THIRD STREAM: ACTIONS (SIDE EFFECTS) ──
+//
+// Tool calls and tool results capture the mechanics, but not the real-world
+// consequences. A tool result of "file written successfully" doesn't capture
+// WHAT file, WHERE, or whether it was reversible. Actions are the bridge:
+//   - file written → action on resource "file:///etc/nginx/nginx.conf"
+//   - deployment triggered → action on resource "k8s://prod/deploy/api"
+//   - git commit created → action on resource "git://repo/main/abc123"
+//   - ticket updated → action on resource "jira://PROJ-182"
+//
+// Actions are first-class events with approval semantics (planned → approved
+// → executed → confirmed/reverted), resource identity, and rollback
+// references. This is critical for forensics: "this config change that
+// broke production was caused by which prompt, which model decision, and
+// who approved it?"
+//
+// ── CAUSAL MODEL ──
+//
+// For forensics you need to trace causality across streams:
+//   "this filesystem change was caused by which prompt and which model decision?"
+//
+// We use distributed tracing semantics (trace_id, span_id, parent_span_id)
+// on both token observations and conversation events. A single user request
+// may fan out into multiple MCP sessions, multiple LLM calls, multiple tools,
+// and multiple agents. session_id alone is too local.
+//
+// Span hierarchy:
+//   trace_id = entire causal chain from user prompt to final result
+//   prompt received → span
+//   llm request → child span
+//   tool call → child span
+//   action executed → child span of tool call
+//   external API call → child span of action
+//
+// ── COMPACT vs LOGICAL VIEW ──
+//
+// In reality, an MCP server plays two roles in a conversation:
+//   1. It RECEIVES prompts from agents and SENDS responses back
+//   2. It EXECUTES tools when the LLM calls back to it
+//
+// In compact view (GRAPH_DENSITY_COMPACT), the MCP server is one node,
+// and edges go in/out of it in both directions. This is accurate but
+// creates a "star" pattern that's hard to follow linearly.
+//
+// In logical view (GRAPH_DENSITY_LOGICAL), the MCP server splits into
+// two visual nodes with the SAME COLOR to indicate they're the same
+// physical entity:
+//   - MCP(prompt-handler): receives prompts from agents, forwards to LLM
+//   - MCP(tool-executor): receives tool calls from LLM, executes, returns
+//
+// This makes the flow read linearly left-to-right:
+//   User → Agent → MCP(prompt) → LLM → MCP(tool) → [execute] → back to LLM → MCP(prompt) → Agent
+//
+// IMPORTANT: Logical-density split is a VIEW CONCERN, not a physical graph
+// concern. The canonical physical graph always has one entity per physical
+// server. The visual projection layer creates the split nodes with
+// physical_entity_id pointing back to the canonical entity. GraphEdge.id
+// is canonically derived from (source_id, target_id, edge_type) so that
+// streaming diffs across density modes are consistent.
+//
+// ── TIME SCRUBBER ──
+//
+// The conversation trace is structured for time scrubbing:
+//   ConversationTurn (one prompt→response cycle)
+//     └─ LlmInteraction[] (each round-trip with the LLM)
+//          └─ ToolCallWithResult[] (tool calls within that interaction)
+//               └─ ActionEvent[] (side effects of each tool call)
+//
+// The UI scrubber advances through turns. Within each turn, it can
+// step through individual LLM interactions. Each step lights up the
+// corresponding edges in the graph:
+//   - Prompt step: agent→MCP edge lights up
+//   - LLM request step: MCP→LLM edge lights up
+//   - Tool call step: LLM→MCP(tool) edge lights up
+//   - Tool result step: MCP(tool)→LLM edge lights up
+//   - Action step: MCP(tool)→Resource edge lights up
+//   - Response step: MCP→agent edge lights up
+//
+// ── VISUALIZATION CLIENTS ──
+//
+// Two visualization clients consume this data:
+//   1. Agate (browser) — D3 tree/graph layout in the web control plane UI
+//   2. Aegis (native macOS) — GPU-rendered Bevy app with force-directed
+//      layout, pinch-to-zoom, trackpad pan, and real-time topology updates.
+//      Uses Metal backend on Apple Silicon for high-performance rendering
+//      of large graphs. Supports multiple layout algorithms (force-directed,
+//      hierarchical, radial, circular) switchable from a slide-out menu.
+//
+// Both clients use GetTopology for initial state and WatchTopology for
+// live updates. The native app is optimized for operational "terrain"
+// visualization where you want to see the full battlespace at once.
+//
+// ── ENTITY TYPE COLOR CODING (for both clients) ──
+//
+//   User            → Blue (#4488ff)
+//   Agent           → Green (#44ff88)
+//   MCP Server      → Orange (#ffaa44)
+//   LLM             → Purple (#ff44ff)
+//   Host            → Gray (#888888)
+//   Resource        → Cyan (#44dddd)
+//   External System → Yellow (#dddd44)
+//
+// ── VIEW PRESETS ──
+//
+// View presets control which entity types and edge types are emphasized:
+//   USER           — the default "who's running what" view
+//   INFRASTRUCTURE — ops view: hosts, servers, agents
+//   SESSION        — active conversations with stats
+//   SECURITY       — delegation chains, entitlements, rejections
+//   LLM            — model-centric: which LLMs, who's calling them, cost
+//   TOOL           — tool-centric: which tools, usage stats, error rates
+//
+// ── DERIVED vs OBSERVED ──
+//
+// Many fields in entity metadata are aggregates (e.g. total_input_tokens,
+// avg_latency_ms). Some values may be exact or estimated depending on
+// the source. Fields that may be estimates carry a bool estimated flag.
+// Token counts from providers are typically exact; cost estimates use
+// configured pricing tables and are always estimates.
+//
+// ============================================================================
+
+syntax = "proto3";
+
+package aegis;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.aegis";
+option java_outer_classname = "Aegis";
+
+import "libs/spec.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/empty.proto";
+
+option (spec.service) = {name: "aegis", id: 17};
+
+// ============================================================================
+// Config
+// ============================================================================
+
+message Config {
+  option (spec.grpc_config) = {service_name: "aegis", id: 17};
+
+  // event_retention_hours is how long observed tokens and conversation events
+  // are kept before pruning. Default: 168 (7 days).
+  int32 event_retention_hours = 1 [(spec.default_int) = 168, (spec.assert_ge) = 1];
+
+  // max_graph_nodes caps the number of entities returned in a single
+  // topology snapshot. Default: 5000.
+  int32 max_graph_nodes = 2 [(spec.default_int) = 5000, (spec.assert_ge) = 100];
+
+  // stale_entity_seconds is how long after the last observation an entity
+  // is considered stale and grayed out in the UI. Default: 300 (5 min).
+  int32 stale_entity_seconds = 3 [(spec.default_int) = 300, (spec.assert_ge) = 30];
+
+  // max_tool_call_payload_bytes caps how much of each tool call's input/output
+  // is stored. Larger payloads are truncated. Default: 65536 (64KB).
+  int32 max_tool_call_payload_bytes = 4 [(spec.default_int) = 65536, (spec.assert_ge) = 1024];
+
+  // simulation_profiles maps profile names to simulation configurations.
+  map<string, SimulationProfile> simulation_profiles = 5 [(spec.assert_max_size) = 16];
+}
+
+// ============================================================================
+// Simulation (mock-aegis-client)
+// ============================================================================
+
+message SimulationProfile {
+  string host_id = 1 [(spec.assert_required) = true];
+  int32 user_count = 2 [(spec.default_int) = 10, (spec.assert_ge) = 1, (spec.assert_le) = 100];
+  int32 agents_per_user = 3 [(spec.default_int) = 4, (spec.assert_ge) = 1, (spec.assert_le) = 20];
+  int32 mcp_server_count = 4 [(spec.default_int) = 5, (spec.assert_ge) = 1, (spec.assert_le) = 50];
+  double speed = 5 [(spec.default_float) = 1.0, (spec.assert_float) = {gt: 0, le: 1000}];
+  double phase_offset = 6 [(spec.assert_float) = {ge: 0, le: 1}];
+  int32 batch_interval_ms = 7 [(spec.default_int) = 5000, (spec.assert_ge) = 100];
+  string seed = 8;
+}
+
+// ============================================================================
+// Event Provenance
+// ============================================================================
+
+// EventProvenance captures the source and integrity metadata of an event.
+message EventProvenance {
+  string source_service = 1;
+  string source_instance_id = 2;
+  string source_version = 3;
+  int64 ingested_at_ms = 4;
+  int64 clock_skew_ms_estimate = 5;
+  CaptureMethod capture_method = 6;
+}
+
+enum CaptureMethod {
+  CAPTURE_METHOD_UNSPECIFIED = 0;
+  CAPTURE_METHOD_OBSERVED = 1;
+  CAPTURE_METHOD_RECONSTRUCTED = 2;
+  CAPTURE_METHOD_SAMPLED = 3;
+  CAPTURE_METHOD_INFERRED = 4;
+}
+
+// ============================================================================
+// Content Metadata
+// ============================================================================
+
+message ContentMeta {
+  bool was_truncated = 1;
+  int64 original_bytes = 2;
+  bool redaction_applied = 3;
+  string redaction_policy_id = 4;
+  string content_hash = 5;
+  DataClassification classification = 6;
+}
+
+enum DataClassification {
+  DATA_CLASSIFICATION_UNSPECIFIED = 0;
+  DATA_CLASSIFICATION_PUBLIC = 1;
+  DATA_CLASSIFICATION_INTERNAL = 2;
+  DATA_CLASSIFICATION_CONFIDENTIAL = 3;
+  DATA_CLASSIFICATION_RESTRICTED = 4;
+}
+
+message SensitiveContentFlags {
+  bool contains_pii = 1;
+  bool contains_secrets = 2;
+  bool contains_credentials = 3;
+  bool contains_source_code = 4;
+  string retention_class = 5;
+}
+
+// ============================================================================
+// Data Stream 1: Observed Tokens
+// ============================================================================
+
+message ObservedToken {
+  option (spec.graph_type) = {name: "TokenObservation"};
+  option (spec.bigdata) = {name: "TokenObservation", key: "token_id"};
+
+  int64 observed_at_ms = 1 [(spec.graph_index) = "int", (spec.timeseries) = true, (spec.cache) = true];
+  string observer_service = 2 [(spec.graph_index) = "exact", (spec.timeseries) = true];
+  string observer_host_id = 3 [(spec.cache) = true];
+
+  string trace_id = 4 [(spec.graph_index) = "exact", (spec.timeseries) = true];
+  string span_id = 5;
+  string parent_span_id = 6;
+
+  string subject = 10 [(spec.graph_index) = "exact", (spec.timeseries) = true, (spec.cache) = true];
+  string issuer = 11;
+  string audience = 12 [(spec.timeseries) = true, (spec.cache) = true];
+  int64 issued_at = 13;
+  int64 expires_at = 14;
+  string token_id = 15 [(spec.cache) = true];
+
+  string subject_type = 20 [(spec.timeseries) = true];
+  repeated string entitlements = 21 [(spec.assert_max_size) = 128];
+  repeated string delegation_chain = 22 [(spec.assert_max_size) = 16];
+  string client_component = 23 [(spec.cache) = true];
+  repeated string profiles = 24 [(spec.assert_max_size) = 64];
+  string authorized_party = 25;
+  string auth_type = 26 [(spec.timeseries) = true];
+
+  google.protobuf.Struct extra_claims = 30;
+  map<string, string> labels = 31 [(spec.assert_max_size) = 64];
+
+  string observed_method = 40 [(spec.timeseries) = true];
+  ObservationResult result = 41 [(spec.timeseries) = true, (spec.cache) = true];
+  string rejection_reason = 42;
+
+  EventProvenance provenance = 50;
+  int32 schema_version = 51;
+  string token_format_version = 52 [(spec.archive) = true];
+}
+
+enum ObservationResult {
+  OBSERVATION_RESULT_UNSPECIFIED = 0;
+  OBSERVATION_RESULT_ACCEPTED = 1;
+  OBSERVATION_RESULT_REJECTED_EXPIRED = 2;
+  OBSERVATION_RESULT_REJECTED_UNAUTHORIZED = 3;
+  OBSERVATION_RESULT_REJECTED_INVALID = 4;
+  OBSERVATION_RESULT_REJECTED_POLICY_DENIED = 5;
+}
+
+// ============================================================================
+// Data Stream 2: MCP Conversation Events
+// ============================================================================
+
+message McpConversationEvent {
+  option (spec.graph_type) = {name: "ConversationStep"};
+  option (spec.bigdata) = {name: "ConversationStep", key: "event_id"};
+
+  string event_id = 1 [(spec.graph_index) = "exact", (spec.cache) = true];
+  int64 timestamp_ms = 2 [(spec.timeseries) = true, (spec.cache) = true];
+  string session_id = 3 [(spec.graph_index) = "exact", (spec.timeseries) = true, (spec.cache) = true];
+  int32 turn_number = 4 [(spec.timeseries) = true];
+  int32 sequence = 5;
+  ConversationEventType event_type = 6 [(spec.timeseries) = true, (spec.cache) = true];
+
+  string trace_id = 7 [(spec.graph_index) = "exact", (spec.timeseries) = true];
+  string span_id = 8;
+  string parent_span_id = 9;
+
+  string agent_id = 10 [(spec.graph_index) = "exact", (spec.timeseries) = true, (spec.cache) = true];
+  string server_id = 11 [(spec.timeseries) = true, (spec.cache) = true];
+  string model_id = 12 [(spec.timeseries) = true];
+  string user_id = 13 [(spec.timeseries) = true];
+
+  string connection_id = 14;
+  string conversation_id = 15;
+
+  // Event payloads — source of truth only (not projected to index stores).
+  PromptEvent prompt = 20;
+  LlmRequestEvent llm_request = 21;
+  ToolCallEvent tool_call = 22;
+  ToolResultEvent tool_result = 23;
+  LlmResponseEvent llm_response = 24;
+  ResponseSentEvent response_sent = 25;
+  ErrorEvent error = 26;
+  ActionEvent action = 27;
+
+  EventProvenance provenance = 50;
+  int32 schema_version = 51;
+  string mcp_protocol_version = 52 [(spec.archive) = true];
+}
+
+enum ConversationEventType {
+  CONVERSATION_EVENT_TYPE_UNSPECIFIED = 0;
+  CONVERSATION_EVENT_TYPE_PROMPT_RECEIVED = 1;
+  CONVERSATION_EVENT_TYPE_LLM_REQUEST = 2;
+  CONVERSATION_EVENT_TYPE_TOOL_CALL = 3;
+  CONVERSATION_EVENT_TYPE_TOOL_RESULT = 4;
+  CONVERSATION_EVENT_TYPE_LLM_RESPONSE = 5;
+  CONVERSATION_EVENT_TYPE_RESPONSE_SENT = 6;
+  CONVERSATION_EVENT_TYPE_ERROR = 7;
+  CONVERSATION_EVENT_TYPE_ACTION_EXECUTED = 8;
+  CONVERSATION_EVENT_TYPE_ACTION_PLANNED = 9;
+  CONVERSATION_EVENT_TYPE_ACTION_CONFIRMED = 10;
+  CONVERSATION_EVENT_TYPE_ACTION_REVERTED = 11;
+}
+
+// ── Event Payloads ──────────────────────────────────────────────────────────
+
+message PromptEvent {
+  string prompt_text = 1;
+  string system_prompt = 2;
+  int32 input_tokens = 3;
+  int32 context_message_count = 4;
+  ContentMeta prompt_content_meta = 5;
+  ContentMeta system_prompt_content_meta = 6;
+  SensitiveContentFlags sensitivity = 7;
+}
+
+message LlmRequestEvent {
+  string model = 1;
+  repeated ToolDefinition available_tools = 2 [(spec.assert_max_size) = 256];
+  int32 input_tokens = 3;
+  double temperature = 4;
+  int32 max_tokens = 5;
+
+  string llm_call_id = 10;
+  string provider_request_id = 11;
+  int32 attempt_number = 12;
+  string fallback_from_model = 13;
+  bool cache_hit = 14;
+  bool streamed = 15;
+  string reasoning_effort = 16;
+  int32 timeout_ms = 17;
+  string provider_region = 18;
+  string deployment_id = 19;
+
+  string provider = 20;
+  string model_family = 21;
+  string model_variant = 22;
+  string endpoint = 23;
+  string routing_policy = 24;
+}
+
+message ToolCallEvent {
+  string tool_call_id = 1;
+  string tool_name = 2;
+  string tool_server = 3;
+  string input_json = 4;
+  int64 input_bytes = 5;
+
+  string parallel_group_id = 6;
+  int32 index_in_group = 7;
+  bool is_speculative = 8;
+  repeated string depends_on_tool_call_ids = 9 [(spec.assert_max_size) = 16];
+
+  repeated string target_resource_uris = 10 [(spec.assert_max_size) = 32];
+  string target_resource_type = 11;
+
+  ContentMeta input_content_meta = 12;
+  SensitiveContentFlags sensitivity = 13;
+
+  bool approval_required = 14;
+  ApprovalStatus approval_status = 15;
+  string approved_by = 16;
+  int64 approval_timestamp_ms = 17;
+  string policy_rule_id = 18;
+}
+
+enum ApprovalStatus {
+  APPROVAL_STATUS_UNSPECIFIED = 0;
+  APPROVAL_STATUS_NOT_REQUIRED = 1;
+  APPROVAL_STATUS_PENDING = 2;
+  APPROVAL_STATUS_APPROVED = 3;
+  APPROVAL_STATUS_DENIED = 4;
+  APPROVAL_STATUS_AUTO_APPROVED = 5;
+  APPROVAL_STATUS_TIMED_OUT = 6;
+}
+
+message ToolResultEvent {
+  string tool_call_id = 1;
+  string tool_name = 2;
+  ToolExecutionStatus status = 3;
+  string output = 4;
+  int64 output_byte_count = 5;
+  int64 duration_ms = 6;
+  string error_message = 7;
+
+  ContentMeta output_content_meta = 8;
+  SensitiveContentFlags sensitivity = 9;
+
+  int64 queued_at_ms = 10;
+  int64 started_at_ms = 11;
+  int64 ended_at_ms = 12;
+}
+
+enum ToolExecutionStatus {
+  TOOL_EXECUTION_STATUS_UNSPECIFIED = 0;
+  TOOL_EXECUTION_STATUS_QUEUED = 1;
+  TOOL_EXECUTION_STATUS_DISPATCHED = 2;
+  TOOL_EXECUTION_STATUS_RUNNING = 3;
+  TOOL_EXECUTION_STATUS_SUCCEEDED = 4;
+  TOOL_EXECUTION_STATUS_FAILED = 5;
+  TOOL_EXECUTION_STATUS_TIMED_OUT = 6;
+  TOOL_EXECUTION_STATUS_CANCELLED = 7;
+  TOOL_EXECUTION_STATUS_POLICY_DENIED = 8;
+}
+
+message LlmResponseEvent {
+  string response_text = 1;
+  bool has_more_tool_calls = 2;
+  int32 input_tokens = 3;
+  int32 output_tokens = 4;
+  string stop_reason = 5;
+  string finish_reason_normalized = 6;
+
+  int64 input_cost_micros_usd = 7;
+  int64 output_cost_micros_usd = 8;
+  bool cost_estimated = 9;
+
+  ContentMeta response_content_meta = 10;
+}
+
+message ResponseSentEvent {
+  string response_text = 1;
+  int32 total_input_tokens = 2;
+  int32 total_output_tokens = 3;
+  int32 tool_call_count = 4;
+  int64 total_duration_ms = 5;
+
+  int64 total_cost_micros_usd = 6;
+  bool cost_estimated = 7;
+
+  ContentMeta response_content_meta = 8;
+}
+
+message ErrorEvent {
+  string stage = 1;
+  string message = 2;
+  int32 code = 3;
+  bool recoverable = 4;
+}
+
+// ============================================================================
+// Data Stream 3: Actions (Side Effects)
+// ============================================================================
+
+message ActionEvent {
+  option (spec.graph_type) = {name: "ActionStep"};
+  option (spec.bigdata) = {name: "ActionStep", key: "action_id"};
+
+  string action_id = 1 [(spec.graph_index) = "exact", (spec.cache) = true];
+  string action_type = 2 [(spec.graph_index) = "exact", (spec.timeseries) = true, (spec.cache) = true];
+
+  string target_resource = 3 [(spec.graph_index) = "exact", (spec.timeseries) = true];
+  string target_resource_type = 4 [(spec.timeseries) = true];
+  repeated string affected_resource_uris = 5 [(spec.assert_max_size) = 32];
+
+  string requested_by_tool_call_id = 6;
+  string caused_by_event_id = 7;
+
+  string approved_by = 8;
+  ApprovalStatus approval_status = 9 [(spec.timeseries) = true];
+  string policy_rule_id = 10;
+
+  bool success = 11 [(spec.timeseries) = true, (spec.cache) = true];
+  bool reversible = 12;
+  string rollback_reference = 13;
+  string side_effect_summary = 14;
+  int64 executed_at_ms = 15 [(spec.timeseries) = true, (spec.cache) = true];
+  int64 duration_ms = 16 [(spec.timeseries) = true];
+}
+
+message ToolDefinition {
+  string name = 1;
+  string description = 2;
+  string input_schema_json = 3;
+  string server = 4;
+}
+
+// ============================================================================
+// Graph Entity and Edge Types
+// ============================================================================
+
+message GraphEntity {
+  option (spec.graph_type) = {name: "Entity", xid_field: "id"};
+  option (spec.bigdata) = {name: "Entity", key: "id"};
+
+  string id = 1 [(spec.graph_index) = "exact", (spec.cache) = true];
+  EntityType entity_type = 2 [(spec.graph_index) = "exact", (spec.timeseries) = true, (spec.cache) = true];
+  string display_name = 3 [(spec.graph_index) = "term,fulltext", (spec.cache) = true];
+  string parent_id = 4 [(spec.graph_index) = "exact"];
+  int64 first_seen_ms = 5 [(spec.graph_index) = "int", (spec.timeseries) = true];
+  int64 last_seen_ms = 6 [(spec.graph_index) = "int", (spec.timeseries) = true, (spec.cache) = true];
+  int64 observation_count = 7 [(spec.timeseries) = true];
+
+  UserMeta user_meta = 10;
+  AgentMeta agent_meta = 11;
+  McpServerMeta server_meta = 12;
+  LlmMeta llm_meta = 13;
+  HostMeta host_meta = 14;
+  ResourceMeta resource_meta = 15;
+  ExternalSystemMeta external_system_meta = 16;
+
+  EntityRole role = 20;
+  string physical_entity_id = 21;
+}
+
+enum EntityType {
+  ENTITY_TYPE_UNSPECIFIED = 0;
+  ENTITY_TYPE_USER = 1;
+  ENTITY_TYPE_AGENT = 2;
+  ENTITY_TYPE_MCP_SERVER = 3;
+  ENTITY_TYPE_LLM = 4;
+  ENTITY_TYPE_HOST = 5;
+  ENTITY_TYPE_RESOURCE = 6;
+  ENTITY_TYPE_EXTERNAL_SYSTEM = 7;
+}
+
+enum EntityRole {
+  ENTITY_ROLE_UNIFIED = 0;
+  ENTITY_ROLE_PROMPT_HANDLER = 1;
+  ENTITY_ROLE_TOOL_EXECUTOR = 2;
+}
+
+message GraphEdge {
+  option (spec.graph_type) = {name: "Edge", xid_field: "id"};
+  option (spec.bigdata) = {name: "Edge", key: "id"};
+
+  string id = 1 [(spec.graph_index) = "exact", (spec.cache) = true];
+  string source_id = 2 [(spec.graph_index) = "exact", (spec.timeseries) = true, (spec.cache) = true];
+  string target_id = 3 [(spec.graph_index) = "exact", (spec.timeseries) = true, (spec.cache) = true];
+  EdgeType edge_type = 4 [(spec.graph_index) = "exact", (spec.timeseries) = true, (spec.cache) = true];
+
+  int64 observation_count = 5 [(spec.timeseries) = true];
+  int64 first_seen_ms = 6 [(spec.graph_index) = "int", (spec.timeseries) = true];
+  int64 last_seen_ms = 7 [(spec.graph_index) = "int", (spec.timeseries) = true, (spec.cache) = true];
+  repeated string observed_methods = 8 [(spec.assert_max_size) = 256];
+
+  SessionEdgeMeta session_meta = 10;
+  DelegationEdgeMeta delegation_meta = 11;
+  ToolEdgeMeta tool_meta = 12;
+  ActionEdgeMeta action_meta = 13;
+}
+
+enum EdgeType {
+  EDGE_TYPE_UNSPECIFIED = 0;
+  EDGE_TYPE_OWNS = 1;
+  EDGE_TYPE_SESSION = 2;
+  EDGE_TYPE_MODEL_CALL = 3;
+  EDGE_TYPE_HOSTED_ON = 4;
+  EDGE_TYPE_DELEGATION = 5;
+  EDGE_TYPE_TOOL_CALL = 6;
+  EDGE_TYPE_TOOL_RESULT = 7;
+  EDGE_TYPE_PROMPT = 8;
+  EDGE_TYPE_RESPONSE = 9;
+  EDGE_TYPE_ACTS_ON = 10;
+  EDGE_TYPE_CALLS_EXTERNAL = 11;
+}
+
+// ============================================================================
+// Entity Metadata
+// ============================================================================
+
+message UserMeta {
+  string principal = 1;
+  repeated string agent_ids = 2 [(spec.assert_max_size) = 256];
+  repeated string observed_entitlements = 3 [(spec.assert_max_size) = 128];
+  int64 last_active_ms = 4;
+  repeated string accessed_services = 5 [(spec.assert_max_size) = 64];
+}
+
+message AgentMeta {
+  string short_name = 1;
+  string framework = 2;
+  AgentState state = 3;
+  repeated string target_services = 4 [(spec.assert_max_size) = 64];
+  repeated string observed_entitlements = 5 [(spec.assert_max_size) = 128];
+  string owning_user = 6;
+  repeated string delegation_chain = 7 [(spec.assert_max_size) = 16];
+  int32 distinct_methods_called = 8;
+  repeated string profiles = 9 [(spec.assert_max_size) = 64];
+  int64 total_prompts = 10;
+  int64 total_tool_calls = 11;
+  int64 total_input_tokens = 12;
+  int64 total_output_tokens = 13;
+  int64 total_cost_micros_usd = 14;
+  bool cost_estimated = 15;
+  int64 total_actions_executed = 16;
+  int64 total_actions_reverted = 17;
+}
+
+enum AgentState {
+  AGENT_STATE_UNSPECIFIED = 0;
+  AGENT_STATE_ACTIVE = 1;
+  AGENT_STATE_IDLE = 2;
+  AGENT_STATE_EXPIRED = 3;
+  AGENT_STATE_REJECTED = 4;
+}
+
+message McpServerMeta {
+  string server_name = 1;
+  string host_id = 2;
+  repeated string connected_agent_ids = 3 [(spec.assert_max_size) = 256];
+  repeated string observed_methods = 4 [(spec.assert_max_size) = 256];
+  int32 active_client_count = 5;
+  HealthStatus health = 6;
+  double rejection_rate = 7;
+  repeated ToolDefinition available_tools = 10 [(spec.assert_max_size) = 256];
+  int64 total_tool_calls_served = 11;
+  int64 total_tool_errors = 12;
+  repeated ToolCallStats top_tools = 13 [(spec.assert_max_size) = 64];
+  repeated string external_system_ids = 14 [(spec.assert_max_size) = 64];
+}
+
+message ToolCallStats {
+  string tool_name = 1;
+  int64 call_count = 2;
+  int64 error_count = 3;
+  double avg_duration_ms = 4;
+  int64 total_input_bytes = 5;
+  int64 total_output_bytes = 6;
+}
+
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  HEALTH_STATUS_HEALTHY = 1;
+  HEALTH_STATUS_DEGRADED = 2;
+  HEALTH_STATUS_UNHEALTHY = 3;
+}
+
+message LlmMeta {
+  string model_id = 1;
+  string provider = 2;
+  repeated string caller_agent_ids = 3 [(spec.assert_max_size) = 256];
+  int64 call_count = 4;
+  int64 total_input_tokens = 5;
+  int64 total_output_tokens = 6;
+  double avg_latency_ms = 7;
+  double tool_use_rate = 8;
+  int64 total_cost_micros_usd = 9;
+  bool cost_estimated = 10;
+  string model_family = 11;
+  string model_variant = 12;
+  double cache_hit_rate = 13;
+  double retry_rate = 14;
+}
+
+message HostMeta {
+  string hostname = 1;
+  repeated string hosted_services = 2 [(spec.assert_max_size) = 64];
+}
+
+message ResourceMeta {
+  string resource_uri = 1;
+  string resource_type = 2;
+  string display_name = 3;
+  int64 total_actions = 4;
+  repeated string acting_agent_ids = 5 [(spec.assert_max_size) = 256];
+  int64 last_acted_on_ms = 6;
+}
+
+message ExternalSystemMeta {
+  string system_id = 1;
+  string system_type = 2;
+  string endpoint = 3;
+  int64 total_calls = 4;
+  double error_rate = 5;
+  double avg_latency_ms = 6;
+}
+
+// ============================================================================
+// Edge Metadata
+// ============================================================================
+
+message SessionEdgeMeta {
+  repeated string methods = 1 [(spec.assert_max_size) = 256];
+  int64 rpc_count = 2;
+  int64 last_active_ms = 3;
+  repeated string entitlements = 4 [(spec.assert_max_size) = 128];
+  int64 rejection_count = 5;
+}
+
+message DelegationEdgeMeta {
+  string delegator = 1;
+  string delegatee = 2;
+  repeated string delegated_entitlements = 3 [(spec.assert_max_size) = 128];
+  string auth_type = 4;
+}
+
+message ToolEdgeMeta {
+  repeated string tool_names = 1 [(spec.assert_max_size) = 256];
+  int64 call_count = 2;
+  int64 error_count = 3;
+  double avg_duration_ms = 4;
+  int64 total_input_bytes = 5;
+  int64 total_output_bytes = 6;
+}
+
+message ActionEdgeMeta {
+  repeated string action_types = 1 [(spec.assert_max_size) = 64];
+  int64 action_count = 2;
+  int64 revert_count = 3;
+  int64 last_action_ms = 4;
+}
+
+// ============================================================================
+// Conversation Trace
+// ============================================================================
+
+enum ConversationState {
+  CONVERSATION_STATE_UNSPECIFIED = 0;
+  CONVERSATION_STATE_STARTED = 1;
+  CONVERSATION_STATE_IN_PROGRESS = 2;
+  CONVERSATION_STATE_COMPLETED = 3;
+  CONVERSATION_STATE_FAILED = 4;
+  CONVERSATION_STATE_ABANDONED = 5;
+  CONVERSATION_STATE_CANCELLED = 6;
+  CONVERSATION_STATE_TIMED_OUT = 7;
+}
+
+message ConversationTurn {
+  string session_id = 1;
+  int32 turn_number = 2;
+
+  PromptEvent prompt = 3;
+  repeated LlmInteraction interactions = 4 [(spec.assert_max_size) = 64];
+  ResponseSentEvent response = 5;
+  ErrorEvent error = 6;
+
+  int64 started_ms = 7;
+  int64 ended_ms = 8;
+
+  int32 total_tool_calls = 9;
+  int32 total_input_tokens = 10;
+  int32 total_output_tokens = 11;
+
+  int64 total_cost_micros_usd = 12;
+  bool cost_estimated = 13;
+
+  repeated ActionEvent actions = 14 [(spec.assert_max_size) = 256];
+  ConversationState state = 15;
+}
+
+message LlmInteraction {
+  int32 interaction_number = 1;
+  LlmRequestEvent request = 2;
+  repeated ToolCallWithResult tool_calls = 3 [(spec.assert_max_size) = 64];
+  LlmResponseEvent response = 4;
+  int64 started_ms = 5;
+  int64 ended_ms = 6;
+}
+
+message ToolCallWithResult {
+  ToolCallEvent call = 1;
+  ToolResultEvent result = 2;
+  repeated ActionEvent actions = 3 [(spec.assert_max_size) = 16];
+}
+
+// ============================================================================
+// Forensics
+// ============================================================================
+
+message TokenTimeline {
+  string principal = 1;
+  repeated ObservedToken observations = 2 [(spec.assert_max_size) = 4096];
+  int64 first_seen_ms = 3;
+  int64 last_seen_ms = 4;
+  int32 distinct_services = 5;
+  int32 distinct_methods = 6;
+  int32 rejection_count = 7;
+}
+
+message DelegationTree {
+  string root_principal = 1;
+  repeated DelegationTree children = 2 [(spec.assert_max_size) = 256];
+  int64 observation_count = 3;
+  repeated string accessed_services = 4 [(spec.assert_max_size) = 64];
+  repeated string entitlements = 5 [(spec.assert_max_size) = 128];
+}
+
+// ============================================================================
+// Topology
+// ============================================================================
+
+message TopologySnapshot {
+  int64 computed_at_ms = 1;
+  repeated GraphEntity entities = 2 [(spec.assert_max_size) = 8192];
+  repeated GraphEdge edges = 3 [(spec.assert_max_size) = 16384];
+  TopologyStats stats = 4;
+  int64 from_ms = 5;
+  int64 to_ms = 6;
+  ViewPreset view = 7;
+  GraphDensity density = 8;
+}
+
+message TopologyStats {
+  int32 total_users = 1;
+  int32 total_agents = 2;
+  int32 total_servers = 3;
+  int32 total_llms = 4;
+  int32 total_hosts = 5;
+  int32 active_sessions = 6;
+  int64 total_observations = 7;
+  int64 total_rejections = 8;
+  int32 distinct_delegation_chains = 9;
+  int64 total_tool_calls = 10;
+  int64 total_prompts = 11;
+  int64 total_input_tokens = 12;
+  int64 total_output_tokens = 13;
+  int64 total_cost_micros_usd = 14;
+  bool cost_estimated = 15;
+  int64 total_actions_executed = 16;
+  int32 total_resources = 17;
+  int32 total_external_systems = 18;
+}
+
+enum ViewPreset {
+  VIEW_PRESET_UNSPECIFIED = 0;
+  VIEW_PRESET_USER = 1;
+  VIEW_PRESET_INFRASTRUCTURE = 2;
+  VIEW_PRESET_SESSION = 3;
+  VIEW_PRESET_SECURITY = 4;
+  VIEW_PRESET_LLM = 5;
+  VIEW_PRESET_TOOL = 6;
+}
+
+enum GraphDensity {
+  GRAPH_DENSITY_COMPACT = 0;
+  GRAPH_DENSITY_LOGICAL = 1;
+}
+
+// ============================================================================
+// Live Events
+// ============================================================================
+
+message TopologyEvent {
+  int64 timestamp_ms = 1;
+  TopologyEventType event_type = 2;
+
+  EntityEvent entity_event = 10;
+  EdgeEvent edge_event = 11;
+  TokenObservationEvent token_event = 12;
+  ConversationStepEvent conversation_event = 13;
+  AlertEvent alert_event = 14;
+  ActionStepEvent action_event = 15;
+}
+
+enum TopologyEventType {
+  TOPOLOGY_EVENT_TYPE_UNSPECIFIED = 0;
+  TOPOLOGY_EVENT_TYPE_ENTITY_ADDED = 1;
+  TOPOLOGY_EVENT_TYPE_ENTITY_UPDATED = 2;
+  TOPOLOGY_EVENT_TYPE_ENTITY_REMOVED = 3;
+  TOPOLOGY_EVENT_TYPE_EDGE_ADDED = 4;
+  TOPOLOGY_EVENT_TYPE_EDGE_UPDATED = 5;
+  TOPOLOGY_EVENT_TYPE_EDGE_REMOVED = 6;
+  TOPOLOGY_EVENT_TYPE_TOKEN_OBSERVED = 7;
+  TOPOLOGY_EVENT_TYPE_ALERT = 8;
+  TOPOLOGY_EVENT_TYPE_CONVERSATION_STEP = 9;
+  TOPOLOGY_EVENT_TYPE_ACTION_STEP = 10;
+}
+
+message EntityEvent {
+  GraphEntity entity = 1;
+}
+
+message EdgeEvent {
+  GraphEdge edge = 1;
+}
+
+message TokenObservationEvent {
+  ObservedToken token = 1;
+  repeated string affected_entity_ids = 2 [(spec.assert_max_size) = 64];
+  repeated string affected_edge_ids = 3 [(spec.assert_max_size) = 64];
+}
+
+message ConversationStepEvent {
+  McpConversationEvent event = 1;
+  repeated string affected_edge_ids = 2 [(spec.assert_max_size) = 64];
+}
+
+message ActionStepEvent {
+  ActionEvent action = 1;
+  string resource_entity_id = 2;
+  repeated string affected_edge_ids = 3 [(spec.assert_max_size) = 64];
+}
+
+message AlertEvent {
+  option (spec.graph_type) = {name: "Alert"};
+  option (spec.bigdata) = {name: "Alert", key: "alert_id"};
+
+  string alert_id = 1 [(spec.graph_index) = "exact", (spec.cache) = true];
+  AlertSeverity severity = 2 [(spec.graph_index) = "exact", (spec.timeseries) = true, (spec.cache) = true];
+  string title = 3 [(spec.cache) = true];
+  string description = 4;
+  repeated string entity_ids = 5 [(spec.assert_max_size) = 64];
+  ObservedToken triggering_token = 6;
+  McpConversationEvent triggering_event = 7;
+
+  string rule_id = 8 [(spec.graph_index) = "exact", (spec.timeseries) = true];
+  string rule_version = 9;
+  double match_confidence = 10 [(spec.timeseries) = true];
+  string dedupe_key = 11 [(spec.graph_index) = "exact"];
+  string incident_id = 12 [(spec.cache) = true];
+}
+
+enum AlertSeverity {
+  ALERT_SEVERITY_UNSPECIFIED = 0;
+  ALERT_SEVERITY_INFO = 1;
+  ALERT_SEVERITY_WARNING = 2;
+  ALERT_SEVERITY_CRITICAL = 3;
+}
+
+// ============================================================================
+// Detection Rules
+// ============================================================================
+
+message DetectionRule {
+  string rule_id = 1;
+  string rule_version = 2;
+  string name = 3;
+  string description = 4;
+  DetectionRuleType rule_type = 5;
+  google.protobuf.Struct rule_config = 6;
+  AlertSeverity severity = 7;
+  bool enabled = 8;
+  string created_by = 9;
+  int64 created_at_ms = 10;
+  int64 fire_count = 11;
+  int64 last_fired_ms = 12;
+  double false_positive_rate = 13;
+}
+
+enum DetectionRuleType {
+  DETECTION_RULE_TYPE_UNSPECIFIED = 0;
+  DETECTION_RULE_TYPE_DELEGATION_DEPTH = 1;
+  DETECTION_RULE_TYPE_REJECTION_SPIKE = 2;
+  DETECTION_RULE_TYPE_EXPIRED_TOKEN_USE = 3;
+  DETECTION_RULE_TYPE_TOOL_ERROR_SPIKE = 4;
+  DETECTION_RULE_TYPE_ENTITLEMENT_ANOMALY = 5;
+  DETECTION_RULE_TYPE_COST_THRESHOLD = 6;
+  DETECTION_RULE_TYPE_SENSITIVE_RESOURCE_ACTION = 7;
+  DETECTION_RULE_TYPE_CUSTOM = 8;
+}
+
+// ============================================================================
+// Operator Annotations
+// ============================================================================
+
+message Annotation {
+  string annotation_id = 1;
+  string target_id = 2;
+  AnnotationType annotation_type = 3;
+  string author = 4;
+  int64 created_at_ms = 5;
+  string title = 6;
+  string body = 7;
+  repeated string tags = 8 [(spec.assert_max_size) = 32];
+  string incident_id = 9;
+  bool resolved_as_false_positive = 10;
+}
+
+enum AnnotationType {
+  ANNOTATION_TYPE_UNSPECIFIED = 0;
+  ANNOTATION_TYPE_NOTE = 1;
+  ANNOTATION_TYPE_BOOKMARK = 2;
+  ANNOTATION_TYPE_INCIDENT_TAG = 3;
+  ANNOTATION_TYPE_ALERT_RESOLUTION = 4;
+}
+
+// ============================================================================
+// Trace (causal chain)
+// ============================================================================
+
+message TraceSpan {
+  string span_id = 1;
+  string parent_span_id = 2;
+  string span_type = 3;
+  int64 started_ms = 4;
+  int64 ended_ms = 5;
+  string service_id = 6;
+  string agent_id = 7;
+
+  ObservedToken token = 10;
+  McpConversationEvent conversation_event = 11;
+  ActionEvent action = 12;
+}
+
+// ============================================================================
+// Declared Queries
+// ============================================================================
+
+// EntityQueries declares typed queries against the Entity BigData type.
+message EntityQueries {
+  option (spec.queries) = {target: "Entity"};
+
+  string by_type = 1 [(spec.sql) =
+    "SELECT * FROM Entity WHERE entity_type = :entity_type AND last_seen_ms BETWEEN :from_ms AND :to_ms"];
+
+  string by_parent = 2 [(spec.sql) =
+    "SELECT * FROM Entity WHERE parent_id = :parent_id"];
+
+  string neighbors = 3 [(spec.sql) =
+    "SELECT e.* FROM Entity e JOIN Edge ed ON e.id = ed.target_id WHERE ed.source_id = :entity_id"];
+}
+
+// EdgeQueries declares typed queries against the Edge BigData type.
+message EdgeQueries {
+  option (spec.queries) = {target: "Edge"};
+
+  string by_source = 1 [(spec.sql) =
+    "SELECT * FROM Edge WHERE source_id = :source_id AND last_seen_ms BETWEEN :from_ms AND :to_ms"];
+
+  string by_target = 2 [(spec.sql) =
+    "SELECT * FROM Edge WHERE target_id = :target_id"];
+
+  string by_type = 3 [(spec.sql) =
+    "SELECT * FROM Edge WHERE edge_type = :edge_type AND last_seen_ms BETWEEN :from_ms AND :to_ms"];
+}
+
+// TokenQueries declares typed queries against the TokenObservation BigData type.
+message TokenQueries {
+  option (spec.queries) = {target: "TokenObservation"};
+
+  string by_subject = 1 [(spec.sql) =
+    "SELECT * FROM TokenObservation WHERE subject = :subject AND observed_at_ms BETWEEN :from_ms AND :to_ms"];
+
+  string by_trace = 2 [(spec.sql) =
+    "SELECT * FROM TokenObservation WHERE trace_id = :trace_id"];
+
+  string rejections = 3 [(spec.sql) =
+    "SELECT * FROM TokenObservation WHERE result != 1 AND observed_at_ms BETWEEN :from_ms AND :to_ms"];
+}
+
+// ConversationQueries declares typed queries against the ConversationStep BigData type.
+message ConversationQueries {
+  option (spec.queries) = {target: "ConversationStep"};
+
+  string by_session = 1 [(spec.sql) =
+    "SELECT * FROM ConversationStep WHERE session_id = :session_id ORDER BY timestamp_ms ASC"];
+
+  string by_agent = 2 [(spec.sql) =
+    "SELECT * FROM ConversationStep WHERE agent_id = :agent_id AND timestamp_ms BETWEEN :from_ms AND :to_ms"];
+
+  string tool_calls = 3 [(spec.sql) =
+    "SELECT * FROM ConversationStep WHERE event_type = 3 AND agent_id = :agent_id AND timestamp_ms BETWEEN :from_ms AND :to_ms"];
+}
+
+// ActionQueries declares typed queries against the ActionStep BigData type.
+message ActionQueries {
+  option (spec.queries) = {target: "ActionStep"};
+
+  string by_resource = 1 [(spec.sql) =
+    "SELECT * FROM ActionStep WHERE target_resource = :resource AND executed_at_ms BETWEEN :from_ms AND :to_ms"];
+
+  string by_type = 2 [(spec.sql) =
+    "SELECT * FROM ActionStep WHERE action_type = :action_type AND executed_at_ms BETWEEN :from_ms AND :to_ms"];
+
+  string failures = 3 [(spec.sql) =
+    "SELECT * FROM ActionStep WHERE success = false AND executed_at_ms BETWEEN :from_ms AND :to_ms"];
+}
+
+// AlertQueries declares typed queries against the Alert BigData type.
+message AlertQueries {
+  option (spec.queries) = {target: "Alert"};
+
+  string by_severity = 1 [(spec.sql) =
+    "SELECT * FROM Alert WHERE severity = :severity"];
+
+  string by_rule = 2 [(spec.sql) =
+    "SELECT * FROM Alert WHERE rule_id = :rule_id"];
+}
+
+// ============================================================================
+// State — Aegis is now a client-only service. Event ingestion goes through
+// EventBus typed RPCs. Read/query RPCs are on BigDataService.
+// AegisState is retained because DgraphState subscribes to event_stream.
+// ============================================================================
+
+message AegisState {
+  option (spec.service_state) = {name: "AegisState", tag: "eventbus"};
+
+  TopologyEvent event_stream = 1 [(spec.topic) = true, (spec.leader) = true];
+}
+
+// AegisConfigState is the state boundary for aegis service configuration.
+// Auto-injected by tacplus from (spec.grpc_config) annotation.
+message AegisConfigState {
+  option (spec.service_state) = {name: "AegisConfigState", store: "kernel"};
+  option (spec.state_consistency) = CONSISTENCY_CONVERGENT;
+
+  aegis.Config config = 1 [
+    (spec.consistency) = CONSISTENCY_CONVERGENT,
+    (spec.persistence) = true
+  ];
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service AegisStateService {
+	// Topic: EventStream
+	rpc PublishToEventStream(TopologyEvent) returns (TopicPublishReceipt);
+	rpc SubscribeToEventStream(google.protobuf.Empty) returns (stream TopologyEvent);
+	// Leader Election: EventStream
+	rpc ElectEventStreamLeader(LeaderElectRequest) returns (LeaderRecord);
+	rpc ResignEventStreamLeader(LeaderResignRequest) returns (LeaderRecord);
+	rpc GetLeaderEventStream(google.protobuf.Empty) returns (LeaderRecord);
+	rpc WatchLeaderEventStream(google.protobuf.Empty) returns (stream LeaderRecord);
+	rpc RenewLeaseEventStream(stream LeaderLeaseRenewal) returns (stream LeaderRecord);
+}
+
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service AegisConfigStateService {
+	// Singleton: Config
+	rpc GetConfig(google.protobuf.Empty) returns (Config);
+	rpc SetConfig(Config) returns (Config);
+	rpc WatchConfig(google.protobuf.Empty) returns (stream Config);
+}
+
+message MapEmpty {}
+
+message TopicPublishReceipt { bool published = 1; }
+
+message LeaderRecord { string leader_id = 1; int64 fence_token = 2; int64 lease_expiry_ms = 3; int64 term = 4; }
+message LeaderElectRequest { string candidate_id = 1; }
+message LeaderResignRequest { string leader_id = 1; int64 fence_token = 2; }
+message LeaderLeaseRenewal { string leader_id = 1; int64 fence_token = 2; }
+
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_CONFIG = 1;
+  TYPE_ID_SIMULATION_PROFILE = 2;
+  TYPE_ID_EVENT_PROVENANCE = 3;
+  TYPE_ID_CONTENT_META = 4;
+  TYPE_ID_SENSITIVE_CONTENT_FLAGS = 5;
+  TYPE_ID_OBSERVED_TOKEN = 6;
+  TYPE_ID_MCP_CONVERSATION_EVENT = 7;
+  TYPE_ID_PROMPT_EVENT = 8;
+  TYPE_ID_LLM_REQUEST_EVENT = 9;
+  TYPE_ID_TOOL_CALL_EVENT = 10;
+  TYPE_ID_TOOL_RESULT_EVENT = 11;
+  TYPE_ID_LLM_RESPONSE_EVENT = 12;
+  TYPE_ID_RESPONSE_SENT_EVENT = 13;
+  TYPE_ID_ERROR_EVENT = 14;
+  TYPE_ID_ACTION_EVENT = 15;
+  TYPE_ID_TOOL_DEFINITION = 16;
+  TYPE_ID_GRAPH_ENTITY = 17;
+  TYPE_ID_GRAPH_EDGE = 18;
+  TYPE_ID_USER_META = 19;
+  TYPE_ID_AGENT_META = 20;
+  TYPE_ID_MCP_SERVER_META = 21;
+  TYPE_ID_TOOL_CALL_STATS = 22;
+  TYPE_ID_LLM_META = 23;
+  TYPE_ID_HOST_META = 24;
+  TYPE_ID_RESOURCE_META = 25;
+  TYPE_ID_EXTERNAL_SYSTEM_META = 26;
+  TYPE_ID_SESSION_EDGE_META = 27;
+  TYPE_ID_DELEGATION_EDGE_META = 28;
+  TYPE_ID_TOOL_EDGE_META = 29;
+  TYPE_ID_ACTION_EDGE_META = 30;
+  TYPE_ID_CONVERSATION_TURN = 31;
+  TYPE_ID_LLM_INTERACTION = 32;
+  TYPE_ID_TOOL_CALL_WITH_RESULT = 33;
+  TYPE_ID_TOKEN_TIMELINE = 34;
+  TYPE_ID_DELEGATION_TREE = 35;
+  TYPE_ID_TOPOLOGY_SNAPSHOT = 36;
+  TYPE_ID_TOPOLOGY_STATS = 37;
+  TYPE_ID_TOPOLOGY_EVENT = 38;
+  TYPE_ID_ENTITY_EVENT = 39;
+  TYPE_ID_EDGE_EVENT = 40;
+  TYPE_ID_TOKEN_OBSERVATION_EVENT = 41;
+  TYPE_ID_CONVERSATION_STEP_EVENT = 42;
+  TYPE_ID_ACTION_STEP_EVENT = 43;
+  TYPE_ID_ALERT_EVENT = 44;
+  TYPE_ID_DETECTION_RULE = 45;
+  TYPE_ID_ANNOTATION = 46;
+  TYPE_ID_TRACE_SPAN = 47;
+  TYPE_ID_ENTITY_QUERIES = 48;
+  TYPE_ID_EDGE_QUERIES = 49;
+  TYPE_ID_TOKEN_QUERIES = 50;
+  TYPE_ID_CONVERSATION_QUERIES = 51;
+  TYPE_ID_ACTION_QUERIES = 52;
+  TYPE_ID_ALERT_QUERIES = 53;
+  TYPE_ID_AEGIS_STATE = 54;
+  TYPE_ID_AEGIS_CONFIG_STATE = 55;
+  TYPE_ID_MAP_EMPTY = 56;
+  TYPE_ID_TOPIC_PUBLISH_RECEIPT = 57;
+  TYPE_ID_LEADER_RECORD = 58;
+  TYPE_ID_LEADER_ELECT_REQUEST = 59;
+  TYPE_ID_LEADER_RESIGN_REQUEST = 60;
+  TYPE_ID_LEADER_LEASE_RENEWAL = 61;
+}
+
+enum AegisStateServiceRpcId {
+  AEGIS_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  AEGIS_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  AEGIS_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  AEGIS_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  AEGIS_STATE_SERVICE_RPC_ID_PUBLISH_TO_EVENT_STREAM = 4;
+  AEGIS_STATE_SERVICE_RPC_ID_SUBSCRIBE_TO_EVENT_STREAM = 5;
+  AEGIS_STATE_SERVICE_RPC_ID_ELECT_EVENT_STREAM_LEADER = 6;
+  AEGIS_STATE_SERVICE_RPC_ID_RESIGN_EVENT_STREAM_LEADER = 7;
+  AEGIS_STATE_SERVICE_RPC_ID_GET_LEADER_EVENT_STREAM = 8;
+  AEGIS_STATE_SERVICE_RPC_ID_WATCH_LEADER_EVENT_STREAM = 9;
+  AEGIS_STATE_SERVICE_RPC_ID_RENEW_LEASE_EVENT_STREAM = 10;
+}
+
+enum AegisConfigStateServiceRpcId {
+  AEGIS_CONFIG_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  AEGIS_CONFIG_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  AEGIS_CONFIG_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  AEGIS_CONFIG_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  AEGIS_CONFIG_STATE_SERVICE_RPC_ID_GET_CONFIG = 4;
+  AEGIS_CONFIG_STATE_SERVICE_RPC_ID_SET_CONFIG = 5;
+  AEGIS_CONFIG_STATE_SERVICE_RPC_ID_WATCH_CONFIG = 6;
+}

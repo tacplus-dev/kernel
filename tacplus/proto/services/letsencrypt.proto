@@ -1,0 +1,150 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+syntax = "proto3";
+
+package letsencrypt;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.letsencrypt";
+option java_outer_classname = "Letsencrypt";
+
+import "libs/spec.proto";
+import "libs/host.proto";
+import "libs/x509.proto";
+import "google/protobuf/empty.proto";
+
+// ============================================================================
+// Config
+// ============================================================================
+
+// NOTES: should support multiple domains
+
+message Config {
+
+  // lets_encrypt_email is the email address for Let's Encrypt account
+  // registration and certificate expiration notifications.
+  // If empty, letsencrypt will use "admin@<fqdn>".
+  // NOTES: needs email assertion
+  string lets_encrypt_email = 1;
+
+  // http_listener is the bind address for the HTTP server used for ACME HTTP-01
+  // challenge responses. Must be reachable on port 80 from the internet.
+  // Default port 80.
+  host.Host http_listener = 2;
+
+  // renewal_check_interval_seconds is how often to check if the certificate
+  // needs renewal (seconds). Default: 3600 (1 hour).
+  int64 renewal_check_interval_seconds = 3;
+
+  // fqdn is the fully qualified domain name for which to request
+  // a Let's Encrypt certificate.
+  string fqdn = 4;
+}
+
+// ============================================================================
+// State (stored in kernel)
+// ============================================================================
+
+// LetsEncryptState holds the Let's Encrypt certificate and CertMagic storage
+// state. Gateway watches this to obtain the TLS certificate for its
+// public-facing HTTPS listener.
+message LetsEncryptState {
+
+  // cert_data is the singleton holding the current certificate and
+  // CertMagic internal state. Written atomically on each renewal.
+  LetsEncryptCertData cert_data = 1;
+}
+
+// LetsEncryptCertData holds the Let's Encrypt certificate, CertMagic state,
+// and metadata. Written as a single atomic unit on each certificate
+// issuance or renewal.
+message LetsEncryptCertData {
+  // tls_cert is the current Let's Encrypt certificate chain and private key.
+  // Gateway watches this to serve HTTPS traffic.
+  x509.X509CertChain tls_cert = 1;
+
+  // certmagic_state is the serialized CertMagic storage tree. Contains
+  // ACME account data, certificate metadata, and cached certificates.
+  // LetsEncrypt reads this on startup to restore state without re-provisioning.
+  CertMagicState certmagic_state = 2;
+
+  // last_renewed is the Unix epoch timestamp (seconds) of the last
+  // successful certificate renewal.
+  int64 last_renewed = 3;
+
+  // fqdn is the domain name the certificate was issued for.
+  string fqdn = 4;
+}
+
+// CertMagicState is the serialized storage tree used by CertMagic.
+// This mirrors the certmagic.Storage interface — each node is either
+// a directory (with children) or a file (with value bytes).
+message CertMagicState {
+  bool is_dir = 1;
+  bytes value = 2;
+  int64 mod_time = 3;
+  map<string, CertMagicState> children = 4;
+}
+
+// LetsencryptConfigState is the state boundary for letsencrypt service configuration.
+// Auto-injected by tacplus from (spec.grpc_config) annotation.
+message LetsencryptConfigState {
+
+  letsencrypt.Config config = 1;
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service LetsEncryptStateService {
+	// Singleton: CertData
+	rpc GetCertData(google.protobuf.Empty) returns (LetsEncryptCertData);
+	rpc SetCertData(LetsEncryptCertData) returns (LetsEncryptCertData);
+	rpc WatchCertData(google.protobuf.Empty) returns (stream LetsEncryptCertData);
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service LetsencryptConfigStateService {
+	// Singleton: Config
+	rpc GetConfig(google.protobuf.Empty) returns (Config);
+	rpc SetConfig(Config) returns (Config);
+	rpc WatchConfig(google.protobuf.Empty) returns (stream Config);
+}
+
+message MapEmpty {}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_CONFIG = 1;
+  TYPE_ID_LETS_ENCRYPT_STATE = 2;
+  TYPE_ID_LETS_ENCRYPT_CERT_DATA = 3;
+  TYPE_ID_CERT_MAGIC_STATE = 4;
+  TYPE_ID_LETSENCRYPT_CONFIG_STATE = 5;
+  TYPE_ID_MAP_EMPTY = 6;
+}
+
+enum LetsEncryptStateServiceRpcId {
+  LETS_ENCRYPT_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  LETS_ENCRYPT_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  LETS_ENCRYPT_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  LETS_ENCRYPT_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  LETS_ENCRYPT_STATE_SERVICE_RPC_ID_GET_CERT_DATA = 4;
+  LETS_ENCRYPT_STATE_SERVICE_RPC_ID_SET_CERT_DATA = 5;
+  LETS_ENCRYPT_STATE_SERVICE_RPC_ID_WATCH_CERT_DATA = 6;
+}
+
+enum LetsencryptConfigStateServiceRpcId {
+  LETSENCRYPT_CONFIG_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  LETSENCRYPT_CONFIG_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  LETSENCRYPT_CONFIG_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  LETSENCRYPT_CONFIG_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  LETSENCRYPT_CONFIG_STATE_SERVICE_RPC_ID_GET_CONFIG = 4;
+  LETSENCRYPT_CONFIG_STATE_SERVICE_RPC_ID_SET_CONFIG = 5;
+  LETSENCRYPT_CONFIG_STATE_SERVICE_RPC_ID_WATCH_CONFIG = 6;
+}

@@ -1,0 +1,216 @@
+syntax = "proto3";
+package dgraph;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.dgraph";
+option java_outer_classname = "Dgraph";
+
+import "libs/spec.proto";
+import "libs/host.proto";
+import "google/protobuf/empty.proto";
+
+// NodeMode determines whether this node runs as Zero or Alpha.
+enum NodeMode {
+  NODE_MODE_UNDEFINED = 0;
+
+  // Zero: cluster management, shard assignment, leader election.
+  NODE_MODE_ZERO = 1;
+
+  // Alpha: data storage, serves GraphQL/DQL queries.
+  NODE_MODE_ALPHA = 2;
+
+  // Combined: runs both Zero and Alpha in a single container (dev only).
+  NODE_MODE_COMBINED = 3;
+}
+
+// Config is the service-level configuration for dgraph.
+// Node mode is determined by the NODE_MODE env var, not by this config.
+message Config {
+
+  // mode is the role assigned to this node.
+  NodeMode mode = 1;
+
+  // zero_count is the expected number of Zero nodes in the cluster.
+  // Zeros use this to form the Raft quorum. Default: 1.
+  int32 zero_count = 2;
+
+  // replicas is the number of Alpha replicas per data shard group.
+  // Used by Zero nodes.
+  int32 replicas = 3;
+
+  // alpha_count is the expected number of Alpha nodes. Default: 1.
+  int32 alpha_count = 4;
+}
+
+// ============================================================================
+// State (stored in kernel)
+// ============================================================================
+
+// DgraphNode represents a single dgraph instance registered in shared state.
+// Each node publishes its own entry on startup and refreshes it periodically.
+message DgraphNode {
+  // node_id is the unique identifier for this node (e.g. instance hostname or UUID).
+  string node_id = 1;
+
+  // mode is the role of this node (Zero or Alpha).
+  NodeMode mode = 2;
+
+  // endpoint is the address other nodes use to connect to this node.
+  host.Host endpoint = 3;
+}
+
+// DgraphState holds the shared state for dgraph node discovery.
+// Each dgraph instance writes its own DgraphNode entry on startup.
+// Zeros discover each other for Raft peering, and Alphas discover
+// Zeros for registration — all via Watch on this collection.
+message DgraphState {
+
+  // nodes is the collection of registered dgraph instances.
+  // Keyed by node_id, evicted after 120s if not refreshed.
+  repeated DgraphNode nodes = 1;
+}
+
+// DgraphConfigState is the state boundary for dgraph service configuration.
+// Auto-injected by tacplus from (spec.grpc_config) annotation.
+message DgraphConfigState {
+
+  dgraph.Config config = 1;
+}
+
+// Collection query types (auto-injected)
+enum ComparisonOp {
+  COMPARISON_OP_UNSPECIFIED = 0;
+  COMPARISON_OP_EQ = 1;
+  COMPARISON_OP_NE = 2;
+  COMPARISON_OP_GT = 3;
+  COMPARISON_OP_GE = 4;
+  COMPARISON_OP_LT = 5;
+  COMPARISON_OP_LE = 6;
+  COMPARISON_OP_IN = 7;
+  COMPARISON_OP_NOT_IN = 8;
+  COMPARISON_OP_LIKE = 9;
+  COMPARISON_OP_IS_NULL = 10;
+  COMPARISON_OP_IS_NOT_NULL = 11;
+}
+enum SortDirection {
+  SORT_DIRECTION_UNSPECIFIED = 0;
+  SORT_DIRECTION_ASC = 1;
+  SORT_DIRECTION_DESC = 2;
+}
+enum LogicalOp {
+  LOGICAL_OP_UNSPECIFIED = 0;
+  LOGICAL_OP_AND = 1;
+  LOGICAL_OP_OR = 2;
+}
+message QueryValue { oneof value { string string_value = 1; int64 int_value = 2; double double_value = 3; bool bool_value = 4; } }
+message Predicate { string field_name = 1; ComparisonOp op = 2; QueryValue value = 3; repeated QueryValue values = 4; }
+message PredicateGroup { LogicalOp op = 1; repeated Predicate predicates = 2; repeated PredicateGroup groups = 3; }
+message SortField { string field_name = 1; SortDirection direction = 2; }
+message CollectionQuery { PredicateGroup where = 1; repeated SortField order_by = 2; int32 limit = 3; int32 offset = 4; }
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service DgraphStateService {
+	// Collection: Nodes
+	rpc GetNodes(NodesGetRequest) returns (NodesValueResponse);
+	rpc PutNodes(NodesPutRequest) returns (NodesValueResponse);
+	rpc SetNodes(NodesPutRequest) returns (MapEmpty);
+	rpc RemoveNodes(NodesGetRequest) returns (NodesValueResponse);
+	rpc DeleteNodes(NodesGetRequest) returns (MapEmpty);
+	rpc ContainsKeyNodes(NodesGetRequest) returns (NodesValueResponse);
+	rpc GetAllNodes(NodesGetAllRequest) returns (NodesEntriesResponse);
+	rpc KeySetNodes(NodesKeysRequest) returns (NodesKeysResponse);
+	rpc SizeNodes(NodesSizeRequest) returns (NodesSizeResponse);
+	rpc ClearNodes(NodesClearRequest) returns (MapEmpty);
+	rpc PutIfAbsentNodes(NodesPutRequest) returns (NodesValueResponse);
+	rpc WatchNodes(google.protobuf.Empty) returns (stream NodesEntriesResponse);
+	rpc QueryNodes(NodesQueryRequest) returns (NodesQueryResponse);
+	rpc WatchQueryNodes(NodesQueryRequest) returns (stream NodesQueryResponse);
+}
+
+message NodesGetRequest { string key = 1; }
+message NodesPutRequest { string key = 1; DgraphNode value = 2; int64 lock_counter = 3; }
+message NodesGetAllRequest {}
+message NodesKeysRequest {}
+message NodesSizeRequest {}
+message NodesClearRequest {}
+message NodesValueResponse { DgraphNode value = 1; bool found = 2; }
+message NodesEntriesResponse { map<string, DgraphNode> entries = 1; }
+message NodesKeysResponse { repeated string keys = 1; }
+message NodesSizeResponse { int32 size = 1; }
+message NodesQueryRequest { CollectionQuery query = 1; }
+message NodesQueryResponse { repeated DgraphNode results = 1; int32 total_count = 2; }
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service DgraphConfigStateService {
+	// Singleton: Config
+	rpc GetConfig(google.protobuf.Empty) returns (Config);
+	rpc SetConfig(Config) returns (Config);
+	rpc WatchConfig(google.protobuf.Empty) returns (stream Config);
+}
+
+message MapEmpty {}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_CONFIG = 1;
+  TYPE_ID_DGRAPH_NODE = 2;
+  TYPE_ID_DGRAPH_STATE = 3;
+  TYPE_ID_DGRAPH_CONFIG_STATE = 4;
+  TYPE_ID_QUERY_VALUE = 5;
+  TYPE_ID_PREDICATE = 6;
+  TYPE_ID_PREDICATE_GROUP = 7;
+  TYPE_ID_SORT_FIELD = 8;
+  TYPE_ID_COLLECTION_QUERY = 9;
+  TYPE_ID_NODES_GET_REQUEST = 10;
+  TYPE_ID_NODES_PUT_REQUEST = 11;
+  TYPE_ID_NODES_GET_ALL_REQUEST = 12;
+  TYPE_ID_NODES_KEYS_REQUEST = 13;
+  TYPE_ID_NODES_SIZE_REQUEST = 14;
+  TYPE_ID_NODES_CLEAR_REQUEST = 15;
+  TYPE_ID_NODES_VALUE_RESPONSE = 16;
+  TYPE_ID_NODES_ENTRIES_RESPONSE = 17;
+  TYPE_ID_NODES_KEYS_RESPONSE = 18;
+  TYPE_ID_NODES_SIZE_RESPONSE = 19;
+  TYPE_ID_NODES_QUERY_REQUEST = 20;
+  TYPE_ID_NODES_QUERY_RESPONSE = 21;
+  TYPE_ID_MAP_EMPTY = 22;
+}
+
+enum DgraphStateServiceRpcId {
+  DGRAPH_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  DGRAPH_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  DGRAPH_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  DGRAPH_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  DGRAPH_STATE_SERVICE_RPC_ID_GET_NODES = 4;
+  DGRAPH_STATE_SERVICE_RPC_ID_PUT_NODES = 5;
+  DGRAPH_STATE_SERVICE_RPC_ID_SET_NODES = 6;
+  DGRAPH_STATE_SERVICE_RPC_ID_REMOVE_NODES = 7;
+  DGRAPH_STATE_SERVICE_RPC_ID_DELETE_NODES = 8;
+  DGRAPH_STATE_SERVICE_RPC_ID_CONTAINS_KEY_NODES = 9;
+  DGRAPH_STATE_SERVICE_RPC_ID_GET_ALL_NODES = 10;
+  DGRAPH_STATE_SERVICE_RPC_ID_KEY_SET_NODES = 11;
+  DGRAPH_STATE_SERVICE_RPC_ID_SIZE_NODES = 12;
+  DGRAPH_STATE_SERVICE_RPC_ID_CLEAR_NODES = 13;
+  DGRAPH_STATE_SERVICE_RPC_ID_PUT_IF_ABSENT_NODES = 14;
+  DGRAPH_STATE_SERVICE_RPC_ID_WATCH_NODES = 15;
+  DGRAPH_STATE_SERVICE_RPC_ID_QUERY_NODES = 16;
+  DGRAPH_STATE_SERVICE_RPC_ID_WATCH_QUERY_NODES = 17;
+}
+
+enum DgraphConfigStateServiceRpcId {
+  DGRAPH_CONFIG_STATE_SERVICE_RPC_ID_UNSPECIFIED = 0;
+  DGRAPH_CONFIG_STATE_SERVICE_RPC_ID_ALL_ACCESSORS = 1;
+  DGRAPH_CONFIG_STATE_SERVICE_RPC_ID_ALL_MUTATORS = 2;
+  DGRAPH_CONFIG_STATE_SERVICE_RPC_ID_ALL_EXECUTORS = 3;
+  DGRAPH_CONFIG_STATE_SERVICE_RPC_ID_GET_CONFIG = 4;
+  DGRAPH_CONFIG_STATE_SERVICE_RPC_ID_SET_CONFIG = 5;
+  DGRAPH_CONFIG_STATE_SERVICE_RPC_ID_WATCH_CONFIG = 6;
+}

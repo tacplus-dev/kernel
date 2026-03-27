@@ -1,0 +1,98 @@
+// Copyright (c) 2024 Second Star Cavalier, LLC.
+
+// Package cavalierctl defines configuration types for the cavalierctl CLI tool
+// and the agentic workstation sensor (blueclaude daemon).
+
+syntax = "proto3";
+
+package cavalierctl;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.clients.cavalierctl";
+option java_outer_classname = "Cavalierctl";
+
+import "libs/grpcconfig.proto";
+import "libs/outputformat.proto";
+
+// Directory and path constants — all relative to $HOME.
+
+// ============================================================================
+// CLI Config
+// ============================================================================
+
+// Config is the per-profile configuration for cavalierctl.
+// Loaded from all YAML files in ~/.cavalierctl/config/ and merged.
+// Splitting connection and key into separate files (config.yaml + key.yaml)
+// allows chmod 400 on the key file.
+message Config {
+  // connection is the gRPC connection configuration.
+  // Used by the identity manager for token exchange with gateway.
+  // Contains endpoints, private_key, and trusted_cas.
+  grpcconfig.Config connection = 1;
+
+  // format is the default output format.
+  outputformat.OutputFormat format = 2;
+
+  // agentic is the agentic workstation sensor configuration.
+  AgenticConfig agentic = 3;
+
+  // direct_mode bypasses the daemon and connects directly to gateway.
+  // Useful for debugging or environments where the daemon is not desired.
+  // Can also be set via --direct flag on CLI commands.
+  bool direct_mode = 4;
+
+  // proxy_log_path is the file path for proxy log output.
+  // If empty, the proxy logs to the system log (os_log on macOS,
+  // journald on Linux, Event Log on Windows).
+  string proxy_log_path = 5;
+}
+
+// ProfileConfig is the top-level config file format.
+// All YAML files in ~/.cavalierctl/config/ are parsed as ProfileConfig
+// and merged at the profile level.
+message ProfileConfig {
+  // current_profile is the active profile name.
+  string current_profile = 1;
+
+  // profiles is a map of named connection profiles.
+  map<string, Config> profiles = 2;
+}
+
+// ============================================================================
+// Agentic Sensor
+// ============================================================================
+
+// AgenticConfig is the configuration for the agentic workstation sensor.
+// The daemon receives events from coding-agent hooks (PostToolUse,
+// SubagentStart, etc.) via a Unix socket, batches them, and publishes
+// to EventBus. From there, Aegis ingests the events for topology
+// visualization and forensics.
+message AgenticConfig {
+  // flush_interval_ms is the max time between event flushes to EventBus. Default: 5000.
+  int32 flush_interval_ms = 1;
+
+  // batch_size is the max events per flush. Default: 100.
+  int32 batch_size = 2;
+
+  // max_event_payload_bytes caps how much of each tool input/output is
+  // stored per event. Larger payloads are truncated. Default: 32768 (32KB).
+  int32 max_event_payload_bytes = 3;
+
+  // file_pattern_excludelist is a set of glob patterns for files to
+  // exclude from tracking. Example: ["*.lock", "node_modules/**", ".git/**"].
+  repeated string file_pattern_excludelist = 4;
+
+  // spool_max_bytes is the maximum spool file size in bytes. When the spool
+  // reaches this limit, new events are dropped until the backlog drains.
+  // Default: 524288000 (500MB).
+  int64 spool_max_bytes = 5;
+}
+
+// ============================================================================
+// Generated Proto Registry IDs
+// Auto-injected by tacplus for shared type/RPC identifiers.
+// ============================================================================
+enum TypeID {
+  TYPE_ID_UNSPECIFIED = 0;
+  TYPE_ID_CONFIG = 1;
+  TYPE_ID_PROFILE_CONFIG = 2;
+  TYPE_ID_AGENTIC_CONFIG = 3;
+}

@@ -1,0 +1,315 @@
+// Sensor — Agent-agnostic event model for coding-agent observability.
+//
+// This is the shared contract for edge sensors that observe coding-agent
+// activity on developer workstations, CI runners, and IDE agent sessions.
+// The same event structures apply to any coding agent that exposes lifecycle
+// hooks (Claude Code, Cursor, Windsurf, etc.). The sensor_type field on
+// SensorEvent identifies the source.
+//
+// ── WHY THIS EXISTS ──
+//
+// Coding-agent IDEs spawn subagents that spawn more subagents, each
+// generating code autonomously. Without a sensor at the edge, this sprawl
+// is invisible. The sensor hooks into the IDE agent's lifecycle events and
+// forwards them as structured proto events through EventBus.
+//
+// ── EVENT FLOW ──
+//
+//   IDE agent hook fires (HTTP POST to daemon)
+//     -> daemon receives via HTTPS hook endpoint
+//     -> daemon batches events
+//     -> flush to EventBus (SensorEvent topic)
+//     -> Aegis ingests, builds topology
+//     -> Agate/Aegis UI shows agent graph
+
+syntax = "proto3";
+
+package sensor;
+option java_package = "com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.sensor";
+option java_outer_classname = "Sensor";
+
+import "google/protobuf/empty.proto";
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+// SensorEventType classifies the hook event captured by the sensor.
+enum SensorEventType {
+  SENSOR_EVENT_TYPE_UNSPECIFIED = 0;
+
+  // Session lifecycle.
+  SENSOR_EVENT_TYPE_SESSION_START = 1;
+  SENSOR_EVENT_TYPE_SESSION_END = 2;
+
+  // Tool use (any tool: Bash, Read, Write, Edit, Grep, Agent, etc.)
+  SENSOR_EVENT_TYPE_TOOL_USE = 3;
+
+  // Subagent lifecycle — agent spawned or finished.
+  SENSOR_EVENT_TYPE_SUBAGENT_START = 4;
+  SENSOR_EVENT_TYPE_SUBAGENT_STOP = 5;
+
+  // Task lifecycle.
+  SENSOR_EVENT_TYPE_TASK_COMPLETED = 6;
+
+  // Context management.
+  SENSOR_EVENT_TYPE_COMPACT = 7;
+
+  // User prompt submitted.
+  SENSOR_EVENT_TYPE_PROMPT = 8;
+
+  // Stop — agent finished responding.
+  SENSOR_EVENT_TYPE_STOP = 9;
+}
+
+// SensorType identifies which coding-agent sensor produced the event.
+enum SensorType {
+  SENSOR_TYPE_UNSPECIFIED = 0;
+  SENSOR_TYPE_CLAUDE_CODE = 1;
+  SENSOR_TYPE_CURSOR = 2;
+  SENSOR_TYPE_WINDSURF = 3;
+}
+
+// HookPhase distinguishes pre- vs post-execution hook firings.
+// Claude Code fires PreToolUse before execution and PostToolUse after.
+enum HookPhase {
+  HOOK_PHASE_UNSPECIFIED = 0;
+  HOOK_PHASE_PRE = 1;
+  HOOK_PHASE_POST = 2;
+}
+
+// FileOperation classifies what happened to a file.
+enum FileOperation {
+  FILE_OPERATION_UNSPECIFIED = 0;
+  FILE_OPERATION_CREATE = 1;
+  FILE_OPERATION_MODIFY = 2;
+  FILE_OPERATION_DELETE = 3;
+  FILE_OPERATION_READ = 4;
+}
+
+// ============================================================================
+// Event payloads
+// ============================================================================
+
+// SessionEvent captures session start/end metadata.
+message SessionEvent {
+  // source is how the session started: "startup", "resume", "clear", "compact".
+  string source = 1;
+
+  // model is the LLM model ID (e.g. "claude-opus-4-6", "gpt-4o").
+  string model = 2;
+
+  // permission_mode is the active permission mode (e.g. "default", "acceptEdits").
+  string permission_mode = 3;
+}
+
+// ToolUseEvent captures a single tool invocation.
+message ToolUseEvent {
+  // tool_name is the tool that was called (Bash, Read, Write, Edit, Agent, etc.)
+  string tool_name = 1;
+
+  // tool_input is the JSON-encoded input arguments.
+  string tool_input = 2;
+
+  // tool_output is the (possibly truncated) tool output.
+  string tool_output = 3;
+
+  // duration_ms is how long the tool call took.
+  int64 duration_ms = 4;
+
+  // succeeded is whether the tool call completed without error.
+  bool succeeded = 5;
+
+  // error_message is the error text if the tool call failed.
+  string error_message = 6;
+
+  // file_events are file operations performed by this tool call.
+  // Populated for Write, Edit, Bash (when file side-effects detected).
+  repeated FileEvent file_events = 7;
+
+  // tool_use_id is the unique ID for this tool invocation.
+  // Correlates PreToolUse with its PostToolUse for the same call.
+  string tool_use_id = 8;
+}
+
+// SubagentEvent captures subagent spawn/stop.
+message SubagentEvent {
+  // subagent_type is the agent type: "Explore", "Plan", "general-purpose",
+  // or a custom agent name.
+  string subagent_type = 1;
+
+  // description is the task description given to the subagent.
+  string description = 2;
+
+  // isolated is true if the subagent runs in a worktree or sandbox.
+  bool isolated = 3;
+
+  // duration_ms is the total runtime (only set on SUBAGENT_STOP).
+  int64 duration_ms = 4;
+
+  // model is the model override for this subagent, if any.
+  string model = 5;
+}
+
+// FileEvent captures a file operation.
+message FileEvent {
+  // file_path is the absolute path of the affected file.
+  string file_path = 1;
+
+  // operation is what happened to the file.
+  FileOperation operation = 2;
+
+  // language is the detected language from the file extension (e.g. "go", "rust", "proto").
+  string language = 3;
+
+  // size_bytes is the file size after the operation.
+  int64 size_bytes = 4;
+
+  // lines_changed is the number of lines added or modified.
+  int32 lines_changed = 5;
+
+  // is_new_file is true when a file is created for the first time.
+  bool is_new_file = 6;
+
+  // is_generated is true when the file was written by a subagent (not the root agent).
+  bool is_generated = 7;
+}
+
+// PromptEvent captures a user prompt submission.
+message PromptEvent {
+  // prompt_length is the character count of the user prompt.
+  int32 prompt_length = 1;
+
+  // has_images is true if the prompt included image attachments.
+  bool has_images = 2;
+}
+
+// StopEvent captures why the agent stopped responding.
+message StopEvent {
+  // reason is why the agent stopped (e.g. "end_turn", "max_tokens").
+  string reason = 1;
+}
+
+// ============================================================================
+// Core event — the unit that flows through EventBus
+// ============================================================================
+
+// SensorEvent is the top-level event published to EventBus.
+// Each event represents one hook firing in one coding-agent session.
+message SensorEvent {
+  // ── Identity claims ────────────────────────────────────────────────
+  // Stamped by Herald from the publishing user's verified JWT.
+  // Not populated by clients — Herald overwrites these server-side.
+
+  // Field 1 was map<string, string> claims — replaced by typed claim fields.
+  reserved 1;
+
+  // subject is the authenticated user identity (JWT "sub" claim).
+  string subject = 15;
+
+  // issuer is the identity provider (JWT "iss" claim).
+  string issuer = 16;
+
+  // audience is the intended recipient service (JWT "aud" claim).
+  string audience = 17;
+
+  // email is the user's email address from the JWT.
+  string email = 18;
+
+  // service_id identifies the publishing service (for S2S tokens).
+  string service_id = 19;
+
+  // instance_id identifies the specific service instance (for S2S tokens).
+  string instance_id = 25;
+
+  // ── Event identity ────────────────────────────────────────────────
+
+  // event_id is a unique identifier for this event (UUID).
+  string event_id = 2;
+
+  // timestamp_ms is when the hook fired (wall clock on the workstation).
+  int64 timestamp_ms = 3;
+
+  // event_type classifies this event.
+  SensorEventType event_type = 4;
+
+  // ── Session context ────────────────────────────────────────────────
+
+  // session_id is the coding-agent session identifier.
+  string session_id = 5;
+
+  // working_directory is the project root for this session.
+  string working_directory = 6;
+
+  // ── Agent hierarchy ────────────────────────────────────────────────
+
+  // agent_id identifies this specific agent instance.
+  // For the root agent, this equals session_id.
+  // For subagents, this is their spawned instance ID.
+  string agent_id = 7;
+
+  // parent_agent_id is the agent that spawned this one.
+  // Empty for the root agent.
+  string parent_agent_id = 8;
+
+  // depth is the nesting level in the agent tree (0 = root).
+  int32 depth = 9;
+
+  // ── Sensor identity ────────────────────────────────────────────────
+
+  // sensor_node_id identifies which workstation/sensor produced this event.
+  string sensor_node_id = 10;
+
+  // username is the OS user running the IDE agent.
+  string username = 11;
+
+  // sensor_type identifies which coding-agent sensor produced this event.
+  SensorType sensor_type = 12;
+
+  // ── Hook metadata ────────────────────────────────────────────────
+
+  // transcript_path is the path to the conversation JSONL file on the workstation.
+  // Links this event back to the full conversation transcript.
+  string transcript_path = 13;
+
+  // hook_phase distinguishes pre- vs post-execution hook firings.
+  HookPhase hook_phase = 14;
+
+  // ── Event payload ────────────────────────────────────────────────
+
+  oneof payload {
+    SessionEvent session = 20;
+    ToolUseEvent tool_use = 21;
+    SubagentEvent subagent = 22;
+    PromptEvent prompt = 23;
+    StopEvent stop = 24;
+  }
+}
+
+// ============================================================================
+// EventBus topic
+// ============================================================================
+
+// AgenticCodeEventBus holds the event topic for all coding-agent sensor data.
+// Sensor daemons (blueclaude, etc.) publish SensorEvents here; Aegis
+// subscribes for workstation-side observability. The sensor_type field on
+// each event identifies the originating agent.
+message AgenticCodeEventBus {
+
+  // event_stream is the EventBus topic for sensor events.
+  SensorEvent event_stream = 1;
+}
+
+// ============================================================================
+// Auto-generated State Service (tacplus)
+// ============================================================================
+
+service AgenticCodeEventBusStateService {
+	// Topic: EventStream
+	rpc PublishToEventStream(SensorEvent) returns (TopicPublishReceipt);
+	rpc SubscribeToEventStream(google.protobuf.Empty) returns (stream SensorEvent);
+}
+
+message MapEmpty {}
+
+message TopicPublishReceipt { bool published = 1; }

@@ -1,8 +1,8 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.PersistenceProvider;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast.MapRegistry;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast.PersistenceProvider;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
 

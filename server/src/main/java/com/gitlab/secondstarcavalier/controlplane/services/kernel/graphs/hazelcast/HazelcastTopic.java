@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
-package com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast;
+package com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast;
 
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.ITopic;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.ITopic;
 import java.util.function.Consumer;
 
 /**

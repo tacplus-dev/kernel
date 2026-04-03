@@ -1,8 +1,8 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
-package com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast;
+package com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.ConsistencyType;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IMap;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.IMap;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageLite;
 import com.google.protobuf.Parser;

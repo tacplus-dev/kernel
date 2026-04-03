@@ -1,10 +1,10 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.PersistenceProvider;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast.MapRegistry;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast.PersistenceProvider;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.ConsistencyType;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IMap;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.IMap;
 import com.hazelcast.core.HazelcastInstance;
 import java.io.IOException;
 import java.nio.file.Files;

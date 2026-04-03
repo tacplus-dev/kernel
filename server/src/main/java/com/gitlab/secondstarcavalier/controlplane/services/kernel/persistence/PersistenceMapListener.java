@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.services.kernel.persistence;
 
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.RedoLogEntry;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.PersistenceEntry;
 import com.google.protobuf.ByteString;

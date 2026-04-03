@@ -1,17 +1,17 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
-package com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast;
+package com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast;
 
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast.ConsistencyType;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IList;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IMap;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IPriorityQueue;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IQueue;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.ISet;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.ITopic;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IdGenerator;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Lock;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.Manager;
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.MultiMap;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.IList;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.IMap;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.IPriorityQueue;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.IQueue;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.ISet;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.ITopic;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.IdGenerator;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.Lock;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.Manager;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.MultiMap;
 import com.hazelcast.core.HazelcastInstance;
 import java.util.Objects;
 

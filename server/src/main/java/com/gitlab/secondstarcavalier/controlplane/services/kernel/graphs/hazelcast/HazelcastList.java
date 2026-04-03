@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
-package com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast;
+package com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast;
 
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IList;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.IList;
 import java.util.ArrayList;
 import java.util.List;
 

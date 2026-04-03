@@ -53,7 +53,7 @@ public final class KitchenSinkHelper {
 	 * @return the deserialized message, or null if no payload or parser unavailable
 	 */
 	public static MessageLite getPayload(PersistenceEntry entry,
-			com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.MapRegistry registry) {
+			com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast.MapRegistry registry) {
 		if (!entry.hasPayload()) {
 			return null;
 		}

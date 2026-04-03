@@ -1,8 +1,7 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
-package com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast;
+package com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast;
 
-import com.gitlab.secondstarcavalier.controlplane.services.proto.interfaces.java.graphs.IMap;
-import com.hazelcast.replicatedmap.ReplicatedMap;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.IMap;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Objects;
@@ -11,22 +10,17 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 
 /**
- * HazelcastReplicatedMap adapts a Hazelcast {@link ReplicatedMap} to the
- * {@link IMap} interface. ReplicatedMaps store a full copy on every cluster
- * member, providing always-local reads with async-replicated writes.
- *
- * <p>
- * Operations not supported by ReplicatedMap (locking, async, eviction,
- * tryPut/tryRemove) throw {@link UnsupportedOperationException}.
+ * HazelcastMap adapts a Hazelcast {@link com.hazelcast.map.IMap} to the
+ * {@link IMap} interface, keeping Hazelcast types out of generated code.
  *
  * @param <K> the key type
  * @param <V> the value type
  */
-class HazelcastReplicatedMap<K, V> implements IMap<K, V> {
+class HazelcastMap<K, V> implements IMap<K, V> {
 
-	private final ReplicatedMap<K, V> delegate;
+	private final com.hazelcast.map.IMap<K, V> delegate;
 
-	HazelcastReplicatedMap(ReplicatedMap<K, V> delegate) {
+	HazelcastMap(com.hazelcast.map.IMap<K, V> delegate) {
 		this.delegate = Objects.requireNonNull(delegate, "delegate");
 	}
 
@@ -54,12 +48,16 @@ class HazelcastReplicatedMap<K, V> implements IMap<K, V> {
 
 	@Override
 	public void set(K key, V value) {
-		delegate.put(Objects.requireNonNull(key, "key"), Objects.requireNonNull(value, "value"));
+		delegate.set(Objects.requireNonNull(key, "key"), Objects.requireNonNull(value, "value"));
 	}
 
 	@Override
 	public void set(K key, V value, long ttl, TimeUnit ttlUnit) {
-		throw new UnsupportedOperationException("set(K,V,ttl) not supported on ReplicatedMap");
+		delegate.set(
+				Objects.requireNonNull(key, "key"),
+				Objects.requireNonNull(value, "value"),
+				ttl,
+				Objects.requireNonNull(ttlUnit, "ttlUnit"));
 	}
 
 	@Override
@@ -69,7 +67,11 @@ class HazelcastReplicatedMap<K, V> implements IMap<K, V> {
 
 	@Override
 	public V putIfAbsent(K key, V value, long ttl, TimeUnit ttlUnit) {
-		throw new UnsupportedOperationException("putIfAbsent(K,V,ttl) not supported on ReplicatedMap");
+		return delegate.putIfAbsent(
+				Objects.requireNonNull(key, "key"),
+				Objects.requireNonNull(value, "value"),
+				ttl,
+				Objects.requireNonNull(ttlUnit, "ttlUnit"));
 	}
 
 	@Override
@@ -87,19 +89,12 @@ class HazelcastReplicatedMap<K, V> implements IMap<K, V> {
 
 	@Override
 	public boolean remove(K key, V value) {
-		K nonNullKey = Objects.requireNonNull(key, "key");
-		V nonNullValue = Objects.requireNonNull(value, "value");
-		V current = delegate.get(nonNullKey);
-		if (Objects.equals(current, nonNullValue)) {
-			delegate.remove(nonNullKey);
-			return true;
-		}
-		return false;
+		return delegate.remove(Objects.requireNonNull(key, "key"), Objects.requireNonNull(value, "value"));
 	}
 
 	@Override
 	public void delete(K key) {
-		delegate.remove(Objects.requireNonNull(key, "key"));
+		delegate.delete(Objects.requireNonNull(key, "key"));
 	}
 
 	// ========================================================================
@@ -107,25 +102,15 @@ class HazelcastReplicatedMap<K, V> implements IMap<K, V> {
 	// ========================================================================
 	@Override
 	public V replace(K key, V value) {
-		K nonNullKey = Objects.requireNonNull(key, "key");
-		V nonNullValue = Objects.requireNonNull(value, "value");
-		if (delegate.containsKey(nonNullKey)) {
-			return delegate.put(nonNullKey, nonNullValue);
-		}
-		return null;
+		return delegate.replace(Objects.requireNonNull(key, "key"), Objects.requireNonNull(value, "value"));
 	}
 
 	@Override
 	public boolean replace(K key, V oldValue, V newValue) {
-		K nonNullKey = Objects.requireNonNull(key, "key");
-		V nonNullOldValue = Objects.requireNonNull(oldValue, "oldValue");
-		V nonNullNewValue = Objects.requireNonNull(newValue, "newValue");
-		V current = delegate.get(nonNullKey);
-		if (Objects.equals(current, nonNullOldValue)) {
-			delegate.put(nonNullKey, nonNullNewValue);
-			return true;
-		}
-		return false;
+		return delegate.replace(
+				Objects.requireNonNull(key, "key"),
+				Objects.requireNonNull(oldValue, "oldValue"),
+				Objects.requireNonNull(newValue, "newValue"));
 	}
 
 	// ========================================================================
@@ -143,7 +128,7 @@ class HazelcastReplicatedMap<K, V> implements IMap<K, V> {
 
 	@Override
 	public Map<K, V> getAll(Set<K> keys) {
-		throw new UnsupportedOperationException("getAll not supported on ReplicatedMap");
+		return delegate.getAll(Objects.requireNonNull(keys, "keys"));
 	}
 
 	// ========================================================================
@@ -183,109 +168,136 @@ class HazelcastReplicatedMap<K, V> implements IMap<K, V> {
 	}
 
 	// ========================================================================
-	// Eviction — not supported on ReplicatedMap
+	// Eviction
 	// ========================================================================
 	@Override
 	public boolean evict(K key) {
-		throw new UnsupportedOperationException("evict not supported on ReplicatedMap");
+		return delegate.evict(Objects.requireNonNull(key, "key"));
 	}
 
 	@Override
 	public void evictAll() {
-		throw new UnsupportedOperationException("evictAll not supported on ReplicatedMap");
+		delegate.evictAll();
 	}
 
 	// ========================================================================
-	// Try Operations — not supported on ReplicatedMap
+	// Try Operations
 	// ========================================================================
 	@Override
 	public boolean tryPut(K key, V value, long timeout, TimeUnit timeUnit) {
-		throw new UnsupportedOperationException("tryPut not supported on ReplicatedMap");
+		return delegate.tryPut(
+				Objects.requireNonNull(key, "key"),
+				Objects.requireNonNull(value, "value"),
+				timeout,
+				Objects.requireNonNull(timeUnit, "timeUnit"));
 	}
 
 	@Override
 	public boolean tryRemove(K key, long timeout, TimeUnit timeUnit) {
-		throw new UnsupportedOperationException("tryRemove not supported on ReplicatedMap");
+		return delegate.tryRemove(
+				Objects.requireNonNull(key, "key"),
+				timeout,
+				Objects.requireNonNull(timeUnit, "timeUnit"));
 	}
 
 	// ========================================================================
-	// Per-Key Locking — not supported on ReplicatedMap
+	// Per-Key Locking
 	// ========================================================================
 	@Override
 	public void lock(K key) {
-		throw new UnsupportedOperationException("lock not supported on ReplicatedMap");
+		delegate.lock(Objects.requireNonNull(key, "key"));
 	}
 
 	@Override
 	public void lock(K key, long leaseTime, TimeUnit timeUnit) {
-		throw new UnsupportedOperationException("lock not supported on ReplicatedMap");
+		delegate.lock(
+				Objects.requireNonNull(key, "key"),
+				leaseTime,
+				Objects.requireNonNull(timeUnit, "timeUnit"));
 	}
 
 	@Override
 	public void unlock(K key) {
-		throw new UnsupportedOperationException("unlock not supported on ReplicatedMap");
+		delegate.unlock(Objects.requireNonNull(key, "key"));
 	}
 
 	@Override
 	public boolean tryLock(K key) {
-		throw new UnsupportedOperationException("tryLock not supported on ReplicatedMap");
+		return delegate.tryLock(Objects.requireNonNull(key, "key"));
 	}
 
 	@Override
-	public boolean tryLock(K key, long time, TimeUnit timeUnit) {
-		throw new UnsupportedOperationException("tryLock not supported on ReplicatedMap");
+	public boolean tryLock(K key, long time, TimeUnit timeUnit) throws InterruptedException {
+		return delegate.tryLock(
+				Objects.requireNonNull(key, "key"),
+				time,
+				Objects.requireNonNull(timeUnit, "timeUnit"));
 	}
 
 	@Override
-	public boolean tryLock(K key, long time, TimeUnit timeUnit, long leaseTime, TimeUnit leaseTimeUnit) {
-		throw new UnsupportedOperationException("tryLock not supported on ReplicatedMap");
+	public boolean tryLock(K key, long time, TimeUnit timeUnit, long leaseTime, TimeUnit leaseTimeUnit)
+			throws InterruptedException {
+		return delegate.tryLock(
+				Objects.requireNonNull(key, "key"),
+				time,
+				Objects.requireNonNull(timeUnit, "timeUnit"),
+				leaseTime,
+				Objects.requireNonNull(leaseTimeUnit, "leaseTimeUnit"));
 	}
 
 	@Override
 	public boolean isLocked(K key) {
-		throw new UnsupportedOperationException("isLocked not supported on ReplicatedMap");
+		return delegate.isLocked(Objects.requireNonNull(key, "key"));
 	}
 
 	@Override
 	public void forceUnlock(K key) {
-		throw new UnsupportedOperationException("forceUnlock not supported on ReplicatedMap");
+		delegate.forceUnlock(Objects.requireNonNull(key, "key"));
 	}
 
 	// ========================================================================
-	// Async Operations — not supported on ReplicatedMap
+	// Async Operations
 	// ========================================================================
 	@Override
 	public CompletionStage<V> getAsync(K key) {
-		throw new UnsupportedOperationException("getAsync not supported on ReplicatedMap");
+		return delegate.getAsync(Objects.requireNonNull(key, "key"));
 	}
 
 	@Override
 	public CompletionStage<V> putAsync(K key, V value) {
-		throw new UnsupportedOperationException("putAsync not supported on ReplicatedMap");
+		return delegate.putAsync(Objects.requireNonNull(key, "key"), Objects.requireNonNull(value, "value"));
 	}
 
 	@Override
 	public CompletionStage<V> putAsync(K key, V value, long ttl, TimeUnit ttlUnit) {
-		throw new UnsupportedOperationException("putAsync not supported on ReplicatedMap");
+		return delegate.putAsync(
+				Objects.requireNonNull(key, "key"),
+				Objects.requireNonNull(value, "value"),
+				ttl,
+				Objects.requireNonNull(ttlUnit, "ttlUnit"));
 	}
 
 	@Override
 	public CompletionStage<Void> setAsync(K key, V value) {
-		throw new UnsupportedOperationException("setAsync not supported on ReplicatedMap");
+		return delegate.setAsync(Objects.requireNonNull(key, "key"), Objects.requireNonNull(value, "value"));
 	}
 
 	@Override
 	public CompletionStage<Void> setAsync(K key, V value, long ttl, TimeUnit ttlUnit) {
-		throw new UnsupportedOperationException("setAsync not supported on ReplicatedMap");
+		return delegate.setAsync(
+				Objects.requireNonNull(key, "key"),
+				Objects.requireNonNull(value, "value"),
+				ttl,
+				Objects.requireNonNull(ttlUnit, "ttlUnit"));
 	}
 
 	@Override
 	public CompletionStage<V> removeAsync(K key) {
-		throw new UnsupportedOperationException("removeAsync not supported on ReplicatedMap");
+		return delegate.removeAsync(Objects.requireNonNull(key, "key"));
 	}
 
 	@Override
 	public CompletionStage<Boolean> deleteAsync(K key) {
-		throw new UnsupportedOperationException("deleteAsync not supported on ReplicatedMap");
+		return delegate.deleteAsync(Objects.requireNonNull(key, "key"));
 	}
 }

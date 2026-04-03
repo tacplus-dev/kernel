@@ -3,8 +3,8 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster;
 
 import static com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster.PeerContext.PEER_KEY;
 
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.HazelcastManager;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.hazelcast.PersistenceProvider;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast.HazelcastManager;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast.PersistenceProvider;
 // StateServer is in this package
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;

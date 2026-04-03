@@ -22,11 +22,14 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.services.Services;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,7 +53,9 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	private static final Logger logger = LoggerFactory.getLogger(IdentityServiceImpl.class);
 
 	private static final Set<String> STANDARD_JWT_CLAIMS = Set.of("sub", "iss", "aud", "exp", "iat", "azp", "nbf",
-			"jti", "typ", "profiles", "token_use", "sub_type");
+			"jti", "typ", "profiles", "token_use", "sub_type",
+			"spiffe_id", "scope", "terminal", "parent_spiffe_id", "locality",
+			"instance_id", "principal");
 
 	// Claims from external IdPs that get origin_ prefix to avoid collision with Cavalier claims.
 	private static final Set<String> WELL_KNOWN_JWT_CLAIMS = Set.of(
@@ -63,10 +68,20 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	private static final String TOKEN_USE_REFRESH = "refresh";
 	private static final String TOKEN_USE_ACCESS = "access";
 	private static final String TOKEN_USE_SERVICE = "service";
+	private static final String TOKEN_USE_BOOTSTRAP = "bootstrap";
 
 	// sub_type claim values — identifies what the sub claim represents.
 	private static final String SUB_TYPE_SERVICE = "service";
 	private static final String SUB_TYPE_USER = "user";
+
+	// SPIFFE workload identity claim names.
+	private static final String SPIFFE_ID = "spiffe_id";
+	private static final String SCOPE = "scope";
+	private static final String TERMINAL = "terminal";
+	private static final String PARENT_SPIFFE_ID = "parent_spiffe_id";
+	private static final String LOCALITY = "locality";
+
+	private static final Pattern WORKLOAD_NAME_PATTERN = Pattern.compile("[a-zA-Z0-9_-]+");
 
 	private static final Gson GSON = new Gson();
 
@@ -225,9 +240,17 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 				logger.info("Generated new instance_id={} for sub={}", instanceId, delegateName);
 			}
 
+			String spiffeId = "spiffe://" + trustDomainReader.get() + "/" + delegateName;
+			String scopeStr = buildScopeString(matchedDelegate.getAuthorizedServicesList());
+			Map<String, Object> extraClaims = new java.util.LinkedHashMap<>();
+			extraClaims.put("instance_id", instanceId);
+			extraClaims.put("sub_type", SUB_TYPE_SERVICE);
+			extraClaims.put(SPIFFE_ID, spiffeId);
+			extraClaims.put(SCOPE, scopeStr);
+
 			return mintRefreshToken(
 					delegateName, delegateName, request,
-					Map.of("instance_id", instanceId, "sub_type", SUB_TYPE_SERVICE));
+					extraClaims);
 		}
 
 		String issuer = inputToken.getIssuer();
@@ -523,6 +546,17 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			throw new StatusException(Status.UNAUTHENTICATED, "refresh token verification failed: " + e.getMessage());
 		}
 
+		// Bootstrap tokens are exchanged for real refresh+access pairs (workload bootstrap).
+		if (TOKEN_USE_BOOTSTRAP.equals(tokenUse)) {
+			ImmutableKey bsSigningKey = keyRotator.getActiveSigningKey();
+			if (bsSigningKey == null) {
+				throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+			}
+			long bsNow = Instant.now().getEpochSecond();
+			long bsExp = bsNow + defaultTokenExpirySeconds;
+			return exchangeBootstrapToRefresh(inputToken, bsSigningKey, bsNow, bsExp);
+		}
+
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey();
 		if (signingKey == null) {
 			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
@@ -548,6 +582,19 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 		Kernel.Delegate delegate = findDelegateByName(subject);
 		boolean isS2S = delegate != null;
+
+		// Locality validation for workload tokens (child workloads present a locality_token on refresh).
+		// TODO: Wire WorkloadState map after codegen — look up parent's locality and compare.
+		if (isRefresh) {
+			String parentSpiffe = inputToken.getCustomField(PARENT_SPIFFE_ID);
+			if (parentSpiffe != null && !parentSpiffe.isEmpty()) {
+				String localityToken = request.getLocalityToken();
+				if (localityToken == null || localityToken.isEmpty()) {
+					logger.warn("Workload token refresh without locality_token: sub={}", subject);
+					// TODO: reject once WorkloadState locality lookups are wired
+				}
+			}
+		}
 
 		// Refresh tokens cannot directly mint service-specific tokens.
 		// Exchange refresh → access first, then access → service token.
@@ -605,6 +652,20 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 				String instanceId = inputToken.getInstanceId();
 				if (instanceId != null && !instanceId.isEmpty()) {
 					newToken.setInstanceId(instanceId);
+				}
+			}
+
+			// Forward SPIFFE claims from input token to service token.
+			{
+				String spiffeId = inputToken.getCustomField(SPIFFE_ID);
+				if (spiffeId != null && !spiffeId.isEmpty()) {
+					newToken.setCustomField(SPIFFE_ID, spiffeId);
+					String scope = inputToken.getCustomField(SCOPE);
+					if (scope != null) newToken.setCustomField(SCOPE, scope);
+					String terminal = inputToken.getCustomField(TERMINAL);
+					if (terminal != null) newToken.setCustomField(TERMINAL, terminal);
+					String parentSpiffeId = inputToken.getCustomField(PARENT_SPIFFE_ID);
+					if (parentSpiffeId != null) newToken.setCustomField(PARENT_SPIFFE_ID, parentSpiffeId);
 				}
 			}
 
@@ -906,6 +967,285 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		logger.info("Created intermediate CA for service: {}", serviceName);
 
 		return ImmutableCertChain.from(intermediateProto);
+	}
+
+	// ========================================================================
+	// Workload Identity (SPIFFE)
+	// ========================================================================
+
+	@Override
+	public void workloadMint(Tokenrequest.WorkloadMintRequest request,
+			StreamObserver<Tokenrequest.WorkloadMintResponse> responseObserver) {
+		try {
+			Tokenrequest.WorkloadMintResponse result = doWorkloadMint(request);
+			responseObserver.onNext(result);
+			responseObserver.onCompleted();
+		} catch (StatusException e) {
+			responseObserver.onError(e.toGrpcStatus().asRuntimeException());
+		} catch (Exception e) {
+			logger.error("WorkloadMint failed", e);
+			responseObserver.onError(Status.INTERNAL
+					.withDescription("workload mint failed: " + e.getMessage())
+					.asRuntimeException());
+		}
+	}
+
+	private Tokenrequest.WorkloadMintResponse doWorkloadMint(Tokenrequest.WorkloadMintRequest request)
+			throws StatusException {
+		// Auth: extract caller's bearer token.
+		String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
+		if (rawToken == null || rawToken.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED, "workload mint requires authorization header");
+		}
+		TokenWrapper callerToken;
+		try {
+			callerToken = TokenWrapper.parse(rawToken);
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED, "invalid caller token: " + e.getMessage());
+		}
+
+		// Verify against cluster keys.
+		String kid = callerToken.getKid();
+		if (kid == null || kid.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
+		}
+		JwkOuterClass.Jwk matchingKey = null;
+		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+			if (kid.equals(jwk.getKid())) {
+				matchingKey = jwk;
+				break;
+			}
+		}
+		if (matchingKey == null) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token signed with unknown key: " + kid);
+		}
+		try {
+			callerToken.verify(ImmutableJwk.from(matchingKey));
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token verification failed: " + e.getMessage());
+		}
+
+		// Validate caller has a SPIFFE ID and is not terminal.
+		String callerSpiffeId = callerToken.getCustomField(SPIFFE_ID);
+		if (callerSpiffeId == null || callerSpiffeId.isEmpty()) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"caller has no spiffe_id — only SPIFFE-identified services can mint workloads");
+		}
+		String callerTerminal = callerToken.getCustomField(TERMINAL);
+		if ("true".equals(callerTerminal)) {
+			throw new StatusException(Status.PERMISSION_DENIED, "terminal workloads cannot mint children");
+		}
+
+		// Validate workload_name.
+		String workloadName = request.getWorkloadName();
+		if (workloadName == null || workloadName.isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "workload_name is required");
+		}
+		if (!WORKLOAD_NAME_PATTERN.matcher(workloadName).matches()) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "workload_name must match [a-zA-Z0-9_-]+");
+		}
+
+		// Validate scope is a subset of caller's scope.
+		Set<String> callerScope = parseScopeSet(callerToken.getCustomField(SCOPE));
+		String requestScopeStr = buildScopeString(request.getScopeList());
+		Set<String> requestScope = parseScopeSet(requestScopeStr);
+		if (!callerScope.contains("*") && !callerScope.containsAll(requestScope)) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"requested scope " + requestScope + " exceeds caller's scope " + callerScope);
+		}
+
+		// Construct child SPIFFE ID.
+		String childSpiffeId = callerSpiffeId + "/" + workloadName;
+
+		// Mint bootstrap token (short-lived).
+		ImmutableKey signingKey = keyRotator.getActiveSigningKey();
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+
+		long now = Instant.now().getEpochSecond();
+		long bootstrapExp;
+		if (request.getExp() > 0) {
+			bootstrapExp = request.getExp();
+			if (bootstrapExp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT, "exp must be in the future");
+			}
+			// Cap bootstrap token lifetime to 5 minutes.
+			if (bootstrapExp > now + 300) {
+				bootstrapExp = now + 300;
+			}
+		} else {
+			bootstrapExp = now + 60; // default 60s
+		}
+
+		TokenWrapper bootstrapToken = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(childSpiffeId)
+				.setAudience("kernel")
+				.setIssuedAt(now)
+				.setExpiration(bootstrapExp)
+				.setJTI(UUID.randomUUID().toString());
+
+		bootstrapToken.setCustomField(SPIFFE_ID, childSpiffeId);
+		bootstrapToken.setCustomField(PARENT_SPIFFE_ID, callerSpiffeId);
+		bootstrapToken.setCustomField(SCOPE, requestScopeStr);
+		bootstrapToken.setCustomField(TERMINAL, request.getTerminal() ? "true" : "false");
+		bootstrapToken.setTokenUse(TOKEN_USE_BOOTSTRAP);
+		bootstrapToken.setSubType(SUB_TYPE_SERVICE);
+
+		bootstrapToken.sign(signingKey);
+
+		logger.info("WorkloadMint: parent={}, child={}, scope={}, terminal={}",
+				callerSpiffeId, childSpiffeId, requestScopeStr, request.getTerminal());
+
+		return Tokenrequest.WorkloadMintResponse.newBuilder()
+				.setBootstrapToken(bootstrapToken.getProto())
+				.build();
+	}
+
+	/** Exchanges a bootstrap token for a real refresh + access token pair. */
+	private Tokenrequest.TokenMintResponse exchangeBootstrapToRefresh(
+			TokenWrapper bootstrapToken, ImmutableKey signingKey, long now, long exp) throws StatusException {
+
+		String spiffeId = bootstrapToken.getCustomField(SPIFFE_ID);
+		String parentSpiffeId = bootstrapToken.getCustomField(PARENT_SPIFFE_ID);
+		String scope = bootstrapToken.getCustomField(SCOPE);
+		String terminal = bootstrapToken.getCustomField(TERMINAL);
+
+		if (spiffeId == null || spiffeId.isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "bootstrap token missing spiffe_id");
+		}
+
+		String instanceId = UUID.randomUUID().toString();
+
+		// Mint refresh token.
+		TokenWrapper refreshToken = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(spiffeId)
+				.setAudience("kernel")
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+
+		refreshToken.setTokenUse(TOKEN_USE_REFRESH);
+		refreshToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
+		refreshToken.setSubType(SUB_TYPE_SERVICE);
+		refreshToken.setAzp("kernel");
+		refreshToken.setInstanceId(instanceId);
+		refreshToken.setCustomField(SPIFFE_ID, spiffeId);
+		if (parentSpiffeId != null) refreshToken.setCustomField(PARENT_SPIFFE_ID, parentSpiffeId);
+		if (scope != null) refreshToken.setCustomField(SCOPE, scope);
+		if (terminal != null) refreshToken.setCustomField(TERMINAL, terminal);
+
+		refreshToken.sign(signingKey);
+
+		// Mint access token.
+		TokenOuterClass.Token accessProto = mintAccessFromRefresh(refreshToken, signingKey, now, exp);
+
+		logger.info("Bootstrap exchange: spiffe_id={}, instance_id={}", spiffeId, instanceId);
+
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setRefreshToken(refreshToken.getProto())
+				.setAccessToken(accessProto)
+				.build();
+	}
+
+	@Override
+	public void workloadRevoke(Kernel.WorkloadRevokeRequest request,
+			StreamObserver<com.google.protobuf.Empty> responseObserver) {
+		try {
+			doWorkloadRevoke(request);
+			responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
+			responseObserver.onCompleted();
+		} catch (StatusException e) {
+			responseObserver.onError(e.toGrpcStatus().asRuntimeException());
+		} catch (Exception e) {
+			logger.error("WorkloadRevoke failed", e);
+			responseObserver.onError(Status.INTERNAL
+					.withDescription("workload revoke failed: " + e.getMessage())
+					.asRuntimeException());
+		}
+	}
+
+	private void doWorkloadRevoke(Kernel.WorkloadRevokeRequest request) throws StatusException {
+		// Auth: extract caller's bearer token.
+		String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
+		if (rawToken == null || rawToken.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED, "workload revoke requires authorization header");
+		}
+		TokenWrapper callerToken;
+		try {
+			callerToken = TokenWrapper.parse(rawToken);
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED, "invalid caller token: " + e.getMessage());
+		}
+
+		// Verify against cluster keys.
+		String kid = callerToken.getKid();
+		if (kid == null || kid.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
+		}
+		JwkOuterClass.Jwk matchingKey = null;
+		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+			if (kid.equals(jwk.getKid())) {
+				matchingKey = jwk;
+				break;
+			}
+		}
+		if (matchingKey == null) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token signed with unknown key: " + kid);
+		}
+		try {
+			callerToken.verify(ImmutableJwk.from(matchingKey));
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token verification failed: " + e.getMessage());
+		}
+
+		// Validate caller has a SPIFFE ID.
+		String callerSpiffeId = callerToken.getCustomField(SPIFFE_ID);
+		if (callerSpiffeId == null || callerSpiffeId.isEmpty()) {
+			throw new StatusException(Status.PERMISSION_DENIED, "caller has no spiffe_id");
+		}
+
+		// Validate target is a descendant of the caller.
+		String targetSpiffeId = request.getSpiffeId();
+		if (targetSpiffeId == null || targetSpiffeId.isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "spiffe_id is required");
+		}
+		if (!targetSpiffeId.startsWith(callerSpiffeId + "/")) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"cannot revoke " + targetSpiffeId + " — not a descendant of " + callerSpiffeId);
+		}
+
+		// TODO: Write revocation to WorkloadState after codegen runs.
+		logger.info("WorkloadRevoke (deferred): caller={}, target={}", callerSpiffeId, targetSpiffeId);
+	}
+
+	/** Builds a scope claim string from a list of ServiceName enums. */
+	private static String buildScopeString(List<Services.ServiceName> serviceNames) {
+		for (var sn : serviceNames) {
+			if ("SERVICE_NAME_ANY".equals(sn.name())) return "*";
+		}
+		StringBuilder sb = new StringBuilder();
+		for (var sn : serviceNames) {
+			String name = sn.name();
+			if ("SERVICE_NAME_UNSPECIFIED".equals(name)) continue;
+			if (sb.length() > 0) sb.append(",");
+			sb.append(name.replace("SERVICE_NAME_", "").toLowerCase());
+		}
+		return sb.toString();
+	}
+
+	/** Parses a scope string into a set. */
+	private static Set<String> parseScopeSet(String scope) {
+		if (scope == null || scope.isEmpty()) return Set.of();
+		if ("*".equals(scope)) return Set.of("*");
+		Set<String> result = new HashSet<>();
+		for (String s : scope.split(",")) {
+			String trimmed = s.trim();
+			if (!trimmed.isEmpty()) result.add(trimmed);
+		}
+		return result;
 	}
 
 	// ========================================================================

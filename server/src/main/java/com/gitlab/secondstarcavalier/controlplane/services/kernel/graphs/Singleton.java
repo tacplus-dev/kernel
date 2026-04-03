@@ -3,6 +3,8 @@ package com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs;
 
 /**
  * Marker interface for singleton distributed objects.
+ * Singletons are stored in IMaps under a well-known key.
  */
 public interface Singleton {
+	String SINGLETON_KEY = "SINGLETON";
 }

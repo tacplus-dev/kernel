@@ -61,6 +61,13 @@ public class BoundaryAnalyzer {
 				continue;
 			}
 
+			// Skip injected trace fields (200-203) — they are not state boundaries.
+			String fieldName = field.getName();
+			if ("trace".equals(fieldName) || "trace_rounds".equals(fieldName)
+					|| "trace_email".equals(fieldName) || "trace_request_id".equals(fieldName)) {
+				continue;
+			}
+
 			// Collect view boundaries (read-only unions of source collections)
 			if (field.getAnnotations().containsKey("view_sources")) {
 				SharedView view = new SharedView();

@@ -19,6 +19,11 @@ variables:
 build:
   stage: build
   image: $TACPLUS_IMAGE
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
   cache:
@@ -28,9 +33,11 @@ build:
   before_script:
     - *setup-netrc
     - *parse-version
-    - tacplus build --no-container --skip-post --tag "${CI_COMMIT_TAG#v}"
+    - mkdir -p ~/.docker
+    - printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY" "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64)" > ~/.docker/config.json
+    - tacplus build --no-container --tag "${CI_COMMIT_TAG#v}"
   script:
-    - mvn package -DskipTests -B -s ci_settings.xml
+    - echo "Build completed by tacplus post-gen"
   artifacts:
     paths:
       - server/target/kernel.jar

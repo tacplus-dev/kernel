@@ -13,6 +13,9 @@ variables:
     MINOR="$(echo "$V" | cut -d. -f2)"
     PATCH="$(echo "$V" | cut -d. -f3)"
 
+.setup-netrc: &setup-netrc
+  - printf "machine gitlab.com\nlogin gitlab-ci-token\npassword %s\n" "$CI_JOB_TOKEN" > ~/.netrc
+
 build:
   stage: build
   image: $TACPLUS_IMAGE
@@ -23,13 +26,14 @@ build:
     paths:
       - .m2/repository
   before_script:
+    - *setup-netrc
     - *parse-version
-    - (cd kernel/tacplus && tacplus build --no-container --tag "${CI_COMMIT_TAG#v}")
+    - tacplus build --no-container --skip-post --tag "${CI_COMMIT_TAG#v}"
   script:
-    - cd kernel && mvn package -DskipTests -B -s ci_settings.xml
+    - mvn package -DskipTests -B -s ci_settings.xml
   artifacts:
     paths:
-      - kernel/server/target/kernel.jar
+      - server/target/kernel.jar
     expire_in: 1 hour
 
 package:
@@ -52,4 +56,4 @@ package:
         --platform linux/amd64,linux/arm64 \
         -t "${IMAGE}:${PATCH}" \
         -t "${IMAGE}:latest" \
-        --push kernel
+        --push .

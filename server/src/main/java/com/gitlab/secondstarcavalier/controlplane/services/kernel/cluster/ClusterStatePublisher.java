@@ -41,7 +41,7 @@ public class ClusterStatePublisher {
 	private final HazelcastInstance hazelcast;
 	private final ClusterMap clusterStateMap;
 	private final PersistenceProvider persistence;
-	private final Kernel.BootstrapConfig bootstrapConfig;
+	private final Kernel.Config config;
 	private final int grpcPort;
 	private final RateLimitInterceptor rateLimiter;
 	private final Supplier<Hazelcast.AdminTokenCacheStats> tokenCacheStatsSupplier;
@@ -54,8 +54,7 @@ public class ClusterStatePublisher {
 			HazelcastInstance hazelcast,
 			ClusterMap clusterStateMap,
 			PersistenceProvider persistence,
-			Kernel.BootstrapConfig bootstrapConfig,
-			Kernel.Config frontendConfig,
+			Kernel.Config config,
 			int grpcPort,
 			RateLimitInterceptor rateLimiter,
 			Supplier<Hazelcast.AdminTokenCacheStats> tokenCacheStatsSupplier,
@@ -63,7 +62,7 @@ public class ClusterStatePublisher {
 		this.hazelcast = hazelcast;
 		this.clusterStateMap = clusterStateMap;
 		this.persistence = persistence;
-		this.bootstrapConfig = bootstrapConfig;
+		this.config = config;
 		this.grpcPort = grpcPort;
 		this.rateLimiter = rateLimiter;
 		this.tokenCacheStatsSupplier = tokenCacheStatsSupplier;
@@ -227,7 +226,7 @@ public class ClusterStatePublisher {
 		}
 
 		var disk = Hazelcast.AdminDiskMetrics.newBuilder();
-		String persistenceDir = bootstrapConfig.getPersistenceDir();
+		String persistenceDir = config.getPersistenceDir();
 		if (!persistenceDir.isEmpty()) {
 			File dir = new File(persistenceDir);
 			disk.setPersistenceDir(persistenceDir)
@@ -276,7 +275,7 @@ public class ClusterStatePublisher {
 				Hazelcast.AdminPersistenceStatus.newBuilder()
 						.setNodeId(nodeId)
 						.setEnabled(persistence.isEnabled())
-						.setPersistenceDir(bootstrapConfig.getPersistenceDir())
+						.setPersistenceDir(config.getPersistenceDir())
 						.setRedoLogSizeBytes(Math.max(0, persistence.getRedoLogSizeBytes()))
 						.setLastDumpTimeMs(persistence.getLastDumpTimestamp())
 						.setTimestampMs(System.currentTimeMillis())

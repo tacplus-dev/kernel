@@ -18,6 +18,7 @@ import org.apache.maven.plugins.annotations.Parameter;
 import com.gitlab.secondstarcavalier.controlplane.codegen.generator.BackendMapGenerator;
 import com.gitlab.secondstarcavalier.controlplane.codegen.generator.BackendServersGenerator;
 import com.gitlab.secondstarcavalier.controlplane.codegen.generator.BackendServiceServerGenerator;
+import com.gitlab.secondstarcavalier.controlplane.codegen.generator.BackendStoreServerGenerator;
 import com.gitlab.secondstarcavalier.controlplane.codegen.generator.EpochExpirationHelperGenerator;
 import com.gitlab.secondstarcavalier.controlplane.codegen.generator.GeneratorContext;
 import com.gitlab.secondstarcavalier.controlplane.codegen.generator.SecurityAuthenticatorGenerator;
@@ -27,6 +28,7 @@ import com.gitlab.secondstarcavalier.controlplane.codegen.generator.ViewServerGe
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.AccessPolicy;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendRpcServiceInfo;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendServiceInfo;
+import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendStoreInfo;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.SharedBackendInfo;
 
 /**
@@ -161,7 +163,12 @@ public class BackendServerMojo extends AbstractMojo {
 			rpcServices.sort(Comparator.comparing(BackendRpcServiceInfo::getPackageName));
 			getLog().info("Discovered " + rpcServices.size() + " backend RPC services");
 
-			if (services.isEmpty() && rpcServices.isEmpty()) {
+			// Discover store services (service_store annotation — durable key-value stores)
+			List<BackendStoreInfo> storeServices = BackendServiceDiscovery.discoverStoreServices(parser);
+			storeServices.sort(Comparator.comparing(BackendStoreInfo::getPackageName));
+			getLog().info("Discovered " + storeServices.size() + " backend store services");
+
+			if (services.isEmpty() && rpcServices.isEmpty() && storeServices.isEmpty()) {
 				getLog().info("No backend services found, skipping generation");
 				return;
 			}
@@ -201,6 +208,12 @@ public class BackendServerMojo extends AbstractMojo {
 				BackendServiceServerGenerator.generate(svc, info, ctx);
 			}
 
+			// Step 4b: Generate store service servers
+			for (BackendStoreInfo store : storeServices) {
+				getLog().info("Generating store service server for " + store.getValueTypeName());
+				BackendStoreServerGenerator.generate(store, ctx);
+			}
+
 			// Step 5: Generate serializable wrappers, factory, and registry
 			SerializableWrapperGenerator.generate(infoMap, ctx);
 
@@ -210,8 +223,8 @@ public class BackendServerMojo extends AbstractMojo {
 			// Step 7: Generate service-specific view servers.
 			ViewServerGenerator.generate(ctx);
 
-			// Step 8: Generate aggregators (including backend RPC services)
-			BackendServersGenerator.generate(new ArrayList<>(infoMap.keySet()), infoMap, rpcServices, ctx);
+			// Step 8: Generate aggregators (including backend RPC and store services)
+			BackendServersGenerator.generate(new ArrayList<>(infoMap.keySet()), infoMap, rpcServices, storeServices, ctx);
 
 			// Step 9: Generate epoch expiration helper for StateRestorer
 			EpochExpirationHelperGenerator.generate(infoMap, ctx);

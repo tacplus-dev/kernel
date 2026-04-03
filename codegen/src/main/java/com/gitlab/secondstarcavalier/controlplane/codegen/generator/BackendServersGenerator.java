@@ -11,6 +11,7 @@ import java.util.Map;
 import com.gitlab.secondstarcavalier.controlplane.codegen.StringUtils;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendRpcServiceInfo;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendServiceInfo;
+import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendStoreInfo;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.SharedBackendInfo;
 
 /**
@@ -26,7 +27,7 @@ public class BackendServersGenerator {
 	 */
 	public static void generate(List<BackendServiceInfo> services, Map<BackendServiceInfo, SharedBackendInfo> infoMap,
 			GeneratorContext ctx) throws IOException {
-		generate(services, infoMap, List.of(), ctx);
+		generate(services, infoMap, List.of(), List.of(), ctx);
 	}
 
 	/**
@@ -35,6 +36,16 @@ public class BackendServersGenerator {
 	 */
 	public static void generate(List<BackendServiceInfo> services, Map<BackendServiceInfo, SharedBackendInfo> infoMap,
 			List<BackendRpcServiceInfo> rpcServices, GeneratorContext ctx) throws IOException {
+		generate(services, infoMap, rpcServices, List.of(), ctx);
+	}
+
+	/**
+	 * Groups services by their proto directory (services/, common/, etc.)
+	 * and generates both levels of aggregators, including backend RPC and store services.
+	 */
+	public static void generate(List<BackendServiceInfo> services, Map<BackendServiceInfo, SharedBackendInfo> infoMap,
+			List<BackendRpcServiceInfo> rpcServices, List<BackendStoreInfo> storeServices,
+			GeneratorContext ctx) throws IOException {
 		// Group state services by directory prefix
 		Map<String, List<BackendServiceInfo>> groups = new LinkedHashMap<>();
 		for (BackendServiceInfo svc : services) {
@@ -65,12 +76,26 @@ public class BackendServersGenerator {
 			groups.computeIfAbsent(dir, k -> new ArrayList<>());
 		}
 
+		// Group store services by directory prefix
+		Map<String, List<BackendStoreInfo>> storeGroups = new LinkedHashMap<>();
+		for (BackendStoreInfo store : storeServices) {
+			String dir = "services";
+			String path = store.getProtoFile();
+			int slash = path.indexOf('/');
+			if (slash > 0) {
+				dir = path.substring(0, slash);
+			}
+			storeGroups.computeIfAbsent(dir, k -> new ArrayList<>()).add(store);
+			groups.computeIfAbsent(dir, k -> new ArrayList<>());
+		}
+
 		// Generate group-level aggregator for each group
 		for (var entry : groups.entrySet()) {
 			String group = entry.getKey();
 			List<BackendServiceInfo> groupServices = entry.getValue();
 			List<BackendRpcServiceInfo> groupRpcServices = rpcGroups.getOrDefault(group, List.of());
-			generateGroupAggregator(group, groupServices, infoMap, groupRpcServices, ctx);
+			List<BackendStoreInfo> groupStoreServices = storeGroups.getOrDefault(group, List.of());
+			generateGroupAggregator(group, groupServices, infoMap, groupRpcServices, groupStoreServices, ctx);
 		}
 
 		// Generate root-level aggregator
@@ -79,7 +104,7 @@ public class BackendServersGenerator {
 
 	private static void generateGroupAggregator(String group, List<BackendServiceInfo> services,
 			Map<BackendServiceInfo, SharedBackendInfo> infoMap, List<BackendRpcServiceInfo> rpcServices,
-			GeneratorContext ctx) throws IOException {
+			List<BackendStoreInfo> storeServices, GeneratorContext ctx) throws IOException {
 		String pkg = ctx.getJavaPackageBase() + "." + group;
 
 		// Build fields
@@ -102,6 +127,13 @@ public class BackendServersGenerator {
 			String rpcFieldName = StringUtils.toLowerCamelCase(rpc.getBackendName()) + "Service";
 			fields.append("    private volatile BindableService ").append(rpcFieldName).append(";\n");
 		}
+		// Store service fields
+		for (BackendStoreInfo store : storeServices) {
+			String storePkg = BackendStoreServerGenerator.getFullPackage(store, ctx);
+			String storeServerClass = storePkg + "." + store.getValueTypeName() + "StoreServiceServer";
+			String storeFieldName = StringUtils.toLowerCamelCase(store.getValueTypeName()) + "StoreSvc";
+			fields.append("    private final ").append(storeServerClass).append(" ").append(storeFieldName).append(";\n");
+		}
 
 		// Build constructor
 		StringBuilder ctor = new StringBuilder();
@@ -120,6 +152,13 @@ public class BackendServersGenerator {
 					.append(info.getClassName()).append("(manager);\n");
 			ctor.append("        this.").append(svcFieldName).append(" = new ").append(svcPkg).append(".")
 					.append(svcServerClass).append("(manager, authenticator);\n");
+		}
+		for (BackendStoreInfo store : storeServices) {
+			String storePkg = BackendStoreServerGenerator.getFullPackage(store, ctx);
+			String storeFieldName = StringUtils.toLowerCamelCase(store.getValueTypeName()) + "StoreSvc";
+			String storeServerClass = store.getValueTypeName() + "StoreServiceServer";
+			ctor.append("        this.").append(storeFieldName).append(" = new ").append(storePkg).append(".")
+					.append(storeServerClass).append("(manager, authenticator);\n");
 		}
 		ctor.append("    }\n\n");
 		ctor.append("    public BackendServers(Manager manager) {\n");
@@ -144,6 +183,13 @@ public class BackendServersGenerator {
 			grpcAdds.append("            services.add(io.grpc.ServerInterceptors.interceptForward(\n");
 			grpcAdds.append("                ").append(rpcFieldName).append(".bindService(), callerInterceptor));\n");
 			grpcAdds.append("        }\n");
+		}
+		// Add store services
+		for (BackendStoreInfo store : storeServices) {
+			String storeFieldName = StringUtils.toLowerCamelCase(store.getValueTypeName()) + "StoreSvc";
+			grpcAdds.append("        services.add(io.grpc.ServerInterceptors.interceptForward(\n");
+			grpcAdds.append("            ").append(storeFieldName)
+					.append(".bindService(), callerInterceptor));\n");
 		}
 
 		// Build quorum propagation calls
@@ -195,6 +241,21 @@ public class BackendServersGenerator {
 			getters.append("     */\n");
 			getters.append("    public void ").append(methodName).append("(BindableService impl) {\n");
 			getters.append("        this.").append(rpcFieldName).append(" = impl;\n");
+			getters.append("    }\n");
+		}
+		// Getters for store services
+		for (BackendStoreInfo store : storeServices) {
+			String storePkg = BackendStoreServerGenerator.getFullPackage(store, ctx);
+			String storeServerClass = storePkg + "." + store.getValueTypeName() + "StoreServiceServer";
+			String storeFieldName = StringUtils.toLowerCamelCase(store.getValueTypeName()) + "StoreSvc";
+			String getterName = "get" + store.getValueTypeName() + "StoreService";
+			getters.append("\n    /**\n");
+			getters.append("     * Returns the ").append(store.getValueTypeName())
+					.append("StoreServiceServer.\n");
+			getters.append("     */\n");
+			getters.append("    public ").append(storeServerClass).append(" ").append(getterName)
+					.append("() {\n");
+			getters.append("        return ").append(storeFieldName).append(";\n");
 			getters.append("    }\n");
 		}
 

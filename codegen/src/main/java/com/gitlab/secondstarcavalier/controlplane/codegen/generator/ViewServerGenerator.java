@@ -47,8 +47,11 @@ public class ViewServerGenerator {
                 }
                 if (!hasServiceState) {
                     java.util.List<AnnotationValue> repeated = msg.getRepeatedAnnotations("service_state");
-                    if (!repeated.isEmpty() && repeated.get(0).isStruct() && repeated.get(0).getStructValue().containsKey("name")) {
-                        hasServiceState = true;
+                    if (!repeated.isEmpty() && repeated.get(0).isStruct()) {
+                        var struct = repeated.get(0).getStructValue();
+                        if (struct.containsKey("name") || struct.containsKey("tag")) {
+                            hasServiceState = true;
+                        }
                     }
                 }
                 if (!hasServiceState) continue;

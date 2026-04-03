@@ -380,20 +380,8 @@ public class SecurityInterceptor implements ServerInterceptor {
      * Returns null if the claim is absent.
      */
     private static List<String> extractEntitlements(TokenWrapper tw) {
-        Object raw = tw.getCustomField("entitlements");
-        if (raw == null) {
-            return null;
-        }
-        if (raw instanceof java.util.Collection<?> col) {
-            List<String> result = new ArrayList<>();
-            for (Object item : col) {
-                if (item != null) {
-                    result.add(item.toString());
-                }
-            }
-            return result;
-        }
-        return null;
+        List<String> entitlements = tw.getEntitlements();
+        return entitlements.isEmpty() ? null : entitlements;
     }
 
     /** Helper to build a policy from lists. Used by the static initializer. */

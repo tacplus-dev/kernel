@@ -25,7 +25,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 
 /**
  * Factory for creating a configured Hazelcast instance from a
- * {@link Kernel.BootstrapConfig}. Extracted from the former monolithic
+ * {@link Kernel.Config}. Extracted from the former monolithic
  * StateDbServer so the gRPC server code (now in {@code libs/statedb}) stays
  * backend-agnostic.
  */
@@ -37,7 +37,7 @@ public class HazelcastFactory {
 	 * Creates a {@link Manager} backed by Hazelcast, configured from the given
 	 * config.
 	 */
-	public static Manager createManager(Kernel.BootstrapConfig config) {
+	public static Manager createManager(Kernel.Config config) {
 		HazelcastInstance hz = create(config);
 		return new HazelcastManager(hz);
 	}
@@ -45,8 +45,8 @@ public class HazelcastFactory {
 	/**
 	 * Creates and starts a Hazelcast instance from the given config.
 	 */
-	static HazelcastInstance create(Kernel.BootstrapConfig statedbConfig) {
-		Kernel.BootstrapConfig cfg = Helpers.bootstrapConfigDefaults(statedbConfig).build();
+	static HazelcastInstance create(Kernel.Config statedbConfig) {
+		Kernel.Config cfg = Helpers.configDefaults(statedbConfig).build();
 
 		Config hzConfig = new Config();
 		hzConfig.setClusterName(Objects.requireNonNull(cfg.getClusterName()));
@@ -82,7 +82,7 @@ public class HazelcastFactory {
 					Objects.requireNonNull(String.valueOf(net.getHeartbeatTimeoutSeconds())));
 		}
 
-		// mTLS using X509CertChain and loader_ca
+		// mTLS using X509CertChain and cluster_ca
 		if (cfg.hasTls()) {
 			try {
 				ImmutableCertChain tlsChain = ImmutableCertChain.from(cfg.getTls());
@@ -95,8 +95,8 @@ public class HazelcastFactory {
 
 				KeyStore trustStore = KeyStore.getInstance("PKCS12");
 				trustStore.load(null, null);
-				for (int i = 0; i < cfg.getLoaderCaCount(); i++) {
-					ImmutableCert ca = ImmutableCert.from(cfg.getLoaderCa(i));
+				for (int i = 0; i < cfg.getClusterCaCount(); i++) {
+					ImmutableCert ca = ImmutableCert.from(cfg.getClusterCa(i));
 					trustStore.setCertificateEntry("ca-" + i, ca.getX509Certificate());
 				}
 

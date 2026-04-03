@@ -1,6 +1,7 @@
 package com.gitlab.secondstarcavalier.controlplane.codegen;
 
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.*;
+import com.gitlab.secondstarcavalier.controlplane.codegen.StringUtils;
 
 import java.util.*;
 
@@ -44,8 +45,20 @@ public class BackendServiceDiscovery {
                     List<AnnotationValue> repeated = msg.getRepeatedAnnotations("service_state");
                     if (!repeated.isEmpty()) {
                         AnnotationValue first = repeated.get(0);
-                        if (first.isStruct() && first.getStructValue().containsKey("name")) {
-                            backendName = first.getStructValue().get("name");
+                        if (first.isStruct()) {
+                            if (first.getStructValue().containsKey("name")) {
+                                backendName = first.getStructValue().get("name");
+                            } else if (first.getStructValue().containsKey("tag")) {
+                                // Fallback: derive backend name from message name,
+                                // stripping "State" suffix if present (convention:
+                                // GatewayTlsState → GatewayTls, Identity → Identity).
+                                String msgName = msg.getName();
+                                if (msgName.endsWith("State")) {
+                                    backendName = msgName.substring(0, msgName.length() - 5);
+                                } else {
+                                    backendName = msgName;
+                                }
+                            }
                         }
                     }
                 }
@@ -101,6 +114,82 @@ public class BackendServiceDiscovery {
         }
 
         return rpcServices;
+    }
+
+    /**
+     * Scans all parsed file descriptors for messages with service_store annotations.
+     * For each, derives the store service metadata including key field and quorum setting.
+     */
+    public static List<BackendStoreInfo> discoverStoreServices(ProtoDescriptorParser parser) {
+        List<BackendStoreInfo> stores = new ArrayList<>();
+
+        for (var entry : parser.getAllFiles().entrySet()) {
+            String relPath = entry.getKey();
+            FileDescriptor fileDesc = entry.getValue();
+
+            if (relPath.startsWith("google/")) continue;
+
+            for (MessageDescriptor msg : fileDesc.getMessages()) {
+                // service_store can be a string annotation or a struct annotation
+                // (e.g., {tag: "kernel"}). Check both forms.
+                String valueTypeName = null;
+
+                // Check simple string annotation
+                AnnotationValue ann = msg.getAnnotations().get("service_store");
+                if (ann != null && ann.getStringValue() != null && !ann.getStringValue().isEmpty()) {
+                    valueTypeName = ann.getStringValue();
+                }
+
+                // Check structured annotation (e.g., {tag: "kernel"})
+                if (valueTypeName == null) {
+                    List<AnnotationValue> repeated = msg.getRepeatedAnnotations("service_store");
+                    if (!repeated.isEmpty()) {
+                        AnnotationValue first = repeated.get(0);
+                        if (first.isStruct()) {
+                            // Derive value type name from message name
+                            valueTypeName = msg.getName();
+                        }
+                    }
+                }
+
+                if (valueTypeName == null || valueTypeName.isEmpty()) {
+                    continue;
+                }
+
+                String packageName = derivePackageName(fileDesc, relPath);
+
+                // Find the store_key field
+                String keyFieldName = null;
+                boolean quorumWrite = false;
+                for (FieldDescriptor field : msg.getFields()) {
+                    AnnotationValue storeKey = field.getAnnotations().get("store_key");
+                    if (storeKey != null && storeKey.getBoolValue()) {
+                        keyFieldName = field.getName();
+                    }
+                    AnnotationValue qw = field.getAnnotations().get("quorum_write");
+                    if (qw != null && qw.getBoolValue()) {
+                        quorumWrite = true;
+                    }
+                }
+
+                if (keyFieldName == null) {
+                    // No store_key field found — skip (validation error in tacplus)
+                    continue;
+                }
+
+                BackendStoreInfo store = new BackendStoreInfo();
+                store.setProtoFile(relPath);
+                store.setPackageName(packageName);
+                store.setServiceName(valueTypeName + "StoreService");
+                store.setValueTypeName(valueTypeName);
+                store.setKeyFieldName(keyFieldName);
+                store.setKeyFieldPascal(StringUtils.toPascalCase(keyFieldName));
+                store.setQuorumWrite(quorumWrite);
+                stores.add(store);
+            }
+        }
+
+        return stores;
     }
 
     private static String derivePackageName(FileDescriptor fd, String relPath) {

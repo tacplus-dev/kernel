@@ -47,7 +47,7 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	private static final long INTERMEDIATE_CA_LIFETIME_SECONDS = 10L * 365 * 24 * 3600;
 
 	private final long certLifetimeSeconds;
-	private final CaKeyHolder caKeyHolder;
+	private final ImmutableCertChain signingCa;
 	private final Function<String, X509.X509CertChain> serviceCaReader;
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
 	private final Supplier<String> trustDomainReader;
@@ -55,19 +55,19 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 
 	/**
 	 * @param certLifetimeSeconds  lifetime for leaf TLS certs (renewal at half-life)
-	 * @param caKeyHolder          per-node CA keypair holder
+	 * @param signingCa            cavalier-issued signing chain (intermediate CA)
 	 * @param serviceCaReader      reads per-service intermediate CA from Ca state
 	 * @param serviceCaWriter      writes per-service intermediate CA to Ca state
 	 * @param trustDomainReader    SPIFFE trust domain
 	 */
 	public TlsCertServiceImpl(
 			long certLifetimeSeconds,
-			CaKeyHolder caKeyHolder,
+			ImmutableCertChain signingCa,
 			Function<String, X509.X509CertChain> serviceCaReader,
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
 			Supplier<String> trustDomainReader) {
 		this.certLifetimeSeconds = certLifetimeSeconds;
-		this.caKeyHolder = caKeyHolder;
+		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
 		this.trustDomainReader = trustDomainReader;
@@ -195,14 +195,8 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			// Cancel any pending renewal from a previous cert.
 			cancelRenewal();
 
-			// Get root CA.
-			ImmutableCertChain rootCa = caKeyHolder.getActiveCaPair();
-			if (rootCa == null) {
-				throw new IllegalStateException("CA keypair not yet initialized");
-			}
-
-			// Get or create per-service intermediate CA.
-			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, rootCa);
+			// Get or create per-service intermediate CA (signed by cavalier-issued signing chain).
+			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
 
 			// Build SPIFFE SAN.
 			String trustDomain = trustDomainReader.get();

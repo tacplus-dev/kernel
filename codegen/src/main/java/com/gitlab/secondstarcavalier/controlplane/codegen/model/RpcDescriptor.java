@@ -5,6 +5,7 @@ public class RpcDescriptor {
     private String inputType;
     private String outputType;
     private boolean serverStreaming;
+    private boolean disableAuth;
 
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
@@ -17,4 +18,7 @@ public class RpcDescriptor {
 
     public boolean isServerStreaming() { return serverStreaming; }
     public void setServerStreaming(boolean serverStreaming) { this.serverStreaming = serverStreaming; }
+
+    public boolean isDisableAuth() { return disableAuth; }
+    public void setDisableAuth(boolean disableAuth) { this.disableAuth = disableAuth; }
 }

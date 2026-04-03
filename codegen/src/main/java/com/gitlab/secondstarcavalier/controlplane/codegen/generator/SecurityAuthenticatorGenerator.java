@@ -125,17 +125,18 @@ public class SecurityAuthenticatorGenerator {
     }
 
     /**
-     * Builds the Java condition for skipping auth on no-auth services.
-     * Generates: method.contains("ServiceA") || method.contains("ServiceB")
+     * Builds the Java condition for skipping auth on no-auth services/methods.
+     * Entries without "/" are service-level: method.contains("ServiceName")
+     * Entries with "/" are per-method: method.contains("ServiceName/RpcName")
      */
-    private static String buildNoAuthSkipCondition(List<String> serviceNames) {
-        if (serviceNames.isEmpty()) {
+    private static String buildNoAuthSkipCondition(List<String> entries) {
+        if (entries.isEmpty()) {
             return "false";
         }
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < serviceNames.size(); i++) {
+        for (int i = 0; i < entries.size(); i++) {
             if (i > 0) sb.append("\n                    || ");
-            sb.append("method.contains(\"").append(serviceNames.get(i)).append("\")");
+            sb.append("method.contains(\"").append(entries.get(i)).append("\")");
         }
         return sb.toString();
     }

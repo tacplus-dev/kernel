@@ -99,6 +99,10 @@ public class SecurityAuthenticator {
                     io.grpc.Metadata headers,
                     io.grpc.ServerCallHandler<ReqT, RespT> next) {
                 String method = call.getMethodDescriptor().getFullMethodName();
+                // Health check service is unauthenticated.
+                if (method.startsWith("grpc.health.v1.Health/")) {
+                    return next.startCall(call, headers);
+                }
                 // Services with disable_auth_service = true handle their own auth.
                 // Skip the caller interceptor for them.
                 if ({{NO_AUTH_SKIP}}) {
@@ -178,17 +182,24 @@ public class SecurityAuthenticator {
         ImmutableJwk immJwk = ImmutableJwk.from(matchingKey);
         tw.verify(immJwk);
 
+        // Reject refresh tokens — they should only be exchanged at the Mint endpoint.
+        String tokenUse = tw.getTokenUse();
+        if ("refresh".equals(tokenUse)) {
+            throw new ProtoException(ProtoException.UNAUTHENTICATED, "refresh tokens cannot be used for API access");
+        }
+        if (tokenUse.isEmpty()) {
+            // Legacy fallback: check typ claim
+            String typ = tw.getCustomField("typ");
+            if ("refresh".equals(typ)) {
+                throw new ProtoException(ProtoException.UNAUTHENTICATED, "refresh tokens cannot be used for API access");
+            }
+        }
+
         // Extract caller identity from token claims.
         // Supports both CredPair tokens (principal claim) and legacy tokens (service_name claim).
-        String serviceName = null;
-        Object principalObj = tw.getCustomField("principal");
-        if (principalObj instanceof String) {
-            serviceName = (String) principalObj;
-        } else {
-            Object serviceNameObj = tw.getCustomField("service_name");
-            if (serviceNameObj instanceof String) {
-                serviceName = (String) serviceNameObj;
-            }
+        String serviceName = tw.getPrincipal();
+        if (serviceName.isEmpty()) {
+            serviceName = tw.getServiceName();
         }
         if (serviceName == null || serviceName.isEmpty()) {
             throw new ProtoException(ProtoException.UNAUTHENTICATED, "token missing caller identity (principal or service_name claim)");

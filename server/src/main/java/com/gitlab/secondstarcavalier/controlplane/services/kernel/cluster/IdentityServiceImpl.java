@@ -11,7 +11,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.KernelMintServiceGrpc;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.MintGrpc;
 import com.google.protobuf.Value;
 import com.google.gson.Gson;
 import io.grpc.Status;
@@ -45,14 +45,29 @@ import org.slf4j.LoggerFactory;
  * per-service trust isolation.</li>
  * </ul>
  */
-public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintServiceImplBase {
+public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 	private static final Logger logger = LoggerFactory.getLogger(IdentityServiceImpl.class);
 
 	private static final Set<String> STANDARD_JWT_CLAIMS = Set.of("sub", "iss", "aud", "exp", "iat", "azp", "nbf",
-			"jti", "typ", "profiles");
+			"jti", "typ", "profiles", "token_use", "sub_type");
 
+	// Claims from external IdPs that get origin_ prefix to avoid collision with Cavalier claims.
+	private static final Set<String> WELL_KNOWN_JWT_CLAIMS = Set.of(
+			"iss", "sub", "aud", "exp", "nbf", "iat", "jti");
+
+	// Legacy typ claim value — kept for backwards compatibility during rollout.
 	private static final String TOKEN_TYPE_REFRESH = "refresh";
+
+	// token_use claim values — unambiguous token type identification.
+	private static final String TOKEN_USE_REFRESH = "refresh";
+	private static final String TOKEN_USE_ACCESS = "access";
+	private static final String TOKEN_USE_SERVICE = "service";
+
+	// sub_type claim values — identifies what the sub claim represents.
+	private static final String SUB_TYPE_SERVICE = "service";
+	private static final String SUB_TYPE_USER = "user";
+
 	private static final Gson GSON = new Gson();
 
 	/** Intermediate CA lifetime: 10 years. */
@@ -67,7 +82,7 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 	private final Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader;
 	private final Supplier<List<Kernel.Delegate>> delegatesReader;
 	private final Map<String, List<String>> serviceEntitlements;
-	private final CaKeyHolder caKeyHolder;
+	private final ImmutableCertChain signingCa;
 	private final Function<String, X509.X509CertChain> serviceCaReader;
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
 	private final Supplier<String> trustDomainReader;
@@ -81,7 +96,7 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
 			Supplier<List<Kernel.Delegate>> delegatesReader,
 			Map<String, List<String>> serviceEntitlements,
-			CaKeyHolder caKeyHolder,
+			ImmutableCertChain signingCa,
 			Function<String, X509.X509CertChain> serviceCaReader,
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
 			Supplier<String> trustDomainReader,
@@ -93,7 +108,7 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 		this.verifyingKeysReader = verifyingKeysReader;
 		this.delegatesReader = delegatesReader;
 		this.serviceEntitlements = serviceEntitlements != null ? serviceEntitlements : Map.of();
-		this.caKeyHolder = caKeyHolder;
+		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
 		this.trustDomainReader = trustDomainReader;
@@ -211,7 +226,8 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 			}
 
 			return mintRefreshToken(
-					delegateName, delegateName, request, Map.of("instance_id", instanceId));
+					delegateName, delegateName, request,
+					Map.of("instance_id", instanceId, "sub_type", SUB_TYPE_SERVICE));
 		}
 
 		String issuer = inputToken.getIssuer();
@@ -230,7 +246,8 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 
 		String subject = inputToken.getSubject();
 
-		return mintRefreshToken(subject, "kernel", request, Map.of());
+		return mintRefreshToken(subject, "kernel", request,
+				Map.of("sub_type", SUB_TYPE_USER));
 	}
 
 	/**
@@ -345,33 +362,40 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 				.setJTI(UUID.randomUUID().toString());
 
 		// azp = the delegate name (e.g. "oauth")
-		newToken.setCustomField("azp", callerSub);
+		newToken.setAzp(callerSub);
 
+		// Token type claims: token_use identifies the token's role in the hierarchy,
+		// sub_type identifies what the subject represents (user vs service).
+		// Delegation is always a broker minting on behalf of a user.
+		newToken.setTokenUse(isRefresh ? TOKEN_USE_REFRESH : TOKEN_USE_ACCESS);
+		newToken.setSubType(SUB_TYPE_USER);
 		if (isRefresh) {
-			newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
+			newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		}
 
-		// Set profiles from the request (serialize as JSON array for cross-language compat).
+		// Set profiles from the request as a comma-delimited string.
 		if (!request.getProfilesList().isEmpty()) {
-			newToken.setCustomField("profiles", GSON.toJson(request.getProfilesList()));
+			newToken.setProfiles(request.getProfilesList());
 		}
 
 		// Forward custom claims from the request (e.g., IDP claims like email, name).
+		// Well-known JWT claims from external IdPs get origin_ prefix to avoid collision.
 		if (request.hasClaims()) {
 			for (Map.Entry<String, Value> entry : request.getClaims().getFieldsMap().entrySet()) {
 				String key = entry.getKey();
 				if (STANDARD_JWT_CLAIMS.contains(key)) {
 					continue;
 				}
+				String outputKey = WELL_KNOWN_JWT_CLAIMS.contains(key) ? "origin_" + key : key;
 				Value val = entry.getValue();
 				if (val.hasStringValue()) {
-					newToken.setCustomField(key, val.getStringValue());
+					newToken.setCustomField(outputKey, val.getStringValue());
 				} else if (val.hasNumberValue()) {
-					newToken.setCustomField(key, Long.toString((long) val.getNumberValue()));
+					newToken.setCustomField(outputKey, Long.toString((long) val.getNumberValue()));
 				} else if (val.hasBoolValue()) {
-					newToken.setCustomField(key, Boolean.toString(val.getBoolValue()));
+					newToken.setCustomField(outputKey, Boolean.toString(val.getBoolValue()));
 				} else {
-					newToken.setCustomField(key, val.toString());
+					newToken.setCustomField(outputKey, val.toString());
 				}
 			}
 		}
@@ -387,7 +411,7 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 
 		logger.info("Minted delegated token: sub={}, aud={}, azp={}, exp={}, isRefresh={}, profiles={}",
 				request.getSubject(), newToken.getAudience(), callerSub, exp, isRefresh,
-				newToken.getCustomField("profiles"));
+				newToken.getProfiles());
 
 		if (isRefresh) {
 			// Also mint an access token (clone of refresh without typ).
@@ -437,8 +461,9 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 
-		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
-		newToken.setCustomField("azp", azp);
+		newToken.setTokenUse(TOKEN_USE_REFRESH);
+		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
+		newToken.setAzp(azp);
 
 		for (Map.Entry<String, Object> entry : extraClaims.entrySet()) {
 			newToken.setCustomField(entry.getKey(), entry.getValue());
@@ -465,7 +490,14 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 	private Tokenrequest.TokenMintResponse exchangeKernelToken(Tokenrequest.TokenMintRequest request,
 			TokenWrapper inputToken) throws StatusException {
 
-		boolean isRefresh = TOKEN_TYPE_REFRESH.equals(inputToken.getCustomField("typ"));
+		// Check token_use first, fall back to legacy typ for backwards compat.
+		String tokenUse = inputToken.getTokenUse();
+		boolean isRefresh;
+		if (!tokenUse.isEmpty()) {
+			isRefresh = TOKEN_USE_REFRESH.equals(tokenUse);
+		} else {
+			isRefresh = TOKEN_TYPE_REFRESH.equals(inputToken.getCustomField("typ"));
+		}
 
 		String kid = inputToken.getKid();
 		if (kid.isEmpty()) {
@@ -562,22 +594,25 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 					.setExpiration(exp)
 					.setJTI(UUID.randomUUID().toString());
 
-			String inputAzp = inputToken.getCustomField("azp");
-			newToken.setCustomField("azp", inputAzp != null ? inputAzp : "kernel");
-			newToken.setCustomField("principal", subject);
+			String inputAzp = inputToken.getAzp();
+			newToken.setAzp(!inputAzp.isEmpty() ? inputAzp : "kernel");
+			newToken.setPrincipal(subject);
+			newToken.setSubType(SUB_TYPE_SERVICE);
+			newToken.setTokenUse(
+					request.getAud().isEmpty() ? TOKEN_USE_ACCESS : TOKEN_USE_SERVICE);
 
 			{
-				String instanceId = inputToken.getProto().getPayloadMap().get("instance_id");
-				if (instanceId != null) {
-					newToken.setCustomField("instance_id", instanceId);
+				String instanceId = inputToken.getInstanceId();
+				if (instanceId != null && !instanceId.isEmpty()) {
+					newToken.setInstanceId(instanceId);
 				}
 			}
 
 			List<String> delegateProfiles = delegate.getAuthorizedProfilesList();
 			if (delegateProfiles != null && !delegateProfiles.isEmpty()) {
-				newToken.setCustomField("profiles", GSON.toJson(delegateProfiles));
+				newToken.setProfiles(delegateProfiles);
 			} else {
-				newToken.setCustomField("profiles", GSON.toJson(List.of(delegate.getName())));
+				newToken.setProfiles(List.of(delegate.getName()));
 			}
 
 			for (Map.Entry<String, String> entry : delegate.getCustomClaimsMap().entrySet()) {
@@ -587,7 +622,7 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 			}
 
 			logger.info("Minted service token (S2S): sub={}, aud={}, exp={}, profiles={}",
-					subject, request.getAud(), exp, newToken.getCustomField("profiles"));
+					subject, request.getAud(), exp, newToken.getProfiles());
 		} else {
 			// U2S: clone the entire input token as a mutable copy.
 			// Preserves all claims (profiles, azp, custom IDP claims) exactly.
@@ -604,10 +639,12 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 			newToken.setIssuedAt(now)
 					.setExpiration(exp)
 					.setJTI(UUID.randomUUID().toString());
-			newToken.setCustomField("principal", subject);
+			newToken.setPrincipal(subject);
+			newToken.setTokenUse(
+					request.getAud().isEmpty() ? TOKEN_USE_ACCESS : TOKEN_USE_SERVICE);
 
 			logger.info("Minted service token (U2S): sub={}, aud={}, exp={}, profiles={}",
-					subject, newToken.getAudience(), exp, newToken.getCustomField("profiles"));
+					subject, newToken.getAudience(), exp, newToken.getProfiles());
 		}
 
 		newToken.sign(signingKey);
@@ -618,7 +655,7 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 
 	/**
 	 * Creates an access token by cloning a signed refresh token, stripping typ=refresh,
-	 * and re-signing with a new jti.
+	 * setting token_use=access, and re-signing with a new jti.
 	 */
 	private TokenOuterClass.Token mintAccessFromRefresh(TokenWrapper refreshToken,
 			ImmutableKey signingKey, long now, long exp) {
@@ -627,6 +664,7 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 				.setBase64("")
 				.removePayload("typ")
 				.build());
+		accessToken.setTokenUse(TOKEN_USE_ACCESS);
 		accessToken.setIssuedAt(now)
 				.setJTI(UUID.randomUUID().toString());
 		accessToken.sign(signingKey);
@@ -643,11 +681,18 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 			throw new StatusException(Status.INVALID_ARGUMENT, "invalid continuity_token: " + e.getMessage());
 		}
 
-		String typ = continuityToken.getCustomField("typ");
-		if (!TOKEN_TYPE_REFRESH.equals(typ)) {
+		// Check token_use first, fall back to legacy typ for backwards compat.
+		String continuityTokenUse = continuityToken.getTokenUse();
+		boolean isRefreshToken;
+		if (!continuityTokenUse.isEmpty()) {
+			isRefreshToken = TOKEN_USE_REFRESH.equals(continuityTokenUse);
+		} else {
+			isRefreshToken = TOKEN_TYPE_REFRESH.equals(continuityToken.getCustomField("typ"));
+		}
+		if (!isRefreshToken) {
 			throw new StatusException(
 					Status.INVALID_ARGUMENT,
-					"continuity_token must be a refresh token (expected typ=refresh)");
+					"continuity_token must be a refresh token (expected token_use=refresh)");
 		}
 
 		String kid = continuityToken.getKid();
@@ -760,21 +805,12 @@ public class IdentityServiceImpl extends KernelMintServiceGrpc.KernelMintService
 				return;
 			}
 
-			// Get root CA.
-			ImmutableCertChain rootCa = caKeyHolder.getActiveCaPair();
-			if (rootCa == null) {
-				responseObserver.onError(Status.UNAVAILABLE
-						.withDescription("CA keypair not yet initialized")
-						.asRuntimeException());
-				return;
-			}
-
-			// Get or create intermediate CA for this service.
-			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, rootCa);
+			// Get or create intermediate CA for this service (signed by cavalier-issued signing chain).
+			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
 
 			// Construct SPIFFE URI SAN from auth context.
-			Object azpObj = token.getCustomField("azp");
-			String azp = (azpObj != null) ? azpObj.toString() : "kernel";
+			String azp = token.getAzp();
+			if (azp.isEmpty()) azp = "kernel";
 			String trustDomain = trustDomainReader.get();
 			String spiffeId = "spiffe://" + trustDomain + "/" + azp + "/" + serviceName;
 

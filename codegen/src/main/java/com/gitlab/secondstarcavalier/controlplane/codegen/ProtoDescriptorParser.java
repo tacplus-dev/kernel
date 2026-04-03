@@ -33,6 +33,12 @@ public class ProtoDescriptorParser {
     private static final Pattern SERVICE_START = Pattern.compile("^\\s*service\\s+(\\w+)\\s*\\{", Pattern.MULTILINE);
     private static final Pattern RPC_PATTERN = Pattern.compile(
             "^\\s*rpc\\s+(\\w+)\\s*\\(([^)]+)\\)\\s+returns\\s+\\((stream\\s+)?([^)]+)\\)\\s*;", Pattern.MULTILINE);
+    // RPC with options block: rpc Name(In) returns (Out) { ... }
+    private static final Pattern RPC_BLOCK_PATTERN = Pattern.compile(
+            "^\\s*rpc\\s+(\\w+)\\s*\\(([^)]+)\\)\\s+returns\\s+\\((stream\\s+)?([^)]+)\\)\\s*\\{", Pattern.MULTILINE);
+    // Method-level option inside RPC block
+    private static final Pattern METHOD_OPTION_PATTERN = Pattern.compile(
+            "^\\s*option\\s+\\(spec\\.(\\w+)\\)\\s*=\\s*(\\{[^}]*\\})\\s*;", Pattern.MULTILINE);
     // Pattern for parsing structured annotation values like {target: "foo", mode: BAR}
     private static final Pattern STRUCT_FIELD_PATTERN = Pattern.compile(
             "(\\w+)\\s*:\\s*(\"[^\"]*\"|\\w+)");
@@ -162,7 +168,8 @@ public class ProtoDescriptorParser {
             while (structOptMatcher.find()) {
                 String optName = structOptMatcher.group(1);
                 String structBody = structOptMatcher.group(2);
-                if ("service_grpc".equals(optName)) {
+                if ("service_grpc".equals(optName) || "service_c2s".equals(optName)) {
+                    svc.setHasAuthAnnotation(true);
                     Matcher fieldMatcher = STRUCT_FIELD_PATTERN.matcher(structBody);
                     while (fieldMatcher.find()) {
                         String key = fieldMatcher.group(1);
@@ -176,10 +183,24 @@ public class ProtoDescriptorParser {
                             svc.setDisableAuth("true".equals(value));
                         }
                     }
+                } else if ("service_s2s".equals(optName)) {
+                    svc.setHasAuthAnnotation(true);
+                    Matcher fieldMatcher = STRUCT_FIELD_PATTERN.matcher(structBody);
+                    while (fieldMatcher.find()) {
+                        String key = fieldMatcher.group(1);
+                        String value = fieldMatcher.group(2);
+                        if (value.startsWith("\"") && value.endsWith("\"")) {
+                            value = value.substring(1, value.length() - 1);
+                        }
+                        if ("auth_disabled".equals(key)) {
+                            svc.setDisableAuth("true".equals(value));
+                        }
+                    }
                 }
             }
 
 
+            // Parse simple RPCs (ending with ;)
             Matcher rpcMatcher = RPC_PATTERN.matcher(svcBody);
             while (rpcMatcher.find()) {
                 RpcDescriptor rpc = new RpcDescriptor();
@@ -187,6 +208,38 @@ public class ProtoDescriptorParser {
                 rpc.setInputType(rpcMatcher.group(2).trim());
                 rpc.setServerStreaming(rpcMatcher.group(3) != null);
                 rpc.setOutputType(rpcMatcher.group(4).trim());
+                svc.getRpcs().add(rpc);
+            }
+
+            // Parse RPCs with options blocks (ending with { ... })
+            Matcher rpcBlockMatcher = RPC_BLOCK_PATTERN.matcher(svcBody);
+            while (rpcBlockMatcher.find()) {
+                RpcDescriptor rpc = new RpcDescriptor();
+                rpc.setName(rpcBlockMatcher.group(1));
+                rpc.setInputType(rpcBlockMatcher.group(2).trim());
+                rpc.setServerStreaming(rpcBlockMatcher.group(3) != null);
+                rpc.setOutputType(rpcBlockMatcher.group(4).trim());
+
+                // Parse method-level options from the block
+                int blockOpen = rpcBlockMatcher.end() - 1;
+                int blockClose = findMatchingBrace(svcBody, blockOpen);
+                if (blockClose > blockOpen) {
+                    String rpcBlock = svcBody.substring(blockOpen + 1, blockClose);
+                    Matcher methodOptMatcher = METHOD_OPTION_PATTERN.matcher(rpcBlock);
+                    while (methodOptMatcher.find()) {
+                        String optName = methodOptMatcher.group(1);
+                        String structBody = methodOptMatcher.group(2);
+                        if ("method_s2s".equals(optName) || "method_c2s".equals(optName)) {
+                            Matcher fieldMatcher = STRUCT_FIELD_PATTERN.matcher(structBody);
+                            while (fieldMatcher.find()) {
+                                if ("auth_disabled".equals(fieldMatcher.group(1)) && "true".equals(fieldMatcher.group(2))) {
+                                    rpc.setDisableAuth(true);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 svc.getRpcs().add(rpc);
             }
 

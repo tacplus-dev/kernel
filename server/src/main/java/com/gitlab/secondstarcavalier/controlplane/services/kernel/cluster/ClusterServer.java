@@ -76,22 +76,18 @@ public class ClusterServer {
 	private final Server grpcServer;
 	private final KeyRotator keyRotator;
 	private final ExternalJwkResolver externalJwkResolver;
-	private final CaKeyHolder caKeyHolder;
+	private final ImmutableCertChain signingCa;
 	private final TlsCertServiceImpl tlsCertService;
 
 	/**
-	 * @param protoConfig    the bootstrap configuration
-	 * @param frontendConfig the frontend configuration (nullable)
-	 * @param persistence    persistence provider
+	 * @param config      the kernel configuration
+	 * @param persistence persistence provider
 	 */
 	public ClusterServer(
-			Kernel.BootstrapConfig protoConfig,
-			Kernel.Config frontendConfig,
+			Kernel.Config config,
 			PersistenceProvider persistence) {
 
-		Kernel.BootstrapConfig cfg = Helpers.bootstrapConfigDefaults(protoConfig).build();
-		Kernel.Config effectiveFrontendConfig = frontendConfig != null ? frontendConfig
-				: Kernel.Config.getDefaultInstance();
+		Kernel.Config cfg = Helpers.configDefaults(config).build();
 
 		this.persistence = persistence;
 
@@ -205,13 +201,13 @@ public class ClusterServer {
 		// Each delegate gets a profile with id=delegateName, azp=[delegateName],
 		// granting _ANY on each authorized service.
 		final List<Entitlements.EntitlementProfile> autoProfiles = buildDelegateProfiles(
-				effectiveFrontendConfig.getDelegatesList());
+				cfg.getDelegatesList());
 
 		// Enrich explicit profiles with auto-populated azp from delegate config,
 		// then merge with auto-generated delegate profiles.
 		final List<Entitlements.EntitlementProfile> enrichedExplicitProfiles = populateExplicitProfileAzp(
-				effectiveFrontendConfig.getEntitlementProfilesList(),
-				effectiveFrontendConfig.getDelegatesList());
+				cfg.getEntitlementProfilesList(),
+				cfg.getDelegatesList());
 		this.profileViewServer = new EntitlementProfileViewServer(
 				backendServers.getAuthenticator(),
 				() -> {
@@ -222,7 +218,7 @@ public class ClusterServer {
 
 		// Capture delegate public keys from Config
 		final var delegatePublicKeys = new java.util.ArrayList<JwkOuterClass.Jwk>();
-		for (Kernel.Delegate delegate : effectiveFrontendConfig.getDelegatesList()) {
+		for (Kernel.Delegate delegate : cfg.getDelegatesList()) {
 			delegatePublicKeys.addAll(delegate.getCredPairsList());
 		}
 
@@ -249,15 +245,15 @@ public class ClusterServer {
 		});
 
 		// Install trusted CAs from Config into TrustedCaState
-		installTrustedCas(effectiveFrontendConfig.getTrustedCasList());
+		installTrustedCas(cfg.getTrustedCasList());
 
 		// Install Config.configs into ConfigHolder boundary maps
-		installConfigHolder(effectiveFrontendConfig);
+		installConfigHolder(cfg);
 
 		// Seed GatewayTls configCerts from the node's TLS chain so the gateway
 		// can start serving HTTPS immediately. The domain comes from the FQDN
 		// configured in the cluster config.
-		seedGatewayTlsCerts(cfg.getTls(), effectiveFrontendConfig.getFqdn());
+		seedGatewayTlsCerts(cfg.getTls(), cfg.getFqdn());
 
 		// ClusterState SetLogLevel handler
 		this.clusterSetLogLevelHandler = new ClusterSetLogLevelHandler();
@@ -293,7 +289,7 @@ public class ClusterServer {
 		// 6. Build gRPC server
 		StateServer backendServer = new StateServer();
 
-		Hazelcast.RateLimitConfig rateLimit = effectiveFrontendConfig.getRateLimit();
+		Hazelcast.RateLimitConfig rateLimit = cfg.getRateLimit();
 		var rateLimiter = new RateLimitInterceptor(
 				rateLimit.getPollingRate(),
 				rateLimit.getUnaryRate(),
@@ -383,7 +379,6 @@ public class ClusterServer {
 				backendServers.services().getClusterMap(),
 				persistence,
 				cfg,
-				effectiveFrontendConfig,
 				grpcPort,
 				rateLimiter,
 				() -> Hazelcast.AdminTokenCacheStats.newBuilder()
@@ -421,13 +416,13 @@ public class ClusterServer {
 			var identityState = backendServers.services().getIdentityMap();
 			var caState = backendServers.services().getCaMap();
 
-			if (effectiveFrontendConfig.getDelegatesCount() > 0) {
-				long maxTokenLifetime = effectiveFrontendConfig.getMaxTokenLifetimeSeconds() > 0
-					? effectiveFrontendConfig.getMaxTokenLifetimeSeconds()
+			if (cfg.getDelegatesCount() > 0) {
+				long maxTokenLifetime = cfg.getMaxTokenLifetimeSeconds() > 0
+					? cfg.getMaxTokenLifetimeSeconds()
 					: 2592000; // 30 days default
 				this.keyRotator = new KeyRotator(
-						effectiveFrontendConfig.getKeyRotationIntervalSeconds() > 0
-								? effectiveFrontendConfig.getKeyRotationIntervalSeconds()
+						cfg.getKeyRotationIntervalSeconds() > 0
+								? cfg.getKeyRotationIntervalSeconds()
 								: 86400,
 						maxTokenLifetime,
 						jwk -> {
@@ -455,22 +450,20 @@ public class ClusterServer {
 				this.externalJwkResolver = null;
 			}
 
-			// Every node generates its own CA keypair so it can sign certs locally.
-			this.caKeyHolder = new CaKeyHolder(
-					effectiveFrontendConfig.getCaCertLifetimeSeconds() > 0
-							? effectiveFrontendConfig.getCaCertLifetimeSeconds()
-							: 31536000,
-					cert -> {
-						String certId = Objects.requireNonNull(cert.getId(), "cert.id");
-						caState.putCaCerts(certId, cert);
-					});
+			// Use cavalier-issued signing chain from bootstrap config (intermediate CA).
+			this.signingCa = ImmutableCertChain.from(cfg.getSigningCa());
 
-			final var delegates = effectiveFrontendConfig.getDelegatesList();
+			// Populate Ca.ca_certs with cluster root CA(s) from bootstrap config.
+			for (X509.X509Cert rootCa : cfg.getClusterCaList()) {
+				caState.putCaCerts(Objects.requireNonNull(rootCa.getId(), "rootCa.id"), rootCa);
+			}
+
+			final var delegates = cfg.getDelegatesList();
 			// Trust domain for SPIFFE ID construction (defaults applied by Helpers).
-			String configuredTrustDomain = effectiveFrontendConfig.getTrustDomain();
+			String configuredTrustDomain = cfg.getTrustDomain();
 			final String trustDomain = (configuredTrustDomain != null && !configuredTrustDomain.isEmpty())
 					? configuredTrustDomain : "cavalier";
-			String fqdn = effectiveFrontendConfig.getFqdn();
+			String fqdn = cfg.getFqdn();
 			final String tokenIssuer;
 			if (fqdn != null && !fqdn.isEmpty()) {
 				tokenIssuer = "https://" + fqdn + Helpers.REST_ROOT_PATH;
@@ -479,36 +472,45 @@ public class ClusterServer {
 				tokenIssuer = "kernel";
 			}
 			var identityService = new IdentityServiceImpl(
-					effectiveFrontendConfig.getDefaultTokenExpirySeconds(),
-					effectiveFrontendConfig.getMaxTokenLifetimeSeconds(),
+					cfg.getDefaultTokenExpirySeconds(),
+					cfg.getMaxTokenLifetimeSeconds(),
 					externalJwkResolver,
 					keyRotator,
 					allKeysSupplier,
 					() -> delegates,
 					com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend.SecurityInterceptor.SERVICE_ENTITLEMENTS,
-					caKeyHolder,
+					signingCa,
 					serviceName -> caState.getServiceCas(serviceName),
 					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
 					() -> trustDomain,
 					tokenIssuer);
 
-			backendServers.services().registerKernelMintService(identityService);
 			serverBuilder.addService(identityService);
-			logger.info("KernelMintService registered on gRPC server ({} delegates)", delegates.size());
+			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
+
+			// C2S token exchange — users exchange access tokens for service-scoped tokens.
+			var tokenExchangeService = new TokenExchangeServiceImpl(
+					cfg.getDefaultTokenExpirySeconds(),
+					cfg.getMaxTokenLifetimeSeconds(),
+					keyRotator,
+					allKeysSupplier,
+					tokenIssuer);
+			serverBuilder.addService(tokenExchangeService);
+			logger.info("TokenExchangeService registered on gRPC server");
 
 			// TLS certificate lifecycle service (ManageCert bidi stream for auto_tls services).
 			this.tlsCertService = new TlsCertServiceImpl(
-					effectiveFrontendConfig.getTlsCertLifetimeSeconds() > 0
-							? effectiveFrontendConfig.getTlsCertLifetimeSeconds()
+					cfg.getTlsCertLifetimeSeconds() > 0
+							? cfg.getTlsCertLifetimeSeconds()
 							: 86400,
-					caKeyHolder,
+					signingCa,
 					serviceName -> caState.getServiceCas(serviceName),
 					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
 					() -> trustDomain);
 			serverBuilder.addService(tlsCertService);
 			logger.info("TlsCertService registered on gRPC server (cert lifetime={}s)",
-					effectiveFrontendConfig.getTlsCertLifetimeSeconds() > 0
-							? effectiveFrontendConfig.getTlsCertLifetimeSeconds() : 86400);
+					cfg.getTlsCertLifetimeSeconds() > 0
+							? cfg.getTlsCertLifetimeSeconds() : 86400);
 		}
 
 		this.grpcServer = serverBuilder.build();
@@ -696,18 +698,12 @@ public class ClusterServer {
 		if (externalJwkResolver != null) {
 			externalJwkResolver.start();
 		}
-		if (caKeyHolder != null) {
-			caKeyHolder.start();
-		}
 		logger.info("gRPC server started on port {}", grpcPort);
 	}
 
 	public void shutdown() {
 		if (tlsCertService != null) {
 			tlsCertService.stop();
-		}
-		if (caKeyHolder != null) {
-			caKeyHolder.stop();
 		}
 		if (keyRotator != null) {
 			keyRotator.stop();

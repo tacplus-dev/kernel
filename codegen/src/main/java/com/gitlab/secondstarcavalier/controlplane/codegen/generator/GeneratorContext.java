@@ -278,16 +278,28 @@ public class GeneratorContext {
 	}
 
 	/**
-	 * Returns the names of gRPC services that have auth_disabled = true.
-	 * These services handle their own authentication and should be skipped
-	 * by the caller interceptor in SecurityAuthenticator.
+	 * Returns entries for the no-auth skip condition in the security interceptor.
+	 * Each entry is either a service name (for unannotated services that handle
+	 * their own auth) or a "ServiceName/RpcName" path (for individual RPCs with
+	 * method-level auth_disabled).
 	 */
 	public List<String> getNoAuthServiceNames() {
 		List<String> names = new ArrayList<>();
 		for (FileDescriptor fd : parser.getAllFiles().values()) {
 			for (ServiceDescriptor svc : fd.getServices()) {
-				if (svc.isDisableAuth()) {
+				if (!svc.hasAuthAnnotation()) {
+					// Unannotated services handle their own auth entirely
 					names.add(svc.getName());
+				} else if (svc.isDisableAuth()) {
+					// Service-level auth_disabled (legacy service_grpc)
+					names.add(svc.getName());
+				} else {
+					// Check per-RPC auth_disabled
+					for (var rpc : svc.getRpcs()) {
+						if (rpc.isDisableAuth()) {
+							names.add(svc.getName() + "/" + rpc.getName());
+						}
+					}
 				}
 			}
 		}

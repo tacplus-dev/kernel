@@ -33,3 +33,5 @@ Thumbs.db
 
 # Docker build context leftovers
 backenddb-mock-runner.log
+# Claude Code
+.claude/

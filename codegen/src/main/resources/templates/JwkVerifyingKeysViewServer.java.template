@@ -6,7 +6,6 @@ import {{JWK_OUTER_CLASS}};
 import {{JWK_VIEW_GRPC_CLASS}};
 import {{JWK_VIEW_PROTO_CLASS}};
 import {{SECURITY_AUTH_CLASS}};
-import com.google.protobuf.Empty;
 import io.grpc.Status;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
@@ -55,7 +54,7 @@ public class JwkVerifyingKeysViewServer
     }
 
     @Override
-    public void watch(Empty request, StreamObserver<Jwkview.JwkViewResponse> observer) {
+    public void watch({{TRACE_REQUEST_TYPE}} request, StreamObserver<Jwkview.JwkViewResponse> observer) {
         try {
             authenticator.checkAccess("*", "jwk_verifying_keys_view", SecurityAuthenticator.OperationType.READ);
         } catch (Exception e) {

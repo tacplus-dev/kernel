@@ -47,7 +47,7 @@ public class BackendServiceImpl extends ClusterServiceGrpc.ClusterServiceImplBas
     }
 
     @Override
-    public void log(com.google.protobuf.Empty request, StreamObserver<LogMessage> responseObserver) {
+    public void log(com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.trace.Trace.TraceRequest request, StreamObserver<LogMessage> responseObserver) {
         String peer = PEER_KEY.get();
         if (peer == null) {
             peer = "unknown";
@@ -65,7 +65,7 @@ public class BackendServiceImpl extends ClusterServiceGrpc.ClusterServiceImplBas
     }
 
     @Override
-    public void ping(com.google.protobuf.Empty request, StreamObserver<PingResponse> responseObserver) {
+    public void ping(com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.trace.Trace.TraceRequest request, StreamObserver<PingResponse> responseObserver) {
         PingResponse response = PingResponse.newBuilder()
                 .setStatus(MemberStatus.MEMBER_STATUS_READY)
                 .build();
@@ -75,7 +75,7 @@ public class BackendServiceImpl extends ClusterServiceGrpc.ClusterServiceImplBas
     }
 
     @Override
-    public void subscribe(com.google.protobuf.Empty request, StreamObserver<ClusterState> responseObserver) {
+    public void subscribe(com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.trace.Trace.TraceRequest request, StreamObserver<ClusterState> responseObserver) {
         String peer = PEER_KEY.get();
         if (peer == null) {
             peer = "unknown";

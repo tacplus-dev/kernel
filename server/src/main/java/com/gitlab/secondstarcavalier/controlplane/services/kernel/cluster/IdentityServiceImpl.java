@@ -14,22 +14,28 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.MintGrpc;
 import com.google.protobuf.Value;
 import com.google.gson.Gson;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.opa.opa_entitlements.OpaEntitlements;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.OpaEvalGrpc;
+import io.grpc.ManagedChannel;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.services.Services;
+import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -102,6 +108,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
 	private final Supplier<String> trustDomainReader;
 	private final String tokenIssuer;
+	@Nullable
+	private final OpaEvalGrpc.OpaEvalBlockingStub opaEvalStub;
 
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
@@ -115,7 +123,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			Function<String, X509.X509CertChain> serviceCaReader,
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
 			Supplier<String> trustDomainReader,
-			String tokenIssuer) {
+			String tokenIssuer,
+			@Nullable ManagedChannel opaChannel) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
 		this.externalJwkResolver = externalJwkResolver;
@@ -128,10 +137,13 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		this.serviceCaWriter = serviceCaWriter;
 		this.trustDomainReader = trustDomainReader;
 		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : "kernel";
+		this.opaEvalStub = opaChannel != null
+				? OpaEvalGrpc.newBlockingStub(opaChannel)
+				: null;
 	}
 
 	// ========================================================================
-	// TokenMint RPC
+	// TokenMint RPC (legacy — delegates to doTokenMint)
 	// ========================================================================
 
 	@Override
@@ -148,6 +160,237 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			responseObserver.onError(Status.INTERNAL
 					.withDescription("token mint failed: " + e.getMessage())
 					.asRuntimeException());
+		}
+	}
+
+	// ========================================================================
+	// MintServiceToken RPC (S2S bootstrap — replaces TokenMint for S2S)
+	// ========================================================================
+
+	@Override
+	public void mintServiceToken(Tokenrequest.MintServiceTokenRequest request,
+			StreamObserver<Tokenrequest.TokenMintResponse> responseObserver) {
+		try {
+			// S2S fields map 1:1 — convert to legacy request and delegate.
+			Tokenrequest.TokenMintRequest legacyRequest = Tokenrequest.TokenMintRequest.newBuilder()
+					.setInputToken(request.getInputToken())
+					.setCloudProof(request.getCloudProof())
+					.setContinuityToken(request.getContinuityToken())
+					.setAud(request.getAud())
+					.setExp(request.getExp())
+					.setTokenPurpose(request.getTokenPurpose())
+					.setLocalityToken(request.getLocalityToken())
+					.build();
+			Tokenrequest.TokenMintResponse result = doTokenMint(legacyRequest);
+			responseObserver.onNext(result);
+			responseObserver.onCompleted();
+		} catch (StatusException e) {
+			responseObserver.onError(e.toGrpcStatus().asRuntimeException());
+		} catch (Exception e) {
+			logger.error("MintServiceToken failed", e);
+			responseObserver.onError(Status.INTERNAL
+					.withDescription("service token mint failed: " + e.getMessage())
+					.asRuntimeException());
+		}
+	}
+
+	// ========================================================================
+	// MintUserToken RPC (C2S delegation — replaces TokenMint delegation path)
+	// ========================================================================
+
+	@Override
+	public void mintUserToken(Tokenrequest.MintUserTokenRequest request,
+			StreamObserver<Tokenrequest.TokenMintResponse> responseObserver) {
+		try {
+			Tokenrequest.TokenMintResponse result = doMintUserToken(request);
+			responseObserver.onNext(result);
+			responseObserver.onCompleted();
+		} catch (StatusException e) {
+			responseObserver.onError(e.toGrpcStatus().asRuntimeException());
+		} catch (Exception e) {
+			logger.error("MintUserToken failed", e);
+			responseObserver.onError(Status.INTERNAL
+					.withDescription("user token mint failed: " + e.getMessage())
+					.asRuntimeException());
+		}
+	}
+
+	/**
+	 * C2S delegation: a trusted broker (e.g. OAuth) authenticates via its service token
+	 * in the header and requests a token on behalf of a user. Kernel calls UncleOPA to
+	 * resolve user claims into entitlement profiles — the broker does not determine
+	 * authorization.
+	 */
+	private Tokenrequest.TokenMintResponse doMintUserToken(Tokenrequest.MintUserTokenRequest request)
+			throws StatusException {
+
+		// Authenticate the calling broker via its bearer token.
+		String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
+		if (rawToken == null || rawToken.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"MintUserToken requires authorization header");
+		}
+
+		TokenWrapper callerToken;
+		try {
+			callerToken = TokenWrapper.parse(rawToken);
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"invalid caller token: " + e.getMessage());
+		}
+
+		String kid = callerToken.getKid();
+		if (kid == null || kid.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
+		}
+
+		JwkOuterClass.Jwk matchingKey = null;
+		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+			if (kid.equals(jwk.getKid())) {
+				matchingKey = jwk;
+				break;
+			}
+		}
+		if (matchingKey == null) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"caller token signed with unknown key: " + kid);
+		}
+
+		try {
+			callerToken.verify(ImmutableJwk.from(matchingKey));
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"caller token verification failed: " + e.getMessage());
+		}
+
+		// Caller must be a known delegate.
+		String callerSub = callerToken.getSubject();
+		Kernel.Delegate delegate = findDelegateByName(callerSub);
+		if (delegate == null) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"caller " + callerSub + " is not a registered delegate");
+		}
+
+		// Resolve profiles via UncleOPA.
+		List<String> profiles = resolveProfilesViaOpa(request.getClaims());
+
+		// Mint the token.
+		ImmutableKey signingKey = keyRotator.getActiveSigningKey();
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+
+		long now = Instant.now().getEpochSecond();
+		long maxExp = now + maxTokenLifetimeSeconds;
+		long exp;
+		if (request.getExp() > 0) {
+			exp = request.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > maxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
+			}
+		} else {
+			exp = now + defaultTokenExpirySeconds;
+		}
+
+		// Always mint refresh + access for C2S (user tokens are always refresh-based).
+		TokenWrapper newToken = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(request.getSubject())
+				.setAudience("kernel")
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+
+		newToken.setAzp(callerSub);
+		newToken.setTokenUse(TOKEN_USE_REFRESH);
+		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
+		newToken.setSubType(SUB_TYPE_USER);
+
+		if (!profiles.isEmpty()) {
+			newToken.setProfiles(profiles);
+		}
+
+		// Forward custom claims from the request (e.g., IDP claims like email, name).
+		if (request.hasClaims()) {
+			for (Map.Entry<String, Value> entry : request.getClaims().getFieldsMap().entrySet()) {
+				String key = entry.getKey();
+				if (STANDARD_JWT_CLAIMS.contains(key)) {
+					continue;
+				}
+				String outputKey = WELL_KNOWN_JWT_CLAIMS.contains(key) ? "origin_" + key : key;
+				Value val = entry.getValue();
+				if (val.hasStringValue()) {
+					newToken.setCustomField(outputKey, val.getStringValue());
+				} else if (val.hasNumberValue()) {
+					newToken.setCustomField(outputKey, Long.toString((long) val.getNumberValue()));
+				} else if (val.hasBoolValue()) {
+					newToken.setCustomField(outputKey, Boolean.toString(val.getBoolValue()));
+				} else {
+					newToken.setCustomField(outputKey, val.toString());
+				}
+			}
+		}
+
+		// Inject delegate's static custom claims.
+		for (Map.Entry<String, String> entry : delegate.getCustomClaimsMap().entrySet()) {
+			if (!STANDARD_JWT_CLAIMS.contains(entry.getKey())) {
+				newToken.setCustomField(entry.getKey(), entry.getValue());
+			}
+		}
+
+		newToken.sign(signingKey);
+
+		logger.info("MintUserToken: sub={}, azp={}, exp={}, profiles={}",
+				request.getSubject(), callerSub, exp, profiles);
+
+		// Also mint an access token.
+		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setRefreshToken(newToken.getProto())
+				.setAccessToken(accessProto)
+				.build();
+	}
+
+	/**
+	 * Resolves user claims into entitlement profiles via UncleOPA.
+	 * Returns empty list if OPA is not configured or unavailable.
+	 */
+	private List<String> resolveProfilesViaOpa(com.google.protobuf.Struct claims) {
+		if (opaEvalStub == null) {
+			logger.warn("UncleOPA not configured — no profile resolution");
+			return List.of();
+		}
+
+		Map<String, String> claimsMap = new LinkedHashMap<>();
+		if (claims != null) {
+			for (Map.Entry<String, Value> entry : claims.getFieldsMap().entrySet()) {
+				Value val = entry.getValue();
+				if (val.hasStringValue()) {
+					claimsMap.put(entry.getKey(), val.getStringValue());
+				} else if (val.hasNumberValue()) {
+					claimsMap.put(entry.getKey(), Long.toString((long) val.getNumberValue()));
+				} else if (val.hasBoolValue()) {
+					claimsMap.put(entry.getKey(), Boolean.toString(val.getBoolValue()));
+				}
+			}
+		}
+
+		try {
+			OpaEntitlements.EntitlementEvalResult result = opaEvalStub
+					.withDeadlineAfter(5, TimeUnit.SECONDS)
+					.evalEntitlement(
+							OpaEntitlements.EntitlementEvalInput.newBuilder()
+									.putAllClaims(claimsMap)
+									.build());
+			return result.getProfilesList();
+		} catch (Exception e) {
+			logger.warn("UncleOPA EvalEntitlement failed — returning empty profiles", e);
+			return List.of();
 		}
 	}
 

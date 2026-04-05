@@ -1,6 +1,6 @@
 
     @Override
-    public void size{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+    public void size{{FIELD_PASCAL}}({{TRACE_REQUEST_TYPE}} request,
             StreamObserver<{{OUTER_CLASS}}.QueueSizeResponse> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);

@@ -29,6 +29,7 @@ public class ViewServerGenerator {
         vars.put("JWK_VIEW_GRPC_CLASS", ctx.getTypesPackageBase() + ".types.libs.jwkview.JwkVerifyingKeysViewServiceGrpc");
         vars.put("JWK_VIEW_PROTO_CLASS", ctx.getTypesPackageBase() + ".types.libs.jwkview.Jwkview");
         vars.put("SECURITY_AUTH_CLASS", ctx.getJavaPackageBase() + ".SecurityAuthenticator");
+        vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.libs.trace.Trace.TraceRequest");
 
         String content = TemplateEngine.render("JwkVerifyingKeysViewServer.java.template", vars);
         Path dir = ctx.getOutputDir().resolve("src/main/java/" + pkg.replace('.', '/'));

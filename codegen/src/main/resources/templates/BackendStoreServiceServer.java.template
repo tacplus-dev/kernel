@@ -116,7 +116,7 @@ public class {{CLASS_NAME}}
     }
 
     @Override
-    public void list(com.google.protobuf.Empty request,
+    public void list({{TRACE_REQUEST_TYPE}} request,
             StreamObserver<{{OUTER_CLASS}}.{{VALUE_TYPE}}StoreListResponse> responseObserver) {
         logger.debug("rpc method=List{{VALUE_TYPE}}");
         try {

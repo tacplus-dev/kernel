@@ -317,9 +317,10 @@ public class BackendServiceServerGenerator {
 			for (SharedView v : views) {
 				String responseName = outerClassName + "." + v.getFieldPascal() + "EntriesResponse";
 				viewRpcs.append("\n    // --- ").append(v.getFieldPascal()).append(" (view) ---\n");
+				String traceRequestType = ctx.getTypesPackageBase() + ".types.libs.trace.Trace.TraceRequest";
 				viewRpcs.append("\n    @Override\n");
 				viewRpcs.append("    public void watch").append(v.getFieldPascal())
-						.append("(com.google.protobuf.Empty request,\n");
+						.append("(").append(traceRequestType).append(" request,\n");
 				viewRpcs.append("            StreamObserver<").append(responseName)
 						.append("> responseObserver) {\n");
 				viewRpcs.append("        logger.debug(\"rpc method=Watch").append(v.getFieldPascal()).append("\");\n");
@@ -527,6 +528,7 @@ public class BackendServiceServerGenerator {
 		vars.put("HELPERS_REF", ctx.getHelpersRef(svc, b));
 		vars.put("OUTER_CLASS", outerClassName);
 		vars.put("SERVICE_PREFIX", servicePrefix);
+		vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.libs.trace.Trace.TraceRequest");
 		return vars;
 	}
 

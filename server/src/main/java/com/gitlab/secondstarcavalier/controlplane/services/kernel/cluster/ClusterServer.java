@@ -471,6 +471,10 @@ public class ClusterServer {
 			} else {
 				tokenIssuer = "kernel";
 			}
+			// UncleOPA channel for MintUserToken → profile resolution.
+			// null until UncleOPA is deployed — MintUserToken falls back to empty profiles.
+			io.grpc.ManagedChannel opaChannel = null;
+
 			var identityService = new IdentityServiceImpl(
 					cfg.getDefaultTokenExpirySeconds(),
 					cfg.getMaxTokenLifetimeSeconds(),
@@ -483,7 +487,8 @@ public class ClusterServer {
 					serviceName -> caState.getServiceCas(serviceName),
 					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
 					() -> trustDomain,
-					tokenIssuer);
+					tokenIssuer,
+					opaChannel);
 
 			serverBuilder.addService(identityService);
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());

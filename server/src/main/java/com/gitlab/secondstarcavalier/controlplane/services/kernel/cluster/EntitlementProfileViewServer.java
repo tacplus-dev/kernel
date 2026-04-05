@@ -6,7 +6,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.entitlementview.Entitlementview;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
 
-import com.google.protobuf.Empty;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.trace.Trace;
 import io.grpc.Status;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
@@ -57,7 +57,7 @@ public class EntitlementProfileViewServer
     }
 
     @Override
-    public void watch(Empty request,
+    public void watch(Trace.TraceRequest request,
             StreamObserver<Entitlementview.EntitlementProfileViewResponse> observer) {
         try {
             authenticator.checkAccess("*", "entitlement_profile_view",

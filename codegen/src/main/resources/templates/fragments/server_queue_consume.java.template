@@ -1,6 +1,6 @@
 
     @Override
-    public void consumeFrom{{FIELD_PASCAL}}(com.google.protobuf.Empty request,
+    public void consumeFrom{{FIELD_PASCAL}}({{TRACE_REQUEST_TYPE}} request,
             StreamObserver<{{QUALIFIED_TYPE}}> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.ADMIN);

@@ -10,6 +10,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
@@ -463,6 +464,18 @@ public class ClusterServer {
 			String configuredTrustDomain = cfg.getTrustDomain();
 			final String trustDomain = (configuredTrustDomain != null && !configuredTrustDomain.isEmpty())
 					? configuredTrustDomain : "cavalier";
+
+			// Seed ServiceConfigState with trust_domain so all services receive it.
+			try {
+				backendServers.libs().getServiceConfigStateMap().putConfig(
+						Grpcconfig.Config.newBuilder()
+								.setTrustDomain(trustDomain)
+								.build());
+				logger.info("Seeded ServiceConfigState trust_domain={}", trustDomain);
+			} catch (Exception e) {
+				logger.warn("Failed to seed ServiceConfigState: {}", e.getMessage());
+			}
+
 			String fqdn = cfg.getFqdn();
 			final String tokenIssuer;
 			if (fqdn != null && !fqdn.isEmpty()) {

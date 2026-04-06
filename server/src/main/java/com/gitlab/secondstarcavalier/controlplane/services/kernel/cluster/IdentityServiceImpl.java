@@ -136,7 +136,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
 		this.trustDomainReader = trustDomainReader;
-		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : "kernel";
+		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : Kernel.getDescriptor().getPackage();
 		this.opaEvalStub = opaChannel != null
 				? OpaEvalGrpc.newBlockingStub(opaChannel)
 				: null;
@@ -301,7 +301,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		TokenWrapper newToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
 				.setSubject(request.getSubject())
-				.setAudience("kernel")
+				.setAudience(Kernel.getDescriptor().getPackage())
 				.setIssuedAt(now)
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
@@ -492,7 +492,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			extraClaims.put(SCOPE, scopeStr);
 
 			return mintRefreshToken(
-					delegateName, delegateName, request,
+					delegateName, Kernel.getDescriptor().getPackage(), request,
 					extraClaims);
 		}
 
@@ -512,7 +512,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 		String subject = inputToken.getSubject();
 
-		return mintRefreshToken(subject, "kernel", request,
+		return mintRefreshToken(subject, Kernel.getDescriptor().getPackage(), request,
 				Map.of("sub_type", SUB_TYPE_USER));
 	}
 
@@ -622,7 +622,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		TokenWrapper newToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
 				.setSubject(request.getSubject())
-				.setAudience(request.getAud().isEmpty() ? "kernel" : request.getAud())
+				.setAudience(request.getAud().isEmpty() ? Kernel.getDescriptor().getPackage() : request.getAud())
 				.setIssuedAt(now)
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
@@ -722,7 +722,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		TokenWrapper newToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
 				.setSubject(subject)
-				.setAudience("kernel")
+				.setAudience(Kernel.getDescriptor().getPackage())
 				.setIssuedAt(now)
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
@@ -885,7 +885,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 					.setJTI(UUID.randomUUID().toString());
 
 			String inputAzp = inputToken.getAzp();
-			newToken.setAzp(!inputAzp.isEmpty() ? inputAzp : "kernel");
+			newToken.setAzp(!inputAzp.isEmpty() ? inputAzp : Kernel.getDescriptor().getPackage());
 			newToken.setPrincipal(subject);
 			newToken.setSubType(SUB_TYPE_SERVICE);
 			newToken.setTokenUse(
@@ -1114,7 +1114,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 			// Construct SPIFFE URI SAN from auth context.
 			String azp = token.getAzp();
-			if (azp.isEmpty()) azp = "kernel";
+			if (azp.isEmpty()) azp = Kernel.getDescriptor().getPackage();
 			String trustDomain = trustDomainReader.get();
 			String spiffeId = "spiffe://" + trustDomain + "/" + azp + "/" + serviceName;
 
@@ -1324,7 +1324,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		TokenWrapper bootstrapToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
 				.setSubject(childSpiffeId)
-				.setAudience("kernel")
+				.setAudience(Kernel.getDescriptor().getPackage())
 				.setIssuedAt(now)
 				.setExpiration(bootstrapExp)
 				.setJTI(UUID.randomUUID().toString());
@@ -1365,7 +1365,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		TokenWrapper refreshToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
 				.setSubject(spiffeId)
-				.setAudience("kernel")
+				.setAudience(Kernel.getDescriptor().getPackage())
 				.setIssuedAt(now)
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
@@ -1373,7 +1373,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		refreshToken.setTokenUse(TOKEN_USE_REFRESH);
 		refreshToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		refreshToken.setSubType(SUB_TYPE_SERVICE);
-		refreshToken.setAzp("kernel");
+		refreshToken.setAzp(Kernel.getDescriptor().getPackage());
 		refreshToken.setInstanceId(instanceId);
 		refreshToken.setCustomField(SPIFFE_ID, spiffeId);
 		if (parentSpiffeId != null) refreshToken.setCustomField(PARENT_SPIFFE_ID, parentSpiffeId);

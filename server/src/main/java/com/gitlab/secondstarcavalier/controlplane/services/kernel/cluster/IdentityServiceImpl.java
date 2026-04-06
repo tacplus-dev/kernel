@@ -7,7 +7,11 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.t
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.key.KeyOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.TokenOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.TokenOuterClass.JwtPayloadType;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.TokenOuterClass.TokenUse;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.TokenOuterClass.SubType;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
@@ -26,7 +30,6 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -34,7 +37,6 @@ import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.services.Services;
 import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,34 +60,36 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 	private static final Logger logger = LoggerFactory.getLogger(IdentityServiceImpl.class);
 
-	private static final Set<String> STANDARD_JWT_CLAIMS = Set.of("sub", "iss", "aud", "exp", "iat", "azp", "nbf",
-			"jti", "typ", "profiles", "token_use", "sub_type",
-			"spiffe_id", "scope", "terminal", "parent_spiffe_id", "locality",
-			"instance_id", "principal");
+	// Standard Cavalier claims — all proto-defined JwtPayloadType values plus "typ".
+	// External IdP claims with these names get origin_ prefixed to avoid collision.
+	private static final Set<String> STANDARD_JWT_CLAIMS;
+	static {
+		var claims = new java.util.HashSet<>(Helpers.jwtPayloadTypeValidValues());
+		claims.add("typ");
+		STANDARD_JWT_CLAIMS = Set.copyOf(claims);
+	}
 
 	// Claims from external IdPs that get origin_ prefix to avoid collision with Cavalier claims.
 	private static final Set<String> WELL_KNOWN_JWT_CLAIMS = Set.of(
 			"iss", "sub", "aud", "exp", "nbf", "iat", "jti");
 
 	// Legacy typ claim value — kept for backwards compatibility during rollout.
-	private static final String TOKEN_TYPE_REFRESH = "refresh";
+	private static final String TOKEN_TYPE_REFRESH = Helpers.tokenUseToString(TokenUse.TOKEN_USE_REFRESH);
 
-	// token_use claim values — unambiguous token type identification.
-	private static final String TOKEN_USE_REFRESH = "refresh";
-	private static final String TOKEN_USE_ACCESS = "access";
-	private static final String TOKEN_USE_SERVICE = "service";
-	private static final String TOKEN_USE_BOOTSTRAP = "bootstrap";
+	// Claim values — derived from proto-defined enums.
+	private static final String TOKEN_USE_REFRESH = Helpers.tokenUseToString(TokenUse.TOKEN_USE_REFRESH);
+	private static final String TOKEN_USE_ACCESS = Helpers.tokenUseToString(TokenUse.TOKEN_USE_ACCESS);
+	private static final String TOKEN_USE_SERVICE = Helpers.tokenUseToString(TokenUse.TOKEN_USE_SERVICE);
+	private static final String TOKEN_USE_BOOTSTRAP = Helpers.tokenUseToString(TokenUse.TOKEN_USE_BOOTSTRAP);
+	private static final String SUB_TYPE_SERVICE = Helpers.subTypeToString(SubType.SUB_TYPE_SERVICE);
+	private static final String SUB_TYPE_USER = Helpers.subTypeToString(SubType.SUB_TYPE_USER);
 
-	// sub_type claim values — identifies what the sub claim represents.
-	private static final String SUB_TYPE_SERVICE = "service";
-	private static final String SUB_TYPE_USER = "user";
-
-	// SPIFFE workload identity claim names.
-	private static final String SPIFFE_ID = "spiffe_id";
-	private static final String SCOPE = "scope";
-	private static final String TERMINAL = "terminal";
-	private static final String PARENT_SPIFFE_ID = "parent_spiffe_id";
-	private static final String LOCALITY = "locality";
+	// Claim names — derived from proto-defined JwtPayloadType enum.
+	private static final String TERMINAL = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_TERMINAL);
+	// TODO: Replace with Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_PARENT_SUB)
+	// after tacplus is rebuilt with the renamed token.proto enum value.
+	private static final String PARENT_SUB = "parent_sub";
+	private static final String LOCALITY = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_LOCALITY);
 
 	private static final Pattern WORKLOAD_NAME_PATTERN = Pattern.compile("[a-zA-Z0-9_-]+");
 
@@ -106,7 +110,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	private final ImmutableCertChain signingCa;
 	private final Function<String, X509.X509CertChain> serviceCaReader;
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
-	private final Supplier<String> trustDomainReader;
+	private final Supplier<String> spiffePrefixReader;
 	private final String tokenIssuer;
 	@Nullable
 	private final OpaEvalGrpc.OpaEvalBlockingStub opaEvalStub;
@@ -122,7 +126,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			ImmutableCertChain signingCa,
 			Function<String, X509.X509CertChain> serviceCaReader,
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
-			Supplier<String> trustDomainReader,
+			Supplier<String> spiffePrefixReader,
 			String tokenIssuer,
 			@Nullable ManagedChannel opaChannel) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
@@ -135,7 +139,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
-		this.trustDomainReader = trustDomainReader;
+		this.spiffePrefixReader = spiffePrefixReader;
 		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : Kernel.getDescriptor().getPackage();
 		this.opaEvalStub = opaChannel != null
 				? OpaEvalGrpc.newBlockingStub(opaChannel)
@@ -483,16 +487,13 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 				logger.info("Generated new instance_id={} for sub={}", instanceId, delegateName);
 			}
 
-			String spiffeId = "spiffe://" + trustDomainReader.get() + "/" + delegateName;
-			String scopeStr = buildScopeString(matchedDelegate.getAuthorizedServicesList());
+			String spiffeId = "spiffe://" + spiffePrefixReader.get() + "/" + delegateName;
 			Map<String, Object> extraClaims = new java.util.LinkedHashMap<>();
 			extraClaims.put("instance_id", instanceId);
 			extraClaims.put("sub_type", SUB_TYPE_SERVICE);
-			extraClaims.put(SPIFFE_ID, spiffeId);
-			extraClaims.put(SCOPE, scopeStr);
 
 			return mintRefreshToken(
-					delegateName, Kernel.getDescriptor().getPackage(), request,
+					spiffeId, Kernel.getDescriptor().getPackage(), request,
 					extraClaims);
 		}
 
@@ -829,8 +830,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		// Locality validation for workload tokens (child workloads present a locality_token on refresh).
 		// TODO: Wire WorkloadState map after codegen — look up parent's locality and compare.
 		if (isRefresh) {
-			String parentSpiffe = inputToken.getCustomField(PARENT_SPIFFE_ID);
-			if (parentSpiffe != null && !parentSpiffe.isEmpty()) {
+			String parentSub = inputToken.getCustomField(PARENT_SUB);
+			if (parentSub != null && !parentSub.isEmpty()) {
 				String localityToken = request.getLocalityToken();
 				if (localityToken == null || localityToken.isEmpty()) {
 					logger.warn("Workload token refresh without locality_token: sub={}", subject);
@@ -875,7 +876,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		TokenWrapper newToken;
 
 		if (isS2S) {
-			// S2S: build token from scratch with delegate-specific profiles.
+			// S2S: build identity-only token (no profiles — authorization is receiver-side).
 			newToken = TokenWrapper.create()
 					.setIssuer(tokenIssuer)
 					.setSubject(subject)
@@ -898,25 +899,12 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 				}
 			}
 
-			// Forward SPIFFE claims from input token to service token.
+			// Forward workload claims from input token to service token.
 			{
-				String spiffeId = inputToken.getCustomField(SPIFFE_ID);
-				if (spiffeId != null && !spiffeId.isEmpty()) {
-					newToken.setCustomField(SPIFFE_ID, spiffeId);
-					String scope = inputToken.getCustomField(SCOPE);
-					if (scope != null) newToken.setCustomField(SCOPE, scope);
-					String terminal = inputToken.getCustomField(TERMINAL);
-					if (terminal != null) newToken.setCustomField(TERMINAL, terminal);
-					String parentSpiffeId = inputToken.getCustomField(PARENT_SPIFFE_ID);
-					if (parentSpiffeId != null) newToken.setCustomField(PARENT_SPIFFE_ID, parentSpiffeId);
-				}
-			}
-
-			List<String> delegateProfiles = delegate.getAuthorizedProfilesList();
-			if (delegateProfiles != null && !delegateProfiles.isEmpty()) {
-				newToken.setProfiles(delegateProfiles);
-			} else {
-				newToken.setProfiles(List.of(delegate.getName()));
+				String terminal = inputToken.getCustomField(TERMINAL);
+				if (terminal != null) newToken.setCustomField(TERMINAL, terminal);
+				String parentSub = inputToken.getCustomField(PARENT_SUB);
+				if (parentSub != null) newToken.setCustomField(PARENT_SUB, parentSub);
 			}
 
 			for (Map.Entry<String, String> entry : delegate.getCustomClaimsMap().entrySet()) {
@@ -925,8 +913,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 				}
 			}
 
-			logger.info("Minted service token (S2S): sub={}, aud={}, exp={}, profiles={}",
-					subject, request.getAud(), exp, newToken.getProfiles());
+			logger.info("Minted service token (S2S): sub={}, aud={}, exp={}",
+					subject, request.getAud(), exp);
 		} else {
 			// U2S: clone the entire input token as a mutable copy.
 			// Preserves all claims (profiles, azp, custom IDP claims) exactly.
@@ -1115,8 +1103,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			// Construct SPIFFE URI SAN from auth context.
 			String azp = token.getAzp();
 			if (azp.isEmpty()) azp = Kernel.getDescriptor().getPackage();
-			String trustDomain = trustDomainReader.get();
-			String spiffeId = "spiffe://" + trustDomain + "/" + azp + "/" + serviceName;
+			String spiffePrefix = spiffePrefixReader.get();
+			String spiffeId = "spiffe://" + spiffePrefix + "/" + azp + "/" + serviceName;
 
 			// Enrich cert request with SPIFFE URI SAN.
 			X509.X509CertRequest enrichedRequest = request.getCertRequest().toBuilder()
@@ -1268,11 +1256,11 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			throw new StatusException(Status.UNAUTHENTICATED, "caller token verification failed: " + e.getMessage());
 		}
 
-		// Validate caller has a SPIFFE ID and is not terminal.
-		String callerSpiffeId = callerToken.getCustomField(SPIFFE_ID);
-		if (callerSpiffeId == null || callerSpiffeId.isEmpty()) {
+		// Validate caller has a SPIFFE sub and is not terminal.
+		String callerSub = callerToken.getSubject();
+		if (callerSub == null || !callerSub.startsWith("spiffe://")) {
 			throw new StatusException(Status.PERMISSION_DENIED,
-					"caller has no spiffe_id — only SPIFFE-identified services can mint workloads");
+					"caller sub is not a SPIFFE URI — only SPIFFE-identified services can mint workloads");
 		}
 		String callerTerminal = callerToken.getCustomField(TERMINAL);
 		if ("true".equals(callerTerminal)) {
@@ -1288,17 +1276,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			throw new StatusException(Status.INVALID_ARGUMENT, "workload_name must match [a-zA-Z0-9_-]+");
 		}
 
-		// Validate scope is a subset of caller's scope.
-		Set<String> callerScope = parseScopeSet(callerToken.getCustomField(SCOPE));
-		String requestScopeStr = buildScopeString(request.getScopeList());
-		Set<String> requestScope = parseScopeSet(requestScopeStr);
-		if (!callerScope.contains("*") && !callerScope.containsAll(requestScope)) {
-			throw new StatusException(Status.PERMISSION_DENIED,
-					"requested scope " + requestScope + " exceeds caller's scope " + callerScope);
-		}
-
-		// Construct child SPIFFE ID.
-		String childSpiffeId = callerSpiffeId + "/" + workloadName;
+		// Construct child SPIFFE URI.
+		String childSub = callerSub + "/" + workloadName;
 
 		// Mint bootstrap token (short-lived).
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey();
@@ -1323,23 +1302,21 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 		TokenWrapper bootstrapToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
-				.setSubject(childSpiffeId)
+				.setSubject(childSub)
 				.setAudience(Kernel.getDescriptor().getPackage())
 				.setIssuedAt(now)
 				.setExpiration(bootstrapExp)
 				.setJTI(UUID.randomUUID().toString());
 
-		bootstrapToken.setCustomField(SPIFFE_ID, childSpiffeId);
-		bootstrapToken.setCustomField(PARENT_SPIFFE_ID, callerSpiffeId);
-		bootstrapToken.setCustomField(SCOPE, requestScopeStr);
+		bootstrapToken.setCustomField(PARENT_SUB, callerSub);
 		bootstrapToken.setCustomField(TERMINAL, request.getTerminal() ? "true" : "false");
 		bootstrapToken.setTokenUse(TOKEN_USE_BOOTSTRAP);
 		bootstrapToken.setSubType(SUB_TYPE_SERVICE);
 
 		bootstrapToken.sign(signingKey);
 
-		logger.info("WorkloadMint: parent={}, child={}, scope={}, terminal={}",
-				callerSpiffeId, childSpiffeId, requestScopeStr, request.getTerminal());
+		logger.info("WorkloadMint: parent={}, child={}, terminal={}",
+				callerSub, childSub, request.getTerminal());
 
 		return Tokenrequest.WorkloadMintResponse.newBuilder()
 				.setBootstrapToken(bootstrapToken.getProto())
@@ -1350,13 +1327,12 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	private Tokenrequest.TokenMintResponse exchangeBootstrapToRefresh(
 			TokenWrapper bootstrapToken, ImmutableKey signingKey, long now, long exp) throws StatusException {
 
-		String spiffeId = bootstrapToken.getCustomField(SPIFFE_ID);
-		String parentSpiffeId = bootstrapToken.getCustomField(PARENT_SPIFFE_ID);
-		String scope = bootstrapToken.getCustomField(SCOPE);
+		String sub = bootstrapToken.getSubject();
+		String parentSub = bootstrapToken.getCustomField(PARENT_SUB);
 		String terminal = bootstrapToken.getCustomField(TERMINAL);
 
-		if (spiffeId == null || spiffeId.isEmpty()) {
-			throw new StatusException(Status.INVALID_ARGUMENT, "bootstrap token missing spiffe_id");
+		if (sub == null || !sub.startsWith("spiffe://")) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "bootstrap token sub is not a SPIFFE URI");
 		}
 
 		String instanceId = UUID.randomUUID().toString();
@@ -1364,7 +1340,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		// Mint refresh token.
 		TokenWrapper refreshToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
-				.setSubject(spiffeId)
+				.setSubject(sub)
 				.setAudience(Kernel.getDescriptor().getPackage())
 				.setIssuedAt(now)
 				.setExpiration(exp)
@@ -1375,9 +1351,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		refreshToken.setSubType(SUB_TYPE_SERVICE);
 		refreshToken.setAzp(Kernel.getDescriptor().getPackage());
 		refreshToken.setInstanceId(instanceId);
-		refreshToken.setCustomField(SPIFFE_ID, spiffeId);
-		if (parentSpiffeId != null) refreshToken.setCustomField(PARENT_SPIFFE_ID, parentSpiffeId);
-		if (scope != null) refreshToken.setCustomField(SCOPE, scope);
+		if (parentSub != null) refreshToken.setCustomField(PARENT_SUB, parentSub);
 		if (terminal != null) refreshToken.setCustomField(TERMINAL, terminal);
 
 		refreshToken.sign(signingKey);
@@ -1385,7 +1359,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		// Mint access token.
 		TokenOuterClass.Token accessProto = mintAccessFromRefresh(refreshToken, signingKey, now, exp);
 
-		logger.info("Bootstrap exchange: spiffe_id={}, instance_id={}", spiffeId, instanceId);
+		logger.info("Bootstrap exchange: sub={}, instance_id={}", sub, instanceId);
 
 		return Tokenrequest.TokenMintResponse.newBuilder()
 				.setRefreshToken(refreshToken.getProto())
@@ -1444,10 +1418,10 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			throw new StatusException(Status.UNAUTHENTICATED, "caller token verification failed: " + e.getMessage());
 		}
 
-		// Validate caller has a SPIFFE ID.
-		String callerSpiffeId = callerToken.getCustomField(SPIFFE_ID);
-		if (callerSpiffeId == null || callerSpiffeId.isEmpty()) {
-			throw new StatusException(Status.PERMISSION_DENIED, "caller has no spiffe_id");
+		// Validate caller has a SPIFFE sub.
+		String callerSub = callerToken.getSubject();
+		if (callerSub == null || !callerSub.startsWith("spiffe://")) {
+			throw new StatusException(Status.PERMISSION_DENIED, "caller sub is not a SPIFFE URI");
 		}
 
 		// Validate target is a descendant of the caller.
@@ -1455,40 +1429,13 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		if (targetSpiffeId == null || targetSpiffeId.isEmpty()) {
 			throw new StatusException(Status.INVALID_ARGUMENT, "spiffe_id is required");
 		}
-		if (!targetSpiffeId.startsWith(callerSpiffeId + "/")) {
+		if (!targetSpiffeId.startsWith(callerSub + "/")) {
 			throw new StatusException(Status.PERMISSION_DENIED,
-					"cannot revoke " + targetSpiffeId + " — not a descendant of " + callerSpiffeId);
+					"cannot revoke " + targetSpiffeId + " — not a descendant of " + callerSub);
 		}
 
 		// TODO: Write revocation to WorkloadState after codegen runs.
-		logger.info("WorkloadRevoke (deferred): caller={}, target={}", callerSpiffeId, targetSpiffeId);
-	}
-
-	/** Builds a scope claim string from a list of ServiceName enums. */
-	private static String buildScopeString(List<Services.ServiceName> serviceNames) {
-		for (var sn : serviceNames) {
-			if ("SERVICE_NAME_ANY".equals(sn.name())) return "*";
-		}
-		StringBuilder sb = new StringBuilder();
-		for (var sn : serviceNames) {
-			String name = sn.name();
-			if ("SERVICE_NAME_UNSPECIFIED".equals(name)) continue;
-			if (sb.length() > 0) sb.append(",");
-			sb.append(name.replace("SERVICE_NAME_", "").toLowerCase());
-		}
-		return sb.toString();
-	}
-
-	/** Parses a scope string into a set. */
-	private static Set<String> parseScopeSet(String scope) {
-		if (scope == null || scope.isEmpty()) return Set.of();
-		if ("*".equals(scope)) return Set.of("*");
-		Set<String> result = new HashSet<>();
-		for (String s : scope.split(",")) {
-			String trimmed = s.trim();
-			if (!trimmed.isEmpty()) result.add(trimmed);
-		}
-		return result;
+		logger.info("WorkloadRevoke (deferred): caller={}, target={}", callerSub, targetSpiffeId);
 	}
 
 	// ========================================================================

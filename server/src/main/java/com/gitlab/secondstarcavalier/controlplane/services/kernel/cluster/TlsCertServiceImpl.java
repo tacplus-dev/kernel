@@ -50,7 +50,7 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	private final ImmutableCertChain signingCa;
 	private final Function<String, X509.X509CertChain> serviceCaReader;
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
-	private final Supplier<String> trustDomainReader;
+	private final Supplier<String> spiffePrefixReader;
 	private final ScheduledExecutorService scheduler;
 
 	/**
@@ -58,19 +58,19 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	 * @param signingCa            cavalier-issued signing chain (intermediate CA)
 	 * @param serviceCaReader      reads per-service intermediate CA from Ca state
 	 * @param serviceCaWriter      writes per-service intermediate CA to Ca state
-	 * @param trustDomainReader    SPIFFE trust domain
+	 * @param spiffePrefixReader    SPIFFE deployment prefix
 	 */
 	public TlsCertServiceImpl(
 			long certLifetimeSeconds,
 			ImmutableCertChain signingCa,
 			Function<String, X509.X509CertChain> serviceCaReader,
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
-			Supplier<String> trustDomainReader) {
+			Supplier<String> spiffePrefixReader) {
 		this.certLifetimeSeconds = certLifetimeSeconds;
 		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
-		this.trustDomainReader = trustDomainReader;
+		this.spiffePrefixReader = spiffePrefixReader;
 		this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
 			Thread t = new Thread(r, "tls-cert-renewal");
 			t.setDaemon(true);
@@ -199,8 +199,8 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
 
 			// Build SPIFFE SAN.
-			String trustDomain = trustDomainReader.get();
-			String spiffeId = "spiffe://" + trustDomain + "/" + serviceName + "/" + instanceId;
+			String spiffePrefix = spiffePrefixReader.get();
+			String spiffeId = "spiffe://" + spiffePrefix + "/" + serviceName + "/" + instanceId;
 
 			// Build cert request from the CSR's public key.
 			long now = Instant.now().getEpochSecond();

@@ -460,18 +460,18 @@ public class ClusterServer {
 			}
 
 			final var delegates = cfg.getDelegatesList();
-			// Trust domain for SPIFFE ID construction (defaults applied by Helpers).
-			String configuredTrustDomain = cfg.getTrustDomain();
-			final String trustDomain = (configuredTrustDomain != null && !configuredTrustDomain.isEmpty())
-					? configuredTrustDomain : "cavalier";
+			// SPIFFE prefix for URI construction (defaults applied by Helpers).
+			String configuredSpiffePrefix = cfg.getSpiffePrefix();
+			final String spiffePrefix = (configuredSpiffePrefix != null && !configuredSpiffePrefix.isEmpty())
+					? configuredSpiffePrefix : "local/dev";
 
-			// Seed ServiceConfigState with trust_domain so all services receive it.
+			// Seed ServiceConfigState with spiffe_prefix so all services receive it.
 			try {
 				backendServers.libs().getServiceConfigStateMap().putConfig(
 						Grpcconfig.Config.newBuilder()
-								.setTrustDomain(trustDomain)
+								.setSpiffePrefix(spiffePrefix)
 								.build());
-				logger.info("Seeded ServiceConfigState trust_domain={}", trustDomain);
+				logger.info("Seeded ServiceConfigState spiffe_prefix={}", spiffePrefix);
 			} catch (Exception e) {
 				logger.warn("Failed to seed ServiceConfigState: {}", e.getMessage());
 			}
@@ -499,7 +499,7 @@ public class ClusterServer {
 					signingCa,
 					serviceName -> caState.getServiceCas(serviceName),
 					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
-					() -> trustDomain,
+					() -> spiffePrefix,
 					tokenIssuer,
 					opaChannel);
 
@@ -524,7 +524,7 @@ public class ClusterServer {
 					signingCa,
 					serviceName -> caState.getServiceCas(serviceName),
 					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
-					() -> trustDomain);
+					() -> spiffePrefix);
 			serverBuilder.addService(tlsCertService);
 			logger.info("TlsCertService registered on gRPC server (cert lifetime={}s)",
 					cfg.getTlsCertLifetimeSeconds() > 0

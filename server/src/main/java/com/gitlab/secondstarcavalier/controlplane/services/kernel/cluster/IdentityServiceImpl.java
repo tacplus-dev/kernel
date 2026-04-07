@@ -27,6 +27,7 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -366,8 +367,11 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	 */
 	private List<String> resolveProfilesViaOpa(com.google.protobuf.Struct claims) {
 		if (opaEvalStub == null) {
-			logger.warn("UncleOPA not configured — no profile resolution");
-			return List.of();
+			// OPA not wired — fall back to all defined profile names.
+			// TODO: Wire OPA channel for proper entitlement evaluation.
+			List<String> fallback = new ArrayList<>(serviceEntitlements.keySet());
+			logger.warn("UncleOPA not configured — falling back to all profiles: {}", fallback);
+			return fallback;
 		}
 
 		Map<String, String> claimsMap = new LinkedHashMap<>();

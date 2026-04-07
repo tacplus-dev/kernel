@@ -27,7 +27,6 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.time.Instant;
 import java.util.Base64;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -113,6 +112,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
 	private final Supplier<String> spiffePrefixReader;
 	private final String tokenIssuer;
+	private final Supplier<List<String>> profileIdsReader;
 	@Nullable
 	private final OpaEvalGrpc.OpaEvalBlockingStub opaEvalStub;
 
@@ -129,6 +129,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
 			Supplier<String> spiffePrefixReader,
 			String tokenIssuer,
+			Supplier<List<String>> profileIdsReader,
 			@Nullable ManagedChannel opaChannel) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
@@ -142,6 +143,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		this.serviceCaWriter = serviceCaWriter;
 		this.spiffePrefixReader = spiffePrefixReader;
 		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : Kernel.getDescriptor().getPackage();
+		this.profileIdsReader = profileIdsReader;
 		this.opaEvalStub = opaChannel != null
 				? OpaEvalGrpc.newBlockingStub(opaChannel)
 				: null;
@@ -311,7 +313,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 
-		newToken.setAzp(callerSub);
+		// azp = delegate name (not SPIFFE URI) — must match EntitlementProfile.azp entries.
+		newToken.setAzp(delegate.getName());
 		newToken.setTokenUse(TOKEN_USE_REFRESH);
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		newToken.setSubType(SUB_TYPE_USER);
@@ -351,7 +354,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		newToken.sign(signingKey);
 
 		logger.info("MintUserToken: sub={}, azp={}, exp={}, profiles={}",
-				request.getSubject(), callerSub, exp, profiles);
+				request.getSubject(), delegate.getName(), exp, profiles);
 
 		// Also mint an access token.
 		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
@@ -367,9 +370,9 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	 */
 	private List<String> resolveProfilesViaOpa(com.google.protobuf.Struct claims) {
 		if (opaEvalStub == null) {
-			// OPA not wired — fall back to all defined profile names.
+			// OPA not wired — fall back to all defined entitlement profile IDs.
 			// TODO: Wire OPA channel for proper entitlement evaluation.
-			List<String> fallback = new ArrayList<>(serviceEntitlements.keySet());
+			List<String> fallback = profileIdsReader.get();
 			logger.warn("UncleOPA not configured — falling back to all profiles: {}", fallback);
 			return fallback;
 		}
@@ -632,8 +635,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 
-		// azp = the delegate name (e.g. "oauth")
-		newToken.setAzp(callerSub);
+		// azp = the delegate name (not SPIFFE URI) — must match EntitlementProfile.azp entries.
+		newToken.setAzp(delegate.getName());
 
 		// Token type claims: token_use identifies the token's role in the hierarchy,
 		// sub_type identifies what the subject represents (user vs service).

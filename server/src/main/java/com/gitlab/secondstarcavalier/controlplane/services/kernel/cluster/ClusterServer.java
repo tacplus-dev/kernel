@@ -488,6 +488,19 @@ public class ClusterServer {
 			// null until UncleOPA is deployed — MintUserToken falls back to empty profiles.
 			io.grpc.ManagedChannel opaChannel = null;
 
+			// Supplier of explicit entitlement profile IDs for OPA fallback in MintUserToken.
+			// Only explicit profiles (e.g., "admin", "claudecode") — auto-generated
+			// delegate profiles are S2S-scoped and not suitable for user tokens.
+			final var profileIdSupplier = (java.util.function.Supplier<java.util.List<String>>) () -> {
+				var profiles = new java.util.ArrayList<String>();
+				for (var ep : enrichedExplicitProfiles) {
+					if (!ep.getId().isEmpty()) {
+						profiles.add(ep.getId());
+					}
+				}
+				return profiles;
+			};
+
 			var identityService = new IdentityServiceImpl(
 					cfg.getDefaultTokenExpirySeconds(),
 					cfg.getMaxTokenLifetimeSeconds(),
@@ -501,6 +514,7 @@ public class ClusterServer {
 					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
 					() -> spiffePrefix,
 					tokenIssuer,
+					profileIdSupplier,
 					opaChannel);
 
 			serverBuilder.addService(identityService);

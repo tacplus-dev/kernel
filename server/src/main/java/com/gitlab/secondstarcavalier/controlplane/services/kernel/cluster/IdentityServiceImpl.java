@@ -1024,8 +1024,15 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	}
 
 	private Kernel.Delegate findDelegateByName(String name) {
+		// When sub is a SPIFFE URI (spiffe://<prefix>/<delegate_name>),
+		// extract the delegate name portion for lookup.
+		String lookupName = name;
+		String prefix = "spiffe://" + spiffePrefixReader.get() + "/";
+		if (name.startsWith(prefix)) {
+			lookupName = name.substring(prefix.length());
+		}
 		for (Kernel.Delegate d : delegatesReader.get()) {
-			if (name.equals(d.getName())) {
+			if (lookupName.equals(d.getName())) {
 				return d;
 			}
 		}

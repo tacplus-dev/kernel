@@ -112,7 +112,6 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
 	private final Supplier<String> spiffePrefixReader;
 	private final String tokenIssuer;
-	private final Supplier<List<String>> profileIdsReader;
 	@Nullable
 	private final OpaEvalGrpc.OpaEvalBlockingStub opaEvalStub;
 
@@ -129,7 +128,6 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
 			Supplier<String> spiffePrefixReader,
 			String tokenIssuer,
-			Supplier<List<String>> profileIdsReader,
 			@Nullable ManagedChannel opaChannel) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
@@ -143,7 +141,6 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		this.serviceCaWriter = serviceCaWriter;
 		this.spiffePrefixReader = spiffePrefixReader;
 		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : Kernel.getDescriptor().getPackage();
-		this.profileIdsReader = profileIdsReader;
 		this.opaEvalStub = opaChannel != null
 				? OpaEvalGrpc.newBlockingStub(opaChannel)
 				: null;
@@ -370,11 +367,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	 */
 	private List<String> resolveProfilesViaOpa(com.google.protobuf.Struct claims) {
 		if (opaEvalStub == null) {
-			// OPA not wired — fall back to all defined entitlement profile IDs.
-			// TODO: Wire OPA channel for proper entitlement evaluation.
-			List<String> fallback = profileIdsReader.get();
-			logger.warn("UncleOPA not configured — falling back to all profiles: {}", fallback);
-			return fallback;
+			logger.warn("UncleOPA not configured — no profile resolution");
+			return List.of();
 		}
 
 		Map<String, String> claimsMap = new LinkedHashMap<>();

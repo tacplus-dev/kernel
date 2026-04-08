@@ -15,11 +15,24 @@
                 return;
             }
 
+            // Extract short service name from SPIFFE URI for service_id.
+            // subject is a SPIFFE URI like "spiffe://local/dev/eventbus" — the
+            // service name is the first path segment after the spiffe_prefix.
+            // Consumers match against service_id using the short name.
+            String serviceId = subject;
+            if (subject.startsWith("spiffe://")) {
+                String path = subject.substring("spiffe://".length());
+                int lastSlash = path.lastIndexOf('/');
+                if (lastSlash >= 0) {
+                    serviceId = path.substring(lastSlash + 1);
+                }
+            }
+
             // Server-authoritative: build composite key and overwrite identity fields
-            String compositeKey = subject + "@" + instanceId;
+            String compositeKey = serviceId + "@" + instanceId;
             {{QUALIFIED_TYPE}} authoritative = request.toBuilder()
                 .setId(compositeKey)
-                .setServiceId(subject)
+                .setServiceId(serviceId)
                 .setInstanceId(instanceId)
                 .build();
 

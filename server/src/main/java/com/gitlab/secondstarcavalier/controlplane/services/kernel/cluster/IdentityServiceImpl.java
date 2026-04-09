@@ -19,7 +19,7 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.google.protobuf.Value;
 import com.google.gson.Gson;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.opa.userentitlements.Userentitlements;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.OpaEvalGrpc;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.opa_eval.OpaEvalGrpc;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.security.KeyPair;

@@ -488,13 +488,21 @@ public class ClusterServer {
 				tokenIssuer = "kernel";
 			}
 			// ServiceMesh for outbound S2S connections (kernel → uncleopa, etc.).
-			// Build client TLS context trusting cluster CAs.
+			// Build client TLS context trusting cluster CAs + signing CA.
+			// Service certs are signed by per-service CAs issued by the signing CA,
+			// so we must trust the signing CA chain to verify service TLS certs.
 			var trustCerts = new java.util.ArrayList<java.security.cert.X509Certificate>();
 			for (ImmutableCert ic : grpcTlsChain.intermediates()) {
 				trustCerts.add(ic.getX509Certificate());
 			}
 			for (X509.X509Cert rootCa : cfg.getClusterCaList()) {
 				trustCerts.add(ImmutableCert.from(rootCa).getX509Certificate());
+			}
+			// Trust the signing CA — services get their TLS certs via X509Mint
+			// which chains through per-service CAs signed by this CA.
+			trustCerts.add(signingCa.leaf().getX509Certificate());
+			for (ImmutableCert ic : signingCa.intermediates()) {
+				trustCerts.add(ic.getX509Certificate());
 			}
 			SslContext clientSslContext;
 			try {
@@ -518,8 +526,16 @@ public class ClusterServer {
 			Thread meshPoller = new Thread(() -> {
 				while (!Thread.currentThread().isInterrupted()) {
 					try {
-						serviceMesh.onHealthUpdate(
-								new java.util.ArrayList<>(healthMap.proto().getInstancesList()));
+						var instances = new java.util.ArrayList<>(healthMap.proto().getInstancesList());
+						logger.info("mesh-debug: instances.size={}", instances.size());
+						for (var inst : instances) {
+							var ep = inst.getGrpcEndpoint();
+							logger.info("mesh-debug: svc=[{}], status={}, ep={}:{}, id=[{}]",
+									inst.getServiceId(), inst.getStatus(),
+									ep != null ? ep.getHost() : "null",
+									ep != null ? ep.getPort() : 0, inst.getId());
+						}
+						serviceMesh.onHealthUpdate(instances);
 					} catch (Exception e) {
 						logger.warn("ServiceMesh health update failed: {}", e.getMessage());
 					}

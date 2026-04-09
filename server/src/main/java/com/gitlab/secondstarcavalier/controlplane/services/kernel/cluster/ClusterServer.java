@@ -6,6 +6,7 @@ import static com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast.HazelcastManager;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.graphs.hazelcast.PersistenceProvider;
 // StateServer is in this package
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCert;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
@@ -38,6 +39,7 @@ import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.netty.shaded.io.netty.handler.ssl.ClientAuth;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContextBuilder;
+import io.grpc.netty.shaded.io.netty.handler.ssl.SslProvider;
 import io.grpc.protobuf.services.HealthStatusManager;
 import java.io.IOException;
 import java.util.List;
@@ -149,9 +151,10 @@ public class ClusterServer {
 				persistence.initialize(hazelcast, initialQuorumForPersistence);
 			} catch (IOException e) {
 				logger.warn(
-						"Persistence initialization failed — starting without "
-								+ "restored state. Data will converge from peers.",
+						"Persistence initialization failed — disabling persistence. "
+								+ "Data will converge from peers.",
 						e);
+				persistence.disable();
 			}
 		}
 
@@ -484,9 +487,54 @@ public class ClusterServer {
 			} else {
 				tokenIssuer = "kernel";
 			}
-			// UncleOPA channel for MintUserToken → profile resolution.
-			// null until UncleOPA is deployed — MintUserToken falls back to empty profiles.
-			io.grpc.ManagedChannel opaChannel = null;
+			// ServiceMesh for outbound S2S connections (kernel → uncleopa, etc.).
+			// Build client TLS context trusting cluster CAs.
+			var trustCerts = new java.util.ArrayList<java.security.cert.X509Certificate>();
+			for (ImmutableCert ic : grpcTlsChain.intermediates()) {
+				trustCerts.add(ic.getX509Certificate());
+			}
+			for (X509.X509Cert rootCa : cfg.getClusterCaList()) {
+				trustCerts.add(ImmutableCert.from(rootCa).getX509Certificate());
+			}
+			SslContext clientSslContext;
+			try {
+				clientSslContext = GrpcSslContexts.configure(
+						SslContextBuilder.forClient()
+								.trustManager(trustCerts.toArray(new java.security.cert.X509Certificate[0])),
+						SslProvider.JDK)
+						.build();
+			} catch (Exception e) {
+				throw new RuntimeException("Failed to configure client TLS for S2S", e);
+			}
+			final SslContext s2sSslContext = clientSslContext;
+
+			var serviceMesh = new com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.servicemesh.ServiceMesh(
+					target -> io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(target)
+							.sslContext(s2sSslContext)
+							.build());
+
+			// Feed ServiceHealthState into the mesh so it discovers service endpoints.
+			var healthMap = backendServers.services().getServiceHealthMap();
+			Thread meshPoller = new Thread(() -> {
+				while (!Thread.currentThread().isInterrupted()) {
+					try {
+						serviceMesh.onHealthUpdate(
+								new java.util.ArrayList<>(healthMap.proto().getInstancesList()));
+					} catch (Exception e) {
+						logger.warn("ServiceMesh health update failed: {}", e.getMessage());
+					}
+					try { Thread.sleep(5000); } catch (InterruptedException ie) {
+						Thread.currentThread().interrupt();
+						break;
+					}
+				}
+			}, "servicemesh-health-poller");
+			meshPoller.setDaemon(true);
+			meshPoller.start();
+
+			// OPA eval channel — resolves to uncleopa via ServiceMesh.
+			// Falls back to empty profiles if uncleopa has no healthy endpoints.
+			io.grpc.Channel opaChannel = serviceMesh.meshChannel("uncleopa");
 
 			var identityService = new IdentityServiceImpl(
 					cfg.getDefaultTokenExpirySeconds(),

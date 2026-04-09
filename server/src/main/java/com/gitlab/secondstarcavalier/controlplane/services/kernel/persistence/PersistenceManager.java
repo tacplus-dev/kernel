@@ -52,7 +52,7 @@ public class PersistenceManager implements PersistenceProvider {
 
 	private final Path dataDir;
 	private final String nodeId;
-	private final boolean enabled;
+	private volatile boolean enabled;
 	private final long dumpIntervalHours;
 	private final long dumpJitterSeconds;
 	private final long redoFlushIntervalMs;
@@ -277,6 +277,14 @@ public class PersistenceManager implements PersistenceProvider {
 			}
 		}
 		return 0;
+	}
+
+	/**
+	 * Disables persistence. Called when initialization fails so that
+	 * subsequent registerMap calls skip attaching listeners.
+	 */
+	public void disable() {
+		this.enabled = false;
 	}
 
 	/**

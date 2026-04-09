@@ -18,9 +18,8 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.MintGrpc;
 import com.google.protobuf.Value;
 import com.google.gson.Gson;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.opa.opa_entitlements.OpaEntitlements;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.opa.userentitlements.Userentitlements;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.OpaEvalGrpc;
-import io.grpc.ManagedChannel;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.security.KeyPair;
@@ -128,7 +127,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
 			Supplier<String> spiffePrefixReader,
 			String tokenIssuer,
-			@Nullable ManagedChannel opaChannel) {
+			@Nullable io.grpc.Channel opaChannel) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
 		this.externalJwkResolver = externalJwkResolver;
@@ -386,10 +385,10 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		}
 
 		try {
-			OpaEntitlements.EntitlementEvalResult result = opaEvalStub
+			Userentitlements.EntitlementEvalResult result = opaEvalStub
 					.withDeadlineAfter(5, TimeUnit.SECONDS)
 					.evalEntitlement(
-							OpaEntitlements.EntitlementEvalInput.newBuilder()
+							Userentitlements.EntitlementEvalInput.newBuilder()
 									.putAllClaims(claimsMap)
 									.build());
 			return result.getProfilesList();

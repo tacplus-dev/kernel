@@ -16,6 +16,9 @@ public interface PersistenceProvider extends AutoCloseable {
 
 	boolean isEnabled();
 
+	/** Disables persistence after a failed initialization. */
+	void disable();
+
 	void initialize(HazelcastInstance hz, int quorum) throws IOException;
 
 	<K, V> void registerMap(
@@ -41,6 +44,10 @@ public interface PersistenceProvider extends AutoCloseable {
 			@Override
 			public boolean isEnabled() {
 				return false;
+			}
+
+			@Override
+			public void disable() {
 			}
 
 			@Override

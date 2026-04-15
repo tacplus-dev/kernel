@@ -45,12 +45,12 @@ public class EntitlementProfileViewServer
         });
 
     private final SecurityAuthenticator authenticator;
-    private final Supplier<List<Entitlements.EntitlementProfile>> profilesSupplier;
+    private final Supplier<List<Entitlements.TokenEntitlements>> profilesSupplier;
     private final List<WatcherEntry> watchers = new CopyOnWriteArrayList<>();
 
     public EntitlementProfileViewServer(
             SecurityAuthenticator authenticator,
-            Supplier<List<Entitlements.EntitlementProfile>> profilesSupplier) {
+            Supplier<List<Entitlements.TokenEntitlements>> profilesSupplier) {
         this.authenticator = authenticator;
         this.profilesSupplier = profilesSupplier;
         scheduler.scheduleAtFixedRate(this::pollAll, 500, 500, TimeUnit.MILLISECONDS);
@@ -105,8 +105,8 @@ public class EntitlementProfileViewServer
     private Entitlementview.EntitlementProfileViewResponse buildResponse() {
         var builder = Entitlementview.EntitlementProfileViewResponse.newBuilder();
         try {
-            List<Entitlements.EntitlementProfile> profiles = profilesSupplier.get();
-            for (Entitlements.EntitlementProfile profile : profiles) {
+            List<Entitlements.TokenEntitlements> profiles = profilesSupplier.get();
+            for (Entitlements.TokenEntitlements profile : profiles) {
                 builder.putProfiles(profile.getId(), profile);
             }
         } catch (Exception e) {

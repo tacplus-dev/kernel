@@ -204,21 +204,13 @@ public class ClusterServer {
 		// Auto-generate entitlement profiles from delegates with authorized_services.
 		// Each delegate gets a profile with id=delegateName, azp=[delegateName],
 		// granting _ANY on each authorized service.
-		final List<Entitlements.EntitlementProfile> autoProfiles = buildDelegateProfiles(
-				cfg.getDelegatesList());
-
-		// Enrich explicit profiles with auto-populated azp from delegate config,
-		// then merge with auto-generated delegate profiles.
-		final List<Entitlements.EntitlementProfile> enrichedExplicitProfiles = populateExplicitProfileAzp(
-				cfg.getEntitlementProfilesList(),
+		// These profiles are served via EntitlementProfileViewService for backward
+		// compatibility with old tokens that carry the `profiles` claim.
+		final List<Entitlements.TokenEntitlements> autoProfiles = buildDelegateProfiles(
 				cfg.getDelegatesList());
 		this.profileViewServer = new EntitlementProfileViewServer(
 				backendServers.getAuthenticator(),
-				() -> {
-					var merged = new java.util.ArrayList<>(enrichedExplicitProfiles);
-					merged.addAll(autoProfiles);
-					return merged;
-				});
+				() -> autoProfiles);
 
 		// Capture delegate public keys from Config
 		final var delegatePublicKeys = new java.util.ArrayList<JwkOuterClass.Jwk>();
@@ -548,9 +540,18 @@ public class ClusterServer {
 			meshPoller.setDaemon(true);
 			meshPoller.start();
 
-			// OPA eval channel — resolves to uncleopa via ServiceMesh.
-			// Falls back to empty profiles if uncleopa has no healthy endpoints.
-			io.grpc.Channel opaChannel = serviceMesh.meshChannel("uncleopa");
+			// Create GrpcS2SClients with a kernel-local token provider that self-mints
+			// service tokens using the KeyRotator. This avoids the bootstrap deadlock
+			// (IdentityManager calls MintServiceToken, but kernel IS the token issuer).
+			var grpcClients = new com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.clients.generated.GrpcS2SClients(
+					serviceMesh,
+					aud -> () -> {
+						try {
+							return mintSelfToken(keyRotator, tokenIssuer, aud, () -> spiffePrefix);
+						} catch (Exception e) {
+							throw new RuntimeException("failed to self-mint token for " + aud, e);
+						}
+					});
 
 			var identityService = new IdentityServiceImpl(
 					cfg.getDefaultTokenExpirySeconds(),
@@ -565,7 +566,7 @@ public class ClusterServer {
 					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
 					() -> spiffePrefix,
 					tokenIssuer,
-					opaChannel);
+					grpcClients.opaEval());
 
 			serverBuilder.addService(identityService);
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
@@ -600,27 +601,24 @@ public class ClusterServer {
 	}
 
 	/**
-	 * Builds auto-generated EntitlementProfiles from delegates that have
-	 * authorized_services (but no authorized_profiles). Each delegate gets a
-	 * profile with id=delegateName, azp=[delegateName], granting _ANY on each
-	 * authorized service.
+	 * Builds auto-generated TokenEntitlements from delegates that have
+	 * authorized_services. Each delegate gets a profile with id=delegateName,
+	 * azp=[delegateName], granting _ANY on each authorized service.
+	 * These are served via EntitlementProfileViewService for backward compat
+	 * with tokens that carry the profiles claim.
 	 */
-	private static List<Entitlements.EntitlementProfile> buildDelegateProfiles(
+	private static List<Entitlements.TokenEntitlements> buildDelegateProfiles(
 			List<Kernel.Delegate> delegates) {
-		var result = new java.util.ArrayList<Entitlements.EntitlementProfile>();
-		var descriptor = Entitlements.EntitlementProfile.getDescriptor();
+		var result = new java.util.ArrayList<Entitlements.TokenEntitlements>();
+		var descriptor = Entitlements.TokenEntitlements.getDescriptor();
 
 		for (Kernel.Delegate delegate : delegates) {
-			// Skip delegates that already use explicit profile references.
-			if (!delegate.getAuthorizedProfilesList().isEmpty()) {
-				continue;
-			}
 			// Only create auto-profiles for delegates with authorized_services.
 			if (delegate.getAuthorizedServicesList().isEmpty()) {
 				continue;
 			}
 
-			var builder = Entitlements.EntitlementProfile.newBuilder()
+			var builder = Entitlements.TokenEntitlements.newBuilder()
 					.setId(delegate.getName())
 					.addAzp(delegate.getName());
 
@@ -659,73 +657,11 @@ public class ClusterServer {
 			}
 
 			result.add(builder.build());
-			logger.info("Auto-generated EntitlementProfile for delegate: {}", delegate.getName());
+			logger.info("Auto-generated TokenEntitlements for delegate: {}", delegate.getName());
 		}
 		return result;
 	}
 
-	/**
-	 * For each explicit entitlement profile (from config) that has an empty azp list,
-	 * populates azp by scanning delegates: any delegate whose authorized_services
-	 * overlaps with the services granted by the profile is added. "kernel" is always included.
-	 */
-	private static List<Entitlements.EntitlementProfile> populateExplicitProfileAzp(
-			List<Entitlements.EntitlementProfile> explicitProfiles,
-			List<Kernel.Delegate> delegates) {
-		// Build map: service name → set of delegate names authorized for that service
-		var serviceToDelegates = new java.util.HashMap<String, java.util.Set<String>>();
-		for (Kernel.Delegate delegate : delegates) {
-			for (var svcName : delegate.getAuthorizedServicesList()) {
-				String enumName = svcName.name();
-				if (enumName.equals("SERVICE_NAME_UNSPECIFIED")) continue;
-				if (enumName.equals("SERVICE_NAME_ANY")) {
-					serviceToDelegates.computeIfAbsent("_any", k -> new java.util.HashSet<>())
-							.add(delegate.getName());
-					continue;
-				}
-				String svc = enumName.replace("SERVICE_NAME_", "").toLowerCase();
-				serviceToDelegates.computeIfAbsent(svc, k -> new java.util.HashSet<>())
-						.add(delegate.getName());
-			}
-		}
-
-		var result = new java.util.ArrayList<Entitlements.EntitlementProfile>();
-		var descriptor = Entitlements.EntitlementProfile.getDescriptor();
-
-		for (Entitlements.EntitlementProfile profile : explicitProfiles) {
-			if (!profile.getAzpList().isEmpty()) {
-				result.add(profile);
-				continue;
-			}
-
-			java.util.Set<String> authorizedAzp = new java.util.LinkedHashSet<>();
-			authorizedAzp.add("kernel");
-
-			// Delegates authorized for _any service can broker all profiles
-			authorizedAzp.addAll(serviceToDelegates.getOrDefault("_any", java.util.Set.of()));
-
-			// Delegates authorized for the "oauth" service broker user logins —
-			// user tokens carry azp=<broker name>, so include them in all user profiles.
-			authorizedAzp.addAll(serviceToDelegates.getOrDefault("oauth", java.util.Set.of()));
-
-			for (var fd : descriptor.getFields()) {
-				if (fd.getType() != com.google.protobuf.Descriptors.FieldDescriptor.Type.ENUM
-						|| !fd.isRepeated()
-						|| fd.getName().equals("azp")) continue;
-				if (profile.getRepeatedFieldCount(fd) > 0) {
-					String svcName = fd.getName();
-					authorizedAzp.addAll(
-							serviceToDelegates.getOrDefault(svcName, java.util.Set.of()));
-				}
-			}
-
-			result.add(profile.toBuilder()
-					.addAllAzp(authorizedAzp)
-					.build());
-			logger.info("Enriched profile '{}' with azp={}", profile.getId(), authorizedAzp);
-		}
-		return result;
-	}
 
 	private void installTrustedCas(List<X509.X509Cert> configCas) {
 		var map = backendServers.services().getTrustedCaMap();
@@ -810,5 +746,41 @@ public class ClusterServer {
 
 	public int getGrpcPort() {
 		return grpcPort;
+	}
+
+	/**
+	 * Self-mints a service token using the kernel's own KeyRotator.
+	 * Used for kernel's outgoing S2S calls (e.g., to uncleopa) where kernel
+	 * cannot use IdentityManager (bootstrap ordering: IdentityManager calls
+	 * MintServiceToken, but kernel IS the token issuer).
+	 */
+	private static String mintSelfToken(KeyRotator keyRotator, String tokenIssuer,
+			String audience, Supplier<String> spiffePrefixReader) throws Exception {
+		com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.key.ImmutableKey signingKey =
+				keyRotator.getActiveSigningKey();
+		if (signingKey == null) {
+			throw new IllegalStateException("no active signing key for self-mint");
+		}
+		long now = java.time.Instant.now().getEpochSecond();
+		long exp = now + 3600; // 1 hour
+
+		String spiffeId = "spiffe://" + spiffePrefixReader.get() + "/kernel";
+
+		com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.token.TokenWrapper token =
+				com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.token.TokenWrapper.create()
+						.setIssuer(tokenIssuer)
+						.setSubject(spiffeId)
+						.setAudience(audience)
+						.setIssuedAt(now)
+						.setExpiration(exp)
+						.setJTI(java.util.UUID.randomUUID().toString());
+
+		token.setSubType("service");
+		token.setTokenUse("service");
+		token.setAzp(com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel.getDescriptor().getPackage());
+		token.setPrincipal(spiffeId);
+
+		token.sign(signingKey);
+		return token.getBase64();
 	}
 }

@@ -18,8 +18,10 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.MintGrpc;
 import com.google.protobuf.Value;
 import com.google.gson.Gson;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.opa.userentitlements.Userentitlements;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.opa_eval.OpaEvalGrpc;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.vservices.userentitlements.Userentitlements;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.services.Services;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.clients.generated.opa_eval.OpaEvalGrpcClient;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.security.KeyPair;
@@ -31,7 +33,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -89,6 +90,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	// after tacplus is rebuilt with the renamed token.proto enum value.
 	private static final String PARENT_SUB = "parent_sub";
 	private static final String LOCALITY = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_LOCALITY);
+	private static final String SERVICE_ENTITLEMENTS = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_SERVICE_ENTITLEMENTS);
 
 	private static final Pattern WORKLOAD_NAME_PATTERN = Pattern.compile("[a-zA-Z0-9_-]+");
 
@@ -112,7 +114,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	private final Supplier<String> spiffePrefixReader;
 	private final String tokenIssuer;
 	@Nullable
-	private final OpaEvalGrpc.OpaEvalBlockingStub opaEvalStub;
+	private final OpaEvalGrpcClient opaEvalClient;
 
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
@@ -127,7 +129,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
 			Supplier<String> spiffePrefixReader,
 			String tokenIssuer,
-			@Nullable io.grpc.Channel opaChannel) {
+			@Nullable OpaEvalGrpcClient opaEvalClient) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
 		this.externalJwkResolver = externalJwkResolver;
@@ -140,9 +142,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		this.serviceCaWriter = serviceCaWriter;
 		this.spiffePrefixReader = spiffePrefixReader;
 		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : Kernel.getDescriptor().getPackage();
-		this.opaEvalStub = opaChannel != null
-				? OpaEvalGrpc.newBlockingStub(opaChannel)
-				: null;
+		this.opaEvalClient = opaEvalClient;
 	}
 
 	// ========================================================================
@@ -274,8 +274,9 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 					"caller " + callerSub + " is not a registered delegate");
 		}
 
-		// Resolve profiles via UncleOPA.
-		List<String> profiles = resolveProfilesViaOpa(request.getClaims());
+		// Resolve entitlements via UncleOPA.
+		Userentitlements.EntitlementEvalResult opaResult = resolveEntitlementsViaOpa(request.getClaims());
+		Entitlements.TokenEntitlements expanded = expandEntitlements(opaResult);
 
 		// Mint the token.
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey();
@@ -309,14 +310,20 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 
-		// azp = delegate name (not SPIFFE URI) — must match EntitlementProfile.azp entries.
+		// azp = delegate name (not SPIFFE URI) — must match TokenEntitlements.azp entries.
 		newToken.setAzp(delegate.getName());
 		newToken.setTokenUse(TOKEN_USE_REFRESH);
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		newToken.setSubType(SUB_TYPE_USER);
 
-		if (!profiles.isEmpty()) {
-			newToken.setProfiles(profiles);
+		// Set expanded service_entitlements claim (JSON-encoded TokenEntitlements).
+		try {
+			String entJson = com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Helpers
+					.tokenEntitlementsToJson(expanded);
+			newToken.setServiceEntitlementsClaim(entJson);
+		} catch (Exception e) {
+			throw new StatusException(Status.INTERNAL,
+					"failed to serialize service_entitlements: " + e.getMessage());
 		}
 
 		// Forward custom claims from the request (e.g., IDP claims like email, name).
@@ -349,8 +356,9 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 		newToken.sign(signingKey);
 
-		logger.info("MintUserToken: sub={}, azp={}, exp={}, profiles={}",
-				request.getSubject(), delegate.getName(), exp, profiles);
+		logger.info("MintUserToken: sub={}, azp={}, exp={}, service_entitlements={}",
+				request.getSubject(), delegate.getName(), exp,
+				newToken.getServiceEntitlementsClaim());
 
 		// Also mint an access token.
 		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
@@ -361,13 +369,15 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	}
 
 	/**
-	 * Resolves user claims into entitlement profiles via UncleOPA.
-	 * Returns empty list if OPA is not configured or unavailable.
+	 * Resolves user claims into entitlements via UncleOPA.
+	 * Returns the raw EntitlementEvalResult (grant_all flags + explicit entitlements).
+	 * Throws UNAVAILABLE if OPA evaluation fails.
 	 */
-	private List<String> resolveProfilesViaOpa(com.google.protobuf.Struct claims) {
-		if (opaEvalStub == null) {
-			logger.warn("UncleOPA not configured — no profile resolution");
-			return List.of();
+	private Userentitlements.EntitlementEvalResult resolveEntitlementsViaOpa(
+			com.google.protobuf.Struct claims) throws StatusException {
+		if (opaEvalClient == null) {
+			throw new StatusException(Status.UNAVAILABLE,
+					"UncleOPA client not configured — cannot resolve entitlements");
 		}
 
 		Map<String, String> claimsMap = new LinkedHashMap<>();
@@ -385,17 +395,81 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		}
 
 		try {
-			Userentitlements.EntitlementEvalResult result = opaEvalStub
-					.withDeadlineAfter(5, TimeUnit.SECONDS)
-					.evalEntitlement(
-							Userentitlements.EntitlementEvalInput.newBuilder()
-									.putAllClaims(claimsMap)
-									.build());
-			return result.getProfilesList();
+			return opaEvalClient.evalEntitlement(
+					Userentitlements.EntitlementEvalInput.newBuilder()
+							.putAllClaims(claimsMap)
+							.build());
 		} catch (Exception e) {
-			logger.warn("UncleOPA EvalEntitlement failed — returning empty profiles", e);
-			return List.of();
+			logger.error("UncleOPA EvalEntitlement failed", e);
+			throw new StatusException(Status.UNAVAILABLE,
+					"entitlement evaluation failed: " + e.getMessage());
 		}
+	}
+
+	/**
+	 * Expands an OPA EntitlementEvalResult into a concrete TokenEntitlements.
+	 * Merges grant_all (global), per-service grant_all_* flags, and explicit
+	 * entitlements into a single message with concrete RPC lists.
+	 * _ANY wildcards in the explicit entitlements are preserved — the authorizer
+	 * handles them at request time.
+	 */
+	private static Entitlements.TokenEntitlements expandEntitlements(
+			Userentitlements.EntitlementEvalResult result) {
+		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
+
+		// Start with explicit entitlements from OPA (if any).
+		if (result.hasEntitlements()) {
+			builder.mergeFrom(result.getEntitlements());
+		}
+
+		// Global grant_all → _ANY on every service.
+		if (result.getGrantAll()) {
+			builder.clearSentinel().addSentinel(Services.SentinelRPCs.SENTINEL_RPCS_ANY);
+			builder.clearGateway().addGateway(Services.GatewayRPCs.GATEWAY_RPCS_ANY);
+			builder.clearMcp().addMcp(Services.McpRPCs.MCP_RPCS_ANY);
+			builder.clearEventbus().addEventbus(Services.EventbusRPCs.EVENTBUS_RPCS_ANY);
+			builder.clearFleetwood().addFleetwood(Services.FleetwoodRPCs.FLEETWOOD_RPCS_ANY);
+			builder.clearAnthropic().addAnthropic(Services.AnthropicRPCs.ANTHROPIC_RPCS_ANY);
+			builder.clearGithub().addGithub(Services.GithubRPCs.GITHUB_RPCS_ANY);
+			builder.clearGitlab().addGitlab(Services.GitlabRPCs.GITLAB_RPCS_ANY);
+			builder.clearOpenai().addOpenai(Services.OpenaiRPCs.OPENAI_RPCS_ANY);
+			return builder.build();
+		}
+
+		// Per-service grant_all_* → _ANY for that service (overrides explicit RPCs).
+		if (result.getGrantAllSentinel()) {
+			builder.clearSentinel().addSentinel(Services.SentinelRPCs.SENTINEL_RPCS_ANY);
+		}
+		if (result.getGrantAllGateway()) {
+			builder.clearGateway().addGateway(Services.GatewayRPCs.GATEWAY_RPCS_ANY);
+		}
+		if (result.getGrantAllMcp()) {
+			builder.clearMcp().addMcp(Services.McpRPCs.MCP_RPCS_ANY);
+		}
+		if (result.getGrantAllEventbus()) {
+			builder.clearEventbus().addEventbus(Services.EventbusRPCs.EVENTBUS_RPCS_ANY);
+		}
+		if (result.getGrantAllFleetwood()) {
+			builder.clearFleetwood().addFleetwood(Services.FleetwoodRPCs.FLEETWOOD_RPCS_ANY);
+		}
+		if (result.getGrantAllAnthropic()) {
+			builder.clearAnthropic().addAnthropic(Services.AnthropicRPCs.ANTHROPIC_RPCS_ANY);
+		}
+		if (result.getGrantAllGithub()) {
+			builder.clearGithub().addGithub(Services.GithubRPCs.GITHUB_RPCS_ANY);
+		}
+		if (result.getGrantAllGitlab()) {
+			builder.clearGitlab().addGitlab(Services.GitlabRPCs.GITLAB_RPCS_ANY);
+		}
+		if (result.getGrantAllOpenai()) {
+			builder.clearOpenai().addOpenai(Services.OpenaiRPCs.OPENAI_RPCS_ANY);
+		}
+
+		// Strip config-only fields that don't belong in a token.
+		builder.clearId();
+		builder.clearAzp();
+
+		return builder.build();
 	}
 
 	private Tokenrequest.TokenMintResponse doTokenMint(Tokenrequest.TokenMintRequest request) throws StatusException {
@@ -628,7 +702,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 
-		// azp = the delegate name (not SPIFFE URI) — must match EntitlementProfile.azp entries.
+		// azp = the delegate name (not SPIFFE URI) — must match TokenEntitlements.azp entries.
 		newToken.setAzp(delegate.getName());
 
 		// Token type claims: token_use identifies the token's role in the hierarchy,
@@ -638,11 +712,6 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		newToken.setSubType(SUB_TYPE_USER);
 		if (isRefresh) {
 			newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
-		}
-
-		// Set profiles from the request as a comma-delimited string.
-		if (!request.getProfilesList().isEmpty()) {
-			newToken.setProfiles(request.getProfilesList());
 		}
 
 		// Forward custom claims from the request (e.g., IDP claims like email, name).
@@ -676,9 +745,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 		newToken.sign(signingKey);
 
-		logger.info("Minted delegated token: sub={}, aud={}, azp={}, exp={}, isRefresh={}, profiles={}",
-				request.getSubject(), newToken.getAudience(), callerSub, exp, isRefresh,
-				newToken.getProfiles());
+		logger.info("Minted delegated token: sub={}, aud={}, azp={}, exp={}, isRefresh={}",
+				request.getSubject(), newToken.getAudience(), callerSub, exp, isRefresh);
 
 		if (isRefresh) {
 			// Also mint an access token (clone of refresh without typ).

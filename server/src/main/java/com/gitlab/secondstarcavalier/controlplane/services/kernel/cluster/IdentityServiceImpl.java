@@ -20,7 +20,7 @@ import com.google.protobuf.Value;
 import com.google.gson.Gson;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.vservices.userentitlements.Userentitlements;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.clients.generated.opa_eval.OpaEvalGrpcClient;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.userentitlements.OpaEvalGrpcClient;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.security.KeyPair;

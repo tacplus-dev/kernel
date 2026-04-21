@@ -10,7 +10,6 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
@@ -72,7 +71,6 @@ public class ClusterServer {
 	private final PersistenceProvider persistence;
 	private final BackendServers backendServers;
 	private final JwkVerifyingKeysViewServer jwkViewServer;
-	private final EntitlementProfileViewServer profileViewServer;
 	private final ClusterStatePublisher clusterPublisher;
 	private final ClusterSetLogLevelHandler clusterSetLogLevelHandler;
 	private final HealthStatusManager healthManager;
@@ -200,17 +198,6 @@ public class ClusterServer {
 					}
 					return result;
 				});
-
-		// Auto-generate entitlement profiles from delegates with authorized_services.
-		// Each delegate gets a profile with id=delegateName, azp=[delegateName],
-		// granting _ANY on each authorized service.
-		// These profiles are served via EntitlementProfileViewService for backward
-		// compatibility with old tokens that carry the `profiles` claim.
-		final List<Entitlements.TokenEntitlements> autoProfiles = buildDelegateProfiles(
-				cfg.getDelegatesList());
-		this.profileViewServer = new EntitlementProfileViewServer(
-				backendServers.getAuthenticator(),
-				() -> autoProfiles);
 
 		// Capture delegate public keys from Config
 		final var delegatePublicKeys = new java.util.ArrayList<JwkOuterClass.Jwk>();
@@ -400,9 +387,6 @@ public class ClusterServer {
 		serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
 				jwkViewServer.bindService(),
 				backendServers.getAuthenticator().callerInterceptor()));
-		serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
-				profileViewServer.bindService(),
-				backendServers.getAuthenticator().callerInterceptor()));
 
 		// Health service is always registered
 		serverBuilder.addService(healthManager.getHealthService());
@@ -543,7 +527,7 @@ public class ClusterServer {
 			// Create GrpcS2SClients with a kernel-local token provider that self-mints
 			// service tokens using the KeyRotator. This avoids the bootstrap deadlock
 			// (IdentityManager calls MintServiceToken, but kernel IS the token issuer).
-			var grpcClients = new com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.clients.generated.GrpcS2SClients(
+			var grpcClients = new com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.GrpcS2SClients(
 					serviceMesh,
 					aud -> () -> {
 						try {
@@ -599,69 +583,6 @@ public class ClusterServer {
 		this.grpcServer = serverBuilder.build();
 		logger.info("Kernel node configured (grpcPort={})", grpcPort);
 	}
-
-	/**
-	 * Builds auto-generated TokenEntitlements from delegates that have
-	 * authorized_services. Each delegate gets a profile with id=delegateName,
-	 * azp=[delegateName], granting _ANY on each authorized service.
-	 * These are served via EntitlementProfileViewService for backward compat
-	 * with tokens that carry the profiles claim.
-	 */
-	private static List<Entitlements.TokenEntitlements> buildDelegateProfiles(
-			List<Kernel.Delegate> delegates) {
-		var result = new java.util.ArrayList<Entitlements.TokenEntitlements>();
-		var descriptor = Entitlements.TokenEntitlements.getDescriptor();
-
-		for (Kernel.Delegate delegate : delegates) {
-			// Only create auto-profiles for delegates with authorized_services.
-			if (delegate.getAuthorizedServicesList().isEmpty()) {
-				continue;
-			}
-
-			var builder = Entitlements.TokenEntitlements.newBuilder()
-					.setId(delegate.getName())
-					.addAzp(delegate.getName());
-
-			for (var svcName : delegate.getAuthorizedServicesList()) {
-				String enumName = svcName.name();
-				if (enumName.equals("SERVICE_NAME_UNSPECIFIED")) {
-					continue;
-				}
-
-				// For SERVICE_NAME_ANY, grant _ANY on all service fields.
-				if (enumName.equals("SERVICE_NAME_ANY")) {
-					for (var fd : descriptor.getFields()) {
-						if (fd.getType() == com.google.protobuf.Descriptors.FieldDescriptor.Type.ENUM
-								&& fd.isRepeated()
-								&& !fd.getName().equals("azp")) {
-							// Find the _ANY enum value (number 99) in this field's enum type.
-							var anyVal = fd.getEnumType().findValueByNumber(99);
-							if (anyVal != null) {
-								builder.addRepeatedField(fd, anyVal);
-							}
-						}
-					}
-					break;
-				}
-
-				// Map SERVICE_NAME_FOO → "foo" → find field by that name.
-				String svc = enumName.replace("SERVICE_NAME_", "").toLowerCase();
-				var fd = descriptor.findFieldByName(svc);
-				if (fd != null && fd.getType() == com.google.protobuf.Descriptors.FieldDescriptor.Type.ENUM
-						&& fd.isRepeated()) {
-					var anyVal = fd.getEnumType().findValueByNumber(99);
-					if (anyVal != null) {
-						builder.addRepeatedField(fd, anyVal);
-					}
-				}
-			}
-
-			result.add(builder.build());
-			logger.info("Auto-generated TokenEntitlements for delegate: {}", delegate.getName());
-		}
-		return result;
-	}
-
 
 	private void installTrustedCas(List<X509.X509Cert> configCas) {
 		var map = backendServers.services().getTrustedCaMap();
@@ -733,7 +654,6 @@ public class ClusterServer {
 		healthManager.enterTerminalState();
 		grpcServer.shutdown();
 		jwkViewServer.close();
-		profileViewServer.close();
 		backendServers.services().close();
 		persistence.close();
 		hazelcast.shutdown();

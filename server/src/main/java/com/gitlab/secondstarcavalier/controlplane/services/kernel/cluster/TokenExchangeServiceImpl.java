@@ -11,7 +11,6 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.TokenExchangeGrpc;
-import com.google.protobuf.util.JsonFormat;
 import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -234,34 +233,35 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 	}
 
 	// Generic per-service entitlement result used by intersect/subtract helpers.
-	private record SvcEnt<E>(boolean any, List<E> rpcs) {}
-
-	/**
-	 * Intersects two per-service entitlement grants. Returns the narrower of the two.
-	 * any+any→any, any+specific→specific, specific+specific→intersection.
-	 */
-	private static <E> SvcEnt<E> intersectSvc(boolean anyA, List<E> rpcsA, boolean anyB, List<E> rpcsB) {
-		if (!anyA && rpcsA.isEmpty()) return new SvcEnt<>(false, List.of());
-		if (!anyB && rpcsB.isEmpty()) return new SvcEnt<>(false, List.of());
-		if (anyA && anyB) return new SvcEnt<>(true, List.of());
-		if (anyA) return new SvcEnt<>(false, rpcsB);
-		if (anyB) return new SvcEnt<>(false, rpcsA);
-		Set<E> setA = new HashSet<>(rpcsA);
-		return new SvcEnt<>(false, rpcsB.stream().filter(setA::contains).toList());
+	/** Returns true if the list contains the ANY enum value (number 99). */
+	private static <E extends com.google.protobuf.ProtocolMessageEnum> boolean containsAny(List<E> rpcs) {
+		return rpcs.stream().anyMatch(r -> r.getNumber() == 99);
 	}
 
 	/**
-	 * Subtracts exclude from source per-service entitlements.
-	 * any-exclude_any→empty, specific-exclude_any→empty, specific-specific→difference.
-	 * any-specific stays any (can't enumerate "all except N" in this model).
+	 * Intersects two per-service RPC lists. Returns the narrower of the two.
+	 * ANY+ANY→ANY, ANY+specific→specific, specific+specific→intersection.
 	 */
-	private static <E> SvcEnt<E> subtractSvc(boolean anyA, List<E> rpcsA, boolean anyB, List<E> rpcsB) {
-		if (!anyA && rpcsA.isEmpty()) return new SvcEnt<>(false, List.of());
-		if (!anyB && rpcsB.isEmpty()) return new SvcEnt<>(anyA, rpcsA);
-		if (anyB) return new SvcEnt<>(false, List.of());
-		if (anyA) return new SvcEnt<>(true, List.of());
-		Set<E> excludeSet = new HashSet<>(rpcsB);
-		return new SvcEnt<>(false, rpcsA.stream().filter(e -> !excludeSet.contains(e)).toList());
+	private static <E extends com.google.protobuf.ProtocolMessageEnum> List<E> intersectRPCs(List<E> a, List<E> b) {
+		if (a.isEmpty() || b.isEmpty()) return List.of();
+		boolean anyA = containsAny(a), anyB = containsAny(b);
+		if (anyA && anyB) return a.stream().filter(e -> e.getNumber() == 99).limit(1).toList();
+		if (anyA) return b;
+		if (anyB) return a;
+		Set<E> setA = new HashSet<>(a);
+		return b.stream().filter(setA::contains).toList();
+	}
+
+	/**
+	 * Subtracts exclude from source RPC list.
+	 * ANY-excludeANY→empty, specific-excludeANY→empty, ANY-specific stays ANY.
+	 */
+	private static <E extends com.google.protobuf.ProtocolMessageEnum> List<E> subtractRPCs(List<E> a, List<E> b) {
+		if (a.isEmpty() || b.isEmpty()) return a;
+		if (containsAny(b)) return List.of();
+		if (containsAny(a)) return a; // can't enumerate "all except N"
+		Set<E> excludeSet = new HashSet<>(b);
+		return a.stream().filter(e -> !excludeSet.contains(e)).toList();
 	}
 
 	/**
@@ -272,159 +272,72 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 	private static Entitlements.TokenEntitlements intersectEntitlements(
 			Entitlements.TokenEntitlements source,
 			Entitlements.TokenEntitlements include) {
-		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
-
-		var sentinel = intersectSvc(source.getSentinel().getAny(), source.getSentinel().getSentinelList(),
-				include.getSentinel().getAny(), include.getSentinel().getSentinelList());
-		if (sentinel.any() || !sentinel.rpcs().isEmpty())
-			builder.setSentinel(Entitlements.SentinelEntitlements.newBuilder()
-					.setAny(sentinel.any()).addAllSentinel(sentinel.rpcs()).build());
-
-		var gateway = intersectSvc(source.getGateway().getAny(), source.getGateway().getGatewayList(),
-				include.getGateway().getAny(), include.getGateway().getGatewayList());
-		if (gateway.any() || !gateway.rpcs().isEmpty())
-			builder.setGateway(Entitlements.GatewayEntitlements.newBuilder()
-					.setAny(gateway.any()).addAllGateway(gateway.rpcs()).build());
-
-		var mcp = intersectSvc(source.getMcp().getAny(), source.getMcp().getMcpList(),
-				include.getMcp().getAny(), include.getMcp().getMcpList());
-		if (mcp.any() || !mcp.rpcs().isEmpty())
-			builder.setMcp(Entitlements.McpEntitlements.newBuilder()
-					.setAny(mcp.any()).addAllMcp(mcp.rpcs()).build());
-
-		var eventbus = intersectSvc(source.getEventbus().getAny(), source.getEventbus().getEventbusList(),
-				include.getEventbus().getAny(), include.getEventbus().getEventbusList());
-		if (eventbus.any() || !eventbus.rpcs().isEmpty())
-			builder.setEventbus(Entitlements.EventbusEntitlements.newBuilder()
-					.setAny(eventbus.any()).addAllEventbus(eventbus.rpcs()).build());
-
-		var fleetwood = intersectSvc(source.getFleetwood().getAny(), source.getFleetwood().getFleetwoodList(),
-				include.getFleetwood().getAny(), include.getFleetwood().getFleetwoodList());
-		if (fleetwood.any() || !fleetwood.rpcs().isEmpty())
-			builder.setFleetwood(Entitlements.FleetwoodEntitlements.newBuilder()
-					.setAny(fleetwood.any()).addAllFleetwood(fleetwood.rpcs()).build());
-
-		var anthropic = intersectSvc(source.getAnthropic().getAny(), source.getAnthropic().getAnthropicList(),
-				include.getAnthropic().getAny(), include.getAnthropic().getAnthropicList());
-		if (anthropic.any() || !anthropic.rpcs().isEmpty())
-			builder.setAnthropic(Entitlements.AnthropicEntitlements.newBuilder()
-					.setAny(anthropic.any()).addAllAnthropic(anthropic.rpcs()).build());
-
-		var github = intersectSvc(source.getGithub().getAny(), source.getGithub().getGithubList(),
-				include.getGithub().getAny(), include.getGithub().getGithubList());
-		if (github.any() || !github.rpcs().isEmpty())
-			builder.setGithub(Entitlements.GithubEntitlements.newBuilder()
-					.setAny(github.any()).addAllGithub(github.rpcs()).build());
-
-		var gitlab = intersectSvc(source.getGitlab().getAny(), source.getGitlab().getGitlabList(),
-				include.getGitlab().getAny(), include.getGitlab().getGitlabList());
-		if (gitlab.any() || !gitlab.rpcs().isEmpty())
-			builder.setGitlab(Entitlements.GitlabEntitlements.newBuilder()
-					.setAny(gitlab.any()).addAllGitlab(gitlab.rpcs()).build());
-
-		var openai = intersectSvc(source.getOpenai().getAny(), source.getOpenai().getOpenaiList(),
-				include.getOpenai().getAny(), include.getOpenai().getOpenaiList());
-		if (openai.any() || !openai.rpcs().isEmpty())
-			builder.setOpenai(Entitlements.OpenaiEntitlements.newBuilder()
-					.setAny(openai.any()).addAllOpenai(openai.rpcs()).build());
-
-		return builder.build();
+		var b = Entitlements.TokenEntitlements.newBuilder();
+		var sentinel = intersectRPCs(source.getSentinelList(), include.getSentinelList());
+		if (!sentinel.isEmpty()) b.addAllSentinel(sentinel);
+		var gateway = intersectRPCs(source.getGatewayList(), include.getGatewayList());
+		if (!gateway.isEmpty()) b.addAllGateway(gateway);
+		var mcp = intersectRPCs(source.getMcpList(), include.getMcpList());
+		if (!mcp.isEmpty()) b.addAllMcp(mcp);
+		var eventbus = intersectRPCs(source.getEventbusList(), include.getEventbusList());
+		if (!eventbus.isEmpty()) b.addAllEventbus(eventbus);
+		var fleetwood = intersectRPCs(source.getFleetwoodList(), include.getFleetwoodList());
+		if (!fleetwood.isEmpty()) b.addAllFleetwood(fleetwood);
+		var anthropic = intersectRPCs(source.getAnthropicList(), include.getAnthropicList());
+		if (!anthropic.isEmpty()) b.addAllAnthropic(anthropic);
+		var github = intersectRPCs(source.getGithubList(), include.getGithubList());
+		if (!github.isEmpty()) b.addAllGithub(github);
+		var gitlab = intersectRPCs(source.getGitlabList(), include.getGitlabList());
+		if (!gitlab.isEmpty()) b.addAllGitlab(gitlab);
+		var openai = intersectRPCs(source.getOpenaiList(), include.getOpenaiList());
+		if (!openai.isEmpty()) b.addAllOpenai(openai);
+		return b.build();
 	}
 
-	/**
-	 * Subtracts exclude entitlements from source.
-	 * For each service, RPCs in the exclude set are removed from the source.
-	 * any=true in exclude removes all RPCs for that service.
-	 */
 	private static Entitlements.TokenEntitlements subtractEntitlements(
 			Entitlements.TokenEntitlements source,
 			Entitlements.TokenEntitlements exclude) {
-		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
-
-		var sentinel = subtractSvc(source.getSentinel().getAny(), source.getSentinel().getSentinelList(),
-				exclude.getSentinel().getAny(), exclude.getSentinel().getSentinelList());
-		if (sentinel.any() || !sentinel.rpcs().isEmpty())
-			builder.setSentinel(Entitlements.SentinelEntitlements.newBuilder()
-					.setAny(sentinel.any()).addAllSentinel(sentinel.rpcs()).build());
-
-		var gateway = subtractSvc(source.getGateway().getAny(), source.getGateway().getGatewayList(),
-				exclude.getGateway().getAny(), exclude.getGateway().getGatewayList());
-		if (gateway.any() || !gateway.rpcs().isEmpty())
-			builder.setGateway(Entitlements.GatewayEntitlements.newBuilder()
-					.setAny(gateway.any()).addAllGateway(gateway.rpcs()).build());
-
-		var mcp = subtractSvc(source.getMcp().getAny(), source.getMcp().getMcpList(),
-				exclude.getMcp().getAny(), exclude.getMcp().getMcpList());
-		if (mcp.any() || !mcp.rpcs().isEmpty())
-			builder.setMcp(Entitlements.McpEntitlements.newBuilder()
-					.setAny(mcp.any()).addAllMcp(mcp.rpcs()).build());
-
-		var eventbus = subtractSvc(source.getEventbus().getAny(), source.getEventbus().getEventbusList(),
-				exclude.getEventbus().getAny(), exclude.getEventbus().getEventbusList());
-		if (eventbus.any() || !eventbus.rpcs().isEmpty())
-			builder.setEventbus(Entitlements.EventbusEntitlements.newBuilder()
-					.setAny(eventbus.any()).addAllEventbus(eventbus.rpcs()).build());
-
-		var fleetwood = subtractSvc(source.getFleetwood().getAny(), source.getFleetwood().getFleetwoodList(),
-				exclude.getFleetwood().getAny(), exclude.getFleetwood().getFleetwoodList());
-		if (fleetwood.any() || !fleetwood.rpcs().isEmpty())
-			builder.setFleetwood(Entitlements.FleetwoodEntitlements.newBuilder()
-					.setAny(fleetwood.any()).addAllFleetwood(fleetwood.rpcs()).build());
-
-		var anthropic = subtractSvc(source.getAnthropic().getAny(), source.getAnthropic().getAnthropicList(),
-				exclude.getAnthropic().getAny(), exclude.getAnthropic().getAnthropicList());
-		if (anthropic.any() || !anthropic.rpcs().isEmpty())
-			builder.setAnthropic(Entitlements.AnthropicEntitlements.newBuilder()
-					.setAny(anthropic.any()).addAllAnthropic(anthropic.rpcs()).build());
-
-		var github = subtractSvc(source.getGithub().getAny(), source.getGithub().getGithubList(),
-				exclude.getGithub().getAny(), exclude.getGithub().getGithubList());
-		if (github.any() || !github.rpcs().isEmpty())
-			builder.setGithub(Entitlements.GithubEntitlements.newBuilder()
-					.setAny(github.any()).addAllGithub(github.rpcs()).build());
-
-		var gitlab = subtractSvc(source.getGitlab().getAny(), source.getGitlab().getGitlabList(),
-				exclude.getGitlab().getAny(), exclude.getGitlab().getGitlabList());
-		if (gitlab.any() || !gitlab.rpcs().isEmpty())
-			builder.setGitlab(Entitlements.GitlabEntitlements.newBuilder()
-					.setAny(gitlab.any()).addAllGitlab(gitlab.rpcs()).build());
-
-		var openai = subtractSvc(source.getOpenai().getAny(), source.getOpenai().getOpenaiList(),
-				exclude.getOpenai().getAny(), exclude.getOpenai().getOpenaiList());
-		if (openai.any() || !openai.rpcs().isEmpty())
-			builder.setOpenai(Entitlements.OpenaiEntitlements.newBuilder()
-					.setAny(openai.any()).addAllOpenai(openai.rpcs()).build());
-
-		return builder.build();
+		var b = Entitlements.TokenEntitlements.newBuilder();
+		var sentinel = subtractRPCs(source.getSentinelList(), exclude.getSentinelList());
+		if (!sentinel.isEmpty()) b.addAllSentinel(sentinel);
+		var gateway = subtractRPCs(source.getGatewayList(), exclude.getGatewayList());
+		if (!gateway.isEmpty()) b.addAllGateway(gateway);
+		var mcp = subtractRPCs(source.getMcpList(), exclude.getMcpList());
+		if (!mcp.isEmpty()) b.addAllMcp(mcp);
+		var eventbus = subtractRPCs(source.getEventbusList(), exclude.getEventbusList());
+		if (!eventbus.isEmpty()) b.addAllEventbus(eventbus);
+		var fleetwood = subtractRPCs(source.getFleetwoodList(), exclude.getFleetwoodList());
+		if (!fleetwood.isEmpty()) b.addAllFleetwood(fleetwood);
+		var anthropic = subtractRPCs(source.getAnthropicList(), exclude.getAnthropicList());
+		if (!anthropic.isEmpty()) b.addAllAnthropic(anthropic);
+		var github = subtractRPCs(source.getGithubList(), exclude.getGithubList());
+		if (!github.isEmpty()) b.addAllGithub(github);
+		var gitlab = subtractRPCs(source.getGitlabList(), exclude.getGitlabList());
+		if (!gitlab.isEmpty()) b.addAllGitlab(gitlab);
+		var openai = subtractRPCs(source.getOpenaiList(), exclude.getOpenaiList());
+		if (!openai.isEmpty()) b.addAllOpenai(openai);
+		return b.build();
 	}
 
 	/**
-	 * Scopes entitlements to the target service.
+	 * Scopes entitlements to the target service (strips all other services).
 	 * If the target is "kernel", all entitlements are preserved.
-	 * Otherwise, only the target service's entitlements are kept.
 	 */
 	private static Entitlements.TokenEntitlements scopeToService(
 			Entitlements.TokenEntitlements entitlements, String targetAud) {
-		// If the target is kernel, preserve all entitlements.
-		if (Kernel.getDescriptor().getPackage().equals(targetAud)) {
-			return entitlements;
-		}
-
-		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
+		if (Kernel.getDescriptor().getPackage().equals(targetAud)) return entitlements;
+		var b = Entitlements.TokenEntitlements.newBuilder();
 		switch (targetAud) {
-			case "sentinel"  -> { if (entitlements.hasSentinel())  builder.setSentinel(entitlements.getSentinel()); }
-			case "gateway"   -> { if (entitlements.hasGateway())   builder.setGateway(entitlements.getGateway()); }
-			case "mcp"       -> { if (entitlements.hasMcp())       builder.setMcp(entitlements.getMcp()); }
-			case "eventbus"  -> { if (entitlements.hasEventbus())  builder.setEventbus(entitlements.getEventbus()); }
-			case "fleetwood" -> { if (entitlements.hasFleetwood()) builder.setFleetwood(entitlements.getFleetwood()); }
-			case "anthropic" -> { if (entitlements.hasAnthropic()) builder.setAnthropic(entitlements.getAnthropic()); }
-			case "github"    -> { if (entitlements.hasGithub())    builder.setGithub(entitlements.getGithub()); }
-			case "gitlab"    -> { if (entitlements.hasGitlab())    builder.setGitlab(entitlements.getGitlab()); }
-			case "openai"    -> { if (entitlements.hasOpenai())    builder.setOpenai(entitlements.getOpenai()); }
-			default -> {
-				// Unknown service — no entitlements scoped.
-			}
+			case "sentinel"  -> b.addAllSentinel(entitlements.getSentinelList());
+			case "gateway"   -> b.addAllGateway(entitlements.getGatewayList());
+			case "mcp"       -> b.addAllMcp(entitlements.getMcpList());
+			case "eventbus"  -> b.addAllEventbus(entitlements.getEventbusList());
+			case "fleetwood" -> b.addAllFleetwood(entitlements.getFleetwoodList());
+			case "anthropic" -> b.addAllAnthropic(entitlements.getAnthropicList());
+			case "github"    -> b.addAllGithub(entitlements.getGithubList());
+			case "gitlab"    -> b.addAllGitlab(entitlements.getGitlabList());
+			case "openai"    -> b.addAllOpenai(entitlements.getOpenaiList());
 		}
-		return builder.build();
+		return b.build();
 	}
 }

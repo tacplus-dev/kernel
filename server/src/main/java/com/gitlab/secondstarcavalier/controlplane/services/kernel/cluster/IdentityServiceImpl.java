@@ -20,7 +20,6 @@ import com.google.protobuf.Value;
 import com.google.gson.Gson;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.vservices.userentitlements.Userentitlements;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.services.Services;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.clients.generated.opa_eval.OpaEvalGrpcClient;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -316,15 +315,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		newToken.setSubType(SUB_TYPE_USER);
 
-		// Set expanded service_entitlements claim (JSON-encoded TokenEntitlements).
-		try {
-			String entJson = com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Helpers
-					.tokenEntitlementsToJson(expanded);
-			newToken.setServiceEntitlementsClaim(entJson);
-		} catch (Exception e) {
-			throw new StatusException(Status.INTERNAL,
-					"failed to serialize service_entitlements: " + e.getMessage());
-		}
+		// Set expanded service_entitlements claim (typed TokenEntitlements).
+		newToken.setServiceEntitlements(expanded);
 
 		// Forward custom claims from the request (e.g., IDP claims like email, name).
 		if (request.hasClaims()) {
@@ -358,7 +350,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 		logger.info("MintUserToken: sub={}, azp={}, exp={}, service_entitlements={}",
 				request.getSubject(), delegate.getName(), exp,
-				newToken.getServiceEntitlementsClaim());
+				newToken.getServiceEntitlements());
 
 		// Also mint an access token.
 		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
@@ -407,69 +399,13 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	}
 
 	/**
-	 * Expands an OPA EntitlementEvalResult into a concrete TokenEntitlements.
-	 * Merges grant_all (global), per-service grant_all_* flags, and explicit
-	 * entitlements into a single message with concrete RPC lists.
-	 * _ANY wildcards in the explicit entitlements are preserved — the authorizer
-	 * handles them at request time.
+	 * Extracts the TokenEntitlements returned directly by OPA.
+	 * OPA is responsible for all entitlement expansion — kernel embeds the
+	 * result as-is in the JWT service_entitlements claim.
 	 */
 	private static Entitlements.TokenEntitlements expandEntitlements(
 			Userentitlements.EntitlementEvalResult result) {
-		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
-
-		// Start with explicit entitlements from OPA (if any).
-		if (result.hasEntitlements()) {
-			builder.mergeFrom(result.getEntitlements());
-		}
-
-		// Global grant_all → _ANY on every service.
-		if (result.getGrantAll()) {
-			builder.clearSentinel().addSentinel(Services.SentinelRPCs.SENTINEL_RPCS_ANY);
-			builder.clearGateway().addGateway(Services.GatewayRPCs.GATEWAY_RPCS_ANY);
-			builder.clearMcp().addMcp(Services.McpRPCs.MCP_RPCS_ANY);
-			builder.clearEventbus().addEventbus(Services.EventbusRPCs.EVENTBUS_RPCS_ANY);
-			builder.clearFleetwood().addFleetwood(Services.FleetwoodRPCs.FLEETWOOD_RPCS_ANY);
-			builder.clearAnthropic().addAnthropic(Services.AnthropicRPCs.ANTHROPIC_RPCS_ANY);
-			builder.clearGithub().addGithub(Services.GithubRPCs.GITHUB_RPCS_ANY);
-			builder.clearGitlab().addGitlab(Services.GitlabRPCs.GITLAB_RPCS_ANY);
-			builder.clearOpenai().addOpenai(Services.OpenaiRPCs.OPENAI_RPCS_ANY);
-			return builder.build();
-		}
-
-		// Per-service grant_all_* → _ANY for that service (overrides explicit RPCs).
-		if (result.getGrantAllSentinel()) {
-			builder.clearSentinel().addSentinel(Services.SentinelRPCs.SENTINEL_RPCS_ANY);
-		}
-		if (result.getGrantAllGateway()) {
-			builder.clearGateway().addGateway(Services.GatewayRPCs.GATEWAY_RPCS_ANY);
-		}
-		if (result.getGrantAllMcp()) {
-			builder.clearMcp().addMcp(Services.McpRPCs.MCP_RPCS_ANY);
-		}
-		if (result.getGrantAllEventbus()) {
-			builder.clearEventbus().addEventbus(Services.EventbusRPCs.EVENTBUS_RPCS_ANY);
-		}
-		if (result.getGrantAllFleetwood()) {
-			builder.clearFleetwood().addFleetwood(Services.FleetwoodRPCs.FLEETWOOD_RPCS_ANY);
-		}
-		if (result.getGrantAllAnthropic()) {
-			builder.clearAnthropic().addAnthropic(Services.AnthropicRPCs.ANTHROPIC_RPCS_ANY);
-		}
-		if (result.getGrantAllGithub()) {
-			builder.clearGithub().addGithub(Services.GithubRPCs.GITHUB_RPCS_ANY);
-		}
-		if (result.getGrantAllGitlab()) {
-			builder.clearGitlab().addGitlab(Services.GitlabRPCs.GITLAB_RPCS_ANY);
-		}
-		if (result.getGrantAllOpenai()) {
-			builder.clearOpenai().addOpenai(Services.OpenaiRPCs.OPENAI_RPCS_ANY);
-		}
-
-		// Strip config-only fields that don't belong in a token.
-		builder.clearId();
-		builder.clearAzp();
-
-		return builder.build();
+		return result.getTokenEntitlements();
 	}
 
 	private Tokenrequest.TokenMintResponse doTokenMint(Tokenrequest.TokenMintRequest request) throws StatusException {

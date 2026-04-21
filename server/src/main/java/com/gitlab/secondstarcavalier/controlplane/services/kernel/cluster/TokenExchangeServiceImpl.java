@@ -9,17 +9,13 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.token.TokenOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.services.Services;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.TokenExchangeGrpc;
-import com.google.protobuf.Descriptors;
-import com.google.protobuf.ProtocolMessageEnum;
 import com.google.protobuf.util.JsonFormat;
 import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.time.Instant;
-import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -198,14 +194,9 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 		newToken.setTokenUse(TOKEN_USE_SERVICE);
 
 		// Apply downscoping to service_entitlements if the source token carries them.
-		String srcEntClaim = inputToken.getServiceEntitlementsClaim();
-		if (srcEntClaim != null && !srcEntClaim.isEmpty()) {
+		Entitlements.TokenEntitlements srcEnt = inputToken.getServiceEntitlements();
+		if (srcEnt != null) {
 			try {
-				Entitlements.TokenEntitlements.Builder srcBuilder =
-						Entitlements.TokenEntitlements.newBuilder();
-				JsonFormat.parser().ignoringUnknownFields().merge(srcEntClaim, srcBuilder);
-				Entitlements.TokenEntitlements srcEnt = srcBuilder.build();
-
 				Entitlements.TokenEntitlements result;
 				if (hasInclude) {
 					result = intersectEntitlements(srcEnt, request.getIncludeEntitlements());
@@ -217,10 +208,7 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 
 				// Scope to target service: strip entitlements for other services.
 				result = scopeToService(result, targetAud);
-
-				String entJson = com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated
-						.entitlements.Helpers.tokenEntitlementsToJson(result);
-				newToken.setServiceEntitlementsClaim(entJson);
+				newToken.setServiceEntitlements(result);
 			} catch (io.grpc.StatusRuntimeException e) {
 				throw e;
 			} catch (Exception e) {
@@ -245,126 +233,169 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 				.build();
 	}
 
+	// Generic per-service entitlement result used by intersect/subtract helpers.
+	private record SvcEnt<E>(boolean any, List<E> rpcs) {}
+
+	/**
+	 * Intersects two per-service entitlement grants. Returns the narrower of the two.
+	 * any+any→any, any+specific→specific, specific+specific→intersection.
+	 */
+	private static <E> SvcEnt<E> intersectSvc(boolean anyA, List<E> rpcsA, boolean anyB, List<E> rpcsB) {
+		if (!anyA && rpcsA.isEmpty()) return new SvcEnt<>(false, List.of());
+		if (!anyB && rpcsB.isEmpty()) return new SvcEnt<>(false, List.of());
+		if (anyA && anyB) return new SvcEnt<>(true, List.of());
+		if (anyA) return new SvcEnt<>(false, rpcsB);
+		if (anyB) return new SvcEnt<>(false, rpcsA);
+		Set<E> setA = new HashSet<>(rpcsA);
+		return new SvcEnt<>(false, rpcsB.stream().filter(setA::contains).toList());
+	}
+
+	/**
+	 * Subtracts exclude from source per-service entitlements.
+	 * any-exclude_any→empty, specific-exclude_any→empty, specific-specific→difference.
+	 * any-specific stays any (can't enumerate "all except N" in this model).
+	 */
+	private static <E> SvcEnt<E> subtractSvc(boolean anyA, List<E> rpcsA, boolean anyB, List<E> rpcsB) {
+		if (!anyA && rpcsA.isEmpty()) return new SvcEnt<>(false, List.of());
+		if (!anyB && rpcsB.isEmpty()) return new SvcEnt<>(anyA, rpcsA);
+		if (anyB) return new SvcEnt<>(false, List.of());
+		if (anyA) return new SvcEnt<>(true, List.of());
+		Set<E> excludeSet = new HashSet<>(rpcsB);
+		return new SvcEnt<>(false, rpcsA.stream().filter(e -> !excludeSet.contains(e)).toList());
+	}
+
 	/**
 	 * Intersects source entitlements with the include set.
 	 * For each service, only RPCs present in BOTH source and include are kept.
-	 * If source has _ANY wildcard, the include set is used as-is for that service.
+	 * If source has any=true, the include set is used as-is for that service.
 	 */
 	private static Entitlements.TokenEntitlements intersectEntitlements(
 			Entitlements.TokenEntitlements source,
 			Entitlements.TokenEntitlements include) {
 		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
 
-		builder.addAllSentinel(intersectRPCs(
-				source.getSentinelList(), include.getSentinelList(),
-				Services.SentinelRPCs.SENTINEL_RPCS_ANY));
-		builder.addAllGateway(intersectRPCs(
-				source.getGatewayList(), include.getGatewayList(),
-				Services.GatewayRPCs.GATEWAY_RPCS_ANY));
-		builder.addAllMcp(intersectRPCs(
-				source.getMcpList(), include.getMcpList(),
-				Services.McpRPCs.MCP_RPCS_ANY));
-		builder.addAllEventbus(intersectRPCs(
-				source.getEventbusList(), include.getEventbusList(),
-				Services.EventbusRPCs.EVENTBUS_RPCS_ANY));
-		builder.addAllFleetwood(intersectRPCs(
-				source.getFleetwoodList(), include.getFleetwoodList(),
-				Services.FleetwoodRPCs.FLEETWOOD_RPCS_ANY));
-		builder.addAllAnthropic(intersectRPCs(
-				source.getAnthropicList(), include.getAnthropicList(),
-				Services.AnthropicRPCs.ANTHROPIC_RPCS_ANY));
-		builder.addAllGithub(intersectRPCs(
-				source.getGithubList(), include.getGithubList(),
-				Services.GithubRPCs.GITHUB_RPCS_ANY));
-		builder.addAllGitlab(intersectRPCs(
-				source.getGitlabList(), include.getGitlabList(),
-				Services.GitlabRPCs.GITLAB_RPCS_ANY));
-		builder.addAllOpenai(intersectRPCs(
-				source.getOpenaiList(), include.getOpenaiList(),
-				Services.OpenaiRPCs.OPENAI_RPCS_ANY));
+		var sentinel = intersectSvc(source.getSentinel().getAny(), source.getSentinel().getSentinelList(),
+				include.getSentinel().getAny(), include.getSentinel().getSentinelList());
+		if (sentinel.any() || !sentinel.rpcs().isEmpty())
+			builder.setSentinel(Entitlements.SentinelEntitlements.newBuilder()
+					.setAny(sentinel.any()).addAllSentinel(sentinel.rpcs()).build());
+
+		var gateway = intersectSvc(source.getGateway().getAny(), source.getGateway().getGatewayList(),
+				include.getGateway().getAny(), include.getGateway().getGatewayList());
+		if (gateway.any() || !gateway.rpcs().isEmpty())
+			builder.setGateway(Entitlements.GatewayEntitlements.newBuilder()
+					.setAny(gateway.any()).addAllGateway(gateway.rpcs()).build());
+
+		var mcp = intersectSvc(source.getMcp().getAny(), source.getMcp().getMcpList(),
+				include.getMcp().getAny(), include.getMcp().getMcpList());
+		if (mcp.any() || !mcp.rpcs().isEmpty())
+			builder.setMcp(Entitlements.McpEntitlements.newBuilder()
+					.setAny(mcp.any()).addAllMcp(mcp.rpcs()).build());
+
+		var eventbus = intersectSvc(source.getEventbus().getAny(), source.getEventbus().getEventbusList(),
+				include.getEventbus().getAny(), include.getEventbus().getEventbusList());
+		if (eventbus.any() || !eventbus.rpcs().isEmpty())
+			builder.setEventbus(Entitlements.EventbusEntitlements.newBuilder()
+					.setAny(eventbus.any()).addAllEventbus(eventbus.rpcs()).build());
+
+		var fleetwood = intersectSvc(source.getFleetwood().getAny(), source.getFleetwood().getFleetwoodList(),
+				include.getFleetwood().getAny(), include.getFleetwood().getFleetwoodList());
+		if (fleetwood.any() || !fleetwood.rpcs().isEmpty())
+			builder.setFleetwood(Entitlements.FleetwoodEntitlements.newBuilder()
+					.setAny(fleetwood.any()).addAllFleetwood(fleetwood.rpcs()).build());
+
+		var anthropic = intersectSvc(source.getAnthropic().getAny(), source.getAnthropic().getAnthropicList(),
+				include.getAnthropic().getAny(), include.getAnthropic().getAnthropicList());
+		if (anthropic.any() || !anthropic.rpcs().isEmpty())
+			builder.setAnthropic(Entitlements.AnthropicEntitlements.newBuilder()
+					.setAny(anthropic.any()).addAllAnthropic(anthropic.rpcs()).build());
+
+		var github = intersectSvc(source.getGithub().getAny(), source.getGithub().getGithubList(),
+				include.getGithub().getAny(), include.getGithub().getGithubList());
+		if (github.any() || !github.rpcs().isEmpty())
+			builder.setGithub(Entitlements.GithubEntitlements.newBuilder()
+					.setAny(github.any()).addAllGithub(github.rpcs()).build());
+
+		var gitlab = intersectSvc(source.getGitlab().getAny(), source.getGitlab().getGitlabList(),
+				include.getGitlab().getAny(), include.getGitlab().getGitlabList());
+		if (gitlab.any() || !gitlab.rpcs().isEmpty())
+			builder.setGitlab(Entitlements.GitlabEntitlements.newBuilder()
+					.setAny(gitlab.any()).addAllGitlab(gitlab.rpcs()).build());
+
+		var openai = intersectSvc(source.getOpenai().getAny(), source.getOpenai().getOpenaiList(),
+				include.getOpenai().getAny(), include.getOpenai().getOpenaiList());
+		if (openai.any() || !openai.rpcs().isEmpty())
+			builder.setOpenai(Entitlements.OpenaiEntitlements.newBuilder()
+					.setAny(openai.any()).addAllOpenai(openai.rpcs()).build());
 
 		return builder.build();
 	}
 
 	/**
-	 * Intersects two RPC lists. If source contains the _ANY wildcard, returns include as-is.
-	 * Otherwise, returns only RPCs present in both lists.
-	 */
-	@SuppressWarnings("unchecked")
-	private static <E extends ProtocolMessageEnum> List<E> intersectRPCs(
-			List<E> source, List<E> include, E anyValue) {
-		if (source.isEmpty() || include.isEmpty()) {
-			return List.of();
-		}
-		// Source has wildcard → include set is the effective result.
-		if (source.contains(anyValue)) {
-			return include;
-		}
-		// Include has wildcard → source set is the effective result.
-		if (include.contains(anyValue)) {
-			return source;
-		}
-		Set<E> sourceSet = new HashSet<>(source);
-		return include.stream().filter(sourceSet::contains).toList();
-	}
-
-	/**
 	 * Subtracts exclude entitlements from source.
 	 * For each service, RPCs in the exclude set are removed from the source.
-	 * _ANY in exclude removes all RPCs for that service.
+	 * any=true in exclude removes all RPCs for that service.
 	 */
 	private static Entitlements.TokenEntitlements subtractEntitlements(
 			Entitlements.TokenEntitlements source,
 			Entitlements.TokenEntitlements exclude) {
 		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
 
-		builder.addAllSentinel(subtractRPCs(
-				source.getSentinelList(), exclude.getSentinelList(),
-				Services.SentinelRPCs.SENTINEL_RPCS_ANY));
-		builder.addAllGateway(subtractRPCs(
-				source.getGatewayList(), exclude.getGatewayList(),
-				Services.GatewayRPCs.GATEWAY_RPCS_ANY));
-		builder.addAllMcp(subtractRPCs(
-				source.getMcpList(), exclude.getMcpList(),
-				Services.McpRPCs.MCP_RPCS_ANY));
-		builder.addAllEventbus(subtractRPCs(
-				source.getEventbusList(), exclude.getEventbusList(),
-				Services.EventbusRPCs.EVENTBUS_RPCS_ANY));
-		builder.addAllFleetwood(subtractRPCs(
-				source.getFleetwoodList(), exclude.getFleetwoodList(),
-				Services.FleetwoodRPCs.FLEETWOOD_RPCS_ANY));
-		builder.addAllAnthropic(subtractRPCs(
-				source.getAnthropicList(), exclude.getAnthropicList(),
-				Services.AnthropicRPCs.ANTHROPIC_RPCS_ANY));
-		builder.addAllGithub(subtractRPCs(
-				source.getGithubList(), exclude.getGithubList(),
-				Services.GithubRPCs.GITHUB_RPCS_ANY));
-		builder.addAllGitlab(subtractRPCs(
-				source.getGitlabList(), exclude.getGitlabList(),
-				Services.GitlabRPCs.GITLAB_RPCS_ANY));
-		builder.addAllOpenai(subtractRPCs(
-				source.getOpenaiList(), exclude.getOpenaiList(),
-				Services.OpenaiRPCs.OPENAI_RPCS_ANY));
+		var sentinel = subtractSvc(source.getSentinel().getAny(), source.getSentinel().getSentinelList(),
+				exclude.getSentinel().getAny(), exclude.getSentinel().getSentinelList());
+		if (sentinel.any() || !sentinel.rpcs().isEmpty())
+			builder.setSentinel(Entitlements.SentinelEntitlements.newBuilder()
+					.setAny(sentinel.any()).addAllSentinel(sentinel.rpcs()).build());
+
+		var gateway = subtractSvc(source.getGateway().getAny(), source.getGateway().getGatewayList(),
+				exclude.getGateway().getAny(), exclude.getGateway().getGatewayList());
+		if (gateway.any() || !gateway.rpcs().isEmpty())
+			builder.setGateway(Entitlements.GatewayEntitlements.newBuilder()
+					.setAny(gateway.any()).addAllGateway(gateway.rpcs()).build());
+
+		var mcp = subtractSvc(source.getMcp().getAny(), source.getMcp().getMcpList(),
+				exclude.getMcp().getAny(), exclude.getMcp().getMcpList());
+		if (mcp.any() || !mcp.rpcs().isEmpty())
+			builder.setMcp(Entitlements.McpEntitlements.newBuilder()
+					.setAny(mcp.any()).addAllMcp(mcp.rpcs()).build());
+
+		var eventbus = subtractSvc(source.getEventbus().getAny(), source.getEventbus().getEventbusList(),
+				exclude.getEventbus().getAny(), exclude.getEventbus().getEventbusList());
+		if (eventbus.any() || !eventbus.rpcs().isEmpty())
+			builder.setEventbus(Entitlements.EventbusEntitlements.newBuilder()
+					.setAny(eventbus.any()).addAllEventbus(eventbus.rpcs()).build());
+
+		var fleetwood = subtractSvc(source.getFleetwood().getAny(), source.getFleetwood().getFleetwoodList(),
+				exclude.getFleetwood().getAny(), exclude.getFleetwood().getFleetwoodList());
+		if (fleetwood.any() || !fleetwood.rpcs().isEmpty())
+			builder.setFleetwood(Entitlements.FleetwoodEntitlements.newBuilder()
+					.setAny(fleetwood.any()).addAllFleetwood(fleetwood.rpcs()).build());
+
+		var anthropic = subtractSvc(source.getAnthropic().getAny(), source.getAnthropic().getAnthropicList(),
+				exclude.getAnthropic().getAny(), exclude.getAnthropic().getAnthropicList());
+		if (anthropic.any() || !anthropic.rpcs().isEmpty())
+			builder.setAnthropic(Entitlements.AnthropicEntitlements.newBuilder()
+					.setAny(anthropic.any()).addAllAnthropic(anthropic.rpcs()).build());
+
+		var github = subtractSvc(source.getGithub().getAny(), source.getGithub().getGithubList(),
+				exclude.getGithub().getAny(), exclude.getGithub().getGithubList());
+		if (github.any() || !github.rpcs().isEmpty())
+			builder.setGithub(Entitlements.GithubEntitlements.newBuilder()
+					.setAny(github.any()).addAllGithub(github.rpcs()).build());
+
+		var gitlab = subtractSvc(source.getGitlab().getAny(), source.getGitlab().getGitlabList(),
+				exclude.getGitlab().getAny(), exclude.getGitlab().getGitlabList());
+		if (gitlab.any() || !gitlab.rpcs().isEmpty())
+			builder.setGitlab(Entitlements.GitlabEntitlements.newBuilder()
+					.setAny(gitlab.any()).addAllGitlab(gitlab.rpcs()).build());
+
+		var openai = subtractSvc(source.getOpenai().getAny(), source.getOpenai().getOpenaiList(),
+				exclude.getOpenai().getAny(), exclude.getOpenai().getOpenaiList());
+		if (openai.any() || !openai.rpcs().isEmpty())
+			builder.setOpenai(Entitlements.OpenaiEntitlements.newBuilder()
+					.setAny(openai.any()).addAllOpenai(openai.rpcs()).build());
 
 		return builder.build();
-	}
-
-	/**
-	 * Subtracts exclude RPCs from source RPCs.
-	 * If exclude contains _ANY, the entire service is removed (empty list).
-	 */
-	@SuppressWarnings("unchecked")
-	private static <E extends ProtocolMessageEnum> List<E> subtractRPCs(
-			List<E> source, List<E> exclude, E anyValue) {
-		if (source.isEmpty() || exclude.isEmpty()) {
-			return source;
-		}
-		// Exclude has wildcard → remove entire service.
-		if (exclude.contains(anyValue)) {
-			return List.of();
-		}
-		Set<E> excludeSet = new HashSet<>(exclude);
-		return source.stream().filter(e -> !excludeSet.contains(e)).toList();
 	}
 
 	/**
@@ -381,15 +412,15 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 
 		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
 		switch (targetAud) {
-			case "sentinel" -> builder.addAllSentinel(entitlements.getSentinelList());
-			case "gateway" -> builder.addAllGateway(entitlements.getGatewayList());
-			case "mcp" -> builder.addAllMcp(entitlements.getMcpList());
-			case "eventbus" -> builder.addAllEventbus(entitlements.getEventbusList());
-			case "fleetwood" -> builder.addAllFleetwood(entitlements.getFleetwoodList());
-			case "anthropic" -> builder.addAllAnthropic(entitlements.getAnthropicList());
-			case "github" -> builder.addAllGithub(entitlements.getGithubList());
-			case "gitlab" -> builder.addAllGitlab(entitlements.getGitlabList());
-			case "openai" -> builder.addAllOpenai(entitlements.getOpenaiList());
+			case "sentinel"  -> { if (entitlements.hasSentinel())  builder.setSentinel(entitlements.getSentinel()); }
+			case "gateway"   -> { if (entitlements.hasGateway())   builder.setGateway(entitlements.getGateway()); }
+			case "mcp"       -> { if (entitlements.hasMcp())       builder.setMcp(entitlements.getMcp()); }
+			case "eventbus"  -> { if (entitlements.hasEventbus())  builder.setEventbus(entitlements.getEventbus()); }
+			case "fleetwood" -> { if (entitlements.hasFleetwood()) builder.setFleetwood(entitlements.getFleetwood()); }
+			case "anthropic" -> { if (entitlements.hasAnthropic()) builder.setAnthropic(entitlements.getAnthropic()); }
+			case "github"    -> { if (entitlements.hasGithub())    builder.setGithub(entitlements.getGithub()); }
+			case "gitlab"    -> { if (entitlements.hasGitlab())    builder.setGitlab(entitlements.getGitlab()); }
+			case "openai"    -> { if (entitlements.hasOpenai())    builder.setOpenai(entitlements.getOpenai()); }
 			default -> {
 				// Unknown service — no entitlements scoped.
 			}

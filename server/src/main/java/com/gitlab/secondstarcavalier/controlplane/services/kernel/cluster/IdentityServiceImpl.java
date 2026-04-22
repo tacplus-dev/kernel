@@ -274,7 +274,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		}
 
 		// Resolve entitlements via UncleOPA.
-		Userentitlements.EntitlementEvalResult opaResult = resolveEntitlementsViaOpa(request.getClaims());
+		Userentitlements.EntitlementEvalResult opaResult = resolveEntitlementsViaOpa(request.getClaims(), request.getTraceId());
 		Entitlements.TokenEntitlements expanded = expandEntitlements(opaResult);
 
 		// Mint the token.
@@ -366,7 +366,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	 * Throws UNAVAILABLE if OPA evaluation fails.
 	 */
 	private Userentitlements.EntitlementEvalResult resolveEntitlementsViaOpa(
-			com.google.protobuf.Struct claims) throws StatusException {
+			com.google.protobuf.Struct claims, String traceId) throws StatusException {
 		if (opaEvalClient == null) {
 			throw new StatusException(Status.UNAVAILABLE,
 					"UncleOPA client not configured — cannot resolve entitlements");
@@ -387,10 +387,13 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		}
 
 		try {
-			return opaEvalClient.evalEntitlement(
-					Userentitlements.EntitlementEvalInput.newBuilder()
-							.putAllClaims(claimsMap)
-							.build());
+			var inputBuilder = Userentitlements.EntitlementEvalInput.newBuilder()
+					.putAllClaims(claimsMap);
+			// Propagate trace_id so uncleopa appears in trace tail.
+			if (traceId != null && !traceId.isEmpty()) {
+				inputBuilder.setTraceId(traceId);
+			}
+			return opaEvalClient.evalEntitlement(inputBuilder.build());
 		} catch (Exception e) {
 			logger.error("UncleOPA EvalEntitlement failed", e);
 			throw new StatusException(Status.UNAVAILABLE,

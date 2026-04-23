@@ -353,11 +353,9 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 					"UncleOPA client not configured — cannot resolve entitlements");
 		}
 
-		Map<String, String> claimsMap = TokenWrapper.structToStringMap(claims);
-
 		try {
 			var inputBuilder = Userentitlements.EntitlementEvalInput.newBuilder()
-					.putAllClaims(claimsMap);
+					.setClaims(claims);
 			// Propagate trace_id so uncleopa appears in trace tail.
 			if (traceId != null && !traceId.isEmpty()) {
 				inputBuilder.setTraceId(traceId);

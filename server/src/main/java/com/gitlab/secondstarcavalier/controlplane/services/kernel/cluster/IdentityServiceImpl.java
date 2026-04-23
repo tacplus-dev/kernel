@@ -16,8 +16,6 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.MintGrpc;
-import com.google.protobuf.Value;
-import com.google.gson.Gson;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.vservices.userentitlements.Userentitlements;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.userentitlements.OpaEvalGrpcClient;
@@ -93,7 +91,6 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 	private static final Pattern WORKLOAD_NAME_PATTERN = Pattern.compile("[a-zA-Z0-9_-]+");
 
-	private static final Gson GSON = new Gson();
 
 	/** Intermediate CA lifetime: 10 years. */
 	private static final long INTERMEDIATE_CA_LIFETIME_SECONDS = 10L * 365 * 24 * 3600;
@@ -320,23 +317,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 		// Forward custom claims from the request (e.g., IDP claims like email, name).
 		if (request.hasClaims()) {
-			for (Map.Entry<String, Value> entry : request.getClaims().getFieldsMap().entrySet()) {
-				String key = entry.getKey();
-				if (STANDARD_JWT_CLAIMS.contains(key)) {
-					continue;
-				}
-				String outputKey = WELL_KNOWN_JWT_CLAIMS.contains(key) ? "origin_" + key : key;
-				Value val = entry.getValue();
-				if (val.hasStringValue()) {
-					newToken.setCustomField(outputKey, val.getStringValue());
-				} else if (val.hasNumberValue()) {
-					newToken.setCustomField(outputKey, Long.toString((long) val.getNumberValue()));
-				} else if (val.hasBoolValue()) {
-					newToken.setCustomField(outputKey, Boolean.toString(val.getBoolValue()));
-				} else {
-					newToken.setCustomField(outputKey, val.toString());
-				}
-			}
+			newToken.setClaimsFromStruct(request.getClaims(), STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
 		}
 
 		// Inject delegate's static custom claims.
@@ -372,19 +353,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 					"UncleOPA client not configured — cannot resolve entitlements");
 		}
 
-		Map<String, String> claimsMap = new LinkedHashMap<>();
-		if (claims != null) {
-			for (Map.Entry<String, Value> entry : claims.getFieldsMap().entrySet()) {
-				Value val = entry.getValue();
-				if (val.hasStringValue()) {
-					claimsMap.put(entry.getKey(), val.getStringValue());
-				} else if (val.hasNumberValue()) {
-					claimsMap.put(entry.getKey(), Long.toString((long) val.getNumberValue()));
-				} else if (val.hasBoolValue()) {
-					claimsMap.put(entry.getKey(), Boolean.toString(val.getBoolValue()));
-				}
-			}
-		}
+		Map<String, String> claimsMap = TokenWrapper.structToStringMap(claims);
 
 		try {
 			var inputBuilder = Userentitlements.EntitlementEvalInput.newBuilder()
@@ -409,6 +378,46 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	private static Entitlements.TokenEntitlements expandEntitlements(
 			Userentitlements.EntitlementEvalResult result) {
 		return result.getTokenEntitlements();
+	}
+
+	/**
+	 * Parses a JSON string into a protobuf Value, preserving arrays and objects.
+	 */
+	private static com.google.protobuf.Value parseJsonValue(String json) {
+		com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(json);
+		return jsonElementToProtoValue(el);
+	}
+
+	private static com.google.protobuf.Value jsonElementToProtoValue(com.google.gson.JsonElement el) {
+		if (el.isJsonNull()) {
+			return com.google.protobuf.Value.newBuilder()
+					.setNullValue(com.google.protobuf.NullValue.NULL_VALUE).build();
+		} else if (el.isJsonPrimitive()) {
+			com.google.gson.JsonPrimitive prim = el.getAsJsonPrimitive();
+			if (prim.isBoolean()) {
+				return com.google.protobuf.Value.newBuilder()
+						.setBoolValue(prim.getAsBoolean()).build();
+			} else if (prim.isNumber()) {
+				return com.google.protobuf.Value.newBuilder()
+						.setNumberValue(prim.getAsDouble()).build();
+			} else {
+				return com.google.protobuf.Value.newBuilder()
+						.setStringValue(prim.getAsString()).build();
+			}
+		} else if (el.isJsonArray()) {
+			com.google.protobuf.ListValue.Builder list = com.google.protobuf.ListValue.newBuilder();
+			for (com.google.gson.JsonElement item : el.getAsJsonArray()) {
+				list.addValues(jsonElementToProtoValue(item));
+			}
+			return com.google.protobuf.Value.newBuilder().setListValue(list).build();
+		} else if (el.isJsonObject()) {
+			com.google.protobuf.Struct.Builder struct = com.google.protobuf.Struct.newBuilder();
+			for (Map.Entry<String, com.google.gson.JsonElement> entry : el.getAsJsonObject().entrySet()) {
+				struct.putFields(entry.getKey(), jsonElementToProtoValue(entry.getValue()));
+			}
+			return com.google.protobuf.Value.newBuilder().setStructValue(struct).build();
+		}
+		return com.google.protobuf.Value.newBuilder().setStringValue(el.toString()).build();
 	}
 
 	private Tokenrequest.TokenMintResponse doTokenMint(Tokenrequest.TokenMintRequest request) throws StatusException {
@@ -526,8 +535,81 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 
 		String subject = inputToken.getSubject();
 
-		return mintRefreshToken(subject, Kernel.getDescriptor().getPackage(), request,
-				Map.of("sub_type", SUB_TYPE_USER));
+		// Build a Struct from the IDP token's payload so we can forward claims
+		// and resolve entitlements via OPA, just like the delegation path does.
+		Map<String, String> idpPayload = inputToken.getProto().getPayloadMap();
+		com.google.protobuf.Struct.Builder claimsBuilder = com.google.protobuf.Struct.newBuilder();
+		for (Map.Entry<String, String> entry : idpPayload.entrySet()) {
+			// Try to parse JSON values (arrays, objects) back into structured Values.
+			String val = entry.getValue();
+			com.google.protobuf.Value pv;
+			if (val.startsWith("[") || val.startsWith("{")) {
+				try {
+					pv = parseJsonValue(val);
+				} catch (Exception e) {
+					pv = com.google.protobuf.Value.newBuilder()
+							.setStringValue(val).build();
+				}
+			} else {
+				pv = com.google.protobuf.Value.newBuilder()
+						.setStringValue(val).build();
+			}
+			claimsBuilder.putFields(entry.getKey(), pv);
+		}
+		com.google.protobuf.Struct idpClaims = claimsBuilder.build();
+
+		// Resolve entitlements via OPA.
+		Userentitlements.EntitlementEvalResult opaResult = resolveEntitlementsViaOpa(idpClaims, request.getTraceId());
+		Entitlements.TokenEntitlements expanded = expandEntitlements(opaResult);
+
+		// Mint the refresh token with IDP claims and entitlements.
+		ImmutableKey signingKey = keyRotator.getActiveSigningKey();
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+
+		long now = Instant.now().getEpochSecond();
+		long maxExp = now + maxTokenLifetimeSeconds;
+		long exp;
+		if (request.getExp() > 0) {
+			exp = request.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > maxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
+			}
+		} else {
+			exp = now + defaultTokenExpirySeconds;
+		}
+
+		TokenWrapper newToken = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(subject)
+				.setAudience(Kernel.getDescriptor().getPackage())
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+
+		newToken.setTokenUse(TOKEN_USE_REFRESH);
+		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
+		newToken.setAzp(Kernel.getDescriptor().getPackage());
+		newToken.setSubType(SUB_TYPE_USER);
+		newToken.setServiceEntitlements(expanded);
+		newToken.setClaimsFromStruct(idpClaims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
+
+		newToken.sign(signingKey);
+
+		logger.info("Minted refresh token (external IDP): sub={}, exp={}, service_entitlements={}",
+				subject, exp, newToken.getServiceEntitlements());
+
+		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setRefreshToken(newToken.getProto())
+				.setAccessToken(accessProto)
+				.build();
 	}
 
 	/**
@@ -656,23 +738,7 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 		// Forward custom claims from the request (e.g., IDP claims like email, name).
 		// Well-known JWT claims from external IdPs get origin_ prefix to avoid collision.
 		if (request.hasClaims()) {
-			for (Map.Entry<String, Value> entry : request.getClaims().getFieldsMap().entrySet()) {
-				String key = entry.getKey();
-				if (STANDARD_JWT_CLAIMS.contains(key)) {
-					continue;
-				}
-				String outputKey = WELL_KNOWN_JWT_CLAIMS.contains(key) ? "origin_" + key : key;
-				Value val = entry.getValue();
-				if (val.hasStringValue()) {
-					newToken.setCustomField(outputKey, val.getStringValue());
-				} else if (val.hasNumberValue()) {
-					newToken.setCustomField(outputKey, Long.toString((long) val.getNumberValue()));
-				} else if (val.hasBoolValue()) {
-					newToken.setCustomField(outputKey, Boolean.toString(val.getBoolValue()));
-				} else {
-					newToken.setCustomField(outputKey, val.toString());
-				}
-			}
+			newToken.setClaimsFromStruct(request.getClaims(), STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
 		}
 
 		// Inject delegate's static custom claims.

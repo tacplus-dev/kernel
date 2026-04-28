@@ -40,6 +40,15 @@ import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContextBuilder;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslProvider;
 import io.grpc.protobuf.services.HealthStatusManager;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.Mint;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.trace.Trace;
+import io.grpc.CallCredentials;
+import io.grpc.Status;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.io.IOException;
 import java.util.List;
 import java.util.Objects;
@@ -552,7 +561,78 @@ public class ClusterServer {
 					tokenIssuer,
 					grpcClients.opaEval());
 
-			serverBuilder.addService(identityService);
+			Mint mintWrapper = new Mint(identityService);
+			BlockingQueue<Trace.TraceEvent> traceQueue = new ArrayBlockingQueue<>(256);
+			io.grpc.Channel ebChannel = serviceMesh.meshChannel("eventbus");
+			final CallCredentials ebCallCreds = new CallCredentials() {
+				@Override
+				public void applyRequestMetadata(RequestInfo ri, java.util.concurrent.Executor exec,
+						MetadataApplier applier) {
+					exec.execute(() -> {
+						try {
+							String tok = mintSelfToken(keyRotator, tokenIssuer, "eventbus", () -> spiffePrefix);
+							Metadata hdrs = new Metadata();
+							hdrs.put(AUTH_HEADER_KEY, "Bearer " + tok);
+							applier.apply(hdrs);
+						} catch (Exception ex) {
+							applier.fail(Status.UNAUTHENTICATED.withCause(ex));
+						}
+					});
+				}
+			};
+			io.grpc.MethodDescriptor<Trace.TraceEvent, com.google.protobuf.Empty> traceMethod =
+				io.grpc.MethodDescriptor.<Trace.TraceEvent, com.google.protobuf.Empty>newBuilder()
+					.setType(io.grpc.MethodDescriptor.MethodType.BIDI_STREAMING)
+					.setFullMethodName("eventbus.EventBusTypedService/PublishTraceEventBusTraceEvents")
+					.setRequestMarshaller(io.grpc.protobuf.ProtoUtils.marshaller(Trace.TraceEvent.getDefaultInstance()))
+					.setResponseMarshaller(io.grpc.protobuf.ProtoUtils.marshaller(com.google.protobuf.Empty.getDefaultInstance()))
+					.build();
+			Thread traceThread = new Thread(() -> {
+				long backoff = 3000;
+				final long maxBackoff = 30000;
+				while (!Thread.currentThread().isInterrupted()) {
+					try {
+						CountDownLatch streamDone = new CountDownLatch(1);
+						AtomicReference<Throwable> streamError = new AtomicReference<>();
+						io.grpc.stub.StreamObserver<Trace.TraceEvent> outbound =
+							io.grpc.stub.ClientCalls.asyncBidiStreamingCall(
+								ebChannel.newCall(traceMethod,
+									io.grpc.CallOptions.DEFAULT.withCallCredentials(ebCallCreds)),
+								new io.grpc.stub.StreamObserver<com.google.protobuf.Empty>() {
+									@Override public void onNext(com.google.protobuf.Empty v) {}
+									@Override public void onError(Throwable t) { streamError.set(t); streamDone.countDown(); }
+									@Override public void onCompleted() { streamDone.countDown(); }
+								});
+						try {
+							while (!Thread.currentThread().isInterrupted()) {
+								Trace.TraceEvent event = traceQueue.poll(1, TimeUnit.SECONDS);
+								if (event != null) outbound.onNext(event);
+								if (streamDone.getCount() == 0) break;
+							}
+						} finally {
+							try { outbound.onCompleted(); } catch (Exception ignored) {}
+						}
+						if (streamError.get() != null) throw new Exception("trace stream error", streamError.get());
+						return;
+					} catch (InterruptedException ie) {
+						Thread.currentThread().interrupt();
+						return;
+					} catch (Exception ex) {
+						logger.warn("kernel trace publish stream failed, reconnecting in {}ms: {}", backoff, ex.getMessage());
+						try { Thread.sleep(backoff); } catch (InterruptedException ie) {
+							Thread.currentThread().interrupt();
+							return;
+						}
+						if (backoff < maxBackoff) backoff = Math.min(backoff * 2, maxBackoff);
+					}
+				}
+			}, "kernel-trace-publisher");
+			traceThread.setDaemon(true);
+			traceThread.start();
+			mintWrapper.setTracePublisher((Mint.TracePublisher) event -> traceQueue.offer(event));
+			mintWrapper.setTraceIdentity("kernel", instanceName);
+
+			serverBuilder.addService(mintWrapper);
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
 
 			// C2S token exchange — users exchange access tokens for service-scoped tokens.

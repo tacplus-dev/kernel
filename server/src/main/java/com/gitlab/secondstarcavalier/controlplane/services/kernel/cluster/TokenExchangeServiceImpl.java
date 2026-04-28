@@ -323,7 +323,14 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 	 * Scopes entitlements to the target service (strips all other services).
 	 * If the target is "kernel", all entitlements are preserved.
 	 */
-	private static Entitlements.TokenEntitlements scopeToService(
+	/**
+	 * Scopes a full TokenEntitlements down to only the grants relevant to targetAud
+	 * and its vservices. azp constraints are preserved whenever any grants survive.
+	 * Returns the full entitlements unchanged when targetAud is kernel (aud:kernel
+	 * access tokens carry all entitlements). Returns an empty result for unknown
+	 * service names.
+	 */
+	static Entitlements.TokenEntitlements scopeToService(
 			Entitlements.TokenEntitlements entitlements, String targetAud) {
 		if (Kernel.getDescriptor().getPackage().equals(targetAud)) return entitlements;
 		var b = Entitlements.TokenEntitlements.newBuilder();
@@ -331,13 +338,18 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 			case "sentinel"  -> b.addAllSentinel(entitlements.getSentinelList());
 			case "gateway"   -> b.addAllGateway(entitlements.getGatewayList());
 			case "mcp"       -> b.addAllMcp(entitlements.getMcpList());
-			case "eventbus"  -> b.addAllEventbus(entitlements.getEventbusList());
+			case "eventbus"  -> b.addAllEventbus(entitlements.getEventbusList())
+			                     .addAllClaudesensor(entitlements.getClaudesensorList());
 			case "fleetwood" -> b.addAllFleetwood(entitlements.getFleetwoodList());
 			case "anthropic" -> b.addAllAnthropic(entitlements.getAnthropicList());
 			case "github"    -> b.addAllGithub(entitlements.getGithubList());
 			case "gitlab"    -> b.addAllGitlab(entitlements.getGitlabList());
 			case "openai"    -> b.addAllOpenai(entitlements.getOpenaiList());
+			case "mock"      -> b.addAllMock(entitlements.getMockList());
+			// unknown service: return empty entitlements
+			default -> { return b.build(); }
 		}
+		b.addAllAzp(entitlements.getAzpList());
 		return b.build();
 	}
 }

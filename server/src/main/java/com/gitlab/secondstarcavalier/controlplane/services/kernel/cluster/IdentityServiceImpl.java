@@ -15,12 +15,14 @@ import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.services.kernel.MintGrpc;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.Mint;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.servicemanager.Caller;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.errors.ProtoException;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.vservices.userentitlements.Userentitlements;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.userentitlements.OpaEvalGrpcClient;
 import io.grpc.Status;
-import io.grpc.stub.StreamObserver;
+
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.time.Instant;
@@ -53,7 +55,7 @@ import org.slf4j.LoggerFactory;
  * per-service trust isolation.</li>
  * </ul>
  */
-public class IdentityServiceImpl extends MintGrpc.MintImplBase {
+public class IdentityServiceImpl implements Mint.MintHandler {
 
 	private static final Logger logger = LoggerFactory.getLogger(IdentityServiceImpl.class);
 
@@ -146,19 +148,15 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	// ========================================================================
 
 	@Override
-	public void tokenMint(Tokenrequest.TokenMintRequest request,
-			StreamObserver<Tokenrequest.TokenMintResponse> responseObserver) {
+	public Tokenrequest.TokenMintResponse tokenMint(Caller caller, Tokenrequest.TokenMintRequest request)
+			throws ProtoException {
 		try {
-			Tokenrequest.TokenMintResponse result = doTokenMint(request);
-			responseObserver.onNext(result);
-			responseObserver.onCompleted();
+			return doTokenMint(request);
 		} catch (StatusException e) {
-			responseObserver.onError(e.toGrpcStatus().asRuntimeException());
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
 		} catch (Exception e) {
 			logger.error("TokenMint failed", e);
-			responseObserver.onError(Status.INTERNAL
-					.withDescription("token mint failed: " + e.getMessage())
-					.asRuntimeException());
+			throw new ProtoException(ProtoException.INTERNAL, "token mint failed: " + e.getMessage(), e);
 		}
 	}
 
@@ -167,8 +165,8 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	// ========================================================================
 
 	@Override
-	public void mintServiceToken(Tokenrequest.MintServiceTokenRequest request,
-			StreamObserver<Tokenrequest.TokenMintResponse> responseObserver) {
+	public Tokenrequest.TokenMintResponse mintServiceToken(Caller caller,
+			Tokenrequest.MintServiceTokenRequest request) throws ProtoException {
 		try {
 			// S2S fields map 1:1 — convert to legacy request and delegate.
 			Tokenrequest.TokenMintRequest legacyRequest = Tokenrequest.TokenMintRequest.newBuilder()
@@ -180,16 +178,12 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 					.setTokenPurpose(request.getTokenPurpose())
 					.setLocalityToken(request.getLocalityToken())
 					.build();
-			Tokenrequest.TokenMintResponse result = doTokenMint(legacyRequest);
-			responseObserver.onNext(result);
-			responseObserver.onCompleted();
+			return doTokenMint(legacyRequest);
 		} catch (StatusException e) {
-			responseObserver.onError(e.toGrpcStatus().asRuntimeException());
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
 		} catch (Exception e) {
 			logger.error("MintServiceToken failed", e);
-			responseObserver.onError(Status.INTERNAL
-					.withDescription("service token mint failed: " + e.getMessage())
-					.asRuntimeException());
+			throw new ProtoException(ProtoException.INTERNAL, "service token mint failed: " + e.getMessage(), e);
 		}
 	}
 
@@ -198,19 +192,15 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	// ========================================================================
 
 	@Override
-	public void mintUserToken(Tokenrequest.MintUserTokenRequest request,
-			StreamObserver<Tokenrequest.TokenMintResponse> responseObserver) {
+	public Tokenrequest.TokenMintResponse mintUserToken(Caller caller,
+			Tokenrequest.MintUserTokenRequest request) throws ProtoException {
 		try {
-			Tokenrequest.TokenMintResponse result = doMintUserToken(request);
-			responseObserver.onNext(result);
-			responseObserver.onCompleted();
+			return doMintUserToken(request);
 		} catch (StatusException e) {
-			responseObserver.onError(e.toGrpcStatus().asRuntimeException());
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
 		} catch (Exception e) {
 			logger.error("MintUserToken failed", e);
-			responseObserver.onError(Status.INTERNAL
-					.withDescription("user token mint failed: " + e.getMessage())
-					.asRuntimeException());
+			throw new ProtoException(ProtoException.INTERNAL, "user token mint failed: " + e.getMessage(), e);
 		}
 	}
 
@@ -1006,6 +996,15 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 			newToken.setTokenUse(
 					request.getAud().isEmpty() ? TOKEN_USE_ACCESS : TOKEN_USE_SERVICE);
 
+			// Scope service_entitlements to the target service and its vservices.
+			if (!request.getAud().isEmpty()) {
+				Entitlements.TokenEntitlements te = newToken.getServiceEntitlements();
+				if (te != null) {
+					newToken.setServiceEntitlements(
+							TokenExchangeServiceImpl.scopeToService(te, request.getAud()));
+				}
+			}
+
 			logger.info("Minted service token (U2S): sub={}, aud={}, exp={}, profiles={}",
 					subject, newToken.getAudience(), exp, newToken.getProfiles());
 		}
@@ -1115,100 +1114,88 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	// ========================================================================
 
 	@Override
-	public void x509Mint(Tokenrequest.X509MintRequest request,
-			StreamObserver<X509.X509CertChain> responseObserver) {
+	public X509.X509CertChain x509Mint(Caller caller, Tokenrequest.X509MintRequest request)
+			throws ProtoException {
 		try {
-			// Authenticate caller from raw Bearer token (MintService is auth-exempt,
-			// so SecurityInterceptor doesn't validate — we do it manually here).
-			// Fall back to input_token from request body (gateway-mediated calls).
-			String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
-			if ((rawToken == null || rawToken.isEmpty()) && !request.getInputToken().isEmpty()) {
-				rawToken = request.getInputToken();
-			}
-			if (rawToken == null || rawToken.isEmpty()) {
-				responseObserver.onError(Status.UNAUTHENTICATED
-						.withDescription("missing authorization header")
-						.asRuntimeException());
-				return;
-			}
-
-			TokenWrapper token;
-			try {
-				token = TokenWrapper.parse(rawToken);
-			} catch (Exception e) {
-				responseObserver.onError(Status.UNAUTHENTICATED
-						.withDescription("invalid token: " + e.getMessage())
-						.asRuntimeException());
-				return;
-			}
-
-			// Verify token signature against cluster keys.
-			String kid = token.getKid();
-			JwkOuterClass.Jwk matchingKey = null;
-			for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
-				if (kid.equals(jwk.getKid())) {
-					matchingKey = jwk;
-					break;
-				}
-			}
-			if (matchingKey == null) {
-				responseObserver.onError(Status.UNAUTHENTICATED
-						.withDescription("token signed with unknown key: " + kid)
-						.asRuntimeException());
-				return;
-			}
-			try {
-				token.verify(ImmutableJwk.from(matchingKey));
-			} catch (Exception e) {
-				responseObserver.onError(Status.UNAUTHENTICATED
-						.withDescription("token verification failed: " + e.getMessage())
-						.asRuntimeException());
-				return;
-			}
-
-			// Extract service name from token subject.
-			String serviceName = token.getSubject();
-			if (serviceName == null || serviceName.isEmpty()) {
-				responseObserver.onError(Status.INVALID_ARGUMENT
-						.withDescription("token has no sub claim")
-						.asRuntimeException());
-				return;
-			}
-
-			// Get or create intermediate CA for this service (signed by cavalier-issued signing chain).
-			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
-
-			// Construct SPIFFE URI SAN from auth context.
-			String azp = token.getAzp();
-			if (azp.isEmpty()) azp = Kernel.getDescriptor().getPackage();
-			String spiffePrefix = spiffePrefixReader.get();
-			String spiffeId = "spiffe://" + spiffePrefix + "/" + azp + "/" + serviceName;
-
-			// Enrich cert request with SPIFFE URI SAN.
-			X509.X509CertRequest enrichedRequest = request.getCertRequest().toBuilder()
-					.addUriSans(spiffeId)
-					.build();
-
-			// Sign the enriched cert request with the intermediate CA.
-			X509.X509Cert leafCert = intermediateCa.sign(enrichedRequest);
-
-			// Build response: leaf cert + intermediate CA cert in chain.
-			X509.X509CertChain certChain = X509.X509CertChain.newBuilder()
-					.addChain(leafCert)
-					.addChain(intermediateCa.leaf().getProto())
-					.build();
-
-			logger.info("X509Mint: service={}, spiffeId={}, keyId={}",
-					serviceName, spiffeId, request.getCertRequest().getKey().getId());
-
-			responseObserver.onNext(certChain);
-			responseObserver.onCompleted();
+			return doX509Mint(request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
 		} catch (Exception e) {
 			logger.error("X509Mint failed", e);
-			responseObserver.onError(Status.INTERNAL
-					.withDescription("certificate signing failed: " + e.getMessage())
-					.asRuntimeException());
+			throw new ProtoException(ProtoException.INTERNAL, "certificate signing failed: " + e.getMessage(), e);
 		}
+	}
+
+	private X509.X509CertChain doX509Mint(Tokenrequest.X509MintRequest request) throws StatusException, Exception {
+		// Authenticate caller from raw Bearer token (MintService is auth-exempt,
+		// so SecurityInterceptor doesn't validate — we do it manually here).
+		// Fall back to input_token from request body (gateway-mediated calls).
+		String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
+		if ((rawToken == null || rawToken.isEmpty()) && !request.getInputToken().isEmpty()) {
+			rawToken = request.getInputToken();
+		}
+		if (rawToken == null || rawToken.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED, "missing authorization header");
+		}
+
+		TokenWrapper token;
+		try {
+			token = TokenWrapper.parse(rawToken);
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED, "invalid token: " + e.getMessage());
+		}
+
+		// Verify token signature against cluster keys.
+		String kid = token.getKid();
+		JwkOuterClass.Jwk matchingKey = null;
+		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+			if (kid.equals(jwk.getKid())) {
+				matchingKey = jwk;
+				break;
+			}
+		}
+		if (matchingKey == null) {
+			throw new StatusException(Status.UNAUTHENTICATED, "token signed with unknown key: " + kid);
+		}
+		try {
+			token.verify(ImmutableJwk.from(matchingKey));
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED, "token verification failed: " + e.getMessage());
+		}
+
+		// Extract service name from token subject.
+		String serviceName = token.getSubject();
+		if (serviceName == null || serviceName.isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "token has no sub claim");
+		}
+
+		// Get or create intermediate CA for this service (signed by cavalier-issued signing chain).
+		ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
+
+		// Construct SPIFFE URI SAN from auth context.
+		String azp = token.getAzp();
+		if (azp.isEmpty()) azp = Kernel.getDescriptor().getPackage();
+		String spiffePrefix = spiffePrefixReader.get();
+		String spiffeId = "spiffe://" + spiffePrefix + "/" + azp + "/" + serviceName;
+
+		// Enrich cert request with SPIFFE URI SAN.
+		X509.X509CertRequest enrichedRequest = request.getCertRequest().toBuilder()
+				.addUriSans(spiffeId)
+				.build();
+
+		// Sign the enriched cert request with the intermediate CA.
+		X509.X509Cert leafCert = intermediateCa.sign(enrichedRequest);
+
+		// Build response: leaf cert + intermediate CA cert in chain.
+		X509.X509CertChain certChain = X509.X509CertChain.newBuilder()
+				.addChain(leafCert)
+				.addChain(intermediateCa.leaf().getProto())
+				.build();
+
+		logger.info("X509Mint: service={}, spiffeId={}, keyId={}",
+				serviceName, spiffeId, request.getCertRequest().getKey().getId());
+
+		return certChain;
 	}
 
 	/**
@@ -1283,19 +1270,15 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	// ========================================================================
 
 	@Override
-	public void workloadMint(Tokenrequest.WorkloadMintRequest request,
-			StreamObserver<Tokenrequest.WorkloadMintResponse> responseObserver) {
+	public Tokenrequest.WorkloadMintResponse workloadMint(Caller caller,
+			Tokenrequest.WorkloadMintRequest request) throws ProtoException {
 		try {
-			Tokenrequest.WorkloadMintResponse result = doWorkloadMint(request);
-			responseObserver.onNext(result);
-			responseObserver.onCompleted();
+			return doWorkloadMint(request);
 		} catch (StatusException e) {
-			responseObserver.onError(e.toGrpcStatus().asRuntimeException());
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
 		} catch (Exception e) {
 			logger.error("WorkloadMint failed", e);
-			responseObserver.onError(Status.INTERNAL
-					.withDescription("workload mint failed: " + e.getMessage())
-					.asRuntimeException());
+			throw new ProtoException(ProtoException.INTERNAL, "workload mint failed: " + e.getMessage(), e);
 		}
 	}
 
@@ -1446,19 +1429,15 @@ public class IdentityServiceImpl extends MintGrpc.MintImplBase {
 	}
 
 	@Override
-	public void workloadRevoke(Kernel.WorkloadRevokeRequest request,
-			StreamObserver<com.google.protobuf.Empty> responseObserver) {
+	public void workloadRevoke(Caller caller,
+			Kernel.WorkloadRevokeRequest request) throws ProtoException {
 		try {
 			doWorkloadRevoke(request);
-			responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
-			responseObserver.onCompleted();
 		} catch (StatusException e) {
-			responseObserver.onError(e.toGrpcStatus().asRuntimeException());
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
 		} catch (Exception e) {
 			logger.error("WorkloadRevoke failed", e);
-			responseObserver.onError(Status.INTERNAL
-					.withDescription("workload revoke failed: " + e.getMessage())
-					.asRuntimeException());
+			throw new ProtoException(ProtoException.INTERNAL, "workload revoke failed: " + e.getMessage(), e);
 		}
 	}
 

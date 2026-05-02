@@ -1,7 +1,7 @@
 # Kernel Release Image
 # Layers the kernel jar and kernel binary onto a JRE base.
 
-FROM eclipse-temurin:21-jre
+FROM registry.gitlab.com/secondstarcavalier/controlplane/containers/cavalier-jre:latest
 
 ARG BUILD_DATE
 ARG VCS_REF
@@ -15,15 +15,7 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.title="Kernel" \
       org.opencontainers.image.description="Core kernel service for Cavalier control plane"
 
-ARG GRPC_HEALTH_PROBE_VERSION=0.4.48
-ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends curl && \
-    curl -fsSL -o /usr/local/bin/grpc_health_probe \
-      "https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/v${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-${TARGETARCH}" && \
-    chmod +x /usr/local/bin/grpc_health_probe && \
-    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
-
-RUN groupadd -r kernel && useradd -r -g kernel kernel
+RUN addgroup -S kernel && adduser -S kernel -G kernel
 
 COPY server/target/kernel.jar /app/kernel.jar
 COPY kernel /usr/local/bin/kernel

@@ -346,6 +346,7 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 			case "gitlab"    -> b.addAllGitlab(entitlements.getGitlabList());
 			case "openai"    -> b.addAllOpenai(entitlements.getOpenaiList());
 			case "mock"      -> b.addAllMock(entitlements.getMockList());
+			case "argus"     -> b.addAllArgus(entitlements.getArgusList());
 			// unknown service: return empty entitlements
 			default -> { return b.build(); }
 		}

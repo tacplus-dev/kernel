@@ -2,7 +2,7 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
 	<parent>
-		<groupId>com.gitlab.secondstarcavalier.controlplane.services.kernel</groupId>
+		<groupId>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel</groupId>
 		<artifactId>kernel-parent</artifactId>
 		<version>1.0.0</version>
 	</parent>
@@ -16,7 +16,7 @@
 	<dependencies>
 		<!-- Tacplus generated types -->
 		<dependency>
-			<groupId>com.gitlab.secondstarcavalier.controlplane.services.kernel</groupId>
+			<groupId>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel</groupId>
 			<artifactId>kernel-tacplus</artifactId>
 		</dependency>
 		<!-- Protocol Buffers -->
@@ -171,7 +171,7 @@
 				</executions>
 			</plugin>
 			<plugin>
-				<groupId>com.gitlab.secondstarcavalier.controlplane.services.kernel</groupId>
+				<groupId>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel</groupId>
 				<artifactId>codegen</artifactId>
 				<version>1.0.0</version>
 				<executions>
@@ -186,8 +186,8 @@
 				<configuration>
 					<protoDir>${project.basedir}/../tacplus/target/generated-sources/tacplus/proto-annotated</protoDir>
 					<outputDir>${project.build.directory}/generated-sources/tacplus-backend</outputDir>
-					<javaPackageBase>com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplusbackend</javaPackageBase>
-					<peerContextClass>com.gitlab.secondstarcavalier.controlplane.services.kernel.cluster.PeerContext</peerContextClass>
+					<javaPackageBase>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend</javaPackageBase>
+					<peerContextClass>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster.PeerContext</peerContextClass>
 				</configuration>
 			</plugin>
 			<plugin>
@@ -204,7 +204,7 @@
 							<finalName>kernel</finalName>
 							<transformers>
 								<transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-									<mainClass>com.gitlab.secondstarcavalier.controlplane.services.kernel.Main</mainClass>
+									<mainClass>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.Main</mainClass>
 								</transformer>
 								<transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
 							</transformers>

@@ -1,8 +1,6 @@
 language: java
-pkg: com.gitlab.secondstarcavalier.controlplane.services.kernel
+pkg: com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel
 output-dir: tacplus/target/generated-sources
-grpc-servers:
-  - services/kernel.Mint
 post-gen:
   - cmd: mvn
     args: [-pl, server, -am, -Dtacplus.skip=true, package]

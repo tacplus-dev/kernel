@@ -85,7 +85,7 @@ public class ExternalTokenMintServiceImpl implements ExternalTokenMint.ExternalT
             Caller caller, Tokenrequest.ExternalTokenMintRequest request) throws ProtoException {
 
         String rawToken = request.getUserToken();
-        String dstUrl = request.getDstUrl();
+        String metadata = request.getMetadata();
 
         // Parse and verify the user token against kernel's current verifying keys.
         TokenWrapper userToken;
@@ -124,7 +124,7 @@ public class ExternalTokenMintServiceImpl implements ExternalTokenMint.ExternalT
 
         // Evaluate proxy policy via OPA.
         if (proxyPolicyOpaClient == null) {
-            throw ProtoException.newErrUnavailable(null,
+            throw ProtoException.newErrGeneral(null,
                     "proxy policy OPA client not configured");
         }
 
@@ -132,11 +132,11 @@ public class ExternalTokenMintServiceImpl implements ExternalTokenMint.ExternalT
         try {
             var input = Proxypolicy.ProxyPolicyEvalInput.newBuilder()
                     .setClaims(claims)
-                    .setDstUrl(dstUrl)
+                    .setMetadata(metadata)
                     .build();
             opaResult = proxyPolicyOpaClient.evalProxyPolicy(input);
         } catch (Exception e) {
-            throw ProtoException.newErrUnavailable(null,
+            throw ProtoException.newErrGeneral(null,
                     "proxy policy evaluation failed: " + e.getMessage());
         }
 
@@ -153,10 +153,9 @@ public class ExternalTokenMintServiceImpl implements ExternalTokenMint.ExternalT
         if (effectiveAud == null || effectiveAud.isEmpty()) {
             effectiveAud = userToken.getAudience();
         }
+        // resolvedUrl is whatever OPA returned. Empty string is valid — the proxy
+        // will fall back to its own DEFAULT_API_ENDPOINT when it receives an empty dst_url.
         String resolvedUrl = opaResult.getUrl();
-        if (resolvedUrl == null || resolvedUrl.isEmpty()) {
-            resolvedUrl = dstUrl;
-        }
 
         // Compute expiry: now + max TTL, capped by user token's own expiry.
         long now = Instant.now().getEpochSecond();
@@ -201,8 +200,8 @@ public class ExternalTokenMintServiceImpl implements ExternalTokenMint.ExternalT
         externalToken.sign(signingKey);
 
         var authType = opaResult.getAuthType();
-        logger.info("external token minted: caller={}, sub={}, aud={}, dst_url={}, auth_type={}",
-                caller.getSpiffeUri(), userToken.getSubject(), effectiveAud, resolvedUrl, authType);
+        logger.info("external token minted: caller_req={}, sub={}, aud={}, metadata={}, dst_url={}, auth_type={}",
+                caller.getRequestId(), userToken.getSubject(), effectiveAud, metadata, resolvedUrl, authType);
 
         return Tokenrequest.ExternalTokenMintResponse.newBuilder()
                 .setToken(externalToken.getProto())

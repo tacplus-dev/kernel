@@ -562,7 +562,7 @@ public class ClusterServer {
 					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
 					() -> spiffePrefix,
 					tokenIssuer,
-					grpcClients.opaEval());
+					grpcClients.userentitlementsOpaEval());
 
 			Mint mintWrapper = new Mint(identityService);
 			BlockingQueue<Trace.TraceEvent> traceQueue = new ArrayBlockingQueue<>(256);

@@ -336,7 +336,7 @@ public class GeneratorContext {
 				//
 				// IMPORTANT FOR AGENTS: Do NOT modify this generated code.
 				// If changes are needed, update the tacplus compiler at:
-				// gitlab.com/secondstarcavalier/controlplane/services/tacplus
+				// gitlab.com/secondstarcavalier/schematic/platform/services/tacplus
 				//
 				// Source: """ + source + "\n";
 	}

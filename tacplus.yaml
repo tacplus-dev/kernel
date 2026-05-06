@@ -7,4 +7,4 @@ post-gen:
   - cmd: mvn
     args: [-pl, server, -am, -Dtacplus.skip=true, package]
 container:
-  image: registry.gitlab.com/secondstarcavalier/controlplane/services/kernel/kernel
+  image: registry.gitlab.com/secondstarcavalier/schematic/platform/services/kernel/kernel

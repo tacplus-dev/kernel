@@ -40,6 +40,8 @@ import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContextBuilder;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslProvider;
 import io.grpc.protobuf.services.HealthStatusManager;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.libs.servicemanager.Auth;
+import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ExternalTokenMint;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.Mint;
 import com.gitlab.secondstarcavalier.controlplane.services.kernel.tacplus.types.libs.trace.Trace;
 import io.grpc.CallCredentials;
@@ -345,6 +347,7 @@ public class ClusterServer {
 				.sslContext(grpcSslContext)
 				.addTransportFilter(transportFilter)
 				.intercept(rpcInterceptor)
+				.intercept(Auth.requestIdInterceptor())
 				.intercept(backendServers.getAuthenticator().callerInterceptor());
 
 		serverBuilder.intercept(rateLimiter);
@@ -644,6 +647,16 @@ public class ClusterServer {
 					tokenIssuer);
 			serverBuilder.addService(tokenExchangeService);
 			logger.info("TokenExchangeService registered on gRPC server");
+
+			// External token minting — proxy services call this to obtain a short-lived external
+			// token for forwarding to third-party APIs. OPA proxy policy is evaluated here.
+			var externalTokenMintImpl = new ExternalTokenMintServiceImpl(
+					keyRotator, allKeysSupplier, grpcClients.proxypolicyOpaEval());
+			var externalTokenMintWrapper = new ExternalTokenMint(externalTokenMintImpl);
+			externalTokenMintWrapper.setTraceIdentity("kernel", instanceName);
+			externalTokenMintWrapper.setTracePublisher((ExternalTokenMint.TracePublisher) event -> traceQueue.offer(event));
+			serverBuilder.addService(externalTokenMintWrapper);
+			logger.info("ExternalTokenMintService registered on gRPC server");
 
 			// TLS certificate lifecycle service (ManageCert bidi stream for auto_tls services).
 			this.tlsCertService = new TlsCertServiceImpl(

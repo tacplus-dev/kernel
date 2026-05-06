@@ -148,11 +148,36 @@ public class ExternalTokenMintServiceImpl implements ExternalTokenMint.ExternalT
             throw ProtoException.newErrPermissionDenied(null, reason);
         }
 
-        // Determine effective audience and destination URL from OPA result.
-        String effectiveAud = opaResult.getAud();
-        if (effectiveAud == null || effectiveAud.isEmpty()) {
-            effectiveAud = userToken.getAudience();
+        // Determine effective audience: start with the caller's original aud and append
+        // any values OPA requested. OPA may only add audiences, never remove the original.
+        // If OPA returned multiple append_aud values, encode as a JSON array per RFC 7519.
+        String callerAud = userToken.getAudience();
+        if (callerAud == null) callerAud = "";
+        var appendAuds = opaResult.getAppendAudList();
+        String effectiveAud;
+        if (appendAuds.isEmpty()) {
+            effectiveAud = callerAud;
+        } else {
+            // Build an ordered, deduplicated list: original first, then OPA additions.
+            var audList = new java.util.LinkedHashSet<String>();
+            if (!callerAud.isEmpty()) audList.add(callerAud);
+            audList.addAll(appendAuds);
+            if (audList.size() == 1) {
+                effectiveAud = audList.iterator().next();
+            } else {
+                // Encode as JSON array for multi-audience tokens.
+                effectiveAud = new com.google.gson.Gson().toJson(audList);
+            }
         }
+
+        // Determine effective token_use. OPA must return TOKEN_USE_EXTERNAL or unset;
+        // any other value is rejected to prevent external tokens being replayed internally.
+        var opaTokenUse = opaResult.getTokenUse();
+        if (opaTokenUse != TokenUse.TOKEN_USE_UNSPECIFIED && opaTokenUse != TokenUse.TOKEN_USE_EXTERNAL) {
+            throw ProtoException.newErrPermissionDenied(null,
+                    "proxy policy returned invalid token_use: " + opaTokenUse);
+        }
+
         // resolvedUrl is whatever OPA returned. Empty string is valid — the proxy
         // will fall back to its own DEFAULT_API_ENDPOINT when it receives an empty dst_url.
         String resolvedUrl = opaResult.getUrl();
@@ -200,8 +225,8 @@ public class ExternalTokenMintServiceImpl implements ExternalTokenMint.ExternalT
         externalToken.sign(signingKey);
 
         var authType = opaResult.getAuthType();
-        logger.info("external token minted: caller_req={}, sub={}, aud={}, metadata={}, dst_url={}, auth_type={}",
-                caller.getRequestId(), userToken.getSubject(), effectiveAud, metadata, resolvedUrl, authType);
+        logger.info("external token minted: caller_req={}, sub={}, aud={}, append_aud={}, metadata={}, dst_url={}, auth_type={}",
+                caller.getRequestId(), userToken.getSubject(), effectiveAud, appendAuds, metadata, resolvedUrl, authType);
 
         return Tokenrequest.ExternalTokenMintResponse.newBuilder()
                 .setToken(externalToken.getProto())

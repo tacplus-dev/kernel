@@ -1,7 +1,7 @@
 # Kernel Release Image
 # Layers the kernel jar and kernel binary onto a JRE base.
 
-FROM registry.gitlab.com/secondstarcavalier/controlplane/containers/cavalier-jre-1-1:latest
+FROM registry.gitlab.com/secondstarcavalier/schematic/containers/cavalier-jre:latest
 
 ARG BUILD_DATE
 ARG VCS_REF

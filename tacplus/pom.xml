@@ -4,7 +4,7 @@
 	<parent>
 		<groupId>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel</groupId>
 		<artifactId>kernel-parent</artifactId>
-		<version>1.0.0</version>
+		<version>1.2.0-SNAPSHOT</version>
 	</parent>
 	<artifactId>kernel-tacplus</artifactId>
 	<packaging>jar</packaging>

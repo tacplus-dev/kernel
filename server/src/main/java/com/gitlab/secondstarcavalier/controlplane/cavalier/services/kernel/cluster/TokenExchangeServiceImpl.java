@@ -281,8 +281,8 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 		if (!mcp.isEmpty()) b.addAllMcp(mcp);
 		var eventbus = intersectRPCs(source.getEventbusList(), include.getEventbusList());
 		if (!eventbus.isEmpty()) b.addAllEventbus(eventbus);
-		var fleetwood = intersectRPCs(source.getFleetwoodList(), include.getFleetwoodList());
-		if (!fleetwood.isEmpty()) b.addAllFleetwood(fleetwood);
+		var oauth = intersectRPCs(source.getOauthList(), include.getOauthList());
+		if (!oauth.isEmpty()) b.addAllOauth(oauth);
 		var anthropic = intersectRPCs(source.getAnthropicList(), include.getAnthropicList());
 		if (!anthropic.isEmpty()) b.addAllAnthropic(anthropic);
 		var github = intersectRPCs(source.getGithubList(), include.getGithubList());
@@ -306,8 +306,8 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 		if (!mcp.isEmpty()) b.addAllMcp(mcp);
 		var eventbus = subtractRPCs(source.getEventbusList(), exclude.getEventbusList());
 		if (!eventbus.isEmpty()) b.addAllEventbus(eventbus);
-		var fleetwood = subtractRPCs(source.getFleetwoodList(), exclude.getFleetwoodList());
-		if (!fleetwood.isEmpty()) b.addAllFleetwood(fleetwood);
+		var oauth = subtractRPCs(source.getOauthList(), exclude.getOauthList());
+		if (!oauth.isEmpty()) b.addAllOauth(oauth);
 		var anthropic = subtractRPCs(source.getAnthropicList(), exclude.getAnthropicList());
 		if (!anthropic.isEmpty()) b.addAllAnthropic(anthropic);
 		var github = subtractRPCs(source.getGithubList(), exclude.getGithubList());

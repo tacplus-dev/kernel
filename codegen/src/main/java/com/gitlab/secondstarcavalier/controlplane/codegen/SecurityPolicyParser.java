@@ -17,7 +17,7 @@ import java.util.List;
  * policies:
  *   - name: "ClusterState"
  *     rw: ["service:snoopy"]
- *     ro: ["service:fleetwood"]
+ *     ro: ["service:oauth"]
  *     exec: ["service:admin"]
  * </pre>
  */
@@ -88,7 +88,7 @@ public class SecurityPolicyParser {
     }
 
     /**
-     * Parses a YAML inline list like {@code ["service:fleetwood", "service:snoopy"]}.
+     * Parses a YAML inline list like {@code ["service:oauth", "service:snoopy"]}.
      */
     private static List<String> parseInlineList(String s) {
         s = s.trim();

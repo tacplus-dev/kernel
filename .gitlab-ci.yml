@@ -37,9 +37,12 @@ build:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
   cache:
-    key: maven
-    paths:
-      - .m2/repository
+    - key: tacplus
+      paths:
+        - tacplus/
+    - key: maven
+      paths:
+        - .m2/repository
   before_script:
     - *setup-netrc
     - tacplus build --skip-post
@@ -64,8 +67,14 @@ build:
   script:
     - |
       IMAGE="$CI_REGISTRY_IMAGE/kernel-${MAJOR}-${MINOR}"
-      docker build -t "${IMAGE}:${PATCH}-${ARCH}" .
+      docker pull "${IMAGE}:latest-${ARCH}" || true
+      docker build \
+        --cache-from "${IMAGE}:latest-${ARCH}" \
+        -t "${IMAGE}:${PATCH}-${ARCH}" \
+        -t "${IMAGE}:latest-${ARCH}" \
+        .
       docker push "${IMAGE}:${PATCH}-${ARCH}"
+      docker push "${IMAGE}:latest-${ARCH}"
 
 package-amd64:
   extends: .package-arch

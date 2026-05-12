@@ -75,15 +75,8 @@ build:
         .
       docker push "${IMAGE}:${CI_COMMIT_TAG}-${ARCH}"
 
-package-amd64:
-  extends: .package-arch
-  variables:
-    ARCH: amd64
-
 package-arm64:
   extends: .package-arch
-  tags:
-    - saas-linux-large-arm64
   variables:
     ARCH: arm64
 
@@ -92,7 +85,7 @@ manifest:
   image: docker:latest
   services:
     - docker:dind
-  needs: [package-amd64, package-arm64]
+  needs: [package-arm64]
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+-[a-zA-Z0-9_][a-zA-Z0-9_.-]*\.\d+$/
   before_script:
@@ -101,10 +94,8 @@ manifest:
   script:
     - |
       IMAGE="$CI_REGISTRY_IMAGE/kernel-${MAJOR}-${MINOR}"
-      docker manifest create "${IMAGE}:${CI_COMMIT_TAG}" \
-        "${IMAGE}:${CI_COMMIT_TAG}-amd64" \
-        "${IMAGE}:${CI_COMMIT_TAG}-arm64"
-      docker manifest push "${IMAGE}:${CI_COMMIT_TAG}"
+      docker tag "${IMAGE}:${CI_COMMIT_TAG}-arm64" "${IMAGE}:${CI_COMMIT_TAG}"
+      docker push "${IMAGE}:${CI_COMMIT_TAG}"
 
 # ---------------------------------------------------------------------------
 # Proto validation: fires when proto CI fans out on new proto tag.

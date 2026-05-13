@@ -79,7 +79,7 @@ build:
 package-arm64:
   extends: .package-arch
   tags:
-    - saas-linux-large-arm64
+    - br.aarch64
   variables:
     ARCH: arm64
 

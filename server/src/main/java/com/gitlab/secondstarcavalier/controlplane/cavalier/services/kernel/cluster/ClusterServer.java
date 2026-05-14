@@ -262,6 +262,11 @@ public class ClusterServer {
 						grpcPort,
 						e.getMember().getAddress(),
 						totalSize);
+				// Re-publish this node's signing key into the now-merged IMap so all
+				// nodes in the cluster can validate tokens this node issues.
+				if (keyRotator != null) {
+					keyRotator.republishCurrentKey();
+				}
 				clusterPublisher.onMembershipChange();
 			}
 
@@ -523,7 +528,25 @@ public class ClusterServer {
 									ep != null ? ep.getHost() : "null",
 									ep != null ? ep.getPort() : 0, inst.getId());
 						}
-						serviceMesh.onHealthUpdate(instances);
+						// Deduplicate by host:port: when multiple instances share the same endpoint,
+						// keep the best-status one so draining old pods don't shadow healthy new ones.
+						var statusPriority = new java.util.HashMap<com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus, Integer>();
+						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_HEALTHY, 0);
+						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_DEGRADED, 1);
+						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_DRAINING, 2);
+						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_UNHEALTHY, 3);
+						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_STARTING, 4);
+						var deduped = new java.util.LinkedHashMap<String, com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.ServiceInstanceHealth>();
+						for (var inst2 : instances) {
+							var ep2 = inst2.getGrpcEndpoint();
+							if (ep2 == null || ep2.getHost().isEmpty() || ep2.getPort() <= 0) continue;
+							String key2 = inst2.getServiceId() + "/" + ep2.getHost() + ":" + ep2.getPort();
+							var cur = deduped.get(key2);
+							if (cur == null || statusPriority.getOrDefault(inst2.getStatus(), 99) < statusPriority.getOrDefault(cur.getStatus(), 99)) {
+								deduped.put(key2, inst2);
+							}
+						}
+						serviceMesh.onHealthUpdate(new java.util.ArrayList<>(deduped.values()));
 					} catch (Exception e) {
 						logger.warn("ServiceMesh health update failed: {}", e.getMessage());
 					}

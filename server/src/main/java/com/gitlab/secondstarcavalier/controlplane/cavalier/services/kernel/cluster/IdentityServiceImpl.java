@@ -25,6 +25,7 @@ import io.grpc.Status;
 
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -1212,8 +1213,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			return ImmutableCertChain.from(existing);
 		}
 
-		// Generate Ed25519 keypair for the intermediate CA.
-		KeyPairGenerator kpg = KeyPairGenerator.getInstance("Ed25519");
+		// Generate EC P-384 keypair for the intermediate CA.
+		// Ed25519 is avoided because Netty (used by Keycloak/Quarkus) has known
+		// compatibility issues with Ed25519 in TLS certificate chains.
+		KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
+		kpg.initialize(new ECGenParameterSpec("secp384r1"));
 		KeyPair intermediateKeyPair = kpg.generateKeyPair();
 
 		String intermediateId = serviceName + "-intermediate-ca";

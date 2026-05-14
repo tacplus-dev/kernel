@@ -11,6 +11,7 @@ import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.concurrent.Executors;
@@ -211,6 +212,10 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 					.setExp(exp)
 					.setIssuer(serviceName)
 					.addUriSans(spiffeId)
+					// Add DNS SANs so Java gRPC hostname verification passes when kernel
+					// connects to this service via its short hostname (e.g., "opa0").
+					.addDnsNames(serviceName)
+					.addDnsNames(instanceId)
 					.build();
 
 			// Sign with the intermediate CA.
@@ -271,8 +276,11 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			return ImmutableCertChain.from(existing);
 		}
 
-		// Generate Ed25519 keypair for the intermediate CA.
-		KeyPairGenerator kpg = KeyPairGenerator.getInstance("Ed25519");
+		// Generate EC P-384 keypair for the intermediate CA.
+		// Ed25519 is avoided because Netty (used by Keycloak/Quarkus) has known
+		// compatibility issues with Ed25519 in TLS certificate chains.
+		KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
+		kpg.initialize(new ECGenParameterSpec("secp384r1"));
 		KeyPair intermediateKeyPair = kpg.generateKeyPair();
 
 		String intermediateId = serviceName + "-intermediate-ca";

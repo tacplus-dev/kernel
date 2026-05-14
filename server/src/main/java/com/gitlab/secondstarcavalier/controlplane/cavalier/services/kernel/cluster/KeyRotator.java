@@ -39,6 +39,7 @@ public class KeyRotator {
 
     private volatile String activeKid;
     private volatile ImmutableKey activeSigningKey;
+    private volatile JwkOuterClass.Jwk activeJwk;
 
     /**
      * @param rotationIntervalSeconds interval between key rotations
@@ -95,6 +96,21 @@ public class KeyRotator {
 
     public void stop() {
         scheduler.shutdown();
+    }
+
+    /**
+     * Re-publishes the current signing JWK to the verifying_keys boundary.
+     * Called after a Hazelcast cluster topology change so that newly-merged nodes
+     * see this node's signing key and can validate tokens this node has issued.
+     */
+    public void republishCurrentKey() {
+        JwkOuterClass.Jwk jwk = activeJwk;
+        if (jwk == null) {
+            logger.warn("republishCurrentKey: no active JWK to republish");
+            return;
+        }
+        keyPublisher.accept(jwk);
+        logger.info("Republished signing key after cluster topology change: kid={}", activeKid);
     }
 
     public String getActiveKeyId() {
@@ -184,6 +200,7 @@ public class KeyRotator {
                 .setCreated(now)
                 .build();
 
+        activeJwk = jwk;
         keyPublisher.accept(jwk);
         logger.info("Published new signing key: kid={}", kid);
     }

@@ -148,27 +148,15 @@ public class ExternalTokenMintServiceImpl implements ExternalTokenMint.ExternalT
             throw ProtoException.newErrPermissionDenied(null, reason);
         }
 
-        // Determine effective audience: start with the caller's original aud and append
-        // any values OPA requested. OPA may only add audiences, never remove the original.
-        // If OPA returned multiple append_aud values, encode as a JSON array per RFC 7519.
+        // Determine effective audience: {callerAud}:{qualifier} where qualifier is the
+        // first append_aud value returned by OPA, or "default" if OPA returned nothing.
+        // Example: caller aud "anthropic" + OPA "pizza" => "anthropic:pizza"
+        //          caller aud "anthropic" + OPA (none)  => "anthropic:default"
         String callerAud = userToken.getAudience();
         if (callerAud == null) callerAud = "";
         var appendAuds = opaResult.getAppendAudList();
-        String effectiveAud;
-        if (appendAuds.isEmpty()) {
-            effectiveAud = callerAud;
-        } else {
-            // Build an ordered, deduplicated list: original first, then OPA additions.
-            var audList = new java.util.LinkedHashSet<String>();
-            if (!callerAud.isEmpty()) audList.add(callerAud);
-            audList.addAll(appendAuds);
-            if (audList.size() == 1) {
-                effectiveAud = audList.iterator().next();
-            } else {
-                // Encode as JSON array for multi-audience tokens.
-                effectiveAud = new com.google.gson.Gson().toJson(audList);
-            }
-        }
+        String qualifier = appendAuds.isEmpty() ? "default" : appendAuds.get(0);
+        String effectiveAud = callerAud.isEmpty() ? qualifier : callerAud + ":" + qualifier;
 
         // Determine effective token_use. OPA must return TOKEN_USE_EXTERNAL or unset;
         // any other value is rejected to prevent external tokens being replayed internally.

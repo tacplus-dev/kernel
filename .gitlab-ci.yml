@@ -19,6 +19,7 @@ compute-image:
       dotenv: tacplus.env
 
 variables:
+  DOCKER_TLS_CERTDIR: ""
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
 
 .parse-version: &parse-version

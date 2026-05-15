@@ -52,6 +52,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -417,6 +419,7 @@ public class ClusterServer {
 				long maxTokenLifetime = cfg.getMaxTokenLifetimeSeconds() > 0
 					? cfg.getMaxTokenLifetimeSeconds()
 					: 2592000; // 30 days default
+				Path signingKeyPath = Paths.get(cfg.getPersistenceDir(), Helpers.SIGNING_KEY_FILE);
 				this.keyRotator = new KeyRotator(
 						cfg.getKeyRotationIntervalSeconds() > 0
 								? cfg.getKeyRotationIntervalSeconds()
@@ -439,7 +442,8 @@ public class ClusterServer {
 								logger.warn("Failed to read verifying keys: {}", e.getMessage());
 								return List.of();
 							}
-						});
+						},
+						signingKeyPath);
 
 				this.externalJwkResolver = new ExternalJwkResolver(allKeysSupplier);
 			} else {

@@ -69,9 +69,12 @@ build:
   before_script:
     - *parse-version
     - mkdir -p ~/.docker
-    - '[ -n "$DOCKER_AUTH_CONFIG" ] && echo "$DOCKER_AUTH_CONFIG" > ~/.docker/config.json || echo ''{"auths":{}}'' > ~/.docker/config.json'
-    - apk add --no-cache jq
-    - ENCODED=$(printf "%s:%s" "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d "\n") && jq --arg key "$CI_REGISTRY_IMAGE" --arg auth "$ENCODED" '.auths[$key] = {"auth":$auth}' ~/.docker/config.json > /tmp/cfg.json && mv /tmp/cfg.json ~/.docker/config.json
+    # Pre-pull the schematic base image using group read credentials (DOCKER_AUTH_CONFIG).
+    # Then switch to the CI job token for build+push so the push credential is unambiguous.
+    - '[ -n "$DOCKER_AUTH_CONFIG" ] && echo "$DOCKER_AUTH_CONFIG" > ~/.docker/config.json || true'
+    - docker pull "$(sed -n 's/^FROM //p' Dockerfile | head -1)"
+    - echo '{"auths":{}}' > ~/.docker/config.json
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY" 
     - |
       ENCODED=$(echo "$TACPLUS_PROJECT_PATH" | sed 's|/|%2F|g')
       wget -q --header "JOB-TOKEN: $CI_JOB_TOKEN" \
@@ -107,9 +110,7 @@ manifest:
   before_script:
     - *parse-version
     - mkdir -p ~/.docker
-    - '[ -n "$DOCKER_AUTH_CONFIG" ] && echo "$DOCKER_AUTH_CONFIG" > ~/.docker/config.json || echo ''{"auths":{}}'' > ~/.docker/config.json'
-    - apk add --no-cache jq
-    - ENCODED=$(printf "%s:%s" "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d "\n") && jq --arg key "$CI_REGISTRY_IMAGE" --arg auth "$ENCODED" '.auths[$key] = {"auth":$auth}' ~/.docker/config.json > /tmp/cfg.json && mv /tmp/cfg.json ~/.docker/config.json
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY" 
   script:
     - |
       IMAGE="$CI_REGISTRY_IMAGE/kernel-${MAJOR}-${MINOR}"

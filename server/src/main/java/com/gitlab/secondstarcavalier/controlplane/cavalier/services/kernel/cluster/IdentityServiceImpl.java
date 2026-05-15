@@ -303,8 +303,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		newToken.setSubType(SUB_TYPE_USER);
 
-		// Set expanded service_entitlements claim (typed TokenEntitlements).
-		newToken.setServiceEntitlements(expanded);
+		// Set service_entitlements: {"all":true} for admins, per-service grants otherwise.
+		if (opaResult.getAllEntitlements()) {
+			newToken.setCustomField(SERVICE_ENTITLEMENTS, "{\"all\":true}");
+		} else {
+			newToken.setServiceEntitlements(expanded);
+		}
 
 		// Forward custom claims from the request (e.g., IDP claims like email, name).
 		if (request.hasClaims()) {
@@ -586,7 +590,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
 		newToken.setAzp(Kernel.getDescriptor().getPackage());
 		newToken.setSubType(SUB_TYPE_USER);
-		newToken.setServiceEntitlements(expanded);
+
+		// Set service_entitlements: {"all":true} for admins, per-service grants otherwise.
+		if (opaResult.getAllEntitlements()) {
+			newToken.setCustomField(SERVICE_ENTITLEMENTS, "{\"all\":true}");
+		} else {
+			newToken.setServiceEntitlements(expanded);
+		}
 		newToken.setClaimsFromStruct(idpClaims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
 
 		newToken.sign(signingKey);

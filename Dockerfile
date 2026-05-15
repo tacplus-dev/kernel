@@ -2,9 +2,10 @@
 # Distroless Java 21 base with no shell.
 # The launcher binary (copied from the CI context) reads LAUNCH_CMD and execs java.
 
-# Pre-create /app/data with correct ownership for the distroless nonroot user (65532).
+# Pre-create /data (config mount point) and /app/data (PVC data dir) with correct
+# ownership for the distroless nonroot user (65532).
 FROM busybox AS setup
-RUN mkdir -p /app/data
+RUN mkdir -p /data /app/data
 
 FROM gcr.io/distroless/java21-debian12
 
@@ -20,6 +21,7 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.title="Kernel" \
       org.opencontainers.image.description="Core kernel service for Cavalier control plane"
 
+COPY --from=setup --chown=65532:65532 /data /data
 COPY --from=setup --chown=65532:65532 /app/data /app/data
 COPY server/target/kernel.jar /app/kernel.jar
 

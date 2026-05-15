@@ -21,6 +21,7 @@ compute-image:
 variables:
   DOCKER_TLS_CERTDIR: ""
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  TACPLUS_PROJECT_PATH: "secondstarcavalier/schematic/tacplus"
 
 .parse-version: &parse-version
   - |
@@ -71,6 +72,12 @@ build:
     - '[ -n "$DOCKER_AUTH_CONFIG" ] && echo "$DOCKER_AUTH_CONFIG" > ~/.docker/config.json || true'
     - unset DOCKER_AUTH_CONFIG
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY_IMAGE"
+    - |
+      ENCODED=$(echo "$TACPLUS_PROJECT_PATH" | sed 's|/|%2F|g')
+      wget -q --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+        -O "launcher-linux-${ARCH}" \
+        "${CI_API_V4_URL}/projects/${ENCODED}/packages/generic/launcher/latest/launcher-linux-${ARCH}-latest"
+      chmod +x "launcher-linux-${ARCH}"
   script:
     - |
       IMAGE="$CI_REGISTRY_IMAGE/kernel-${MAJOR}-${MINOR}"

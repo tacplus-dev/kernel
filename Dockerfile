@@ -1,7 +1,12 @@
 # Kernel Release Image
-# Layers the kernel jar and kernel binary onto a JRE base.
+# Distroless Java 21 base with no shell.
+# The launcher binary (copied from the CI context) reads LAUNCH_CMD and execs java.
 
-FROM registry.gitlab.com/secondstarcavalier/schematic/containers/jre/schematic-jre-1-3:latest
+# Pre-create /app/data with correct ownership for the distroless nonroot user (65532).
+FROM busybox AS setup
+RUN mkdir -p /app/data
+
+FROM gcr.io/distroless/java21-debian12
 
 ARG BUILD_DATE
 ARG VCS_REF
@@ -15,13 +20,14 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.title="Kernel" \
       org.opencontainers.image.description="Core kernel service for Cavalier control plane"
 
-RUN groupadd -r kernel && useradd -r -g kernel kernel
-
+COPY --from=setup --chown=65532:65532 /app/data /app/data
 COPY server/target/kernel.jar /app/kernel.jar
-COPY kernel /usr/local/bin/kernel
-RUN chmod +x /usr/local/bin/kernel \
-    && mkdir -p /app/data && chown kernel:kernel /app/data
 
-USER kernel
+ARG TARGETARCH
+COPY launcher-linux-${TARGETARCH} /usr/local/bin/kernel
+
+USER nonroot
+
+ENV LAUNCH_CMD="java -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:InitiatingHeapOccupancyPercent=45 -XX:+UseStringDeduplication -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:MinRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/kernel-heapdump.hprof -Djava.net.preferIPv4Stack=true -Dio.netty.recycler.maxCapacityPerThread=0 -jar /app/kernel.jar"
 
 ENTRYPOINT ["kernel"]

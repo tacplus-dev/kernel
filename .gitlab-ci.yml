@@ -82,7 +82,7 @@ build:
 package-arm64:
   extends: .package-arch
   tags:
-    - cavalier-arm64
+    - br.aarch64
   variables:
     ARCH: arm64
 

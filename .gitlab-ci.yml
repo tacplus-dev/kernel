@@ -34,6 +34,7 @@ variables:
 
 build:
   stage: build
+  retry: 2
   image: $TACPLUS_IMAGE
   needs: [compute-image]
   rules:
@@ -57,6 +58,7 @@ build:
 
 .package-arch:
   stage: package
+  retry: 2
   image: docker:latest
   services:
     - docker:dind
@@ -86,6 +88,7 @@ package-arm64:
 
 manifest:
   stage: manifest
+  retry: 2
   image: docker:latest
   services:
     - docker:dind
@@ -125,6 +128,7 @@ compute-validate-image:
 
 proto-validate:
   stage: build
+  retry: 2
   image: $TACPLUS_IMAGE
   needs: [compute-validate-image]
   rules:

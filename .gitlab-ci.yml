@@ -90,6 +90,9 @@ package-arm64:
   extends: .package-arch
   tags:
     - schematic-aarch64
+  needs:
+    - build
+    - compute-image
   variables:
     ARCH: arm64
 

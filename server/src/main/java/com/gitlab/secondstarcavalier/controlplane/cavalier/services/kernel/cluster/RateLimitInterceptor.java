@@ -383,6 +383,10 @@ public class RateLimitInterceptor implements ServerInterceptor {
 				warnedKeys.remove(entry.getKey());
 			}
 		}
+
+		// Also clean warnedKeys that have no corresponding bucket (e.g. added
+		// for a rejected call where the bucket was later evicted or never created).
+		warnedKeys.keySet().removeIf(key -> !buckets.containsKey(key));
 	}
 
 	/**

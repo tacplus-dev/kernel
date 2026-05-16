@@ -32,6 +32,9 @@ public class PersistenceManager implements PersistenceProvider {
 
 	private static final Logger logger = LoggerFactory.getLogger(PersistenceManager.class);
 
+	private static final long DEFAULT_QUORUM_TIMEOUT_MS = 30_000;
+	private static final long DEFAULT_RESTORE_TIMEOUT_MS = 60_000;
+
 	/**
 	 * Internal Hazelcast map name for persistence timestamps.
 	 */
@@ -118,7 +121,7 @@ public class PersistenceManager implements PersistenceProvider {
 		logger.info("Published persistence timestamp: {} for node {}", localTimestamp, nodeId);
 
 		// 2. Wait for quorum (with timeout to avoid catch-22)
-		long quorumTimeoutMs = 30_000; // 30 seconds
+		long quorumTimeoutMs = DEFAULT_QUORUM_TIMEOUT_MS;
 		long deadline = System.currentTimeMillis() + quorumTimeoutMs;
 		logger.info("Waiting for {} nodes to publish timestamps (timeout={}s)...", quorum, quorumTimeoutMs / 1000);
 		while (timestampsMap.size() < quorum) {
@@ -186,7 +189,7 @@ public class PersistenceManager implements PersistenceProvider {
 			readyMap.put(Objects.requireNonNull(READY_KEY), Objects.requireNonNull(nodeId));
 			logger.info("Persistence ready sentinel set");
 		} else {
-			long restoreTimeoutMs = 60_000; // 60 seconds
+			long restoreTimeoutMs = DEFAULT_RESTORE_TIMEOUT_MS;
 			long restoreDeadline = System.currentTimeMillis() + restoreTimeoutMs;
 			logger.info("Waiting for winner to complete restore (timeout={}s)...", restoreTimeoutMs / 1000);
 			while (!readyMap.containsKey(Objects.requireNonNull(READY_KEY))) {

@@ -494,11 +494,7 @@ public class ClusterStatePublisher {
 
 	private void publishConfigDump() {
 		try {
-			String hazelcastXml = hazelcast.getConfig().toString();
-
-			clusterStateMap.putConfigDump(Kernel.AdminConfigDump.newBuilder()
-					.setHazelcastConfigXml(hazelcastXml)
-					.build());
+			clusterStateMap.putConfigDump(Kernel.AdminConfigDump.newBuilder().build());
 
 			logger.info("Published config dump to ClusterState");
 		} catch (Exception e) {

@@ -74,10 +74,9 @@ build:
     - unset DOCKER_AUTH_CONFIG
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
     - |
-      ENCODED=$(echo "$TACPLUS_PROJECT_PATH" | sed 's|/|%2F|g')
-      wget -q --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-        -O "launcher-linux-${ARCH}" \
-        "${CI_API_V4_URL}/projects/${ENCODED}/packages/generic/launcher/latest/launcher-linux-${ARCH}-latest"
+      cid=$(docker create --platform "linux/${ARCH}" "${TACPLUS_IMAGE}")
+      docker cp "${cid}:/usr/local/bin/launcher" "launcher-linux-${ARCH}"
+      docker rm "${cid}"
       chmod +x "launcher-linux-${ARCH}"
   script:
     - |

@@ -71,6 +71,7 @@ build:
     # Pre-pull the schematic base image while DOCKER_AUTH_CONFIG (group read) is active,
     # then switch to the CI job token for push.
     - docker pull "$(awk '/^FROM/{print $2; exit}' Dockerfile)" || true
+    - docker pull "${TACPLUS_IMAGE}"
     - unset DOCKER_AUTH_CONFIG
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
     - |

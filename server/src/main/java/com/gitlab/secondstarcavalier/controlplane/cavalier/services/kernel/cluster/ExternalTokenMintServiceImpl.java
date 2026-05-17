@@ -213,8 +213,9 @@ public class ExternalTokenMintServiceImpl implements ExternalTokenMint.ExternalT
         externalToken.sign(signingKey);
 
         var authType = opaResult.getAuthType();
+        String callerId = (caller != null) ? caller.getRequestId() : "unknown";
         logger.info("external token minted: caller_req={}, sub={}, aud={}, append_aud={}, metadata={}, dst_url={}, auth_type={}",
-                caller.getRequestId(), userToken.getSubject(), effectiveAud, appendAuds, metadata, resolvedUrl, authType);
+                callerId, userToken.getSubject(), effectiveAud, appendAuds, metadata, resolvedUrl, authType);
 
         return Tokenrequest.ExternalTokenMintResponse.newBuilder()
                 .setToken(externalToken.getProto())

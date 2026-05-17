@@ -510,6 +510,7 @@ public class ClusterServer {
 
 			var serviceMesh = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemesh.ServiceMesh(
 					target -> io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(target)
+							.overrideAuthority("cavalier")
 							.sslContext(s2sSslContext)
 							.build());
 

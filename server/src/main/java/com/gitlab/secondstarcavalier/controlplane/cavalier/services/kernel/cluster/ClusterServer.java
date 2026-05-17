@@ -558,14 +558,12 @@ public class ClusterServer {
 				while (!Thread.currentThread().isInterrupted()) {
 					try {
 						var instances = new java.util.ArrayList<>(healthMap.proto().getInstancesList());
-						logger.info("mesh-debug: instances.size={}", instances.size());
-						for (var inst : instances) {
-							var ep = inst.getGrpcEndpoint();
-							logger.info("mesh-debug: svc=[{}], status={}, ep={}:{}, id=[{}]",
-									inst.getServiceId(), inst.getStatus(),
-									ep != null ? ep.getHost() : "null",
-									ep != null ? ep.getPort() : 0, inst.getId());
-						}
+						// Only feed opa service instances to the ServiceMesh — kernel only calls opa
+						// for entitlement evaluation; connecting to other services causes spurious TLS
+						// handshake failures when their SPIFFE certs don't chain to the same CA path.
+						var opaInstances = instances.stream()
+								.filter(inst -> "opa".equals(inst.getServiceId()))
+								.collect(java.util.stream.Collectors.toList());
 						// Deduplicate by host:port: when multiple instances share the same endpoint,
 						// keep the best-status one so draining old pods don't shadow healthy new ones.
 						var statusPriority = new java.util.HashMap<com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus, Integer>();
@@ -575,7 +573,7 @@ public class ClusterServer {
 						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_UNHEALTHY, 3);
 						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_STARTING, 4);
 						var deduped = new java.util.LinkedHashMap<String, com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.ServiceInstanceHealth>();
-						for (var inst2 : instances) {
+						for (var inst2 : opaInstances) {
 							var ep2 = inst2.getGrpcEndpoint();
 							if (ep2 == null || ep2.getHost().isEmpty() || ep2.getPort() <= 0) continue;
 							String key2 = inst2.getServiceId() + "/" + ep2.getHost() + ":" + ep2.getPort();
@@ -897,16 +895,7 @@ public class ClusterServer {
 		public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType,
 				javax.net.ssl.SSLEngine engine) throws java.security.cert.CertificateException {
 			// Validate chain; skip DNS hostname verification (SPIFFE URI SANs).
-			// Log any chain validation failure to diagnose trust store issues.
-			try {
-				delegate.checkServerTrusted(chain, authType);
-			} catch (java.security.cert.CertificateException e) {
-				logger.error("SpiffeAwareTrustManager: chain validation failed (authType={}, chain[0]={}): {}",
-						authType,
-						chain.length > 0 ? chain[0].getSubjectX500Principal().getName() : "empty",
-						e.getMessage());
-				throw e;
-			}
+			delegate.checkServerTrusted(chain, authType);
 		}
 
 		@Override

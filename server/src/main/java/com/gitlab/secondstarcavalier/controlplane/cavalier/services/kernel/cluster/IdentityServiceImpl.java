@@ -985,15 +985,6 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				}
 			}
 
-			// Embed service_entitlements so gateway's C2S entitlement check passes
-			// for services routed as Entitled. For S2S tokens, authorization is already
-			// enforced by the delegate's authorized_services config — the entitlement
-			// claim grants wildcard access to the specific target service.
-			if (!request.getAud().isEmpty()) {
-				newToken.setCustomField(SERVICE_ENTITLEMENTS,
-						String.format("{\"%s\":[\"any\"]}", request.getAud()));
-			}
-
 			logger.info("Minted service token (S2S): sub={}, aud={}, exp={}",
 					subject, request.getAud(), exp);
 		} else {

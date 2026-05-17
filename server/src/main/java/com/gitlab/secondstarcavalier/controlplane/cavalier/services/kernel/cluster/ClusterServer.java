@@ -487,7 +487,7 @@ public class ClusterServer {
 			// Uses the tacplus ServiceManager channel factory for TLS — same code
 			// path as every other service, no hand-written TLS setup needed.
 			var serviceMesh = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemesh.ServiceMesh(
-					com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.ServiceManager.channelFactory(cfg));
+					com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.ServiceManager.channelFactory(cfg.getTrustedCasList()));
 
 			// Feed ServiceHealthState into the mesh so it discovers service endpoints.
 			var healthMap = backendServers.services().getServiceHealthMap();

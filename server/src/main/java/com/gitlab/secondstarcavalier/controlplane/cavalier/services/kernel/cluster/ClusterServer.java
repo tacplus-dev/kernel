@@ -558,14 +558,10 @@ public class ClusterServer {
 				while (!Thread.currentThread().isInterrupted()) {
 					try {
 						var instances = new java.util.ArrayList<>(healthMap.proto().getInstancesList());
-						// Only feed opa service instances to the ServiceMesh — kernel only calls opa
-						// for entitlement evaluation; connecting to other services causes spurious TLS
-						// handshake failures when their SPIFFE certs don't chain to the same CA path.
-						var opaInstances = instances.stream()
-								.filter(inst -> "opa".equals(inst.getServiceId()))
-								.collect(java.util.stream.Collectors.toList());
 						// Deduplicate by host:port: when multiple instances share the same endpoint,
 						// keep the best-status one so draining old pods don't shadow healthy new ones.
+						// ServiceMesh.onHealthUpdate() filters to only registered service IDs (those
+						// claimed by GrpcS2SClients via meshChannel()), so no manual filter is needed here.
 						var statusPriority = new java.util.HashMap<com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus, Integer>();
 						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_HEALTHY, 0);
 						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_DEGRADED, 1);
@@ -573,7 +569,7 @@ public class ClusterServer {
 						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_UNHEALTHY, 3);
 						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_STARTING, 4);
 						var deduped = new java.util.LinkedHashMap<String, com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.ServiceInstanceHealth>();
-						for (var inst2 : opaInstances) {
+						for (var inst2 : instances) {
 							var ep2 = inst2.getGrpcEndpoint();
 							if (ep2 == null || ep2.getHost().isEmpty() || ep2.getPort() <= 0) continue;
 							String key2 = inst2.getServiceId() + "/" + ep2.getHost() + ":" + ep2.getPort();

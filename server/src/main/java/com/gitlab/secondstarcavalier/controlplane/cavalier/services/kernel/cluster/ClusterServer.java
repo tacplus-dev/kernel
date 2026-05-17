@@ -486,8 +486,13 @@ public class ClusterServer {
 			// ServiceMesh for outbound S2S connections (kernel → uncleopa, etc.).
 			// Uses the tacplus ServiceManager channel factory for TLS — same code
 			// path as every other service, no hand-written TLS setup needed.
-			var serviceMesh = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemesh.ServiceMesh(
-					com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.ServiceManager.channelFactory(cfg.getTrustedCasList()));
+			java.util.function.Function<String, io.grpc.ManagedChannel> s2sChannelFactory;
+			try {
+				s2sChannelFactory = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.ServiceManager.channelFactory(cfg.getTrustedCasList());
+			} catch (Exception e) {
+				throw new RuntimeException("Failed to create S2S channel factory", e);
+			}
+			var serviceMesh = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemesh.ServiceMesh(s2sChannelFactory);
 
 			// Feed ServiceHealthState into the mesh so it discovers service endpoints.
 			var healthMap = backendServers.services().getServiceHealthMap();

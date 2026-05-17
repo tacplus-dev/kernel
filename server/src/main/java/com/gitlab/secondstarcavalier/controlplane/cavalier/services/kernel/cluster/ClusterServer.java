@@ -484,35 +484,10 @@ public class ClusterServer {
 				tokenIssuer = "kernel";
 			}
 			// ServiceMesh for outbound S2S connections (kernel → uncleopa, etc.).
-			// Build client TLS context trusting cluster CAs + signing CA.
-			// Uses the same approach as tacplus ServiceManager: load PEM certs
-			// from trusted_cas config and pass to GrpcSslContexts.forClient().
-			SslContext clientSslContext;
-			try {
-				StringBuilder caPem = new StringBuilder();
-				for (X509.X509Cert ca : cfg.getTrustedCasList()) {
-					String certBase64 = ca.getBase64();
-					if (certBase64 != null && !certBase64.isEmpty()) {
-						caPem.append(new String(java.util.Base64.getDecoder().decode(certBase64),
-								java.nio.charset.StandardCharsets.UTF_8));
-					}
-				}
-				SslContextBuilder sslBuilder = GrpcSslContexts.forClient();
-				if (caPem.length() > 0) {
-					sslBuilder.trustManager(new java.io.ByteArrayInputStream(
-							caPem.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-				}
-				clientSslContext = sslBuilder.build();
-			} catch (Exception e) {
-				throw new RuntimeException("Failed to configure client TLS for S2S", e);
-			}
-			final SslContext s2sSslContext = clientSslContext;
-
+			// Uses the tacplus ServiceManager channel factory for TLS — same code
+			// path as every other service, no hand-written TLS setup needed.
 			var serviceMesh = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemesh.ServiceMesh(
-					target -> io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(target)
-							.overrideAuthority("cavalier")
-							.sslContext(s2sSslContext)
-							.build());
+					com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.ServiceManager.channelFactory(cfg));
 
 			// Feed ServiceHealthState into the mesh so it discovers service endpoints.
 			var healthMap = backendServers.services().getServiceHealthMap();

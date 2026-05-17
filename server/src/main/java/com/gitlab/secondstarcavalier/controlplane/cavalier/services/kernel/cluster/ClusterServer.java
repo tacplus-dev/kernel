@@ -38,7 +38,6 @@ import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.netty.shaded.io.netty.handler.ssl.ClientAuth;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContextBuilder;
-import io.grpc.netty.shaded.io.netty.handler.ssl.SslProvider;
 import io.grpc.protobuf.services.HealthStatusManager;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.Auth;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ExternalTokenMint;
@@ -486,62 +485,24 @@ public class ClusterServer {
 			}
 			// ServiceMesh for outbound S2S connections (kernel → uncleopa, etc.).
 			// Build client TLS context trusting cluster CAs + signing CA.
-			// Service certs are signed by per-service CAs issued by the signing CA,
-			// so we must trust the signing CA chain to verify service TLS certs.
-			var trustCerts = new java.util.ArrayList<java.security.cert.X509Certificate>();
-			for (ImmutableCert ic : grpcTlsChain.intermediates()) {
-				trustCerts.add(ic.getX509Certificate());
-			}
-			for (X509.X509Cert rootCa : cfg.getClusterCaList()) {
-				trustCerts.add(ImmutableCert.from(rootCa).getX509Certificate());
-			}
-			// Trust the signing CA — services get their TLS certs via X509Mint
-			// which chains through per-service CAs signed by this CA.
-			trustCerts.add(signingCa.leaf().getX509Certificate());
-			for (ImmutableCert ic : signingCa.intermediates()) {
-				trustCerts.add(ic.getX509Certificate());
-			}
+			// Uses the same approach as tacplus ServiceManager: load PEM certs
+			// from trusted_cas config and pass to GrpcSslContexts.forClient().
 			SslContext clientSslContext;
 			try {
-				// Build a standard trust manager from cluster CAs, then wrap it in
-				// SpiffeAwareTrustManager so that chain validation succeeds but DNS hostname
-				// verification is skipped. Service certs carry SPIFFE URI SANs (e.g.
-				// spiffe://local/dev/opa) with no DNS SAN matching the pod hostname (e.g.
-				// opa0). This is the Java equivalent of gateway's KernelCaVerifier in Rust.
-				java.security.KeyStore s2sTrustStore =
-						java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType());
-				s2sTrustStore.load(null, null);
-				for (int i = 0; i < trustCerts.size(); i++) {
-					s2sTrustStore.setCertificateEntry("ca-" + i, trustCerts.get(i));
+				StringBuilder caPem = new StringBuilder();
+				for (X509.X509Cert ca : cfg.getTrustedCasList()) {
+					String certBase64 = ca.getBase64();
+					if (certBase64 != null && !certBase64.isEmpty()) {
+						caPem.append(new String(java.util.Base64.getDecoder().decode(certBase64),
+								java.nio.charset.StandardCharsets.UTF_8));
+					}
 				}
-				javax.net.ssl.TrustManagerFactory innerTmf =
-						javax.net.ssl.TrustManagerFactory.getInstance(
-								javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm());
-				innerTmf.init(s2sTrustStore);
-				javax.net.ssl.X509TrustManager innerTm =
-						java.util.Arrays.stream(innerTmf.getTrustManagers())
-								.filter(tm -> tm instanceof javax.net.ssl.X509TrustManager)
-								.map(tm -> (javax.net.ssl.X509TrustManager) tm)
-								.findFirst()
-								.orElseThrow(() -> new RuntimeException("No X509TrustManager in factory"));
-				final SpiffeAwareTrustManager spiffeTm = new SpiffeAwareTrustManager(innerTm);
-				// Wrap in a TrustManagerFactory so Netty's SslContextBuilder can consume it.
-				final javax.net.ssl.TrustManagerFactory spiffeTmf =
-						new javax.net.ssl.TrustManagerFactory(
-								new javax.net.ssl.TrustManagerFactorySpi() {
-									@Override protected void engineInit(java.security.KeyStore ks) {}
-									@Override protected void engineInit(
-											javax.net.ssl.ManagerFactoryParameters spec) {}
-									@Override protected javax.net.ssl.TrustManager[] engineGetTrustManagers() {
-										return new javax.net.ssl.TrustManager[]{spiffeTm};
-									}
-								},
-								java.security.Security.getProvider("SunJSSE"),
-								"PKIX") {};
-				clientSslContext = GrpcSslContexts.configure(
-						SslContextBuilder.forClient().trustManager(spiffeTmf),
-						SslProvider.JDK)
-						.build();
+				SslContextBuilder sslBuilder = GrpcSslContexts.forClient();
+				if (caPem.length() > 0) {
+					sslBuilder.trustManager(new java.io.ByteArrayInputStream(
+							caPem.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+				}
+				clientSslContext = sslBuilder.build();
 			} catch (Exception e) {
 				throw new RuntimeException("Failed to configure client TLS for S2S", e);
 			}
@@ -852,69 +813,4 @@ public class ClusterServer {
 		return token.getBase64();
 	}
 
-	/**
-	 * A TLS trust manager that validates the certificate chain against the kernel CA bundle
-	 * but skips DNS hostname verification. Kernel-issued service certs carry SPIFFE URI SANs
-	 * (e.g. spiffe://local/dev/opa) with no DNS SAN matching the pod hostname (e.g. opa0),
-	 * so standard JDK HTTPS endpoint identification always fails.
-	 *
-	 * <p>Extending X509ExtendedTrustManager causes the JDK TLS engine to delegate all
-	 * server-certificate validation to this class (including the hostname check), so
-	 * returning normally from checkServerTrusted without throwing is sufficient to accept
-	 * the cert once chain validation has passed.
-	 *
-	 * <p>Security note: chain validation is fully performed by the delegate; only DNS
-	 * hostname matching is skipped. This is safe because pod-to-pod routing within the
-	 * cluster already guarantees we connect to the correct service.
-	 */
-	private static final class SpiffeAwareTrustManager extends javax.net.ssl.X509ExtendedTrustManager {
-		private final javax.net.ssl.X509TrustManager delegate;
-
-		SpiffeAwareTrustManager(javax.net.ssl.X509TrustManager delegate) {
-			this.delegate = delegate;
-		}
-
-		@Override
-		public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType)
-				throws java.security.cert.CertificateException {
-			delegate.checkServerTrusted(chain, authType);
-		}
-
-		@Override
-		public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType,
-				java.net.Socket socket) throws java.security.cert.CertificateException {
-			// Validate chain; skip DNS hostname verification (SPIFFE URI SANs).
-			delegate.checkServerTrusted(chain, authType);
-		}
-
-		@Override
-		public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType,
-				javax.net.ssl.SSLEngine engine) throws java.security.cert.CertificateException {
-			// Validate chain; skip DNS hostname verification (SPIFFE URI SANs).
-			delegate.checkServerTrusted(chain, authType);
-		}
-
-		@Override
-		public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType)
-				throws java.security.cert.CertificateException {
-			delegate.checkClientTrusted(chain, authType);
-		}
-
-		@Override
-		public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType,
-				java.net.Socket socket) throws java.security.cert.CertificateException {
-			delegate.checkClientTrusted(chain, authType);
-		}
-
-		@Override
-		public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType,
-				javax.net.ssl.SSLEngine engine) throws java.security.cert.CertificateException {
-			delegate.checkClientTrusted(chain, authType);
-		}
-
-		@Override
-		public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-			return delegate.getAcceptedIssuers();
-		}
-	}
 }

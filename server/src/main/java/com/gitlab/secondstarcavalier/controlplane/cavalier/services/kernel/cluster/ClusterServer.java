@@ -897,7 +897,16 @@ public class ClusterServer {
 		public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType,
 				javax.net.ssl.SSLEngine engine) throws java.security.cert.CertificateException {
 			// Validate chain; skip DNS hostname verification (SPIFFE URI SANs).
-			delegate.checkServerTrusted(chain, authType);
+			// Log any chain validation failure to diagnose trust store issues.
+			try {
+				delegate.checkServerTrusted(chain, authType);
+			} catch (java.security.cert.CertificateException e) {
+				logger.error("SpiffeAwareTrustManager: chain validation failed (authType={}, chain[0]={}): {}",
+						authType,
+						chain.length > 0 ? chain[0].getSubjectX500Principal().getName() : "empty",
+						e.getMessage());
+				throw e;
+			}
 		}
 
 		@Override

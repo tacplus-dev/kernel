@@ -247,11 +247,6 @@ public class ClusterServer {
 		// Install Config.configs into ConfigHolder boundary maps
 		installConfigHolder(cfg);
 
-		// Seed GatewayTls configCerts from the node's TLS chain so the gateway
-		// can start serving HTTPS immediately. The domain comes from the FQDN
-		// configured in the cluster config.
-		seedGatewayTlsCerts(cfg.getTls(), cfg.getFqdn());
-
 		// ClusterState SetLogLevel handler
 		this.clusterSetLogLevelHandler = new ClusterSetLogLevelHandler();
 
@@ -691,24 +686,6 @@ public class ClusterServer {
 		}
 		if (installed > 0) {
 			logger.info("Installed {} trusted CA(s) into TrustedCaState", installed);
-		}
-	}
-
-	private void seedGatewayTlsCerts(X509.X509CertChain tlsChain, String fqdn) {
-		if (tlsChain == null || tlsChain.getChainCount() == 0) {
-			logger.info("No TLS chain in bootstrap — skipping GatewayTls cert seeding");
-			return;
-		}
-		String domain = (fqdn != null && !fqdn.isEmpty()) ? fqdn : "localhost";
-		try {
-			var cert = Kernel.GatewayTlsCert.newBuilder()
-					.setDomain(domain)
-					.setCertChain(tlsChain)
-					.build();
-			backendServers.services().getGatewayTlsMap().putConfigCerts(domain, cert);
-			logger.info("Seeded GatewayTls configCerts for domain={}", domain);
-		} catch (Exception e) {
-			logger.warn("Failed to seed GatewayTls configCerts: {}", e.getMessage());
 		}
 	}
 

@@ -531,11 +531,10 @@ public class ClusterServer {
 				}
 			}, "servicemesh-health-poller");
 			meshPoller.setDaemon(true);
-			meshPoller.start();
 
-			// Create GrpcS2SClients with a kernel-local token provider that self-mints
-			// service tokens using the KeyRotator. This avoids the bootstrap deadlock
-			// (IdentityManager calls MintServiceToken, but kernel IS the token issuer).
+			// Create GrpcS2SClients BEFORE starting the health poller so that
+			// meshChannel("opa") is registered before health updates arrive.
+			// Otherwise the ServiceMesh discards OPA health updates (no registered service).
 			var grpcClients = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.GrpcS2SClients(
 					serviceMesh,
 					aud -> () -> {
@@ -545,6 +544,8 @@ public class ClusterServer {
 							throw new RuntimeException("failed to self-mint token for " + aud, e);
 						}
 					});
+
+			meshPoller.start();
 
 			var identityService = new IdentityServiceImpl(
 					cfg.getDefaultTokenExpirySeconds(),

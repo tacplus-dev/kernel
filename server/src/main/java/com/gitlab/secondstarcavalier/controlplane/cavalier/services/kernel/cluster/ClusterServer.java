@@ -484,33 +484,15 @@ public class ClusterServer {
 				tokenIssuer = "kernel";
 			}
 			// ServiceMesh for outbound S2S connections (kernel → uncleopa, etc.).
-			// Build TLS context identical to what ServiceManager.create() uses —
-			// GrpcSslContexts.forClient() (ALPN + OpenSSL) + overrideAuthority
-			// to skip hostname verification for SPIFFE URI SANs.
-			io.grpc.netty.shaded.io.netty.handler.ssl.SslContext s2sSslContext;
+			// Uses tacplus ServiceManager.channelFactory() — single code path for
+			// TLS context + channel creation, shared with ServiceManager.create().
+			java.util.function.Function<String, io.grpc.ManagedChannel> s2sChannelFactory;
 			try {
-				var sslBuilder = io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts.forClient();
-				var caPem = new StringBuilder();
-				for (var ca : cfg.getTrustedCasList()) {
-					String b64 = ca.getBase64();
-					if (b64 != null && !b64.isEmpty()) {
-						caPem.append(new String(java.util.Base64.getDecoder().decode(b64),
-								java.nio.charset.StandardCharsets.UTF_8));
-					}
-				}
-				if (caPem.length() > 0) {
-					sslBuilder.trustManager(new java.io.ByteArrayInputStream(
-							caPem.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-				}
-				s2sSslContext = sslBuilder.build();
+				s2sChannelFactory = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.ServiceManager.channelFactory(cfg.getTrustedCasList());
 			} catch (Exception e) {
-				throw new RuntimeException("Failed to build S2S TLS context", e);
+				throw new RuntimeException("Failed to create S2S channel factory", e);
 			}
-			var serviceMesh = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemesh.ServiceMesh(
-					target -> io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder.forTarget(target)
-							.overrideAuthority("cavalier")
-							.sslContext(s2sSslContext)
-							.build());
+			var serviceMesh = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemesh.ServiceMesh(s2sChannelFactory);
 
 			// Feed ServiceHealthState into the mesh so it discovers service endpoints.
 			var healthMap = backendServers.services().getServiceHealthMap();

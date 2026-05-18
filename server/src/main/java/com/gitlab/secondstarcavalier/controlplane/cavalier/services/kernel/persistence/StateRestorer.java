@@ -10,10 +10,14 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacpl
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.IMap;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageLite;
+import com.google.protobuf.util.JsonFormat;
 import java.io.BufferedInputStream;
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -72,8 +76,8 @@ public class StateRestorer {
 			}
 			// Also check actual entries for the latest timestamp
 			try {
-				List<RedoLogEntry> entries = readRedoLog(redo);
-				for (RedoLogEntry entry : entries) {
+				List<PersistenceEntry> entries = readRedoLogPersistenceEntry(redo);
+				for (PersistenceEntry entry : entries) {
 					if (entry.getTimestampMs() > maxTs) {
 						maxTs = entry.getTimestampMs();
 					}
@@ -334,30 +338,67 @@ public class StateRestorer {
 		}
 	}
 
-	/** Reads all entries from a redo log file as PersistenceEntry messages. */
+	/**
+	 * Reads all entries from a redo log file as PersistenceEntry messages.
+	 * Auto-detects the format (binary protobuf vs NDJSON) by peeking at the
+	 * first byte: '{' indicates NDJSON, anything else is length-prefixed binary.
+	 */
 	static List<PersistenceEntry> readRedoLogPersistenceEntry(Path file) throws IOException {
+		try (BufferedInputStream bis = new BufferedInputStream(Files.newInputStream(file))) {
+			bis.mark(1);
+			int firstByte = bis.read();
+			if (firstByte == -1) {
+				return List.of();
+			}
+			bis.reset();
+
+			if (firstByte == '{') {
+				return readNdjsonEntries(bis, file);
+			} else {
+				return readBinaryEntries(bis);
+			}
+		}
+	}
+
+	/** Reads length-prefixed binary entries from a redo log stream. */
+	private static List<PersistenceEntry> readBinaryEntries(InputStream is) throws IOException {
 		List<PersistenceEntry> entries = new ArrayList<>();
-		try (InputStream is = new BufferedInputStream(Files.newInputStream(file))) {
-			byte[] recordData;
-			while ((recordData = readRecordOrNull(is)) != null) {
-				try {
-					entries.add(PersistenceEntry.parseFrom(recordData));
-				} catch (InvalidProtocolBufferException e) {
-					// Try legacy format
-					entries.add(convertLegacyEntry(RedoLogEntry.parseFrom(recordData)));
-				}
+		byte[] recordData;
+		while ((recordData = readRecordOrNull(is)) != null) {
+			try {
+				entries.add(PersistenceEntry.parseFrom(recordData));
+			} catch (InvalidProtocolBufferException e) {
+				// Try legacy format
+				entries.add(convertLegacyEntry(RedoLogEntry.parseFrom(recordData)));
 			}
 		}
 		return entries;
 	}
 
-	/** Reads all entries from a redo log file as legacy RedoLogEntry messages. */
-	static List<RedoLogEntry> readRedoLog(Path file) throws IOException {
-		List<RedoLogEntry> entries = new ArrayList<>();
-		try (InputStream is = new BufferedInputStream(Files.newInputStream(file))) {
-			byte[] recordData;
-			while ((recordData = readRecordOrNull(is)) != null) {
-				entries.add(RedoLogEntry.parseFrom(recordData));
+	/** Reads NDJSON entries from a redo log stream. */
+	private static List<PersistenceEntry> readNdjsonEntries(InputStream is, Path file) throws IOException {
+		List<PersistenceEntry> entries = new ArrayList<>();
+		JsonFormat.Parser parser = JsonFormat.parser().ignoringUnknownFields();
+		try (BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+			String line;
+			while ((line = reader.readLine()) != null) {
+				line = line.trim();
+				if (line.isEmpty()) continue;
+				try {
+					PersistenceEntry.Builder builder = PersistenceEntry.newBuilder();
+					parser.merge(line, builder);
+					entries.add(builder.build());
+				} catch (InvalidProtocolBufferException e) {
+					// Try legacy RedoLogEntry format
+					try {
+						RedoLogEntry.Builder legacyBuilder = RedoLogEntry.newBuilder();
+						parser.merge(line, legacyBuilder);
+						entries.add(convertLegacyEntry(legacyBuilder.build()));
+					} catch (InvalidProtocolBufferException e2) {
+						logger.warn("Skipping unparseable NDJSON line in {}: {}",
+								file.getFileName(), line.substring(0, Math.min(100, line.length())));
+					}
+				}
 			}
 		}
 		return entries;

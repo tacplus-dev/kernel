@@ -41,10 +41,15 @@ public class HazelcastManager implements Manager {
 
 	@Override
 	public <K, V> IMap<K, V> getConvergentMap(String name) {
+		return getConvergentMap(name, false);
+	}
+
+	@Override
+	public <K, V> IMap<K, V> getConvergentMap(String name, boolean persistent) {
 		String mapName = Objects.requireNonNull(name, "name");
 		com.hazelcast.map.IMap<K, V> hzMap = hazelcast.getMap(mapName);
 		IMap<K, V> base = new HazelcastMap<>(hzMap);
-		if (persistence != null) {
+		if (persistent && persistence != null) {
 			persistence.registerMap(mapName, hzMap, base, ConsistencyType.CONSISTENCY_CONVERGENT);
 		}
 		return base;
@@ -52,7 +57,12 @@ public class HazelcastManager implements Manager {
 
 	@Override
 	public <K, V> IMap<K, V> getAtomicMap(String name) {
-		return getConvergentMap(name);
+		return getAtomicMap(name, false);
+	}
+
+	@Override
+	public <K, V> IMap<K, V> getAtomicMap(String name, boolean persistent) {
+		return getConvergentMap(name, persistent);
 	}
 
 	@Override

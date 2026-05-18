@@ -60,12 +60,12 @@ public class BackendMapGenerator {
         for (SharedBoundary b : info.getSingletons()) {
             String mapGetter = b.isAtomic() ? "getAtomicMap" : b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
             ctor.append("        this.").append(b.getFieldCamel()).append("Map = manager.").append(mapGetter)
-              .append("(CLASS_NAME + \":").append(b.getMapName()).append("\");\n");
+              .append("(CLASS_NAME + \":").append(b.getMapName()).append("\", ").append(b.isPersistent()).append(");\n");
         }
         for (SharedBoundary b : info.getCollections()) {
             String mapGetter = b.isAtomic() ? "getAtomicMap" : b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
             ctor.append("        this.").append(b.getFieldCamel()).append("Map = manager.").append(mapGetter)
-              .append("(CLASS_NAME + \":").append(b.getMapName()).append("\");\n");
+              .append("(CLASS_NAME + \":").append(b.getMapName()).append("\", ").append(b.isPersistent()).append(");\n");
         }
         for (SharedBoundary b : info.getQueues()) {
             ctor.append("        this.").append(b.getFieldCamel()).append("Queue = manager.getQueue(CLASS_NAME + \":").append(b.getMapName()).append("\");\n");

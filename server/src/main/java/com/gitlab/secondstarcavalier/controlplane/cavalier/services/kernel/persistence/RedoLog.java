@@ -3,11 +3,14 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.pers
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.hazelcast.Hazelcast.RedoLogEntry;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.hazelcast.Hazelcast.PersistenceEntry;
+import com.google.protobuf.Message;
 import com.google.protobuf.MessageLite;
+import com.google.protobuf.util.JsonFormat;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -23,7 +26,8 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Append-only redo log writer. Each mutation to a persistent IMap is recorded
- * as a length-prefixed protobuf {@link RedoLogEntry}.
+ * in the configured {@link PersistenceFormat}: length-prefixed binary protobuf
+ * ({@code PROTO_WIRE}) or newline-delimited JSON ({@code NDJSON}).
  *
  * <p>
  * Writes are buffered and batch-flushed on a configurable interval (default
@@ -36,6 +40,8 @@ public class RedoLog {
 	private final Path dataDir;
 	private final String nodeId;
 	private final long flushIntervalMs;
+	private final PersistenceFormat format;
+	private final JsonFormat.Printer jsonPrinter;
 	private final ReentrantLock lock = new ReentrantLock();
 
 	private OutputStream out;
@@ -45,15 +51,23 @@ public class RedoLog {
 	private final ScheduledExecutorService flusher;
 	private ScheduledFuture<?> flushTask;
 
-	public RedoLog(Path dataDir, String nodeId, long flushIntervalMs) {
+	public RedoLog(Path dataDir, String nodeId, long flushIntervalMs, PersistenceFormat format) {
 		this.dataDir = dataDir;
 		this.nodeId = nodeId;
 		this.flushIntervalMs = flushIntervalMs;
+		this.format = format;
+		this.jsonPrinter = (format == PersistenceFormat.NDJSON)
+				? JsonFormat.printer().omittingInsignificantWhitespace()
+				: null;
 		this.flusher = Executors.newSingleThreadScheduledExecutor(r -> {
 			Thread t = new Thread(r, "redo-log-flusher");
 			t.setDaemon(true);
 			return t;
 		});
+	}
+
+	public RedoLog(Path dataDir, String nodeId, long flushIntervalMs) {
+		this(dataDir, nodeId, flushIntervalMs, PersistenceFormat.PROTO_WIRE);
 	}
 
 	public RedoLog(Path dataDir, String nodeId) {
@@ -101,11 +115,17 @@ public class RedoLog {
 			if (out == null) {
 				throw new IllegalStateException("RedoLog not open");
 			}
-			byte[] data = entry.toByteArray();
-			byte[] lenBuf = new byte[4];
-			ByteBuffer.wrap(lenBuf).putInt(data.length);
-			out.write(lenBuf);
-			out.write(data);
+			if (format == PersistenceFormat.NDJSON) {
+				String json = jsonPrinter.print((Message) entry);
+				out.write(json.getBytes(StandardCharsets.UTF_8));
+				out.write('\n');
+			} else {
+				byte[] data = entry.toByteArray();
+				byte[] lenBuf = new byte[4];
+				ByteBuffer.wrap(lenBuf).putInt(data.length);
+				out.write(lenBuf);
+				out.write(data);
+			}
 		} catch (IOException e) {
 			logger.error("Failed to append to redo log", e);
 			throw new RuntimeException("Redo log write failed", e);

@@ -82,7 +82,7 @@ public class PersistenceManager implements PersistenceProvider {
 		this.retentionDays = config.retentionDays();
 
 		this.registry = new MapRegistry();
-		this.redoLog = new RedoLog(this.dataDir, this.nodeId, redoFlushIntervalMs);
+		this.redoLog = new RedoLog(this.dataDir, this.nodeId, redoFlushIntervalMs, config.persistenceFormat());
 		this.dumper = new FullDumper(this.dataDir, this.nodeId, registry, redoLog, retentionDays);
 		this.restorer = new StateRestorer(this.dataDir, this.nodeId, registry);
 
@@ -230,23 +230,6 @@ public class PersistenceManager implements PersistenceProvider {
 	 *                     restore)
 	 * @param consistency  the consistency model
 	 */
-	// Maps that should NOT be persisted — transient data with TTL eviction.
-	// These are high-frequency health/subscription updates that bloat the redo log.
-	// TODO: Replace with proper (spec.persistence) annotation filtering from proto.
-	private static final java.util.Set<String> TRANSIENT_MAPS = java.util.Set.of(
-			"services.kernel.ServiceHealth.Instances",
-			"services.kernel.Cluster.MapStats",
-			"services.kernel.WorkloadState.Localities",
-			"services.kernel.WorkloadState.Revocations"
-	);
-
-	private static boolean isTransient(String mapName) {
-		for (String t : TRANSIENT_MAPS) {
-			if (mapName.contains(t)) return true;
-		}
-		return false;
-	}
-
 	@Override
 	public <K, V> void registerMap(
 			String name, com.hazelcast.map.IMap<K, V> hazelcastMap, IMap<K, V> imap, ConsistencyType consistency) {
@@ -254,10 +237,6 @@ public class PersistenceManager implements PersistenceProvider {
 			return;
 		}
 		registry.register(name, imap, consistency);
-		if (isTransient(name)) {
-			logger.info("Skipping persistence listener for transient map: {}", name);
-			return;
-		}
 		var listener = new PersistenceMapListener(redoLog, name, consistency, registry);
 		hazelcastMap.addEntryListener(listener, true);
 		logger.info("Registered persistence listener for map: {} ({})", name, consistency);
@@ -381,7 +360,7 @@ public class PersistenceManager implements PersistenceProvider {
 			long dumpJitterSeconds,
 			long redoFlushIntervalMs,
 			int retentionDays,
-			String persistenceFormat) {
+			PersistenceFormat persistenceFormat) {
 
 		/**
 		 * Creates a config from environment variables with defaults.
@@ -393,7 +372,7 @@ public class PersistenceManager implements PersistenceProvider {
 					getLongEnv("BACKENDDB_DUMP_JITTER_SECONDS", 3600),
 					getLongEnv("BACKENDDB_REDO_FLUSH_INTERVAL_MS", 100),
 					getIntEnv("BACKENDDB_RETENTION_DAYS", 7),
-					getStringEnv("BACKENDDB_PERSISTENCE_FORMAT", "PROTO_WIRE"));
+					PersistenceFormat.fromString(getStringEnv("BACKENDDB_PERSISTENCE_FORMAT", "PROTO_WIRE")));
 		}
 
 		/**
@@ -401,7 +380,7 @@ public class PersistenceManager implements PersistenceProvider {
 		 * wanted).
 		 */
 		public static PersistenceConfig disabled() {
-			return new PersistenceConfig(false, 24, 3600, 100, 7, "PROTO_WIRE");
+			return new PersistenceConfig(false, 24, 3600, 100, 7, PersistenceFormat.PROTO_WIRE);
 		}
 
 		private static String getStringEnv(String name, String defaultVal) {

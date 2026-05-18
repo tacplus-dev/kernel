@@ -21,6 +21,7 @@ public class SharedBoundary {
     private String epochExpirationGetter;  // e.g., "getExpiresAt" — null when no epoch field
     private boolean replicated;
     private boolean instanceKeyed;  // server builds key from auth context (instance_id claim)
+    private boolean persistent;     // (spec.persistence) = true — redo log persisted
 
     public String getFieldName() { return fieldName; }
     public void setFieldName(String fieldName) { this.fieldName = fieldName; }
@@ -81,4 +82,7 @@ public class SharedBoundary {
 
     public boolean isInstanceKeyed() { return instanceKeyed; }
     public void setInstanceKeyed(boolean instanceKeyed) { this.instanceKeyed = instanceKeyed; }
+
+    public boolean isPersistent() { return persistent; }
+    public void setPersistent(boolean persistent) { this.persistent = persistent; }
 }

@@ -230,6 +230,23 @@ public class PersistenceManager implements PersistenceProvider {
 	 *                     restore)
 	 * @param consistency  the consistency model
 	 */
+	// Maps that should NOT be persisted — transient data with TTL eviction.
+	// These are high-frequency health/subscription updates that bloat the redo log.
+	// TODO: Replace with proper (spec.persistence) annotation filtering from proto.
+	private static final java.util.Set<String> TRANSIENT_MAPS = java.util.Set.of(
+			"services.kernel.ServiceHealth.Instances",
+			"services.kernel.Cluster.MapStats",
+			"services.kernel.WorkloadState.Localities",
+			"services.kernel.WorkloadState.Revocations"
+	);
+
+	private static boolean isTransient(String mapName) {
+		for (String t : TRANSIENT_MAPS) {
+			if (mapName.contains(t)) return true;
+		}
+		return false;
+	}
+
 	@Override
 	public <K, V> void registerMap(
 			String name, com.hazelcast.map.IMap<K, V> hazelcastMap, IMap<K, V> imap, ConsistencyType consistency) {
@@ -237,9 +254,13 @@ public class PersistenceManager implements PersistenceProvider {
 			return;
 		}
 		registry.register(name, imap, consistency);
+		if (isTransient(name)) {
+			logger.info("Skipping persistence listener for transient map: {}", name);
+			return;
+		}
 		var listener = new PersistenceMapListener(redoLog, name, consistency, registry);
 		hazelcastMap.addEntryListener(listener, true);
-		logger.debug("Registered persistence listener for map: {} ({})", name, consistency);
+		logger.info("Registered persistence listener for map: {} ({})", name, consistency);
 	}
 
 	/**

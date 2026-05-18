@@ -153,7 +153,13 @@ public class ClusterServer {
 		this.healthManager = new HealthStatusManager();
 		healthManager.setStatus("", ServingStatus.NOT_SERVING);
 
-		// 3. Initialize persistence
+		// 3. Create backend servers FIRST so maps are registered in MapRegistry
+		// before persistence restore runs. StateRestorer needs the maps to exist
+		// so it can apply redo log entries to them.
+		HazelcastManager manager = new HazelcastManager(hazelcast, persistence);
+		this.backendServers = new BackendServers(manager);
+
+		// 4. Initialize persistence (restore from redo log)
 		int nodeCount = cfg.getNodeCount() > 0 ? cfg.getNodeCount() : members.size();
 		if (persistence.isEnabled()) {
 			int initialQuorumForPersistence = nodeCount / 2 + 1;
@@ -167,10 +173,6 @@ public class ClusterServer {
 				persistence.disable();
 			}
 		}
-
-		// 4. Create backend servers
-		HazelcastManager manager = new HazelcastManager(hazelcast, persistence);
-		this.backendServers = new BackendServers(manager);
 
 		// All boundaries are convergent — quorum is always available
 		backendServers.services().setQuorumAvailable(true);

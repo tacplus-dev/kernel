@@ -101,6 +101,7 @@ public class BoundaryAnalyzer {
 			AnnotationValue topicAnn = field.getAnnotations().get("topic");
 			AnnotationValue leaderAnn = field.getAnnotations().get("leader");
 			AnnotationValue ikAnn = field.getAnnotations().get("instance_keyed");
+			AnnotationValue persistAnn = field.getAnnotations().get("persistence");
 
 			boolean hasQueue = queueAnn != null && queueAnn.getBoolValue();
 			boolean hasPQ = pqAnn != null && pqAnn.getStringValue() != null && !pqAnn.getStringValue().isEmpty();
@@ -151,6 +152,9 @@ public class BoundaryAnalyzer {
 			}
 			if (ikAnn != null && ikAnn.getBoolValue()) {
 				b.setInstanceKeyed(true);
+			}
+			if (persistAnn != null && persistAnn.getBoolValue()) {
+				b.setPersistent(true);
 			}
 
 			if (hasQueue) {

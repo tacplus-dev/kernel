@@ -1,3 +1,4 @@
+tacplus-version: "1.2.x"
 language: java
 pkg: com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel
 output-dir: tacplus/target/generated-sources

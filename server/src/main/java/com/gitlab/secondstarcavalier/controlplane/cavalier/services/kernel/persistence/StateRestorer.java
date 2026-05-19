@@ -159,7 +159,7 @@ public class StateRestorer {
 		for (Path redo : redos) {
 			long fileTs = RedoLog.extractTimestamp(redo, "redo-" + nodeId + "-", ".log");
 			if (fileTs >= dumpTimestamp) {
-				List<PersistenceEntry> entries = readRedoLogPersistenceEntry(redo);
+				List<PersistenceEntry> entries = new ArrayList<>(readRedoLogPersistenceEntry(redo));
 				entries.sort(Comparator.comparingLong(PersistenceEntry::getTimestampMs));
 				for (PersistenceEntry pe : entries) {
 					if (pe.getTimestampMs() > dumpTimestamp) {
@@ -217,7 +217,7 @@ public class StateRestorer {
 		for (Path redo : redos) {
 			long fileTs = RedoLog.extractTimestamp(redo, "redo-" + nodeId + "-", ".log");
 			if (fileTs >= dumpTimestamp) {
-				List<PersistenceEntry> entries = readRedoLogPersistenceEntry(redo);
+				List<PersistenceEntry> entries = new ArrayList<>(readRedoLogPersistenceEntry(redo));
 				entries.sort(Comparator.comparingLong(PersistenceEntry::getTimestampMs));
 				for (PersistenceEntry pe : entries) {
 					if (pe.getTimestampMs() > dumpTimestamp) {

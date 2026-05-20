@@ -23,7 +23,8 @@ import java.util.concurrent.TimeUnit;
  *
  * Nonce registry is in-memory. Kernel restarts clear it (CLI retries).
  */
-public class CliTokenBrokerServiceImpl {
+public class CliTokenBrokerServiceImpl implements
+		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker.CliTokenBrokerHandler {
 
 	private static final Logger logger = LoggerFactory.getLogger(CliTokenBrokerServiceImpl.class);
 	private static final long NONCE_TTL_SECONDS = 300; // 5 minutes

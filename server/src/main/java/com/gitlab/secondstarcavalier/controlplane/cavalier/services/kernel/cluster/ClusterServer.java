@@ -637,23 +637,9 @@ public class ClusterServer {
 			serverBuilder.addService(mintWrapper);
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
 
-			// Register CLI token broker as a raw gRPC service (bidi stream).
-			// The tacplus-generated CliTokenBroker wrapper will be used once available;
-			// for now register the raw bidi stream handler via gRPC service definition.
-			serverBuilder.addService(
-					io.grpc.ServerServiceDefinition.builder("kernel.CliTokenBroker")
-							.addMethod(
-									io.grpc.MethodDescriptor.<Kernel.CliTokenBrokerRequest, Kernel.CliTokenBrokerResponse>newBuilder()
-											.setType(io.grpc.MethodDescriptor.MethodType.BIDI_STREAMING)
-											.setFullMethodName("kernel.CliTokenBroker/BrokerStream")
-											.setRequestMarshaller(io.grpc.protobuf.ProtoUtils.marshaller(
-													Kernel.CliTokenBrokerRequest.getDefaultInstance()))
-											.setResponseMarshaller(io.grpc.protobuf.ProtoUtils.marshaller(
-													Kernel.CliTokenBrokerResponse.getDefaultInstance()))
-											.build(),
-									io.grpc.stub.ServerCalls.asyncBidiStreamingCall(
-											(responseObserver) -> cliTokenBroker.brokerStream(responseObserver)))
-							.build());
+			// Register CLI token broker via tacplus-generated wrapper (handles auth).
+			var cliTokenBrokerWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker(cliTokenBroker);
+			serverBuilder.addService(cliTokenBrokerWrapper);
 			logger.info("CliTokenBrokerService registered on gRPC server");
 
 			// C2S token exchange — users exchange access tokens for service-scoped tokens.

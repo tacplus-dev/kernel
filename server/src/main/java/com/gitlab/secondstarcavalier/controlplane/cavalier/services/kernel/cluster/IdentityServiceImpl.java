@@ -1519,7 +1519,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	// Internal
 	// ========================================================================
 
-	private static final class StatusException extends Exception {
+	static final class StatusException extends Exception {
 		private final Status status;
 
 		StatusException(Status status, String message) {

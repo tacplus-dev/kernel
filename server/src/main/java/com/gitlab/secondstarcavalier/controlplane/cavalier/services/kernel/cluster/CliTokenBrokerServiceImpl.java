@@ -3,8 +3,6 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
-import io.grpc.Status;
-import io.grpc.StatusException;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -174,7 +172,7 @@ public class CliTokenBrokerServiceImpl {
 								entry.instanceId, nonce.substring(0, 8));
 					}
 
-				} catch (StatusException e) {
+				} catch (IdentityServiceImpl.StatusException e) {
 					logger.error("CliTokenBroker: failed to mint token for nonce {}",
 							nonce.substring(0, 8), e);
 					// Try to send error to the registering instance

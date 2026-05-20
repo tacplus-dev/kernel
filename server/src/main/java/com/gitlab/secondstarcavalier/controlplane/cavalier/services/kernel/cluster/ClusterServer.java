@@ -562,7 +562,7 @@ public class ClusterServer {
 			Mint mintWrapper = new Mint(identityService);
 
 			// CLI token broker — mediates nonce matching between oauth instances.
-			var cliTokenBroker = new CliTokenBrokerServiceImpl(identityService);
+			var cliTokenBroker = new CliTokenBrokerServiceImpl(identityService, hazelcast);
 
 			BlockingQueue<Trace.TraceEvent> traceQueue = new ArrayBlockingQueue<>(256);
 			io.grpc.Channel ebChannel = serviceMesh.meshChannel("eventbus");

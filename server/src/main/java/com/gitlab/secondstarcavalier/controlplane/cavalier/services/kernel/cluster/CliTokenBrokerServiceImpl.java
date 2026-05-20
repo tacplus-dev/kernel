@@ -78,7 +78,9 @@ public class CliTokenBrokerServiceImpl implements
 	 * BrokerStream bidi handler. Called by each oauth instance on startup.
 	 * Returns a StreamObserver that receives client messages.
 	 */
+	@Override
 	public StreamObserver<Kernel.CliTokenBrokerRequest> brokerStream(
+			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.Caller caller,
 			StreamObserver<Kernel.CliTokenBrokerResponse> responseObserver) {
 
 		return new StreamObserver<>() {

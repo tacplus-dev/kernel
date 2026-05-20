@@ -261,8 +261,28 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 					"caller " + callerSub + " is not a registered delegate");
 		}
 
+		// Resolve and mint via shared internal method.
+		return mintUserTokenInternal(request.getSubject(), request.getClaims(),
+				request.getExp(), request.getTraceId(), delegate.getName());
+	}
+
+	/**
+	 * Internal token minting: resolves entitlements via OPA, creates refresh + access tokens.
+	 * Used by both MintUserToken (broker-authenticated) and CliTokenBroker (kernel-internal).
+	 */
+	Tokenrequest.TokenMintResponse mintUserTokenInternal(
+			String subject, com.google.protobuf.Struct claims,
+			long requestedExp, String traceId, String delegateName)
+			throws StatusException {
+
+		Kernel.Delegate delegate = findDelegateByName(delegateName);
+		if (delegate == null) {
+			throw new StatusException(Status.INTERNAL,
+					"delegate not found: " + delegateName);
+		}
+
 		// Resolve entitlements via UncleOPA.
-		Userentitlements.EntitlementEvalResult opaResult = resolveEntitlementsViaOpa(request.getClaims(), request.getTraceId());
+		Userentitlements.EntitlementEvalResult opaResult = resolveEntitlementsViaOpa(claims, traceId);
 		Entitlements.TokenEntitlements expanded = expandEntitlements(opaResult);
 
 		// Mint the token.
@@ -274,8 +294,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		long now = Instant.now().getEpochSecond();
 		long maxExp = now + maxTokenLifetimeSeconds;
 		long exp;
-		if (request.getExp() > 0) {
-			exp = request.getExp();
+		if (requestedExp > 0) {
+			exp = requestedExp;
 			if (exp <= now) {
 				throw new StatusException(Status.INVALID_ARGUMENT,
 						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
@@ -288,30 +308,25 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			exp = now + defaultTokenExpirySeconds;
 		}
 
-		// Always mint refresh + access for C2S (user tokens are always refresh-based).
 		TokenWrapper newToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
-				.setSubject(request.getSubject())
+				.setSubject(subject)
 				.setAudience(Kernel.getDescriptor().getPackage())
 				.setIssuedAt(now)
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 
-		// azp = delegate name (not SPIFFE URI) — must match TokenEntitlements.azp entries.
 		newToken.setAzp(delegate.getName());
 		newToken.setTokenUse(TOKEN_USE_REFRESH);
-		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
+		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
 		newToken.setSubType(SUB_TYPE_USER);
 
-		// Set service_entitlements from OPA result (uncleopa expands all_entitlements).
 		newToken.setServiceEntitlements(expanded);
 
-		// Forward custom claims from the request (e.g., IDP claims like email, name).
-		if (request.hasClaims()) {
-			newToken.setClaimsFromStruct(request.getClaims(), STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
+		if (claims != null) {
+			newToken.setClaimsFromStruct(claims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
 		}
 
-		// Inject delegate's static custom claims.
 		for (Map.Entry<String, String> entry : delegate.getCustomClaimsMap().entrySet()) {
 			if (!STANDARD_JWT_CLAIMS.contains(entry.getKey())) {
 				newToken.setCustomField(entry.getKey(), entry.getValue());
@@ -321,10 +336,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.sign(signingKey);
 
 		logger.info("MintUserToken: sub={}, azp={}, exp={}, service_entitlements={}",
-				request.getSubject(), delegate.getName(), exp,
+				subject, delegate.getName(), exp,
 				newToken.getServiceEntitlements());
 
-		// Also mint an access token.
 		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
 		return Tokenrequest.TokenMintResponse.newBuilder()
 				.setRefreshToken(newToken.getProto())

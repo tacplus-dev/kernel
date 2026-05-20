@@ -560,6 +560,10 @@ public class ClusterServer {
 					grpcClients.userentitlementsOpaEval());
 
 			Mint mintWrapper = new Mint(identityService);
+
+			// CLI token broker — mediates nonce matching between oauth instances.
+			var cliTokenBroker = new CliTokenBrokerServiceImpl(identityService);
+
 			BlockingQueue<Trace.TraceEvent> traceQueue = new ArrayBlockingQueue<>(256);
 			io.grpc.Channel ebChannel = serviceMesh.meshChannel("eventbus");
 			final CallCredentials ebCallCreds = new CallCredentials() {
@@ -632,6 +636,25 @@ public class ClusterServer {
 
 			serverBuilder.addService(mintWrapper);
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
+
+			// Register CLI token broker as a raw gRPC service (bidi stream).
+			// The tacplus-generated CliTokenBroker wrapper will be used once available;
+			// for now register the raw bidi stream handler via gRPC service definition.
+			serverBuilder.addService(
+					io.grpc.ServerServiceDefinition.builder("kernel.CliTokenBroker")
+							.addMethod(
+									io.grpc.MethodDescriptor.<Kernel.CliTokenBrokerRequest, Kernel.CliTokenBrokerResponse>newBuilder()
+											.setType(io.grpc.MethodDescriptor.MethodType.BIDI_STREAMING)
+											.setFullMethodName("kernel.CliTokenBroker/BrokerStream")
+											.setRequestMarshaller(io.grpc.protobuf.ProtoUtils.marshaller(
+													Kernel.CliTokenBrokerRequest.getDefaultInstance()))
+											.setResponseMarshaller(io.grpc.protobuf.ProtoUtils.marshaller(
+													Kernel.CliTokenBrokerResponse.getDefaultInstance()))
+											.build(),
+									io.grpc.stub.ServerCalls.asyncBidiStreamingCall(
+											(responseObserver) -> cliTokenBroker.brokerStream(responseObserver)))
+							.build());
+			logger.info("CliTokenBrokerService registered on gRPC server");
 
 			// C2S token exchange — users exchange access tokens for service-scoped tokens.
 			var tokenExchangeService = new TokenExchangeServiceImpl(

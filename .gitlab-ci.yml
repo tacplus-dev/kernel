@@ -52,7 +52,7 @@ build:
         - .m2/repository
   before_script:
     - *setup-netrc
-    - tacplus build --skip-post
+    - tacplus build
   script:
     - mvn -pl server -am -Dtacplus.skip=true -Dmaven.test.skip=true package
   artifacts:
@@ -155,4 +155,4 @@ proto-validate:
   before_script:
     - *setup-netrc
   script:
-    - tacplus build --skip-post --tag $PROTO_VERSION
+    - tacplus build --tag $PROTO_VERSION

@@ -2,8 +2,3 @@ tacplus-version: "1.2.x"
 language: java
 pkg: com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel
 output-dir: tacplus/target/generated-sources
-post-gen:
-  - cmd: mvn
-    args: [-pl, server, -am, -Dtacplus.skip=true, package]
-container:
-  image: registry.gitlab.com/secondstarcavalier/schematic/platform/services/kernel/kernel

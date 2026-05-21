@@ -110,6 +110,9 @@ public class CliTokenBrokerServiceImpl implements
 						instanceId = request.getRegister().getInstanceId();
 						instanceStreams.put(instanceId, responseObserver);
 						logger.info("CliTokenBroker: oauth instance registered: {}", instanceId);
+						// Flush gRPC response headers so the client's stream-open await completes.
+						// In gRPC-Java, bidi response headers are deferred until the first onNext().
+						responseObserver.onNext(Kernel.CliTokenBrokerResponse.getDefaultInstance());
 					}
 					case REGISTER_NONCE -> {
 						if (instanceId == null) { logger.warn("RegisterNonce before Register"); return; }

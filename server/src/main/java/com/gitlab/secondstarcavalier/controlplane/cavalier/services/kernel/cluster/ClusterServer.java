@@ -645,7 +645,7 @@ public class ClusterServer {
 			traceThread.setDaemon(true);
 			traceThread.start();
 			mintWrapper.setTracePublisher((Mint.TracePublisher) event -> traceQueue.offer(event));
-			mintWrapper.setTraceIdentity(MetaData.PROJECT_NAME, instanceName);
+			mintWrapper.setInstanceId(instanceName);
 
 			serverBuilder.addService(mintWrapper);
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
@@ -670,7 +670,7 @@ public class ClusterServer {
 			var externalTokenMintImpl = new ExternalTokenMintServiceImpl(
 					keyRotator, allKeysSupplier, grpcClients.proxypolicyOpaEval());
 			var externalTokenMintWrapper = new ExternalTokenMint(externalTokenMintImpl);
-			externalTokenMintWrapper.setTraceIdentity(MetaData.PROJECT_NAME, instanceName);
+			externalTokenMintWrapper.setInstanceId(instanceName);
 			externalTokenMintWrapper.setTracePublisher((ExternalTokenMint.TracePublisher) event -> traceQueue.offer(event));
 			serverBuilder.addService(externalTokenMintWrapper);
 			logger.info("ExternalTokenMintService registered on gRPC server");

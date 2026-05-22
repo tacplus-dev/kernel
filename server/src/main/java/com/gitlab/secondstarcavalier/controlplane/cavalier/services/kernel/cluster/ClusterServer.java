@@ -480,7 +480,7 @@ public class ClusterServer {
 			} else {
 				tokenIssuer = "kernel";
 			}
-			// ServiceMesh for outbound S2S connections (kernel → uncleopa, etc.).
+			// Per-service connections for outbound S2S communication.
 			// Uses tacplus ServiceManager.channelFactory() — single code path for
 			// TLS context + channel creation, shared with ServiceManager.create().
 			java.util.function.Function<String, io.grpc.ManagedChannel> s2sChannelFactory;
@@ -489,18 +489,21 @@ public class ClusterServer {
 			} catch (Exception e) {
 				throw new RuntimeException("Failed to create S2S channel factory", e);
 			}
-			var serviceMesh = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemesh.ServiceMesh(s2sChannelFactory);
 
-			// Feed ServiceHealthState into the mesh so it discovers service endpoints.
+			// One ServiceConnection per target service. Each manages its own connection
+			// pool and selects the best endpoint based on health reports.
+			var opaConn = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection("opa", s2sChannelFactory);
+			var eventbusConn = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection("eventbus", s2sChannelFactory);
+			var allConns = java.util.List.of(opaConn, eventbusConn);
+
+			// Feed ServiceHealthState into each ServiceConnection.
 			var healthMap = backendServers.services().getServiceHealthMap();
-			Thread meshPoller = new Thread(() -> {
+			Thread healthPoller = new Thread(() -> {
 				while (!Thread.currentThread().isInterrupted()) {
 					try {
 						var instances = new java.util.ArrayList<>(healthMap.proto().getInstancesList());
 						// Deduplicate by host:port: when multiple instances share the same endpoint,
 						// keep the best-status one so draining old pods don't shadow healthy new ones.
-						// ServiceMesh.onHealthUpdate() filters to only registered service IDs (those
-						// claimed by GrpcS2SClients via meshChannel()), so no manual filter is needed here.
 						var statusPriority = new java.util.HashMap<com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus, Integer>();
 						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_HEALTHY, 0);
 						statusPriority.put(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_DEGRADED, 1);
@@ -517,23 +520,31 @@ public class ClusterServer {
 								deduped.put(key2, inst2);
 							}
 						}
-						serviceMesh.onHealthUpdate(new java.util.ArrayList<>(deduped.values()));
+						// Fan out to each ServiceConnection — each filters to its own service ID.
+						var allInstances = new java.util.ArrayList<>(deduped.values());
+						for (var sc : allConns) {
+							var relevant = new java.util.ArrayList<com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.ServiceInstanceHealth>();
+							for (var inst : allInstances) {
+								if (inst.getServiceId().equals(sc.serviceId())) {
+									relevant.add(inst);
+								}
+							}
+							sc.reconcileFromHealth(relevant);
+						}
 					} catch (Exception e) {
-						logger.warn("ServiceMesh health update failed: {}", e.getMessage());
+						logger.warn("Health update failed: {}", e.getMessage());
 					}
 					try { Thread.sleep(5000); } catch (InterruptedException ie) {
 						Thread.currentThread().interrupt();
 						break;
 					}
 				}
-			}, "servicemesh-health-poller");
-			meshPoller.setDaemon(true);
+			}, "health-poller");
+			healthPoller.setDaemon(true);
 
-			// Create GrpcS2SClients BEFORE starting the health poller so that
-			// meshChannel("opa") is registered before health updates arrive.
-			// Otherwise the ServiceMesh discards OPA health updates (no registered service).
+			// GrpcS2SClients with per-target ChannelProviders.
 			var grpcClients = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.GrpcS2SClients(
-					serviceMesh,
+					new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection.ChannelProvider(opaConn),
 					aud -> () -> {
 						try {
 							return mintSelfToken(keyRotator, tokenIssuer, aud, () -> spiffePrefix);
@@ -542,7 +553,7 @@ public class ClusterServer {
 						}
 					});
 
-			meshPoller.start();
+			healthPoller.start();
 
 			var identityService = new IdentityServiceImpl(
 					cfg.getDefaultTokenExpirySeconds(),
@@ -565,7 +576,7 @@ public class ClusterServer {
 			var cliTokenBroker = new CliTokenBrokerServiceImpl(identityService, hazelcast);
 
 			BlockingQueue<Trace.TraceEvent> traceQueue = new ArrayBlockingQueue<>(256);
-			io.grpc.Channel ebChannel = serviceMesh.meshChannel("eventbus");
+			io.grpc.Channel ebChannel = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection.ChannelProvider(eventbusConn);
 			final CallCredentials ebCallCreds = new CallCredentials() {
 				@Override
 				public void applyRequestMetadata(RequestInfo ri, java.util.concurrent.Executor exec,

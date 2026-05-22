@@ -1,6 +1,7 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.MetaData;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.jwk.ImmutableJwk;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.key.ImmutableKey;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.token.TokenWrapper;
@@ -59,7 +60,7 @@ public class TokenExchangeServiceImpl extends TokenExchangeGrpc.TokenExchangeImp
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : 2592000;
 		this.keyRotator = keyRotator;
 		this.verifyingKeysReader = verifyingKeysReader;
-		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : "kernel";
+		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : MetaData.PROJECT_NAME;
 	}
 
 	@Override

@@ -3,6 +3,8 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 
 import static com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster.PeerContext.PEER_KEY;
 
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.MetaData;
+
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.HazelcastManager;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.PersistenceProvider;
 // StateServer is in this package
@@ -478,7 +480,7 @@ public class ClusterServer {
 				tokenIssuer = "https://" + fqdn + Helpers.REST_ROOT_PATH;
 				identityState.putFqdn(Kernel.IdentityFqdn.newBuilder().setFqdn(fqdn).build());
 			} else {
-				tokenIssuer = "kernel";
+				tokenIssuer = MetaData.PROJECT_NAME;
 			}
 			// Per-service connections for outbound S2S communication.
 			// Uses tacplus ServiceManager.channelFactory() — single code path for
@@ -643,7 +645,7 @@ public class ClusterServer {
 			traceThread.setDaemon(true);
 			traceThread.start();
 			mintWrapper.setTracePublisher((Mint.TracePublisher) event -> traceQueue.offer(event));
-			mintWrapper.setTraceIdentity("kernel", instanceName);
+			mintWrapper.setTraceIdentity(MetaData.PROJECT_NAME, instanceName);
 
 			serverBuilder.addService(mintWrapper);
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
@@ -668,7 +670,7 @@ public class ClusterServer {
 			var externalTokenMintImpl = new ExternalTokenMintServiceImpl(
 					keyRotator, allKeysSupplier, grpcClients.proxypolicyOpaEval());
 			var externalTokenMintWrapper = new ExternalTokenMint(externalTokenMintImpl);
-			externalTokenMintWrapper.setTraceIdentity("kernel", instanceName);
+			externalTokenMintWrapper.setTraceIdentity(MetaData.PROJECT_NAME, instanceName);
 			externalTokenMintWrapper.setTracePublisher((ExternalTokenMint.TracePublisher) event -> traceQueue.offer(event));
 			serverBuilder.addService(externalTokenMintWrapper);
 			logger.info("ExternalTokenMintService registered on gRPC server");

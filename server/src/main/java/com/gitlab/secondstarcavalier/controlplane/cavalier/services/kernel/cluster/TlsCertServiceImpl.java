@@ -229,11 +229,16 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			long now = Instant.now().getEpochSecond();
 			long exp = now + certLifetimeSeconds;
 
+			// Cert identity: URI SAN carries the canonical SPIFFE ID (used for
+			// SPIFFE-based peer verification). DNS SANs cover hostname-based
+			// verification for callers connecting by k8s short name or pod
+			// hostname. The X509CertRequest message has no dedicated CN/subject
+			// field — issuer carries the bare service name for human-readability,
+			// the signer fills in subject DN from request/key metadata.
 			X509.X509CertRequest certRequest = X509.X509CertRequest.newBuilder()
 					.setKey(csr.getPublicKey())
 					.setExp(exp)
 					.setIssuer(serviceName)
-					.setCommonName(serviceName)
 					.addUriSans(spiffeId)
 					.addDnsNames(serviceName)
 					.addDnsNames("*." + serviceName)

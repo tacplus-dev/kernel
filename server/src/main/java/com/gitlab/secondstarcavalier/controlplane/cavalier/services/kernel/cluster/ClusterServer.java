@@ -776,7 +776,7 @@ public class ClusterServer {
 		long now = java.time.Instant.now().getEpochSecond();
 		long exp = now + 3600; // 1 hour
 
-		String spiffeId = "spiffe://" + spiffePrefixReader.get() + "/kernel";
+		String spiffeId = SpiffeIds.build(spiffePrefixReader.get(), "kernel");
 
 		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.token.TokenWrapper token =
 				com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.token.TokenWrapper.create()

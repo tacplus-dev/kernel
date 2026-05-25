@@ -105,7 +105,11 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 		private final String callerSubject;
 		private final String callerInstanceId;
 
+		/** Canonical SPIFFE URI for this stream — copied from the caller's authenticated identity. */
+		private String spiffeId;
+		/** Bare service name derived from the SPIFFE URI's last path segment. */
 		private String serviceName;
+		/** Client-supplied instance identifier (used for DNS SAN and logging). */
 		private String instanceId;
 		private boolean initialized;
 		private volatile ScheduledFuture<?> renewalTask;
@@ -157,21 +161,38 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 				return;
 			}
 
-			// Verify service_name matches the authenticated caller.
-			if (callerSubject != null && !callerSubject.isEmpty()
-					&& !callerSubject.equals(init.getServiceName())) {
+			// The authenticated caller subject is the canonical SPIFFE URI
+			// (kernel-minted service tokens set sub = SPIFFE URI). The client's
+			// init.service_name is the bare service name; verify it matches the
+			// last path segment of the SPIFFE URI as defense in depth.
+			if (callerSubject == null || callerSubject.isEmpty()) {
+				responseObserver.onError(Status.UNAUTHENTICATED
+						.withDescription("ManageCert requires an authenticated caller")
+						.asRuntimeException());
+				return;
+			}
+			if (!SpiffeIds.isSpiffeUri(callerSubject)) {
 				responseObserver.onError(Status.PERMISSION_DENIED
-						.withDescription("service_name '" + init.getServiceName()
-								+ "' does not match authenticated subject '" + callerSubject + "'")
+						.withDescription("ManageCert requires a kernel-minted service token; "
+								+ "sub is not a SPIFFE URI: " + callerSubject)
+						.asRuntimeException());
+				return;
+			}
+			String expectedServiceName = SpiffeIds.serviceName(callerSubject);
+			if (!expectedServiceName.equals(init.getServiceName())) {
+				responseObserver.onError(Status.PERMISSION_DENIED
+						.withDescription("init.service_name '" + init.getServiceName()
+								+ "' does not match authenticated SPIFFE identity '" + callerSubject + "'")
 						.asRuntimeException());
 				return;
 			}
 
-			this.serviceName = init.getServiceName();
+			this.spiffeId = callerSubject;
+			this.serviceName = expectedServiceName;
 			this.instanceId = init.getInstanceId();
 			this.initialized = true;
 
-			logger.info("ManageCert Init: service={}, instance={}", serviceName, instanceId);
+			logger.info("ManageCert Init: spiffeId={}, instance={}", spiffeId, instanceId);
 		}
 
 		private void handleCsr(Tlscert.TlsCertCsr csr) {
@@ -196,14 +217,15 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			// Cancel any pending renewal from a previous cert.
 			cancelRenewal();
 
-			// Get or create per-service intermediate CA (signed by cavalier-issued signing chain).
-			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
+			// Intermediate CA is keyed by the canonical SPIFFE URI so both
+			// X509Mint and ManageCert produce certs under the same per-service
+			// intermediate. Naming stays consistent across cert-issuing paths.
+			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(spiffeId, signingCa);
 
-			// Build SPIFFE SAN.
-			String spiffePrefix = spiffePrefixReader.get();
-			String spiffeId = "spiffe://" + spiffePrefix + "/" + serviceName + "/" + instanceId;
-
-			// Build cert request from the CSR's public key.
+			// Build cert request from the CSR's public key. URI SAN is the
+			// canonical SPIFFE URI (already validated against the caller's
+			// authenticated identity in handleInit). DNS SANs cover hostname
+			// verification when callers connect by short k8s service name.
 			long now = Instant.now().getEpochSecond();
 			long exp = now + certLifetimeSeconds;
 
@@ -211,10 +233,10 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 					.setKey(csr.getPublicKey())
 					.setExp(exp)
 					.setIssuer(serviceName)
+					.setCommonName(serviceName)
 					.addUriSans(spiffeId)
-					// Add DNS SANs so Java gRPC hostname verification passes when kernel
-					// connects to this service via its short hostname (e.g., "opa0").
 					.addDnsNames(serviceName)
+					.addDnsNames("*." + serviceName)
 					.addDnsNames(instanceId)
 					.build();
 

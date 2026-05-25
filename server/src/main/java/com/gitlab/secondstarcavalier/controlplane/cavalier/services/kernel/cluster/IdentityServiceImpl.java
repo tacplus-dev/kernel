@@ -50,11 +50,19 @@ import org.slf4j.LoggerFactory;
  * exchange (delegate presents cred_pair JWT) and delegation (broker
  * authenticates via header, mints on behalf).</li>
  * <li><b>X509Mint:</b> signs X.509 certificates under per-service intermediate CAs.
- * Authenticates caller via bearer token, creates an intermediate CA per
- * service (signed by root CA, pathlen:0), signs the caller-provided public
- * key, and returns an X509CertChain (leaf + intermediate). Provides
- * per-service trust isolation.</li>
+ * Authenticates caller via bearer token (which must carry a canonical
+ * SPIFFE URI in its {@code sub} claim — see {@link SpiffeIds}), creates a
+ * per-SPIFFE-URI intermediate CA (signed by root CA, pathlen:0), signs the
+ * caller-provided public key with the SPIFFE URI as URI SAN, and returns
+ * an X509CertChain (leaf + intermediate). The same SPIFFE URI keys the
+ * intermediate CA in {@link TlsCertServiceImpl}, so both cert-issuing paths
+ * produce certs under one consistent per-service intermediate.</li>
  * </ul>
+ *
+ * <p><b>NOTE:</b> X509Mint is the legacy one-shot cert path retained for
+ * non-Rust services (e.g. EventBus) until their tacplus templates gain
+ * ManageCert-based auto-TLS (task #31). New services should use
+ * {@link TlsCertServiceImpl}'s {@code ManageCert} bidi stream instead.
  */
 public class IdentityServiceImpl implements Mint.MintHandler {
 
@@ -512,7 +520,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				logger.info("Generated new instance_id={} for sub={}", instanceId, delegateName);
 			}
 
-			String spiffeId = "spiffe://" + spiffePrefixReader.get() + "/" + delegateName;
+			String spiffeId = SpiffeIds.build(spiffePrefixReader.get(), delegateName);
 			Map<String, Object> extraClaims = new java.util.LinkedHashMap<>();
 			extraClaims.put("instance_id", instanceId);
 			extraClaims.put("sub_type", SUB_TYPE_SERVICE);
@@ -1111,13 +1119,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	private Kernel.Delegate findDelegateByName(String name) {
-		// When sub is a SPIFFE URI (spiffe://<prefix>/<delegate_name>),
-		// extract the delegate name portion for lookup.
-		String lookupName = name;
-		String prefix = "spiffe://" + spiffePrefixReader.get() + "/";
-		if (name.startsWith(prefix)) {
-			lookupName = name.substring(prefix.length());
-		}
+		// When sub is a SPIFFE URI (spiffe://<prefix>/<delegate_name>), extract
+		// the bare delegate name for lookup via SpiffeIds.
+		String lookupName = SpiffeIds.isSpiffeUri(name) ? SpiffeIds.serviceName(name) : name;
 		for (Kernel.Delegate d : delegatesReader.get()) {
 			if (lookupName.equals(d.getName())) {
 				return d;
@@ -1180,35 +1184,27 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			throw new StatusException(Status.UNAUTHENTICATED, "token verification failed: " + e.getMessage());
 		}
 
-		// Extract service name from token subject.
-		String serviceName = token.getSubject();
-		if (serviceName == null || serviceName.isEmpty()) {
+		// Kernel-minted service tokens encode the canonical SPIFFE URI in the
+		// `sub` claim (e.g. "spiffe://local/dev/oauth"). That URI IS the
+		// workload identity for this cluster and propagates unchanged through
+		// the cert: token sub → URI SAN. No reconstruction.
+		//
+		// External-IdP-minted tokens (cred_pair, OIDC) carry a non-SPIFFE
+		// `sub`; X509Mint is not for those flows — reject explicitly.
+		String spiffeId = token.getSubject();
+		if (spiffeId == null || spiffeId.isEmpty()) {
 			throw new StatusException(Status.INVALID_ARGUMENT, "token has no sub claim");
 		}
-
-		// Get or create intermediate CA for this service (signed by cavalier-issued signing chain).
-		ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
-
-		// Construct SPIFFE URI SAN from auth context.
-		//
-		// Kernel-minted service tokens already encode the full SPIFFE URI in the
-		// `sub` claim (e.g. spiffe://local/dev/oauth). Re-prefixing that with
-		// kernel's own SPIFFE prefix produced malformed URIs like
-		// "spiffe://local/dev/kernel/spiffe://local/dev/oauth", which broke peer
-		// verification (peers couldn't match against expected
-		// "spiffe://local/dev/oauth"). When `sub` is already a SPIFFE URI, use
-		// it as-is; otherwise build the URI from kernel prefix + azp + sub.
-		String spiffeId;
-		if (serviceName.startsWith("spiffe://")) {
-			spiffeId = serviceName;
-		} else {
-			String azp = token.getAzp();
-			if (azp.isEmpty()) azp = Kernel.getDescriptor().getPackage();
-			String spiffePrefix = spiffePrefixReader.get();
-			spiffeId = "spiffe://" + spiffePrefix + "/" + azp + "/" + serviceName;
+		if (!SpiffeIds.isSpiffeUri(spiffeId)) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"X509Mint requires a kernel-minted service token; sub is not a SPIFFE URI: " + spiffeId);
 		}
 
-		// Enrich cert request with SPIFFE URI SAN.
+		// Intermediate CA is keyed by the SPIFFE URI itself so naming stays
+		// consistent across all cert-issuing paths (X509Mint + TlsCertService).
+		ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(spiffeId, signingCa);
+
+		// Enrich cert request with the SPIFFE URI SAN (canonical identity).
 		X509.X509CertRequest enrichedRequest = request.getCertRequest().toBuilder()
 				.addUriSans(spiffeId)
 				.build();
@@ -1222,8 +1218,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.addChain(intermediateCa.leaf().getProto())
 				.build();
 
-		logger.info("X509Mint: service={}, spiffeId={}, keyId={}",
-				serviceName, spiffeId, request.getCertRequest().getKey().getId());
+		logger.info("X509Mint: spiffeId={}, keyId={}",
+				spiffeId, request.getCertRequest().getKey().getId());
 
 		return certChain;
 	}
@@ -1352,7 +1348,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		// Validate caller has a SPIFFE sub and is not terminal.
 		String callerSub = callerToken.getSubject();
-		if (callerSub == null || !callerSub.startsWith("spiffe://")) {
+		if (!SpiffeIds.isSpiffeUri(callerSub)) {
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"caller sub is not a SPIFFE URI — only SPIFFE-identified services can mint workloads");
 		}
@@ -1425,7 +1421,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		String parentSub = bootstrapToken.getCustomField(PARENT_SUB);
 		String terminal = bootstrapToken.getCustomField(TERMINAL);
 
-		if (sub == null || !sub.startsWith("spiffe://")) {
+		if (!SpiffeIds.isSpiffeUri(sub)) {
 			throw new StatusException(Status.INVALID_ARGUMENT, "bootstrap token sub is not a SPIFFE URI");
 		}
 
@@ -1510,7 +1506,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		// Validate caller has a SPIFFE sub.
 		String callerSub = callerToken.getSubject();
-		if (callerSub == null || !callerSub.startsWith("spiffe://")) {
+		if (!SpiffeIds.isSpiffeUri(callerSub)) {
 			throw new StatusException(Status.PERMISSION_DENIED, "caller sub is not a SPIFFE URI");
 		}
 

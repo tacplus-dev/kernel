@@ -683,7 +683,8 @@ public class ClusterServer {
 					signingCa,
 					serviceName -> caState.getServiceCas(serviceName),
 					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
-					() -> spiffePrefix);
+					() -> spiffePrefix,
+					allKeysSupplier);
 			serverBuilder.addService(tlsCertService);
 			logger.info("TlsCertService registered on gRPC server (cert lifetime={}s)",
 					cfg.getTlsCertLifetimeSeconds() > 0

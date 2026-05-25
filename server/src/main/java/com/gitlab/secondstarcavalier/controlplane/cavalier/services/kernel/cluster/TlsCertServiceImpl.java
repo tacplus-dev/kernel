@@ -1,12 +1,14 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.jwk.ImmutableJwk;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.token.TokenWrapper;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.x509.ImmutableCertChain;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.key.KeyOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.tlscert.Tlscert;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.tlscert.TlsCertServiceGrpc;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.SecurityInterceptor;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.security.KeyPair;
@@ -14,6 +16,7 @@ import java.security.KeyPairGenerator;
 import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -52,6 +55,7 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	private final Function<String, X509.X509CertChain> serviceCaReader;
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
 	private final Supplier<String> spiffePrefixReader;
+	private final Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader;
 	private final ScheduledExecutorService scheduler;
 
 	/**
@@ -59,19 +63,22 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	 * @param signingCa            cavalier-issued signing chain (intermediate CA)
 	 * @param serviceCaReader      reads per-service intermediate CA from Ca state
 	 * @param serviceCaWriter      writes per-service intermediate CA to Ca state
-	 * @param spiffePrefixReader    SPIFFE deployment prefix
+	 * @param spiffePrefixReader   SPIFFE deployment prefix
+	 * @param verifyingKeysReader  active kernel JWKs for validating caller tokens
 	 */
 	public TlsCertServiceImpl(
 			long certLifetimeSeconds,
 			ImmutableCertChain signingCa,
 			Function<String, X509.X509CertChain> serviceCaReader,
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
-			Supplier<String> spiffePrefixReader) {
+			Supplier<String> spiffePrefixReader,
+			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader) {
 		this.certLifetimeSeconds = certLifetimeSeconds;
 		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
 		this.spiffePrefixReader = spiffePrefixReader;
+		this.verifyingKeysReader = verifyingKeysReader;
 		this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
 			Thread t = new Thread(r, "tls-cert-renewal");
 			t.setDaemon(true);
@@ -86,9 +93,52 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	@Override
 	public StreamObserver<Tlscert.TlsCertClientMsg> manageCert(
 			StreamObserver<Tlscert.TlsCertServerMsg> responseObserver) {
-		// Capture authenticated caller identity from gRPC context (set by SecurityInterceptor).
-		String callerSubject = SecurityInterceptor.CALLER_SUBJECT_KEY.get();
-		String callerInstanceId = SecurityInterceptor.CALLER_INSTANCE_ID_KEY.get();
+		// The cluster gRPC server's callerInterceptor explicitly bypasses
+		// TlsCertService (it's in the "services that handle their own auth"
+		// list). We validate the Bearer token here from RAW_AUTH_TOKEN_KEY
+		// (set by rpcInterceptor on every cluster RPC).
+		String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
+		if (rawToken == null || rawToken.isEmpty()) {
+			logger.warn("ManageCert: missing Authorization header");
+			responseObserver.onError(Status.UNAUTHENTICATED
+					.withDescription("missing authorization header")
+					.asRuntimeException());
+			return new StreamObserver<>() {
+				@Override public void onNext(Tlscert.TlsCertClientMsg value) {}
+				@Override public void onError(Throwable t) {}
+				@Override public void onCompleted() {}
+			};
+		}
+
+		String callerSubject;
+		String callerInstanceId;
+		try {
+			TokenWrapper token = TokenWrapper.parse(rawToken);
+			String kid = token.getKid();
+			JwkOuterClass.Jwk matchingKey = null;
+			for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+				if (kid.equals(jwk.getKid())) {
+					matchingKey = jwk;
+					break;
+				}
+			}
+			if (matchingKey == null) {
+				throw new IllegalStateException("token signed with unknown key: " + kid);
+			}
+			token.verify(ImmutableJwk.from(matchingKey));
+			callerSubject = token.getSubject();
+			callerInstanceId = token.getCustomField("instance_id");
+		} catch (Exception e) {
+			logger.warn("ManageCert: token validation failed: {}", e.getMessage());
+			responseObserver.onError(Status.UNAUTHENTICATED
+					.withDescription("token validation failed: " + e.getMessage())
+					.asRuntimeException());
+			return new StreamObserver<>() {
+				@Override public void onNext(Tlscert.TlsCertClientMsg value) {}
+				@Override public void onError(Throwable t) {}
+				@Override public void onCompleted() {}
+			};
+		}
 
 		logger.info("ManageCert stream opened: caller={}, instanceId={}", callerSubject, callerInstanceId);
 

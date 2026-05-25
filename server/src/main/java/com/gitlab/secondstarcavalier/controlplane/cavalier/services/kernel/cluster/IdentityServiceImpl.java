@@ -1190,10 +1190,23 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
 
 		// Construct SPIFFE URI SAN from auth context.
-		String azp = token.getAzp();
-		if (azp.isEmpty()) azp = Kernel.getDescriptor().getPackage();
-		String spiffePrefix = spiffePrefixReader.get();
-		String spiffeId = "spiffe://" + spiffePrefix + "/" + azp + "/" + serviceName;
+		//
+		// Kernel-minted service tokens already encode the full SPIFFE URI in the
+		// `sub` claim (e.g. spiffe://local/dev/oauth). Re-prefixing that with
+		// kernel's own SPIFFE prefix produced malformed URIs like
+		// "spiffe://local/dev/kernel/spiffe://local/dev/oauth", which broke peer
+		// verification (peers couldn't match against expected
+		// "spiffe://local/dev/oauth"). When `sub` is already a SPIFFE URI, use
+		// it as-is; otherwise build the URI from kernel prefix + azp + sub.
+		String spiffeId;
+		if (serviceName.startsWith("spiffe://")) {
+			spiffeId = serviceName;
+		} else {
+			String azp = token.getAzp();
+			if (azp.isEmpty()) azp = Kernel.getDescriptor().getPackage();
+			String spiffePrefix = spiffePrefixReader.get();
+			spiffeId = "spiffe://" + spiffePrefix + "/" + azp + "/" + serviceName;
+		}
 
 		// Enrich cert request with SPIFFE URI SAN.
 		X509.X509CertRequest enrichedRequest = request.getCertRequest().toBuilder()

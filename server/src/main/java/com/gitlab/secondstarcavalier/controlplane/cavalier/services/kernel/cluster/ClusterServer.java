@@ -489,7 +489,7 @@ public class ClusterServer {
 			// when KSM was eliminated; see tacplus task #31.)
 			java.util.function.Function<String, io.grpc.ManagedChannel> s2sChannelFactory;
 			try {
-				s2sChannelFactory = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection.channelFactory(cfg.getTrustedCasList());
+				s2sChannelFactory = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection.channelFactory(cfg);
 			} catch (Exception e) {
 				throw new RuntimeException("Failed to create S2S channel factory", e);
 			}

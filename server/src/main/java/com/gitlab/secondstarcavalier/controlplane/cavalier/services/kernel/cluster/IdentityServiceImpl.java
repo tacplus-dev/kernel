@@ -829,10 +829,19 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// Also mint an access token (clone of refresh without typ).
 		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
 
-		return Tokenrequest.TokenMintResponse.newBuilder()
-				.setRefreshToken(newToken.getProto())
-				.setAccessToken(accessProto)
-				.build();
+		// Services don't need refresh tokens — they re-bootstrap from their
+		// cred pair (private key) when the access token expires, not via
+		// refresh-token flow like users. Omit the refresh token for service
+		// callers (sub_type=service); clients now parse instance_id from the
+		// access_token's claims.
+		Object subType = extraClaims.get("sub_type");
+		boolean isService = SUB_TYPE_SERVICE.equals(subType);
+		Tokenrequest.TokenMintResponse.Builder resp = Tokenrequest.TokenMintResponse.newBuilder()
+				.setAccessToken(accessProto);
+		if (!isService) {
+			resp.setRefreshToken(newToken.getProto());
+		}
+		return resp.build();
 	}
 
 	/**

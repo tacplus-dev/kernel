@@ -120,6 +120,23 @@ public class CliTokenBrokerServiceImpl implements
 						nonceMap.put(nonce, new NonceEntry(instanceId), NONCE_TTL_SECONDS, TimeUnit.SECONDS);
 						localNonceOwners.put(nonce, instanceId);
 						logger.info("CliTokenBroker: nonce registered: {} → instance {}", nonce.substring(0, 8), instanceId);
+
+						// Buffered delivery: if CompleteNonce already minted a token while the
+						// owning oauth instance was disconnected (or before any instance
+						// registered), the refresh_token sits in nonceMap keyed by
+						// DELIVERY_PREFIX + nonce. Replay it now that we have a stream.
+						NonceEntry pending = nonceMap.remove(DELIVERY_PREFIX + nonce);
+						if (pending != null && pending.refreshToken != null && !pending.isExpired()) {
+							responseObserver.onNext(Kernel.CliTokenBrokerResponse.newBuilder()
+									.setTokenDelivery(Kernel.CliTokenBrokerTokenDelivery.newBuilder()
+											.setNonce(nonce)
+											.setRefreshToken(pending.refreshToken)
+											.build())
+									.build());
+							localNonceOwners.remove(nonce);
+							logger.info("CliTokenBroker: buffered token replayed for nonce {} → instance {}",
+									nonce.substring(0, 8), instanceId);
+						}
 					}
 					case COMPLETE_NONCE -> handleCompleteNonce(request.getCompleteNonce());
 					default -> logger.warn("Unknown message type: {}", request.getMsgCase());

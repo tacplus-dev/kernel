@@ -483,11 +483,13 @@ public class ClusterServer {
 				tokenIssuer = MetaData.PROJECT_NAME;
 			}
 			// Per-service connections for outbound S2S communication.
-			// Uses tacplus ServiceManager.channelFactory() — single code path for
+			// Uses tacplus ServiceConnection.channelFactory() — single code path for
 			// TLS context + channel creation, shared with ServiceManager.create().
+			// (Moved here from the deleted libs.servicemanager.ServiceManager class
+			// when KSM was eliminated; see tacplus task #31.)
 			java.util.function.Function<String, io.grpc.ManagedChannel> s2sChannelFactory;
 			try {
-				s2sChannelFactory = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.ServiceManager.channelFactory(cfg.getTrustedCasList());
+				s2sChannelFactory = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection.channelFactory(cfg.getTrustedCasList());
 			} catch (Exception e) {
 				throw new RuntimeException("Failed to create S2S channel factory", e);
 			}

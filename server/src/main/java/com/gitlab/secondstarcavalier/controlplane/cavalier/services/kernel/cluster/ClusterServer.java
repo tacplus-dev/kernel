@@ -693,6 +693,13 @@ public class ClusterServer {
 			serverBuilder.addService(tenantAdminWrapper);
 			logger.info("TenantAdminService registered on gRPC server (skeleton)");
 
+			// MintClient — client cred_pair → bearer token (mirrors MintServiceToken).
+			// SKELETON: returns UNIMPLEMENTED until the actual mint logic lands.
+			var mintClientImpl = new MintClientServiceImpl();
+			var mintClientWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.MintClient(mintClientImpl);
+			serverBuilder.addService(mintClientWrapper);
+			logger.info("MintClientService registered on gRPC server (skeleton)");
+
 			// TLS certificate lifecycle service (ManageCert bidi stream for auto_tls services).
 			this.tlsCertService = new TlsCertServiceImpl(
 					cfg.getTlsCertLifetimeSeconds() > 0

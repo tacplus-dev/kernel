@@ -677,6 +677,22 @@ public class ClusterServer {
 			serverBuilder.addService(externalTokenMintWrapper);
 			logger.info("ExternalTokenMintService registered on gRPC server");
 
+			// Multi-tenancy control plane (cluster-scope + tenant-scope RPCs).
+			// SKELETON: handlers compile + register but return UNIMPLEMENTED until
+			// signature verification, ConfigState persistence, and ceiling
+			// enforcement land. Registering them ensures kernel boots cleanly
+			// against the new proto and downstream callers get a proper
+			// UNIMPLEMENTED status instead of "service not found".
+			var clusterAdminImpl = new ClusterAdminServiceImpl();
+			var clusterAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin(clusterAdminImpl);
+			serverBuilder.addService(clusterAdminWrapper);
+			logger.info("ClusterAdminService registered on gRPC server (skeleton)");
+
+			var tenantAdminImpl = new TenantAdminServiceImpl();
+			var tenantAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.TenantAdmin(tenantAdminImpl);
+			serverBuilder.addService(tenantAdminWrapper);
+			logger.info("TenantAdminService registered on gRPC server (skeleton)");
+
 			// TLS certificate lifecycle service (ManageCert bidi stream for auto_tls services).
 			this.tlsCertService = new TlsCertServiceImpl(
 					cfg.getTlsCertLifetimeSeconds() > 0

@@ -39,6 +39,47 @@ variables:
 .setup-netrc: &setup-netrc
   - printf "machine gitlab.com\nlogin gitlab-ci-token\npassword %s\n" "$CI_JOB_TOKEN" > ~/.netrc
 
+# Resolve the proto tag matching the service tag's branch channel and run
+# `tacplus build`. Service tag v{M}.{N}.{P}-{BRANCH}.{LOCAL} → newest proto
+# tag matching v{M}.{N}.{P}-{BRANCH}.*. Falls back to letting `tacplus
+# build` auto-resolve (latest main patch) if no branch-matching proto tag
+# exists. Needed because tacplus build does not understand non-main
+# channels (e.g. demo) and silently picks latest main otherwise.
+#
+# tacplus's `--tag` flag only labels the generated package; the actual
+# proto source comes from its own cache which auto-resolves to the latest
+# main patch. To force a specific tag we pre-populate the cache dir from
+# the proto repo at that tag, then invoke `tacplus build --tag <tag>`.
+.tacplus-build: &tacplus-build
+  - |
+    V="${CI_COMMIT_TAG#v}"
+    DOTPART="${V%%-*}"
+    PROTO_MAJOR="$(echo "$DOTPART" | cut -d. -f1)"
+    PROTO_MINOR="$(echo "$DOTPART" | cut -d. -f2)"
+    PROTO_PATCH="$(echo "$DOTPART" | cut -d. -f3)"
+    RESTPART="${V#*-}"
+    PROTO_BRANCH="${RESTPART%.*}"
+    PROTO_TAG=$(git ls-remote --tags --refs \
+      "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/secondstarcavalier/schematic/platform/proto.git" \
+      "refs/tags/v${PROTO_MAJOR}.${PROTO_MINOR}.${PROTO_PATCH}-${PROTO_BRANCH}.*" \
+      | sed -n "s|.*refs/tags/v${PROTO_MAJOR}\\.${PROTO_MINOR}\\.${PROTO_PATCH}-${PROTO_BRANCH}\\.\\([0-9][0-9]*\\)$|\\1 v${PROTO_MAJOR}.${PROTO_MINOR}.${PROTO_PATCH}-${PROTO_BRANCH}.\\1|p" \
+      | sort -n \
+      | tail -1 \
+      | awk '{print $2}')
+    if [ -n "$PROTO_TAG" ]; then
+      echo "Resolved proto tag: $PROTO_TAG"
+      PROTO_CACHE_DIR="/root/.tacplus/cache/proto/gitlab.com-secondstarcavalier-controlplane-cavalier-proto"
+      rm -rf "$PROTO_CACHE_DIR"
+      mkdir -p "$(dirname "$PROTO_CACHE_DIR")"
+      git clone --depth 1 --branch "$PROTO_TAG" \
+        "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/secondstarcavalier/schematic/platform/proto.git" \
+        "$PROTO_CACHE_DIR"
+      tacplus build --tag "$PROTO_TAG"
+    else
+      echo "No proto tag matching v${PROTO_MAJOR}.${PROTO_MINOR}.${PROTO_PATCH}-${PROTO_BRANCH}.*; letting tacplus auto-resolve"
+      tacplus build
+    fi
+
 build:
   stage: build
   retry: 2
@@ -52,7 +93,7 @@ build:
         - .m2/repository
   before_script:
     - *setup-netrc
-    - tacplus build
+    - *tacplus-build
   script:
     - mvn -pl server -am -Dtacplus.skip=true -Dmaven.test.skip=true package
   artifacts:

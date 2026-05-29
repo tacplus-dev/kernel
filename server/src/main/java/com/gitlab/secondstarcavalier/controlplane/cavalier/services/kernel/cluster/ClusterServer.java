@@ -817,6 +817,7 @@ public class ClusterServer {
 		token.setTokenUse("service");
 		token.setAzp(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel.getDescriptor().getPackage());
 		token.setPrincipal(spiffeId);
+		token.setNamespace(SpiffeIds.namespaceFromSpiffe(spiffeId));
 
 		token.sign(signingKey);
 		return token.getBase64();

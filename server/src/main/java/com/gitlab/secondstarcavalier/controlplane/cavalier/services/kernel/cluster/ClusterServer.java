@@ -459,6 +459,8 @@ public class ClusterServer {
 
 			final var delegates = cfg.getDelegatesList();
 			// SPIFFE prefix for URI construction (defaults applied by Helpers).
+			// This is the SPIFFE trust-domain (no leading slash); the leading-slash
+			// namespace claim is derived from it via SpiffeIds / TokenWrapper bridges.
 			String configuredSpiffePrefix = cfg.getSpiffePrefix();
 			final String spiffePrefix = (configuredSpiffePrefix != null && !configuredSpiffePrefix.isEmpty())
 					? configuredSpiffePrefix : "local/dev";

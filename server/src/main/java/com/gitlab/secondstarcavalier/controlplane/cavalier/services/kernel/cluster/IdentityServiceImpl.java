@@ -328,8 +328,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setTokenUse(TOKEN_USE_REFRESH);
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
 		newToken.setSubType(SUB_TYPE_USER);
-		// User tokens live at the cluster root — can level-or-below to any tenant.
-		newToken.setNamespace(spiffePrefixReader.get());
+		// Namespace: OPA maps the caller's IdP (issuer/claims) to the tenant subtree
+		// they belong to. Fall back to the cluster root when the policy returns none.
+		newToken.setNamespace(namespaceFromOpaOrRoot(opaResult));
 
 		newToken.setServiceEntitlements(expanded);
 
@@ -391,6 +392,20 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static Entitlements.TokenEntitlements expandEntitlements(
 			Userentitlements.EntitlementEvalResult result) {
 		return result.getTokenEntitlements();
+	}
+
+	/**
+	 * Resolves the namespace claim for a user token from the OPA result. OPA maps the
+	 * caller's IdP (issuer/claims) to the tenant subtree they belong to, as a
+	 * leading-slash absolute path (e.g. "/local/dev/drpepper"). Falls back to the
+	 * cluster-root namespace when the policy returns none.
+	 */
+	private String namespaceFromOpaOrRoot(Userentitlements.EntitlementEvalResult result) {
+		String ns = result.getNamespace();
+		if (ns != null && !ns.isEmpty()) {
+			return ns;
+		}
+		return SpiffeIds.namespaceRoot(spiffePrefixReader.get());
 	}
 
 	/**
@@ -610,8 +625,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
 		newToken.setAzp(Kernel.getDescriptor().getPackage());
 		newToken.setSubType(SUB_TYPE_USER);
-		// User tokens live at the cluster root — can level-or-below to any tenant.
-		newToken.setNamespace(spiffePrefixReader.get());
+		// Namespace: OPA maps the caller's IdP (issuer/claims) to the tenant subtree
+		// they belong to. Fall back to the cluster root when the policy returns none.
+		newToken.setNamespace(namespaceFromOpaOrRoot(opaResult));
 
 		// Set service_entitlements from OPA result (uncleopa expands all_entitlements).
 		newToken.setServiceEntitlements(expanded);
@@ -749,7 +765,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setTokenUse(isRefresh ? TOKEN_USE_REFRESH : TOKEN_USE_ACCESS);
 		newToken.setSubType(SUB_TYPE_USER);
 		// User tokens live at the cluster root — can level-or-below to any tenant.
-		newToken.setNamespace(spiffePrefixReader.get());
+		newToken.setNamespace(SpiffeIds.namespaceRoot(spiffePrefixReader.get()));
 		if (isRefresh) {
 			newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		}
@@ -828,7 +844,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		boolean isServiceMint = SUB_TYPE_SERVICE.equals(extraClaims.get("sub_type"));
 		newToken.setNamespace(isServiceMint
 				? SpiffeIds.namespaceFromSpiffe(subject)
-				: spiffePrefixReader.get());
+				: SpiffeIds.namespaceRoot(spiffePrefixReader.get()));
 
 		for (Map.Entry<String, Object> entry : extraClaims.entrySet()) {
 			newToken.setCustomField(entry.getKey(), entry.getValue());

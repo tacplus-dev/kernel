@@ -35,15 +35,20 @@ public final class SpiffeIds {
 
 	private static final String SCHEME_PREFIX = "spiffe://";
 
+	// The namespace claim is a leading-slash absolute path (e.g. "/local/dev"),
+	// so the SPIFFE URI is formed by prefixing "spiffe:/" (one slash). The result
+	// is the same canonical two-slash URI: "spiffe:/" + "/local/dev" = "spiffe://local/dev".
+	private static final String NS_SCHEME_PREFIX = "spiffe:/";
+
 	private SpiffeIds() {
 	}
 
 	/**
 	 * Builds the canonical SPIFFE URI for a service in the given trust domain.
 	 *
-	 * @param trustDomain cluster trust-domain prefix (e.g. {@code "local/dev"})
+	 * @param trustDomain cluster trust-domain prefix, no leading slash (e.g. {@code "local/dev"})
 	 * @param serviceName bare service name (e.g. {@code "oauth"})
-	 * @return canonical SPIFFE URI string
+	 * @return canonical SPIFFE URI string (e.g. {@code "spiffe://local/dev/oauth"})
 	 */
 	public static String build(String trustDomain, String serviceName) {
 		if (trustDomain == null || trustDomain.isEmpty()) {
@@ -68,18 +73,33 @@ public final class SpiffeIds {
 	}
 
 	/**
-	 * Extracts the namespace (path component without scheme) from a canonical
-	 * SPIFFE URI. e.g. {@code "spiffe://local/dev/oauth"} → {@code "local/dev/oauth"}.
+	 * Extracts the namespace (leading-slash absolute path) from a canonical
+	 * SPIFFE URI. e.g. {@code "spiffe://local/dev/oauth"} → {@code "/local/dev/oauth"}.
 	 *
-	 * <p>The returned value is what should be set as the JWT {@code namespace}
-	 * claim — the canonical authorization-tree position used for level-or-below
-	 * checks. Returns empty string if the input is not a SPIFFE URI.
+	 * <p>Only the {@code "spiffe:/"} scheme prefix (one slash) is stripped, so the
+	 * leading slash of the path is retained — yielding the canonical namespace claim
+	 * format used for level-or-below checks. Returns empty string if the input is not
+	 * a SPIFFE URI.
 	 */
 	public static String namespaceFromSpiffe(String spiffeId) {
 		if (!isSpiffeUri(spiffeId)) {
 			return "";
 		}
-		return spiffeId.substring(SCHEME_PREFIX.length());
+		return spiffeId.substring(NS_SCHEME_PREFIX.length());
+	}
+
+	/**
+	 * Returns the canonical namespace (leading-slash absolute path) for the cluster
+	 * root, given the SPIFFE trust-domain prefix. e.g. {@code "local/dev"} → {@code "/local/dev"}.
+	 *
+	 * <p>This is the authorization-tree position of the cluster root — the namespace
+	 * claim a token receives when it is not scoped to a specific sub-tenant.
+	 */
+	public static String namespaceRoot(String trustDomain) {
+		if (trustDomain == null || trustDomain.isEmpty()) {
+			return "";
+		}
+		return trustDomain.startsWith("/") ? trustDomain : "/" + trustDomain;
 	}
 
 	/**

@@ -4,56 +4,87 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.Caller;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.errors.ProtoException;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
+
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * ClusterAdminServiceImpl is the kernel-hosted tenant lifecycle handler.
+ * ClusterAdminServiceImpl handles cluster-scope tenant lifecycle.
  *
- * <p>All RPCs require a signed request authenticated by one of the cluster
- * cred_pairs in {@link Kernel.Config#getClusterCredPairsList()}. The caller's
- * effective SPIFFE is {@code spiffe://<spiffe_prefix>/cluster-admin}.
+ * <p>Tenants live under the cluster's SPIFFE prefix as a flat list keyed
+ * by their full namespace path (e.g. {@code "local/dev/acme"}).
+ * {@code Tenant.name} stores only the leaf segment.
  *
- * <p>Today this is a skeleton — every RPC returns UNIMPLEMENTED. Real
- * implementation lands in follow-ups:
- * <ul>
- *   <li>Signature verification (Ed25519 over canonical request + nonce + timestamp)
- *   <li>Hazelcast-backed nonce store (5-min TTL) for replay protection
- *   <li>CreateTenant: generate tenant CredPair, persist to ConfigState
- *   <li>DeleteTenant: remove from ConfigState
- *   <li>ListTenants: read from ConfigState
- * </ul>
+ * <p>Authentication today is the standard JWT bearer flow handled by the
+ * generated wrapper. Cluster-cred-pair signed-request auth is a follow-up
+ * (see task #55).
  */
 public class ClusterAdminServiceImpl implements ClusterAdmin.ClusterAdminHandler {
     private static final Logger logger = LoggerFactory.getLogger(ClusterAdminServiceImpl.class);
 
-    public ClusterAdminServiceImpl() {
-        // No state held by the skeleton.
-        logger.info("ClusterAdminServiceImpl initialised (skeleton — RPCs return UNIMPLEMENTED)");
+    private final ConfigMap configMap;
+    private final Supplier<String> spiffePrefixReader;
+
+    public ClusterAdminServiceImpl(ConfigMap configMap, Supplier<String> spiffePrefixReader) {
+        this.configMap = configMap;
+        this.spiffePrefixReader = spiffePrefixReader;
+        logger.info("ClusterAdminServiceImpl initialised");
     }
 
     @Override
     public Kernel.CreateTenantResponse createTenant(Caller caller, Kernel.CreateTenantRequest request)
             throws ProtoException {
-        logger.warn("ClusterAdmin.CreateTenant called but not implemented yet (caller={}, name={})",
-                caller, request.getName());
-        throw new ProtoException(ProtoException.UNIMPLEMENTED,"ClusterAdmin.CreateTenant is not yet implemented");
+        String name = request.getName();
+        if (name.isEmpty()) {
+            throw new ProtoException(ProtoException.INVALID_ARGUMENT, "tenant name must not be empty");
+        }
+        if (name.contains("/")) {
+            throw new ProtoException(ProtoException.INVALID_ARGUMENT, "tenant name must be a leaf segment (no '/')");
+        }
+        String fullNs = Tenants.joinNamespace(spiffePrefixReader.get(), name);
+
+        Credentials.Entitlements ent = request.hasEntitlements() ? request.getEntitlements() : null;
+        String credId = Tenants.newCredPairId();
+        Tenants.GeneratedCredPair gen = Tenants.generateCredPair(
+                name, credId, ent, "bootstrap cred_pair for tenant " + name);
+
+        Kernel.Tenant tenant = Tenants.createTenant(
+                configMap, fullNs, name, ent,
+                request.hasConfig() ? request.getConfig() : null,
+                gen.credPair());
+
+        logger.info("CreateTenant ns={} name={} cred_pair_id={}", fullNs, name, credId);
+        return Kernel.CreateTenantResponse.newBuilder()
+                .setTenant(tenant)
+                .setCredPair(gen.credPair())
+                .setCredPairPrivateKeyPem(gen.privateKeyPem())
+                .build();
     }
 
     @Override
     public Kernel.DeleteTenantResponse deleteTenant(Caller caller, Kernel.DeleteTenantRequest request)
             throws ProtoException {
-        logger.warn("ClusterAdmin.DeleteTenant called but not implemented yet (caller={}, name={})",
-                caller, request.getName());
-        throw new ProtoException(ProtoException.UNIMPLEMENTED,"ClusterAdmin.DeleteTenant is not yet implemented");
+        String name = request.getName();
+        if (name.isEmpty()) {
+            throw new ProtoException(ProtoException.INVALID_ARGUMENT, "tenant name must not be empty");
+        }
+        String fullNs = Tenants.joinNamespace(spiffePrefixReader.get(), name);
+        Tenants.deleteTenant(configMap, fullNs);
+        logger.info("DeleteTenant ns={}", fullNs);
+        return Kernel.DeleteTenantResponse.getDefaultInstance();
     }
 
     @Override
     public Kernel.ListTenantsResponse listTenants(Caller caller, Kernel.ListTenantsRequest request)
             throws ProtoException {
-        logger.warn("ClusterAdmin.ListTenants called but not implemented yet (caller={})", caller);
-        throw new ProtoException(ProtoException.UNIMPLEMENTED,"ClusterAdmin.ListTenants is not yet implemented");
+        Kernel.ListTenantsResponse.Builder rb = Kernel.ListTenantsResponse.newBuilder();
+        Kernel.ConfigState state = configMap.proto();
+        rb.addAllTenants(state.getTenantsList());
+        return rb.build();
     }
 }

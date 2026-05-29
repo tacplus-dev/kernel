@@ -678,20 +678,20 @@ public class ClusterServer {
 			logger.info("ExternalTokenMintService registered on gRPC server");
 
 			// Multi-tenancy control plane (cluster-scope + tenant-scope RPCs).
-			// SKELETON: handlers compile + register but return UNIMPLEMENTED until
-			// signature verification, ConfigState persistence, and ceiling
-			// enforcement land. Registering them ensures kernel boots cleanly
-			// against the new proto and downstream callers get a proper
-			// UNIMPLEMENTED status instead of "service not found".
-			var clusterAdminImpl = new ClusterAdminServiceImpl();
+			// Handlers read/write the kernel ConfigState (tenants + tenant_configs)
+			// via the generated typed ConfigMap. CredPair signed-request auth is
+			// not yet implemented; today the C2S auth interceptor's level-or-below
+			// check on the target_namespace_field is the sole gate.
+			var kernelConfigMap = backendServers.services().getConfigMap();
+			var clusterAdminImpl = new ClusterAdminServiceImpl(kernelConfigMap, () -> spiffePrefix);
 			var clusterAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin(clusterAdminImpl);
 			serverBuilder.addService(clusterAdminWrapper);
-			logger.info("ClusterAdminService registered on gRPC server (skeleton)");
+			logger.info("ClusterAdminService registered on gRPC server");
 
-			var tenantAdminImpl = new TenantAdminServiceImpl();
+			var tenantAdminImpl = new TenantAdminServiceImpl(kernelConfigMap);
 			var tenantAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.TenantAdmin(tenantAdminImpl);
 			serverBuilder.addService(tenantAdminWrapper);
-			logger.info("TenantAdminService registered on gRPC server (skeleton)");
+			logger.info("TenantAdminService registered on gRPC server");
 
 			// MintClient — client cred_pair → bearer token (mirrors MintServiceToken).
 			// SKELETON: returns UNIMPLEMENTED until the actual mint logic lands.

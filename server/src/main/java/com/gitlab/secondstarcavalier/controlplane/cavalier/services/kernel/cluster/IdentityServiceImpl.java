@@ -328,6 +328,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setTokenUse(TOKEN_USE_REFRESH);
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
 		newToken.setSubType(SUB_TYPE_USER);
+		// User tokens live at the cluster root — can level-or-below to any tenant.
+		newToken.setNamespace(spiffePrefixReader.get());
 
 		newToken.setServiceEntitlements(expanded);
 
@@ -608,6 +610,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
 		newToken.setAzp(Kernel.getDescriptor().getPackage());
 		newToken.setSubType(SUB_TYPE_USER);
+		// User tokens live at the cluster root — can level-or-below to any tenant.
+		newToken.setNamespace(spiffePrefixReader.get());
 
 		// Set service_entitlements from OPA result (uncleopa expands all_entitlements).
 		newToken.setServiceEntitlements(expanded);
@@ -744,6 +748,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// Delegation is always a broker minting on behalf of a user.
 		newToken.setTokenUse(isRefresh ? TOKEN_USE_REFRESH : TOKEN_USE_ACCESS);
 		newToken.setSubType(SUB_TYPE_USER);
+		// User tokens live at the cluster root — can level-or-below to any tenant.
+		newToken.setNamespace(spiffePrefixReader.get());
 		if (isRefresh) {
 			newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		}
@@ -817,6 +823,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setTokenUse(TOKEN_USE_REFRESH);
 		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		newToken.setAzp(azp);
+
+		// Namespace: services derive from their SPIFFE-URI subject; users live at root.
+		boolean isServiceMint = SUB_TYPE_SERVICE.equals(extraClaims.get("sub_type"));
+		newToken.setNamespace(isServiceMint
+				? SpiffeIds.namespaceFromSpiffe(subject)
+				: spiffePrefixReader.get());
 
 		for (Map.Entry<String, Object> entry : extraClaims.entrySet()) {
 			newToken.setCustomField(entry.getKey(), entry.getValue());
@@ -984,6 +996,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			newToken.setAzp(!inputAzp.isEmpty() ? inputAzp : Kernel.getDescriptor().getPackage());
 			newToken.setPrincipal(subject);
 			newToken.setSubType(SUB_TYPE_SERVICE);
+			// Service namespace = path component of the SPIFFE-URI subject.
+			newToken.setNamespace(SpiffeIds.namespaceFromSpiffe(subject));
 			newToken.setTokenUse(
 					request.getAud().isEmpty() ? TOKEN_USE_ACCESS : TOKEN_USE_SERVICE);
 
@@ -1411,6 +1425,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		bootstrapToken.setCustomField(TERMINAL, request.getTerminal() ? "true" : "false");
 		bootstrapToken.setTokenUse(TOKEN_USE_BOOTSTRAP);
 		bootstrapToken.setSubType(SUB_TYPE_SERVICE);
+		// Service namespace = path component of the SPIFFE-URI childSub.
+		bootstrapToken.setNamespace(SpiffeIds.namespaceFromSpiffe(childSub));
 
 		bootstrapToken.sign(signingKey);
 
@@ -1448,6 +1464,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		refreshToken.setTokenUse(TOKEN_USE_REFRESH);
 		refreshToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		refreshToken.setSubType(SUB_TYPE_SERVICE);
+		// Service namespace = path component of the SPIFFE-URI sub (validated above).
+		refreshToken.setNamespace(SpiffeIds.namespaceFromSpiffe(sub));
 		refreshToken.setAzp(Kernel.getDescriptor().getPackage());
 		refreshToken.setInstanceId(instanceId);
 		if (parentSub != null) refreshToken.setCustomField(PARENT_SUB, parentSub);

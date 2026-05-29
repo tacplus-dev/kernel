@@ -68,6 +68,21 @@ public final class SpiffeIds {
 	}
 
 	/**
+	 * Extracts the namespace (path component without scheme) from a canonical
+	 * SPIFFE URI. e.g. {@code "spiffe://local/dev/oauth"} → {@code "local/dev/oauth"}.
+	 *
+	 * <p>The returned value is what should be set as the JWT {@code namespace}
+	 * claim — the canonical authorization-tree position used for level-or-below
+	 * checks. Returns empty string if the input is not a SPIFFE URI.
+	 */
+	public static String namespaceFromSpiffe(String spiffeId) {
+		if (!isSpiffeUri(spiffeId)) {
+			return "";
+		}
+		return spiffeId.substring(SCHEME_PREFIX.length());
+	}
+
+	/**
 	 * Extracts the bare service name (last path segment) from a SPIFFE URI.
 	 *
 	 * @param spiffeId canonical SPIFFE URI

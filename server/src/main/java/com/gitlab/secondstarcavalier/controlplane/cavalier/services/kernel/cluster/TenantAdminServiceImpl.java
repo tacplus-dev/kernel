@@ -57,6 +57,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (configMap.getTenants(ns).getName().isEmpty()) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
         }
+        Tenants.assertIdpUniqueness(configMap, ns, request.getConfig());
         Kernel.TenantConfigEntry entry = Kernel.TenantConfigEntry.newBuilder()
                 .setTenantName(ns)
                 .setConfig(request.getConfig())

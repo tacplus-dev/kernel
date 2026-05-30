@@ -5,6 +5,7 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.errors.ProtoException;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.oauth.Oauth;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.tenant_config.TenantConfigOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 
@@ -86,6 +87,49 @@ public final class Tenants {
         return new GeneratedCredPair(builder.build(), privatePem);
     }
 
+    /**
+     * Enforces the cluster-wide invariant that an IdP {@code (issuer_url, client_id)}
+     * pair is bound to at most one tenant namespace. The minted token's namespace is
+     * derived from the verified provider, so this pair must be globally unique for
+     * tenant resolution to be unambiguous (and ns-spoofing impossible).
+     *
+     * <p>Scans existing tenant configs for any provider colliding with one in
+     * {@code newConfig}, excluding {@code selfNs} so a tenant can re-put its own
+     * config idempotently. Throws {@code ALREADY_EXISTS} on conflict.
+     */
+    public static void assertIdpUniqueness(
+            ConfigMap configMap,
+            String selfNs,
+            TenantConfigOuterClass.TenantConfig newConfig) throws ProtoException {
+        if (newConfig == null || !newConfig.hasOauth()) {
+            return;
+        }
+        java.util.Set<String> incoming = new java.util.HashSet<>();
+        for (Oauth.OAuthProvider p : newConfig.getOauth().getProvidersList()) {
+            incoming.add(idpKey(p.getIssuerUrl(), p.getClientId()));
+        }
+        if (incoming.isEmpty()) {
+            return;
+        }
+        for (Kernel.TenantConfigEntry e : configMap.proto().getTenantConfigsList()) {
+            if (e.getTenantName().equals(selfNs)) {
+                continue;
+            }
+            for (Oauth.OAuthProvider p : e.getConfig().getOauth().getProvidersList()) {
+                if (incoming.contains(idpKey(p.getIssuerUrl(), p.getClientId()))) {
+                    throw new ProtoException(ProtoException.ALREADY_EXISTS,
+                            "IdP (issuer=" + p.getIssuerUrl() + ", client_id=" + p.getClientId()
+                                    + ") is already bound to tenant " + e.getTenantName()
+                                    + "; an IdP may belong to only one tenant namespace");
+                }
+            }
+        }
+    }
+
+    private static String idpKey(String issuerUrl, String clientId) {
+        return issuerUrl + "\u0000" + clientId;
+    }
+
     /** Persists a new tenant record (full path key) and its TenantConfig entry. */
     public static Kernel.Tenant createTenant(
             ConfigMap configMap,
@@ -99,6 +143,7 @@ public final class Tenants {
             throw new ProtoException(ProtoException.ALREADY_EXISTS,
                     "tenant already exists at " + fullNamespace);
         }
+        assertIdpUniqueness(configMap, fullNamespace, config);
 
         Timestamp now = nowTs();
         Kernel.Tenant.Builder tb = Kernel.Tenant.newBuilder()

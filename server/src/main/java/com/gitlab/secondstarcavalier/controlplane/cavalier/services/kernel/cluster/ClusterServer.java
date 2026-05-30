@@ -569,6 +569,7 @@ public class ClusterServer {
 			var identityService = new IdentityServiceImpl(
 					cfg.getDefaultTokenExpirySeconds(),
 					cfg.getMaxTokenLifetimeSeconds(),
+					cfg.getOfflineTokenLifetimeSeconds(),
 					externalJwkResolver,
 					keyRotator,
 					allKeysSupplier,

@@ -89,6 +89,10 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static final String TOKEN_USE_ACCESS = Helpers.tokenUseToString(TokenUse.TOKEN_USE_ACCESS);
 	private static final String TOKEN_USE_SERVICE = Helpers.tokenUseToString(TokenUse.TOKEN_USE_SERVICE);
 	private static final String TOKEN_USE_BOOTSTRAP = Helpers.tokenUseToString(TokenUse.TOKEN_USE_BOOTSTRAP);
+	// TODO: Replace with Helpers.tokenUseToString(TokenUse.TOKEN_USE_OFFLINE) once
+	// tacplus is rebuilt with token.proto TOKEN_USE_OFFLINE=7 (commit 9acf59f).
+	// The literal matches that enum's (spec.json_return_value).
+	private static final String TOKEN_USE_OFFLINE = "offline";
 	private static final String SUB_TYPE_SERVICE = Helpers.subTypeToString(SubType.SUB_TYPE_SERVICE);
 	private static final String SUB_TYPE_USER = Helpers.subTypeToString(SubType.SUB_TYPE_USER);
 
@@ -107,9 +111,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static final long INTERMEDIATE_CA_LIFETIME_SECONDS = 10L * 365 * 24 * 3600;
 
 	private static final long DEFAULT_MAX_TOKEN_LIFETIME_SECONDS = 2592000; // 30 days
+	private static final long DEFAULT_OFFLINE_TOKEN_LIFETIME_SECONDS = 7776000; // 90 days
 
 	private final long defaultTokenExpirySeconds;
 	private final long maxTokenLifetimeSeconds;
+	private final long offlineTokenLifetimeSeconds;
 	private final ExternalJwkResolver externalJwkResolver;
 	private final KeyRotator keyRotator;
 	private final Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader;
@@ -126,6 +132,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
 			long maxTokenLifetimeSeconds,
+			long offlineTokenLifetimeSeconds,
 			ExternalJwkResolver externalJwkResolver,
 			KeyRotator keyRotator,
 			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
@@ -139,6 +146,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			@Nullable OpaEvalGrpcClient opaEvalClient) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
+		this.offlineTokenLifetimeSeconds = offlineTokenLifetimeSeconds > 0 ? offlineTokenLifetimeSeconds : DEFAULT_OFFLINE_TOKEN_LIFETIME_SECONDS;
 		this.externalJwkResolver = externalJwkResolver;
 		this.keyRotator = keyRotator;
 		this.verifyingKeysReader = verifyingKeysReader;
@@ -271,7 +279,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		// Resolve and mint via shared internal method.
 		return mintUserTokenInternal(request.getSubject(), request.getClaims(),
-				request.getExp(), request.getTraceId(), delegate.getName());
+				request.getExp(), request.getTraceId(), delegate.getName(),
+				request.getOfflineAccess());
 	}
 
 	/**
@@ -280,7 +289,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 */
 	Tokenrequest.TokenMintResponse mintUserTokenInternal(
 			String subject, com.google.protobuf.Struct claims,
-			long requestedExp, String traceId, String delegateName)
+			long requestedExp, String traceId, String delegateName,
+			boolean offlineAccess)
 			throws StatusException {
 
 		Kernel.Delegate delegate = findDelegateByName(delegateName);
@@ -300,7 +310,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 
 		long now = Instant.now().getEpochSecond();
-		long maxExp = now + maxTokenLifetimeSeconds;
+		// Long-lived token: an Offline Token (OT) when offline_access is requested
+		// (months), otherwise a refresh token (RT). The OT is exempt from the
+		// short-lived max_token_lifetime ceiling and uses the offline ceiling.
+		long longLivedDefault = offlineAccess ? offlineTokenLifetimeSeconds : defaultTokenExpirySeconds;
+		long maxExp = now + (offlineAccess ? offlineTokenLifetimeSeconds : maxTokenLifetimeSeconds);
 		long exp;
 		if (requestedExp > 0) {
 			exp = requestedExp;
@@ -313,7 +327,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
 			}
 		} else {
-			exp = now + defaultTokenExpirySeconds;
+			exp = now + longLivedDefault;
 		}
 
 		TokenWrapper newToken = TokenWrapper.create()
@@ -325,8 +339,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.setJTI(UUID.randomUUID().toString());
 
 		newToken.setAzp(delegate.getName());
-		newToken.setTokenUse(TOKEN_USE_REFRESH);
-		newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
+		if (offlineAccess) {
+			newToken.setTokenUse(TOKEN_USE_OFFLINE);
+		} else {
+			newToken.setTokenUse(TOKEN_USE_REFRESH);
+			newToken.setCustomField("typ", TOKEN_TYPE_REFRESH);
+		}
 		newToken.setSubType(SUB_TYPE_USER);
 		// Namespace: OPA maps the caller's IdP (issuer/claims) to the tenant subtree
 		// they belong to. Fall back to the cluster root when the policy returns none.
@@ -346,11 +364,14 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		newToken.sign(signingKey);
 
-		logger.info("MintUserToken: sub={}, azp={}, exp={}, service_entitlements={}",
-				subject, delegate.getName(), exp,
+		logger.info("MintUserToken: sub={}, azp={}, exp={}, offline={}, service_entitlements={}",
+				subject, delegate.getName(), exp, offlineAccess,
 				newToken.getServiceEntitlements());
 
-		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
+		// The access token is always short-lived and never outlives its parent.
+		// A long-lived OT must not be mirrored into a long-lived AT.
+		long accessExp = Math.min(exp, now + defaultTokenExpirySeconds);
+		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, accessExp);
 		return Tokenrequest.TokenMintResponse.newBuilder()
 				.setRefreshToken(newToken.getProto())
 				.setAccessToken(accessProto)
@@ -924,6 +945,30 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			return exchangeBootstrapToRefresh(inputToken, bsSigningKey, bsNow, bsExp);
 		}
 
+		// Offline Token (OT) input. An OT mints a short-lived access token for the
+		// data plane, or — when offline_access is set — a fresh OT (renewal). It can
+		// never directly mint a service-scoped token; that must go OT → AT → ST.
+		if (TOKEN_USE_OFFLINE.equals(tokenUse)) {
+			if (!request.getAud().isEmpty()) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"offline tokens cannot mint service-specific tokens; exchange for an access token first");
+			}
+			ImmutableKey otSigningKey = keyRotator.getActiveSigningKey();
+			if (otSigningKey == null) {
+				throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+			}
+			long otNow = Instant.now().getEpochSecond();
+			if (request.getOfflineAccess()) {
+				return renewOfflineToken(inputToken, otSigningKey, otNow, request);
+			}
+			// Data plane: OT → AT (mintAccessFromRefresh stamps AT.parent_jti = OT.jti).
+			long otAccessExp = otNow + defaultTokenExpirySeconds;
+			TokenOuterClass.Token at = mintAccessFromRefresh(inputToken, otSigningKey, otNow, otAccessExp);
+			return Tokenrequest.TokenMintResponse.newBuilder()
+					.setAccessToken(at)
+					.build();
+		}
+
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey();
 		if (signingKey == null) {
 			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
@@ -1096,12 +1141,61 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// once the parent is revoked. parent_jti is kernel-only (services ignore it).
 		String parentJti = refreshToken.getJTI();
 		accessToken.setIssuedAt(now)
+				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 		if (parentJti != null && !parentJti.isEmpty()) {
 			accessToken.setCustomField("parent_jti", parentJti);
 		}
 		accessToken.sign(signingKey);
 		return accessToken.getProto();
+	}
+
+	/**
+	 * Mints a fresh Offline Token (OT) from a presented, already-verified OT
+	 * (renewal). The fresh OT keeps the holder's identity and claims, gets a new
+	 * jti and a new months-long expiry, and is returned alongside a fresh
+	 * short-lived access token so the caller refreshes both in one round trip.
+	 * A renewed OT is a fresh root: it carries no parent_jti (per the token-chain
+	 * lineage rules, only AT/ST chain to a parent).
+	 */
+	private Tokenrequest.TokenMintResponse renewOfflineToken(TokenWrapper oldOt,
+			ImmutableKey signingKey, long now, Tokenrequest.TokenMintRequest request)
+			throws StatusException {
+		long maxExp = now + offlineTokenLifetimeSeconds;
+		long exp;
+		if (request.getExp() > 0) {
+			exp = request.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > maxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds offline token lifetime ceiling " + maxExp);
+			}
+		} else {
+			exp = now + offlineTokenLifetimeSeconds;
+		}
+
+		TokenWrapper freshOt = TokenWrapper.from(oldOt.getProto().toBuilder()
+				.setSignature("")
+				.setBase64("")
+				.build());
+		freshOt.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+		freshOt.setTokenUse(TOKEN_USE_OFFLINE);
+		freshOt.sign(signingKey);
+
+		// Also hand back a fresh short-lived AT for immediate data-plane use.
+		long accessExp = now + defaultTokenExpirySeconds;
+		TokenOuterClass.Token at = mintAccessFromRefresh(freshOt, signingKey, now, accessExp);
+
+		logger.info("Renewed offline token (OT): sub={}, exp={}", freshOt.getSubject(), exp);
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setRefreshToken(freshOt.getProto())
+				.setAccessToken(at)
+				.build();
 	}
 
 	private String resolveInstanceIdFromContinuityToken(Tokenrequest.TokenMintRequest request,

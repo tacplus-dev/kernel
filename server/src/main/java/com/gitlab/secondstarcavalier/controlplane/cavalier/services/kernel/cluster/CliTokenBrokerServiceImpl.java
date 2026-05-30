@@ -167,7 +167,10 @@ public class CliTokenBrokerServiceImpl implements
 					Tokenrequest.TokenMintResponse mintResponse = identityService.mintUserTokenInternal(
 							complete.getSubject(),
 							complete.hasClaims() ? complete.getClaims() : null,
-							0, complete.getTraceId(), "oauth");
+							0, complete.getTraceId(), "oauth",
+							// offline_access stays false until the cavalier daemon is
+							// switched to OT semantics (cavalier PLAN items 3-7).
+							false);
 					refreshToken = mintResponse.getRefreshToken().getBase64();
 				} catch (IdentityServiceImpl.StatusException e) {
 					logger.error("CliTokenBroker: mint failed for nonce {}", nonce.substring(0, 8), e);

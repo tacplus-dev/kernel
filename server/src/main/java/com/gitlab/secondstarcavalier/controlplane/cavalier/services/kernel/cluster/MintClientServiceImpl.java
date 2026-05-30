@@ -44,4 +44,16 @@ public class MintClientServiceImpl implements MintClient.MintClientHandler {
         throw new ProtoException(ProtoException.UNIMPLEMENTED,
                 "MintClient.MintClientToken is not yet implemented");
     }
+
+    @Override
+    public Tokenrequest.TokenMintResponse mintP2SToken(Caller caller, Tokenrequest.MintP2STokenRequest request)
+            throws ProtoException {
+        // TODO(Batch C): resolve the cred_pair_id from the input_token against the
+        // tenant's pipeline_cred_pairs (or cluster cred_pairs for root), verify the
+        // JWT signature against the stored P2SCredPair public key, and mint a P2S
+        // bearer token {sub_type=pipeline, capability, namespace}.
+        logger.warn("MintClient.MintP2SToken called but not implemented yet (caller={})", caller);
+        throw new ProtoException(ProtoException.UNIMPLEMENTED,
+                "MintClient.MintP2SToken is not yet implemented");
+    }
 }

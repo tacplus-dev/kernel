@@ -1091,8 +1091,15 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.removePayload("typ")
 				.build());
 		accessToken.setTokenUse(TOKEN_USE_ACCESS);
+		// Lineage: the access token (AT) records the jti of the refresh/offline token
+		// (OT/RT) it was minted from, so the kernel can refuse to mint downstream tokens
+		// once the parent is revoked. parent_jti is kernel-only (services ignore it).
+		String parentJti = refreshToken.getJTI();
 		accessToken.setIssuedAt(now)
 				.setJTI(UUID.randomUUID().toString());
+		if (parentJti != null && !parentJti.isEmpty()) {
+			accessToken.setCustomField("parent_jti", parentJti);
+		}
 		accessToken.sign(signingKey);
 		return accessToken.getProto();
 	}

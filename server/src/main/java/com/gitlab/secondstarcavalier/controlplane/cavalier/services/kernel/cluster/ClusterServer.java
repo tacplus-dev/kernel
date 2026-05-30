@@ -443,7 +443,12 @@ public class ClusterServer {
 						},
 						signingKeyPath);
 
-				this.externalJwkResolver = new ExternalJwkResolver(allKeysSupplier);
+				final java.util.List<ExternalJwkResolver.TrustedIssuer> trustedIssuers =
+						cfg.getTrustedIssuersList().stream()
+								.map(ie -> new ExternalJwkResolver.TrustedIssuer(
+										ie.getIssuer(), ie.getJwksUri(), ie.getCaPem()))
+								.toList();
+				this.externalJwkResolver = new ExternalJwkResolver(allKeysSupplier, () -> trustedIssuers);
 			} else {
 				this.keyRotator = null;
 				this.externalJwkResolver = null;

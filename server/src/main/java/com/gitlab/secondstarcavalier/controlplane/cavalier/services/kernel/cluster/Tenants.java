@@ -7,6 +7,10 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacpl
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.oauth.Oauth;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.tenant_config.TenantConfigOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.credpair.Credpair;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.key.KeyOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.spec.Spec;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 
 import com.google.protobuf.Timestamp;
@@ -85,6 +89,50 @@ public final class Tenants {
             builder.setDescription(description);
         }
         return new GeneratedCredPair(builder.build(), privatePem);
+    }
+
+    /** Result of generating a fresh P2S cred_pair (public JWK stored, private PEM returned once). */
+    public record GeneratedP2SCredPair(Credpair.P2SCredPair credPair, String privateKeyPem) {}
+
+    /**
+     * Generates a fresh Ed25519 keypair and wraps the public half as a P2SCredPair
+     * whose public_key is a JWK (kty=OKP, crv=Ed25519, x=base64url(raw 32-byte key)),
+     * verifiable directly via ImmutableJwk. The private key (PKCS#8 PEM) is returned
+     * once for the holder to sign P2S proofs with.
+     */
+    public static GeneratedP2SCredPair generateP2SCredPair(
+            String id, Spec.Capability capability, String description) {
+        KeyPair kp;
+        try {
+            kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        } catch (Exception e) {
+            throw new RuntimeException("Ed25519 keypair generation failed", e);
+        }
+        // X.509 SubjectPublicKeyInfo for Ed25519 is a fixed 44-byte structure whose
+        // last 32 bytes are the raw public key — the JWK "x" value.
+        byte[] x509Pub = kp.getPublic().getEncoded();
+        byte[] raw = java.util.Arrays.copyOfRange(x509Pub, x509Pub.length - 32, x509Pub.length);
+        String x = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+        JwkOuterClass.Jwk publicJwk = JwkOuterClass.Jwk.newBuilder()
+                .setKty(KeyOuterClass.KeyType.KEY_TYPE_OKP)
+                .setKid(id)
+                .setCrv("Ed25519")
+                .setX(x)
+                .build();
+
+        byte[] pkcs8 = kp.getPrivate().getEncoded();
+        String privatePem = "-----BEGIN PRIVATE KEY-----\n"
+                + Base64.getMimeEncoder(64, "\n".getBytes()).encodeToString(pkcs8)
+                + "\n-----END PRIVATE KEY-----\n";
+
+        Credpair.P2SCredPair.Builder b = Credpair.P2SCredPair.newBuilder()
+                .setId(id)
+                .setPublicKey(publicJwk)
+                .setCapability(capability);
+        if (description != null && !description.isEmpty()) {
+            b.setDescription(description);
+        }
+        return new GeneratedP2SCredPair(b.build(), privatePem);
     }
 
     /**

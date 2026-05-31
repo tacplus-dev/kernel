@@ -703,7 +703,7 @@ public class ClusterServer {
 
 			// MintClient — client cred_pair → bearer token (mirrors MintServiceToken).
 			// SKELETON: returns UNIMPLEMENTED until the actual mint logic lands.
-			var mintClientImpl = new MintClientServiceImpl();
+			var mintClientImpl = new MintClientServiceImpl(kernelConfigMap, keyRotator, tokenIssuer);
 			var mintClientWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.MintClient(mintClientImpl);
 			serverBuilder.addService(mintClientWrapper);
 			logger.info("MintClientService registered on gRPC server (skeleton)");

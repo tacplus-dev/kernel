@@ -353,6 +353,9 @@ public class ClusterServer {
 				.addTransportFilter(transportFilter)
 				.intercept(rpcInterceptor)
 				.intercept(Auth.requestIdInterceptor())
+				// Populate AUTH_HEADER_CTX_KEY so the generated Authorizer on the P2S
+				// management wrappers (ClusterAdmin/TenantAdmin) can read the bearer.
+				.intercept(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.grpcserver.Authorizer.interceptor())
 				.intercept(backendServers.getAuthenticator().callerInterceptor());
 
 		serverBuilder.intercept(rateLimiter);
@@ -470,6 +473,12 @@ public class ClusterServer {
 			final String spiffePrefix = (configuredSpiffePrefix != null && !configuredSpiffePrefix.isEmpty())
 					? configuredSpiffePrefix : "local/dev";
 
+			// Mandatory, fail-closed Authorizer shared by the kernel's token-auth gRPC
+			// wrappers. The kernel is the JWKS authority, so it uses a LOCAL key source
+			// (verify against its own keys) rather than the RemoteJwkSource consumers use.
+			var kernelAuthorizer = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.grpcserver.Authorizer(
+					spiffePrefix, new LocalJwkSource(allKeysSupplier));
+
 			// Seed ServiceConfigState with spiffe_prefix so all services receive it.
 			try {
 				backendServers.libs().getServiceConfigStateMap().putConfig(
@@ -582,7 +591,7 @@ public class ClusterServer {
 					tokenIssuer,
 					grpcClients.userentitlementsOpaEval());
 
-			Mint mintWrapper = new Mint(identityService);
+			Mint mintWrapper = new Mint(identityService, kernelAuthorizer);
 
 			// CLI token broker — mediates nonce matching between oauth instances.
 			var cliTokenBroker = new CliTokenBrokerServiceImpl(identityService, hazelcast);
@@ -661,7 +670,7 @@ public class ClusterServer {
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
 
 			// Register CLI token broker via tacplus-generated wrapper (handles auth).
-			var cliTokenBrokerWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker(cliTokenBroker);
+			var cliTokenBrokerWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker(cliTokenBroker, kernelAuthorizer);
 			serverBuilder.addService(cliTokenBrokerWrapper);
 			logger.info("CliTokenBrokerService registered on gRPC server");
 
@@ -679,7 +688,7 @@ public class ClusterServer {
 			// token for forwarding to third-party APIs. OPA proxy policy is evaluated here.
 			var externalTokenMintImpl = new ExternalTokenMintServiceImpl(
 					keyRotator, allKeysSupplier, grpcClients.proxypolicyOpaEval());
-			var externalTokenMintWrapper = new ExternalTokenMint(externalTokenMintImpl);
+			var externalTokenMintWrapper = new ExternalTokenMint(externalTokenMintImpl, kernelAuthorizer);
 			externalTokenMintWrapper.setInstanceId(instanceName);
 			externalTokenMintWrapper.setTracePublisher((ExternalTokenMint.TracePublisher) event -> traceQueue.offer(event));
 			serverBuilder.addService(externalTokenMintWrapper);
@@ -691,22 +700,29 @@ public class ClusterServer {
 			// not yet implemented; today the C2S auth interceptor's level-or-below
 			// check on the target_namespace_field is the sole gate.
 			var kernelConfigMap = backendServers.services().getConfigMap();
+
+			// P2S management RPCs enforce capability + level-or-below via the shared
+			// kernelAuthorizer (built once, above). Register their per-method rules.
+			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin.registerMethodAuth(kernelAuthorizer);
+			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.TenantAdmin.registerMethodAuth(kernelAuthorizer);
+
 			var clusterAdminImpl = new ClusterAdminServiceImpl(kernelConfigMap, () -> spiffePrefix);
-			var clusterAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin(clusterAdminImpl);
+			var clusterAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin(clusterAdminImpl, kernelAuthorizer);
 			serverBuilder.addService(clusterAdminWrapper);
 			logger.info("ClusterAdminService registered on gRPC server");
 
 			var tenantAdminImpl = new TenantAdminServiceImpl(kernelConfigMap);
-			var tenantAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.TenantAdmin(tenantAdminImpl);
+			var tenantAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.TenantAdmin(tenantAdminImpl, kernelAuthorizer);
 			serverBuilder.addService(tenantAdminWrapper);
 			logger.info("TenantAdminService registered on gRPC server");
 
-			// MintClient — client cred_pair → bearer token (mirrors MintServiceToken).
-			// SKELETON: returns UNIMPLEMENTED until the actual mint logic lands.
+			// MintClient — cred_pair → bearer token. Its RPCs are auth_disabled
+			// (they verify a cred_pair JWT in the body), but the wrapper still takes
+			// the mandatory Authorizer.
 			var mintClientImpl = new MintClientServiceImpl(kernelConfigMap, keyRotator, tokenIssuer);
-			var mintClientWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.MintClient(mintClientImpl);
+			var mintClientWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.MintClient(mintClientImpl, kernelAuthorizer);
 			serverBuilder.addService(mintClientWrapper);
-			logger.info("MintClientService registered on gRPC server (skeleton)");
+			logger.info("MintClientService registered on gRPC server");
 
 			// TLS certificate lifecycle service (ManageCert bidi stream for auto_tls services).
 			this.tlsCertService = new TlsCertServiceImpl(

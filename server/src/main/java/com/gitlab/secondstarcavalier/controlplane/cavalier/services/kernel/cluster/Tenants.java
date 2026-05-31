@@ -178,14 +178,19 @@ public final class Tenants {
         return issuerUrl + "\u0000" + clientId;
     }
 
-    /** Persists a new tenant record (full path key) and its TenantConfig entry. */
+    /**
+     * Persists a new tenant record (full path key) and its TenantConfig entry,
+     * appending the kernel-auto-created bootstrap RW P2S cred_pair to
+     * KernelTenantConfig.pipeline_cred_pairs so the tenant can mint a P2S token
+     * (MintP2SToken) and call its first SetConfig.
+     */
     public static Kernel.Tenant createTenant(
             ConfigMap configMap,
             String fullNamespace,
             String leafName,
             Credentials.Entitlements entitlements,
             TenantConfigOuterClass.TenantConfig config,
-            Credentials.CredPair bootstrapCredPair) throws ProtoException {
+            Credpair.P2SCredPair bootstrapP2SCredPair) throws ProtoException {
 
         if (!configMap.getTenants(fullNamespace).getName().isEmpty()) {
             throw new ProtoException(ProtoException.ALREADY_EXISTS,
@@ -205,13 +210,13 @@ public final class Tenants {
         Kernel.Tenant tenant = tb.build();
         configMap.putTenants(fullNamespace, tenant);
 
-        // Build initial TenantConfig, append bootstrap cred_pair.
+        // Build initial TenantConfig, append the bootstrap RW P2S cred_pair.
         TenantConfigOuterClass.TenantConfig.Builder cfgBuilder =
                 (config != null ? config.toBuilder() : TenantConfigOuterClass.TenantConfig.newBuilder());
         Credentials.KernelTenantConfig.Builder kernelCfg =
                 cfgBuilder.getKernel().toBuilder();
-        if (bootstrapCredPair != null) {
-            kernelCfg.addCredPairs(bootstrapCredPair);
+        if (bootstrapP2SCredPair != null) {
+            kernelCfg.addPipelineCredPairs(bootstrapP2SCredPair);
         }
         cfgBuilder.setKernel(kernelCfg.build());
         Kernel.TenantConfigEntry entry = Kernel.TenantConfigEntry.newBuilder()

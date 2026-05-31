@@ -7,6 +7,7 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacpl
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.tenant_config.TenantConfigOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.errors.ProtoException;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.spec.Spec;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 
@@ -85,18 +86,19 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
 
         Credentials.Entitlements ent = request.hasEntitlements() ? request.getEntitlements() : null;
         String credId = Tenants.newCredPairId();
-        Tenants.GeneratedCredPair gen = Tenants.generateCredPair(
-                leaf, credId, ent, "bootstrap cred_pair for sub-tenant " + leaf);
+        Tenants.GeneratedP2SCredPair gen = Tenants.generateP2SCredPair(
+                credId, Spec.Capability.CAPABILITY_RW, "bootstrap RW cred_pair for sub-tenant " + leaf);
 
         Kernel.Tenant tenant = Tenants.createTenant(
                 configMap, fullNs, leaf, ent,
                 request.hasConfig() ? request.getConfig() : null,
                 gen.credPair());
 
+        // Public P2S cred_pair is in the tenant config (GetTenantConfig); the
+        // private key is delivered once here.
         logger.info("CreateSubTenant parent_ns={} ns={} cred_pair_id={}", parentNs, fullNs, credId);
         return Kernel.CreateSubTenantResponse.newBuilder()
                 .setTenant(tenant)
-                .setCredPair(gen.credPair())
                 .setCredPairPrivateKeyPem(gen.privateKeyPem())
                 .build();
     }
@@ -151,21 +153,21 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (tenant.getName().isEmpty()) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
         }
-        Credentials.Entitlements ent = request.hasEntitlements() ? request.getEntitlements() : null;
         String credId = Tenants.newCredPairId();
-        Tenants.GeneratedCredPair gen = Tenants.generateCredPair(
-                tenant.getName(), credId, ent, "cred_pair");
+        // P2S cred_pair. Capability defaults to RW; a per-request capability param
+        // is a follow-up (AddCredPairRequest currently carries C2S entitlements).
+        Tenants.GeneratedP2SCredPair gen = Tenants.generateP2SCredPair(
+                credId, Spec.Capability.CAPABILITY_RW, "cred_pair");
 
         Kernel.TenantConfigEntry entry = configMap.getTenantConfigs(ns);
         TenantConfigOuterClass.TenantConfig.Builder cfg = entry.getConfig().toBuilder();
         Credentials.KernelTenantConfig.Builder k = cfg.getKernel().toBuilder();
-        k.addCredPairs(gen.credPair());
+        k.addPipelineCredPairs(gen.credPair());
         cfg.setKernel(k.build());
         configMap.putTenantConfigs(ns, entry.toBuilder().setConfig(cfg.build()).build());
 
         logger.info("AddCredPair ns={} cred_pair_id={}", ns, credId);
         return Kernel.AddCredPairResponse.newBuilder()
-                .setCredPair(gen.credPair())
                 .setCredPairPrivateKeyPem(gen.privateKeyPem())
                 .build();
     }

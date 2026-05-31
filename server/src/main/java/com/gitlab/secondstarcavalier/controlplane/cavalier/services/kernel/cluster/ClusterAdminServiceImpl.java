@@ -6,6 +6,7 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacpl
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.errors.ProtoException;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.spec.Spec;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 
@@ -50,18 +51,22 @@ public class ClusterAdminServiceImpl implements ClusterAdmin.ClusterAdminHandler
 
         Credentials.Entitlements ent = request.hasEntitlements() ? request.getEntitlements() : null;
         String credId = Tenants.newCredPairId();
-        Tenants.GeneratedCredPair gen = Tenants.generateCredPair(
-                name, credId, ent, "bootstrap cred_pair for tenant " + name);
+        // Auto-create the bootstrap RW P2S cred_pair so the tenant can mint a P2S
+        // token and call its first SetConfig.
+        Tenants.GeneratedP2SCredPair gen = Tenants.generateP2SCredPair(
+                credId, Spec.Capability.CAPABILITY_RW, "bootstrap RW cred_pair for tenant " + name);
 
         Kernel.Tenant tenant = Tenants.createTenant(
                 configMap, fullNs, name, ent,
                 request.hasConfig() ? request.getConfig() : null,
                 gen.credPair());
 
+        // Return the initial config (which now contains the bootstrap P2S cred_pair)
+        // plus the private key, delivered once.
         logger.info("CreateTenant ns={} name={} cred_pair_id={}", fullNs, name, credId);
         return Kernel.CreateTenantResponse.newBuilder()
                 .setTenant(tenant)
-                .setCredPair(gen.credPair())
+                .setConfig(configMap.getTenantConfigs(fullNs).getConfig())
                 .setCredPairPrivateKeyPem(gen.privateKeyPem())
                 .build();
     }

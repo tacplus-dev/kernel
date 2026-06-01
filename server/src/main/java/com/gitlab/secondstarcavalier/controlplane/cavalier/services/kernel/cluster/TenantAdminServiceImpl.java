@@ -6,6 +6,8 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacpl
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.TenantAdmin;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.tenant_config.TenantConfigOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.project_config.ProjectConfigOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.credpair.Credpair;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.errors.ProtoException;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.spec.Spec;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
@@ -45,6 +47,8 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (entry.getTenantName().isEmpty()) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
         }
+        // The immutable system slice (L1) is stored inline (root-written via
+        // SetRootConfig); return the config as-is.
         return entry.getConfig();
     }
 
@@ -58,14 +62,19 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (configMap.getTenants(ns).getName().isEmpty()) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
         }
-        Tenants.assertIdpUniqueness(configMap, ns, request.getConfig());
+        // Preserve the immutable-to-tenant system slice (L1): keep whatever is
+        // currently stored (root-written), ignoring any tenant-supplied value.
+        Credentials.TenantSystemConfig existingSystem =
+                configMap.getTenantConfigs(ns).getConfig().getKernel().getSystem();
+        TenantConfigOuterClass.TenantConfig.Builder cfg = request.getConfig().toBuilder();
+        cfg.setKernel(cfg.getKernel().toBuilder().setSystem(existingSystem));
         Kernel.TenantConfigEntry entry = Kernel.TenantConfigEntry.newBuilder()
                 .setTenantName(ns)
-                .setConfig(request.getConfig())
+                .setConfig(cfg.build())
                 .build();
         configMap.putTenantConfigs(ns, entry);
         logger.info("PutTenantConfig ns={}", ns);
-        return request.getConfig();
+        return entry.getConfig();
     }
 
     @Override
@@ -122,7 +131,18 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         for (String k : toDelete) {
             Tenants.deleteTenant(configMap, k);
         }
-        logger.info("DeleteSubTenant ns={} cascaded={}", ns, toDelete.size());
+        // Cascade project configs (L3) under this namespace too.
+        List<String> projDelete = new ArrayList<>();
+        for (Kernel.ProjectConfigEntry e : configMap.proto().getProjectConfigsList()) {
+            String k = e.getProjectNamespace();
+            if (k.equals(ns) || k.startsWith(ns + "/")) {
+                projDelete.add(k);
+            }
+        }
+        for (String k : projDelete) {
+            configMap.deleteProjectConfigs(k);
+        }
+        logger.info("DeleteSubTenant ns={} cascaded={} projects={}", ns, toDelete.size(), projDelete.size());
         return Kernel.DeleteSubTenantResponse.getDefaultInstance();
     }
 
@@ -184,9 +204,11 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         }
         TenantConfigOuterClass.TenantConfig.Builder cfg = entry.getConfig().toBuilder();
         Credentials.KernelTenantConfig.Builder k = cfg.getKernel().toBuilder();
-        List<Credentials.CredPair> kept = new ArrayList<>();
+        // C2S cred_pairs moved to ProjectConfig; tenant-level cred_pairs are P2S
+        // pipeline cred_pairs.
+        List<Credpair.P2SCredPair> kept = new ArrayList<>();
         boolean removed = false;
-        for (Credentials.CredPair cp : k.getCredPairsList()) {
+        for (Credpair.P2SCredPair cp : k.getPipelineCredPairsList()) {
             if (cp.getId().equals(id)) {
                 removed = true;
             } else {
@@ -196,13 +218,69 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (!removed) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no cred_pair " + id + " at " + ns);
         }
-        k.clearCredPairs();
-        k.addAllCredPairs(kept);
+        k.clearPipelineCredPairs();
+        k.addAllPipelineCredPairs(kept);
         cfg.setKernel(k.build());
         configMap.putTenantConfigs(ns, entry.toBuilder().setConfig(cfg.build()).build());
 
         logger.info("RemoveCredPair ns={} cred_pair_id={}", ns, id);
         return Kernel.RemoveCredPairResponse.getDefaultInstance();
+    }
+
+    // --- Project config (L3) — ProjectConfig is the atomic unit ---
+
+    @Override
+    public ProjectConfigOuterClass.ProjectConfig getProjectConfig(
+            Caller caller, Kernel.GetProjectConfigRequest request) throws ProtoException {
+        String ns = require(request.getProjectNamespace(), "project_namespace");
+        Kernel.ProjectConfigEntry entry = configMap.getProjectConfigs(ns);
+        if (entry.getProjectNamespace().isEmpty()) {
+            throw new ProtoException(ProtoException.NOT_FOUND, "no project at " + ns);
+        }
+        return entry.getConfig();
+    }
+
+    @Override
+    public ProjectConfigOuterClass.ProjectConfig setProjectConfig(
+            Caller caller, Kernel.SetProjectConfigRequest request) throws ProtoException {
+        String ns = require(request.getProjectNamespace(), "project_namespace");
+        if (!request.hasConfig()) {
+            throw new ProtoException(ProtoException.INVALID_ARGUMENT, "config is required");
+        }
+        // IdP (issuer, client_id) must be globally unique across projects.
+        Tenants.assertIdpUniqueness(configMap, ns, request.getConfig());
+        Kernel.ProjectConfigEntry entry = Kernel.ProjectConfigEntry.newBuilder()
+                .setProjectNamespace(ns)
+                .setConfig(request.getConfig())
+                .build();
+        configMap.putProjectConfigs(ns, entry);
+        logger.info("SetProjectConfig ns={}", ns);
+        return request.getConfig();
+    }
+
+    @Override
+    public Kernel.ListProjectsResponse listProjects(
+            Caller caller, Kernel.ListProjectsRequest request) throws ProtoException {
+        String tenantNs = require(request.getTenantNamespace(), "tenant_namespace");
+        Kernel.ListProjectsResponse.Builder rb = Kernel.ListProjectsResponse.newBuilder();
+        for (Kernel.ProjectConfigEntry e : configMap.proto().getProjectConfigsList()) {
+            if (Tenants.isImmediateChild(e.getProjectNamespace(), tenantNs)) {
+                rb.addProjectNamespaces(e.getProjectNamespace());
+            }
+        }
+        return rb.build();
+    }
+
+    @Override
+    public Kernel.DeleteProjectResponse deleteProject(
+            Caller caller, Kernel.DeleteProjectRequest request) throws ProtoException {
+        String ns = require(request.getProjectNamespace(), "project_namespace");
+        if (configMap.getProjectConfigs(ns).getProjectNamespace().isEmpty()) {
+            throw new ProtoException(ProtoException.NOT_FOUND, "no project at " + ns);
+        }
+        configMap.deleteProjectConfigs(ns);
+        logger.info("DeleteProject ns={}", ns);
+        return Kernel.DeleteProjectResponse.getDefaultInstance();
     }
 
     private static String require(String v, String name) throws ProtoException {

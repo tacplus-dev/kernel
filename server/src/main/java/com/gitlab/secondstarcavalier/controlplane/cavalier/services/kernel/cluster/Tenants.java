@@ -7,6 +7,7 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacpl
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.oauth.Oauth;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.tenant_config.TenantConfigOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.project_config.ProjectConfigOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.credpair.Credpair;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.key.KeyOuterClass;
@@ -147,8 +148,8 @@ public final class Tenants {
      */
     public static void assertIdpUniqueness(
             ConfigMap configMap,
-            String selfNs,
-            TenantConfigOuterClass.TenantConfig newConfig) throws ProtoException {
+            String selfProjectNs,
+            ProjectConfigOuterClass.ProjectConfig newConfig) throws ProtoException {
         if (newConfig == null || !newConfig.hasOauth()) {
             return;
         }
@@ -159,19 +160,29 @@ public final class Tenants {
         if (incoming.isEmpty()) {
             return;
         }
-        for (Kernel.TenantConfigEntry e : configMap.proto().getTenantConfigsList()) {
-            if (e.getTenantName().equals(selfNs)) {
+        // IdP lives at the project level now; scan project configs for collisions.
+        for (Kernel.ProjectConfigEntry e : configMap.proto().getProjectConfigsList()) {
+            if (e.getProjectNamespace().equals(selfProjectNs)) {
                 continue;
             }
             for (Oauth.OAuthProvider p : e.getConfig().getOauth().getProvidersList()) {
                 if (incoming.contains(idpKey(p.getIssuerUrl(), p.getClientId()))) {
                     throw new ProtoException(ProtoException.ALREADY_EXISTS,
                             "IdP (issuer=" + p.getIssuerUrl() + ", client_id=" + p.getClientId()
-                                    + ") is already bound to tenant " + e.getTenantName()
-                                    + "; an IdP may belong to only one tenant namespace");
+                                    + ") is already bound to project " + e.getProjectNamespace()
+                                    + "; an IdP may belong to only one project namespace");
                 }
             }
         }
+    }
+
+    /** Stores an empty ProjectConfig at the given full project namespace. */
+    public static void putEmptyProject(ConfigMap configMap, String projectNs) {
+        Kernel.ProjectConfigEntry entry = Kernel.ProjectConfigEntry.newBuilder()
+                .setProjectNamespace(projectNs)
+                .setConfig(ProjectConfigOuterClass.ProjectConfig.getDefaultInstance())
+                .build();
+        configMap.putProjectConfigs(projectNs, entry);
     }
 
     private static String idpKey(String issuerUrl, String clientId) {
@@ -196,7 +207,6 @@ public final class Tenants {
             throw new ProtoException(ProtoException.ALREADY_EXISTS,
                     "tenant already exists at " + fullNamespace);
         }
-        assertIdpUniqueness(configMap, fullNamespace, config);
 
         Timestamp now = nowTs();
         Kernel.Tenant.Builder tb = Kernel.Tenant.newBuilder()
@@ -224,6 +234,10 @@ public final class Tenants {
                 .setConfig(cfgBuilder.build())
                 .build();
         configMap.putTenantConfigs(fullNamespace, entry);
+
+        // Auto-create the tenant's default project (L3). The tenant may use,
+        // replace (SetProjectConfig), or delete (DeleteProject) it.
+        putEmptyProject(configMap, fullNamespace + "/default");
 
         return tenant;
     }

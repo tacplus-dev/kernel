@@ -5,9 +5,8 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.Caller;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.credentials.Credentials;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.tenant_config.TenantConfigOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.errors.ProtoException;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.spec.Spec;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 
@@ -50,19 +49,21 @@ public class ClusterAdminServiceImpl implements ClusterAdmin.ClusterAdminHandler
         }
         String fullNs = Tenants.joinNamespace(spiffePrefixReader.get(), name);
 
-        Credentials.Entitlements ent = request.hasEntitlements() ? request.getEntitlements() : null;
+        Entitlements.TokenEntitlements ent = request.hasEntitlements() ? request.getEntitlements() : null;
         String credId = Tenants.newCredPairId();
-        // Auto-create the bootstrap RW P2S cred_pair so the tenant can mint a P2S
-        // token and call its first SetConfig.
-        Tenants.GeneratedP2SCredPair gen = Tenants.generateP2SCredPair(
-                credId, Spec.Capability.CAPABILITY_RW, "bootstrap RW cred_pair for tenant " + name);
+        // Auto-create the bootstrap cred_pair so the tenant can mint a token and
+        // call its first SetConfig. Grant it the tenant's ceiling entitlements and
+        // all of the tenant's projects ("*").
+        Tenants.GeneratedCredPair gen = Tenants.generateCredPair(
+                fullNs, credId, ent, java.util.List.of("*"),
+                "bootstrap cred_pair for tenant " + name);
 
         Kernel.Tenant tenant = Tenants.createTenant(
                 configMap, fullNs, name, ent,
                 request.hasConfig() ? request.getConfig() : null,
                 gen.credPair());
 
-        // Return the initial config (which now contains the bootstrap P2S cred_pair)
+        // Return the initial config (which now contains the bootstrap cred_pair)
         // plus the private key, delivered once.
         logger.info("CreateTenant ns={} name={} cred_pair_id={}", fullNs, name, credId);
         return Kernel.CreateTenantResponse.newBuilder()
@@ -92,41 +93,5 @@ public class ClusterAdminServiceImpl implements ClusterAdmin.ClusterAdminHandler
         Kernel.ConfigState state = configMap.proto();
         rb.addAllTenants(state.getTenantsList());
         return rb.build();
-    }
-
-    @Override
-    public Kernel.RootConfig getRootConfig(Caller caller, Kernel.GetRootConfigRequest request)
-            throws ProtoException {
-        // Assemble RootConfig from each tenant's stored system slice — there is no
-        // singleton state field; the system slice lives in tenant_configs.
-        Kernel.RootConfig.Builder rb = Kernel.RootConfig.newBuilder();
-        for (Kernel.TenantConfigEntry e : configMap.proto().getTenantConfigsList()) {
-            if (e.getConfig().getKernel().hasSystem()) {
-                rb.putTenants(e.getTenantName(), e.getConfig().getKernel().getSystem());
-            }
-        }
-        return rb.build();
-    }
-
-    @Override
-    public Kernel.RootConfig setRootConfig(Caller caller, Kernel.SetRootConfigRequest request)
-            throws ProtoException {
-        if (!request.hasConfig()) {
-            throw new ProtoException(ProtoException.INVALID_ARGUMENT, "config is required");
-        }
-        // Write each tenant's immutable system slice into its tenant_configs entry
-        // (proven keyed-map storage; no singleton state field).
-        for (var e : request.getConfig().getTenantsMap().entrySet()) {
-            String ns = e.getKey();
-            Kernel.TenantConfigEntry entry = configMap.getTenantConfigs(ns);
-            if (entry.getTenantName().isEmpty()) {
-                throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
-            }
-            TenantConfigOuterClass.TenantConfig.Builder cfg = entry.getConfig().toBuilder();
-            cfg.setKernel(cfg.getKernel().toBuilder().setSystem(e.getValue()));
-            configMap.putTenantConfigs(ns, entry.toBuilder().setConfig(cfg.build()).build());
-        }
-        logger.info("SetRootConfig tenants={}", request.getConfig().getTenantsCount());
-        return request.getConfig();
     }
 }

@@ -5,11 +5,9 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.Caller;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.TenantAdmin;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.credentials.Credentials;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.tenant_config.TenantConfigOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.project_config.ProjectConfigOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.credpair.Credpair;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.errors.ProtoException;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.spec.Spec;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 
@@ -47,8 +45,6 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (entry.getTenantName().isEmpty()) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
         }
-        // The immutable system slice (L1) is stored inline (root-written via
-        // SetRootConfig); return the config as-is.
         return entry.getConfig();
     }
 
@@ -62,15 +58,11 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (configMap.getTenants(ns).getName().isEmpty()) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
         }
-        // Preserve the immutable-to-tenant system slice (L1): keep whatever is
-        // currently stored (root-written), ignoring any tenant-supplied value.
-        Credentials.TenantSystemConfig existingSystem =
-                configMap.getTenantConfigs(ns).getConfig().getKernel().getSystem();
-        TenantConfigOuterClass.TenantConfig.Builder cfg = request.getConfig().toBuilder();
-        cfg.setKernel(cfg.getKernel().toBuilder().setSystem(existingSystem));
+        // IdP (issuer, client_id) must be globally unique across tenants.
+        Tenants.assertIdpUniqueness(configMap, ns, request.getConfig());
         Kernel.TenantConfigEntry entry = Kernel.TenantConfigEntry.newBuilder()
                 .setTenantName(ns)
-                .setConfig(cfg.build())
+                .setConfig(request.getConfig())
                 .build();
         configMap.putTenantConfigs(ns, entry);
         logger.info("PutTenantConfig ns={}", ns);
@@ -93,17 +85,20 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         }
         String fullNs = Tenants.joinNamespace(parentNs, leaf);
 
-        Credentials.Entitlements ent = request.hasEntitlements() ? request.getEntitlements() : null;
+        Entitlements.TokenEntitlements ent = request.hasEntitlements() ? request.getEntitlements() : null;
         String credId = Tenants.newCredPairId();
-        Tenants.GeneratedP2SCredPair gen = Tenants.generateP2SCredPair(
-                credId, Spec.Capability.CAPABILITY_RW, "bootstrap RW cred_pair for sub-tenant " + leaf);
+        // Bootstrap cred_pair for the sub-tenant: ceiling entitlements, all of
+        // the sub-tenant's projects ("*").
+        Tenants.GeneratedCredPair gen = Tenants.generateCredPair(
+                fullNs, credId, ent, List.of("*"),
+                "bootstrap cred_pair for sub-tenant " + leaf);
 
         Kernel.Tenant tenant = Tenants.createTenant(
                 configMap, fullNs, leaf, ent,
                 request.hasConfig() ? request.getConfig() : null,
                 gen.credPair());
 
-        // Public P2S cred_pair is in the tenant config (GetTenantConfig); the
+        // Public cred_pair is in the tenant config (GetTenantConfig); the
         // private key is delivered once here.
         logger.info("CreateSubTenant parent_ns={} ns={} cred_pair_id={}", parentNs, fullNs, credId);
         return Kernel.CreateSubTenantResponse.newBuilder()
@@ -174,15 +169,16 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
         }
         String credId = Tenants.newCredPairId();
-        // P2S cred_pair. Capability defaults to RW; a per-request capability param
-        // is a follow-up (AddCredPairRequest currently carries C2S entitlements).
-        Tenants.GeneratedP2SCredPair gen = Tenants.generateP2SCredPair(
-                credId, Spec.Capability.CAPABILITY_RW, "cred_pair");
+        // Cred_pair carries the request's entitlements (⊆ tenant ceiling).
+        // Namespaces default to all of the tenant's projects ("*") for now.
+        Entitlements.TokenEntitlements ent = request.hasEntitlements() ? request.getEntitlements() : null;
+        Tenants.GeneratedCredPair gen = Tenants.generateCredPair(
+                ns, credId, ent, List.of("*"), "cred_pair");
 
         Kernel.TenantConfigEntry entry = configMap.getTenantConfigs(ns);
         TenantConfigOuterClass.TenantConfig.Builder cfg = entry.getConfig().toBuilder();
         Credentials.KernelTenantConfig.Builder k = cfg.getKernel().toBuilder();
-        k.addPipelineCredPairs(gen.credPair());
+        k.addCredPairs(gen.credPair());
         cfg.setKernel(k.build());
         configMap.putTenantConfigs(ns, entry.toBuilder().setConfig(cfg.build()).build());
 
@@ -204,11 +200,9 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         }
         TenantConfigOuterClass.TenantConfig.Builder cfg = entry.getConfig().toBuilder();
         Credentials.KernelTenantConfig.Builder k = cfg.getKernel().toBuilder();
-        // C2S cred_pairs moved to ProjectConfig; tenant-level cred_pairs are P2S
-        // pipeline cred_pairs.
-        List<Credpair.P2SCredPair> kept = new ArrayList<>();
+        List<Credentials.CredPair> kept = new ArrayList<>();
         boolean removed = false;
-        for (Credpair.P2SCredPair cp : k.getPipelineCredPairsList()) {
+        for (Credentials.CredPair cp : k.getCredPairsList()) {
             if (cp.getId().equals(id)) {
                 removed = true;
             } else {
@@ -218,8 +212,8 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (!removed) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no cred_pair " + id + " at " + ns);
         }
-        k.clearPipelineCredPairs();
-        k.addAllPipelineCredPairs(kept);
+        k.clearCredPairs();
+        k.addAllCredPairs(kept);
         cfg.setKernel(k.build());
         configMap.putTenantConfigs(ns, entry.toBuilder().setConfig(cfg.build()).build());
 
@@ -230,7 +224,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     // --- Project config (L3) — ProjectConfig is the atomic unit ---
 
     @Override
-    public ProjectConfigOuterClass.ProjectConfig getProjectConfig(
+    public Kernel.ProjectConfig getProjectConfig(
             Caller caller, Kernel.GetProjectConfigRequest request) throws ProtoException {
         String ns = require(request.getProjectNamespace(), "project_namespace");
         Kernel.ProjectConfigEntry entry = configMap.getProjectConfigs(ns);
@@ -241,14 +235,12 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     }
 
     @Override
-    public ProjectConfigOuterClass.ProjectConfig setProjectConfig(
+    public Kernel.ProjectConfig setProjectConfig(
             Caller caller, Kernel.SetProjectConfigRequest request) throws ProtoException {
         String ns = require(request.getProjectNamespace(), "project_namespace");
         if (!request.hasConfig()) {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT, "config is required");
         }
-        // IdP (issuer, client_id) must be globally unique across projects.
-        Tenants.assertIdpUniqueness(configMap, ns, request.getConfig());
         Kernel.ProjectConfigEntry entry = Kernel.ProjectConfigEntry.newBuilder()
                 .setProjectNamespace(ns)
                 .setConfig(request.getConfig())

@@ -106,6 +106,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 	private static final Pattern WORKLOAD_NAME_PATTERN = Pattern.compile("[a-zA-Z0-9_-]+");
 
+	// v3 project-scoping session claims, stamped on a user's refresh/offline token
+	// from the OPA result at login. They let a refresh→access exchange scope the
+	// AT to one authorized project (and switch projects) without re-running login.
+	// authorized_projects is a JSON array of leaf names; default_project is a leaf.
+	private static final String CLAIM_AUTHORIZED_PROJECTS = "authorized_projects";
+	private static final String CLAIM_DEFAULT_PROJECT = "default_project";
+
 
 	/** Intermediate CA lifetime: 10 years. */
 	private static final long INTERMEDIATE_CA_LIFETIME_SECONDS = 10L * 365 * 24 * 3600;
@@ -361,6 +368,10 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				newToken.setCustomField(entry.getKey(), entry.getValue());
 			}
 		}
+
+		// v3: record the session's authorized projects so later refresh→access
+		// exchanges can scope/switch the AT's project without re-login.
+		stampProjectClaims(newToken, opaResult);
 
 		newToken.sign(signingKey);
 
@@ -653,6 +664,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// Set service_entitlements from OPA result (uncleopa expands all_entitlements).
 		newToken.setServiceEntitlements(expanded);
 		newToken.setClaimsFromStruct(idpClaims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
+		// v3: record the session's authorized projects for later AT scoping/switch.
+		stampProjectClaims(newToken, opaResult);
 
 		newToken.sign(signingKey);
 
@@ -962,8 +975,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				return renewOfflineToken(inputToken, otSigningKey, otNow, request);
 			}
 			// Data plane: OT → AT (mintAccessFromRefresh stamps AT.parent_jti = OT.jti).
+			// The AT is scoped to the requested (or default) project — this is the
+			// project-switch path for offline-token holders.
 			long otAccessExp = otNow + defaultTokenExpirySeconds;
-			TokenOuterClass.Token at = mintAccessFromRefresh(inputToken, otSigningKey, otNow, otAccessExp);
+			TokenOuterClass.Token at = mintAccessFromRefresh(
+					inputToken, otSigningKey, otNow, otAccessExp, request.getProject());
 			return Tokenrequest.TokenMintResponse.newBuilder()
 					.setAccessToken(at)
 					.build();
@@ -1105,6 +1121,16 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			newToken.setTokenUse(
 					request.getAud().isEmpty() ? TOKEN_USE_ACCESS : TOKEN_USE_SERVICE);
 
+			// v3: a refresh→access exchange scopes the AT to one authorized
+			// project (the project-switch path). An access→service exchange
+			// (aud set) keeps the already-project-scoped namespace as-is.
+			if (isRefresh && request.getAud().isEmpty()) {
+				String projectNs = projectScopedNamespace(inputToken, request.getProject());
+				if (projectNs != null) {
+					newToken.setNamespace(projectNs);
+				}
+			}
+
 			// Scope service_entitlements to the target service and its vservices.
 			if (!request.getAud().isEmpty()) {
 				Entitlements.TokenEntitlements te = newToken.getServiceEntitlements();
@@ -1129,13 +1155,33 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 * setting token_use=access, and re-signing with a new jti.
 	 */
 	private TokenOuterClass.Token mintAccessFromRefresh(TokenWrapper refreshToken,
-			ImmutableKey signingKey, long now, long exp) {
+			ImmutableKey signingKey, long now, long exp) throws StatusException {
+		return mintAccessFromRefresh(refreshToken, signingKey, now, exp, null);
+	}
+
+	/**
+	 * As {@link #mintAccessFromRefresh(TokenWrapper, ImmutableKey, long, long)},
+	 * but scopes the access token to a single project (v3). {@code requestedProject}
+	 * (may be null/empty) selects which authorized project to scope to; empty uses
+	 * the session's default project.
+	 */
+	private TokenOuterClass.Token mintAccessFromRefresh(TokenWrapper refreshToken,
+			ImmutableKey signingKey, long now, long exp, String requestedProject)
+			throws StatusException {
 		TokenWrapper accessToken = TokenWrapper.from(refreshToken.getProto().toBuilder()
 				.setSignature("")
 				.setBase64("")
 				.removePayload("typ")
 				.build());
 		accessToken.setTokenUse(TOKEN_USE_ACCESS);
+		// v3: an IDP user's access token is scoped to exactly one project. The
+		// refresh/offline token carries the session's authorized_projects +
+		// default_project; service/workload tokens carry none (→ namespace
+		// unchanged, the cloned tenant/SPIFFE namespace stands).
+		String projectNs = projectScopedNamespace(refreshToken, requestedProject);
+		if (projectNs != null) {
+			accessToken.setNamespace(projectNs);
+		}
 		// Lineage: the access token (AT) records the jti of the refresh/offline token
 		// (OT/RT) it was minted from, so the kernel can refuse to mint downstream tokens
 		// once the parent is revoked. parent_jti is kernel-only (services ignore it).
@@ -1148,6 +1194,81 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		accessToken.sign(signingKey);
 		return accessToken.getProto();
+	}
+
+	/**
+	 * v3 project scoping. Reads the session refresh/offline token's
+	 * {@code authorized_projects} + {@code default_project} claims (stamped at
+	 * login from the OPA result) and returns the full project namespace
+	 * ({@code tenantNs + "/" + leaf}) the access token should be scoped to.
+	 *
+	 * <p>{@code requestedProject} (may be null/empty) selects the project to
+	 * switch to and must be one of the authorized projects; empty uses
+	 * {@code default_project}. Returns {@code null} when the token carries no
+	 * project authorization (service/workload tokens) — the caller then keeps
+	 * the cloned namespace unchanged.
+	 *
+	 * @throws StatusException PERMISSION_DENIED if the requested project is not authorized.
+	 */
+	private String projectScopedNamespace(TokenWrapper rt, String requestedProject)
+			throws StatusException {
+		String defaultProject = rt.getCustomField(CLAIM_DEFAULT_PROJECT);
+		String authJson = rt.getCustomField(CLAIM_AUTHORIZED_PROJECTS);
+		if (authJson == null && (defaultProject == null || defaultProject.isEmpty())) {
+			return null; // not a project-scoped (IDP user) session
+		}
+		List<String> authorized = parseStringList(authJson);
+		String leaf = (requestedProject != null && !requestedProject.isEmpty())
+				? requestedProject
+				: defaultProject;
+		if (leaf == null || leaf.isEmpty()) {
+			return null; // nothing to scope to
+		}
+		if (!authorized.isEmpty() && !authorized.contains(leaf)) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"not authorized for project '" + leaf + "'");
+		}
+		String tenantNs = rt.getNamespace();
+		if (tenantNs == null || tenantNs.isEmpty()) {
+			return null;
+		}
+		String base = tenantNs.endsWith("/") ? tenantNs.substring(0, tenantNs.length() - 1) : tenantNs;
+		return base + "/" + leaf;
+	}
+
+	/** Parses a JSON string array (as written by Gson) into a list; null/blank → empty. */
+	private static List<String> parseStringList(String json) {
+		if (json == null || json.isEmpty()) {
+			return List.of();
+		}
+		try {
+			com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(json);
+			if (!el.isJsonArray()) {
+				return List.of();
+			}
+			List<String> out = new java.util.ArrayList<>();
+			for (com.google.gson.JsonElement e : el.getAsJsonArray()) {
+				if (e.isJsonPrimitive()) {
+					out.add(e.getAsString());
+				}
+			}
+			return out;
+		} catch (Exception e) {
+			return List.of();
+		}
+	}
+
+	/**
+	 * Stamps the v3 project-scoping session claims on a freshly built user
+	 * refresh/offline token from the OPA evaluation result, so later
+	 * refresh→access exchanges can scope (and switch) the AT's project.
+	 */
+	private static void stampProjectClaims(TokenWrapper rt, Userentitlements.EntitlementEvalResult opaResult) {
+		rt.setCustomField(CLAIM_AUTHORIZED_PROJECTS,
+				new com.google.gson.Gson().toJson(opaResult.getAuthorizedProjectsList()));
+		if (!opaResult.getDefaultProject().isEmpty()) {
+			rt.setCustomField(CLAIM_DEFAULT_PROJECT, opaResult.getDefaultProject());
+		}
 	}
 
 	/**

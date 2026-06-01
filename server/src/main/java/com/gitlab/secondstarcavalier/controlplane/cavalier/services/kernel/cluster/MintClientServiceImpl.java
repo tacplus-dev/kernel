@@ -7,10 +7,9 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacpl
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.Caller;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.token.TokenWrapper;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.MintClient;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.credpair.Credpair;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.errors.ProtoException;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.spec.Spec;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.token.TokenOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
@@ -75,12 +74,13 @@ public class MintClientServiceImpl implements MintClient.MintClientHandler {
                     "input_token missing kid (cred_pair_id)");
         }
 
-        // Resolve the P2SCredPair by id across tenants' pipeline_cred_pairs.
-        // The owning tenant's namespace becomes the minted token's namespace.
-        Credpair.P2SCredPair matched = null;
+        // Resolve the CredPair by id across tenants' cred_pairs. The owning
+        // tenant's namespace becomes the minted token's namespace (entitlements +
+        // at-or-below cover the tenant and its projects).
+        Credentials.CredPair matched = null;
         String namespace = null;
         for (Kernel.TenantConfigEntry e : configMap.proto().getTenantConfigsList()) {
-            for (Credpair.P2SCredPair cp : e.getConfig().getKernel().getPipelineCredPairsList()) {
+            for (Credentials.CredPair cp : e.getConfig().getKernel().getCredPairsList()) {
                 if (credPairId.equals(cp.getId())) {
                     matched = cp;
                     namespace = e.getTenantName();
@@ -93,7 +93,7 @@ public class MintClientServiceImpl implements MintClient.MintClientHandler {
         }
         if (matched == null) {
             throw new ProtoException(ProtoException.UNAUTHENTICATED,
-                    "unknown P2S cred_pair: " + credPairId);
+                    "unknown cred_pair: " + credPairId);
         }
 
         // Expiry check on the cred_pair itself.
@@ -101,7 +101,7 @@ public class MintClientServiceImpl implements MintClient.MintClientHandler {
         if (matched.hasExpiresAt() && matched.getExpiresAt().getSeconds() > 0
                 && matched.getExpiresAt().getSeconds() <= now) {
             throw new ProtoException(ProtoException.UNAUTHENTICATED,
-                    "P2S cred_pair " + credPairId + " has expired");
+                    "cred_pair " + credPairId + " has expired");
         }
 
         // Verify the proof signature against the cred_pair's JWK public key.
@@ -109,15 +109,8 @@ public class MintClientServiceImpl implements MintClient.MintClientHandler {
             proof.verify(ImmutableJwk.from(matched.getPublicKey()));
         } catch (Exception e) {
             throw new ProtoException(ProtoException.UNAUTHENTICATED,
-                    "P2S proof verification failed: " + e.getMessage());
+                    "cred_pair proof verification failed: " + e.getMessage());
         }
-
-        Spec.Capability cap = matched.getCapability();
-        if (cap == Spec.Capability.CAPABILITY_UNSPECIFIED) {
-            throw new ProtoException(ProtoException.FAILED_PRECONDITION,
-                    "P2S cred_pair " + credPairId + " has no capability");
-        }
-        String capStr = cap == Spec.Capability.CAPABILITY_RW ? "RW" : "RO";
 
         ImmutableKey signingKey = keyRotator.getActiveSigningKey();
         if (signingKey == null) {
@@ -134,7 +127,9 @@ public class MintClientServiceImpl implements MintClient.MintClientHandler {
             exp = now + DEFAULT_P2S_TTL_SECONDS;
         }
 
-        // Mint the P2S bearer token: identity-only, capability-carrying.
+        // Mint a C2S token carrying the cred_pair's entitlements + namespace.
+        // No P2S/capability: the single C2S authorizer checks service_entitlements
+        // against (method, target namespace), identically to IDP-user tokens.
         TokenWrapper token = TokenWrapper.create()
                 .setIssuer(tokenIssuer)
                 .setSubject("cred-pair:" + credPairId)
@@ -143,12 +138,11 @@ public class MintClientServiceImpl implements MintClient.MintClientHandler {
                 .setExpiration(exp)
                 .setJTI(UUID.randomUUID().toString());
         token.setNamespace(namespace);
-        token.setSubType("pipeline");
-        token.setCustomField("capability", capStr);
+        token.setServiceEntitlements(matched.getEntitlements());
         token.sign(signingKey);
 
-        logger.info("Minted P2S token: cred_pair={} namespace={} capability={} exp={}",
-                credPairId, namespace, capStr, exp);
+        logger.info("Minted cred_pair token: cred_pair={} namespace={} exp={}",
+                credPairId, namespace, exp);
         TokenOuterClass.Token proto = token.getProto();
         return Tokenrequest.TokenMintResponse.newBuilder()
                 .setAccessToken(proto)

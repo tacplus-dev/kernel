@@ -701,11 +701,10 @@ public class ClusterServer {
 			// check on the target_namespace_field is the sole gate.
 			var kernelConfigMap = backendServers.services().getConfigMap();
 
-			// P2S management RPCs enforce capability + level-or-below via the shared
-			// kernelAuthorizer (built once, above). Register their per-method rules.
-			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin.registerMethodAuth(kernelAuthorizer);
-			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.TenantAdmin.registerMethodAuth(kernelAuthorizer);
-
+			// ClusterAdmin/TenantAdmin are ordinary C2S services: the shared
+			// kernelAuthorizer enforces the entitlement + level-or-below check
+			// (target_namespace_field) declaratively per the generated wrapper —
+			// no manual per-method registration.
 			var clusterAdminImpl = new ClusterAdminServiceImpl(kernelConfigMap, () -> spiffePrefix);
 			var clusterAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin(clusterAdminImpl, kernelAuthorizer);
 			serverBuilder.addService(clusterAdminWrapper);

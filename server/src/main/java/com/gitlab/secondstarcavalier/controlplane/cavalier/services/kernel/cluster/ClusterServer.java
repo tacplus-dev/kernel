@@ -701,6 +701,14 @@ public class ClusterServer {
 			// check on the target_namespace_field is the sole gate.
 			var kernelConfigMap = backendServers.services().getConfigMap();
 
+			// Seed the cluster-admin cred_pairs (kernel.Config.cluster_cred_pairs)
+			// as a root TenantConfigEntry so MintP2SToken can authenticate them
+			// (token namespace = cluster root, entitlements = config:ANY). This is
+			// what lets cavalierctl call ClusterAdmin/TenantAdmin to provision
+			// tenants and projects.
+			Tenants.seedClusterCredPairs(kernelConfigMap, cfg.getClusterCredPairsList(),
+					SpiffeIds.namespaceRoot(spiffePrefix));
+
 			// ClusterAdmin/TenantAdmin are ordinary C2S services: the shared
 			// kernelAuthorizer enforces the entitlement + level-or-below check
 			// (target_namespace_field) declaratively per the generated wrapper —

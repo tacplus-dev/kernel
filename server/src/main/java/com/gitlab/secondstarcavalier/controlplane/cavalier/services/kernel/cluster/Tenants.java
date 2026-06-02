@@ -242,4 +242,74 @@ public final class Tenants {
     public static String newCredPairId() {
         return "cp-" + UUID.randomUUID().toString().substring(0, 12);
     }
+
+    /**
+     * Seeds the cluster-admin cred_pairs (from {@code kernel.Config.cluster_cred_pairs})
+     * as a root {@code TenantConfigEntry} keyed by the cluster root namespace, so the
+     * standard MintP2SToken resolution path can authenticate them.
+     *
+     * <p>v3 "fold": a {@code ClusterCredPair} (id + PEM public key, no scope) becomes a
+     * unified {@code CredPair} owned by the root namespace, holding {@code config:ANY}
+     * (every kernel ClusterAdmin/TenantAdmin RPC) and {@code namespaces=["*"]}. The
+     * minted token therefore carries {@code namespace=}root, which satisfies
+     * SCOPE_CLUSTER (ClusterAdmin) and is at-or-above any tenant/project for the
+     * SCOPE_TENANT level-or-below check (TenantAdmin). Idempotent: re-running overwrites
+     * the root entry. No-op when there are no cluster cred_pairs.
+     */
+    public static void seedClusterCredPairs(
+            ConfigMap configMap,
+            java.util.List<Credentials.ClusterCredPair> clusterCredPairs,
+            String rootNamespace) {
+        if (clusterCredPairs == null || clusterCredPairs.isEmpty()) {
+            return;
+        }
+        Entitlements.TokenEntitlements allConfig = Entitlements.TokenEntitlements.newBuilder()
+                .addConfig(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel
+                        .tacplus.types.generated.services.Services.ConfigRPCs.CONFIG_RPCS_ANY)
+                .build();
+        Credentials.KernelTenantConfig.Builder kernelCfg = Credentials.KernelTenantConfig.newBuilder();
+        for (Credentials.ClusterCredPair ccp : clusterCredPairs) {
+            JwkOuterClass.Jwk jwk = pemToEd25519Jwk(ccp.getPublicKey(), ccp.getId());
+            Credentials.CredPair.Builder cp = Credentials.CredPair.newBuilder()
+                    .setId(ccp.getId())
+                    .setTenantName(rootNamespace)
+                    .setPublicKey(jwk)
+                    .setEntitlements(allConfig)
+                    .addNamespaces("*")
+                    .setCreatedAt(nowTs());
+            if (!ccp.getDescription().isEmpty()) {
+                cp.setDescription(ccp.getDescription());
+            }
+            kernelCfg.addCredPairs(cp.build());
+        }
+        TenantConfigOuterClass.TenantConfig cfg = TenantConfigOuterClass.TenantConfig.newBuilder()
+                .setKernel(kernelCfg.build())
+                .build();
+        Kernel.TenantConfigEntry entry = Kernel.TenantConfigEntry.newBuilder()
+                .setTenantName(rootNamespace)
+                .setConfig(cfg)
+                .build();
+        configMap.putTenantConfigs(rootNamespace, entry);
+    }
+
+    /**
+     * Converts an X.509 SubjectPublicKeyInfo PEM (Ed25519) into a v3 {@code Jwk}
+     * (kty=OKP, crv=Ed25519, x=base64url(raw 32-byte key)). The Ed25519 SPKI is a
+     * fixed 44-byte structure whose last 32 bytes are the raw public key.
+     */
+    private static JwkOuterClass.Jwk pemToEd25519Jwk(String pem, String kid) {
+        String b64 = pem
+                .replace("-----BEGIN PUBLIC KEY-----", "")
+                .replace("-----END PUBLIC KEY-----", "")
+                .replaceAll("\\s", "");
+        byte[] der = Base64.getDecoder().decode(b64);
+        byte[] raw = java.util.Arrays.copyOfRange(der, der.length - 32, der.length);
+        String x = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+        return JwkOuterClass.Jwk.newBuilder()
+                .setKty(KeyOuterClass.KeyType.KEY_TYPE_OKP)
+                .setKid(kid)
+                .setCrv("Ed25519")
+                .setX(x)
+                .build();
+    }
 }

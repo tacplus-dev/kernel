@@ -263,9 +263,11 @@ public final class Tenants {
         if (clusterCredPairs == null || clusterCredPairs.isEmpty()) {
             return;
         }
+        // config:[CONFIG_RPCS_ANY] — grants every kernel ClusterAdmin/TenantAdmin
+        // RPC. Use the proto enum's numeric value (CONFIG_RPCS_ANY = 99) via
+        // addConfigValue to avoid depending on the generated enum class symbol.
         Entitlements.TokenEntitlements allConfig = Entitlements.TokenEntitlements.newBuilder()
-                .addConfig(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel
-                        .tacplus.types.generated.services.Services.ConfigRPCs.CONFIG_RPCS_ANY)
+                .addConfigValue(99)
                 .build();
         Credentials.KernelTenantConfig.Builder kernelCfg = Credentials.KernelTenantConfig.newBuilder();
         for (Credentials.ClusterCredPair ccp : clusterCredPairs) {

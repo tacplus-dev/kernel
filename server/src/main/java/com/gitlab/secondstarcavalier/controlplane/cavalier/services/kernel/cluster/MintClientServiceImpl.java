@@ -20,24 +20,24 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * MintClientServiceImpl hosts the kernel's cred_pair → token exchanges.
+ * MintClientServiceImpl hosts the kernel's cred_pair → token exchange.
  *
- * <p>{@link #mintP2SToken} is the P2S (pipeline/CI) mint: a P2S cred_pair JWT
+ * <p>{@link #mintClientToken} is the v3 cred_pair mint (no P2S): a cred_pair JWT
  * (signed by the holder's private key, carrying the cred_pair_id as the JWT kid)
- * is exchanged for a kernel-signed P2S bearer token. Kernel resolves the
- * cred_pair_id against the tenants' {@code pipeline_cred_pairs}, verifies the JWT
- * signature against the stored JWK public key, and mints a token whose
- * {@code sub_type=pipeline}, {@code capability} and {@code namespace} come from the
- * cred_pair. That token gates the P2S management RPCs (ClusterAdmin/TenantAdmin),
- * enforced by capability + level-or-below.
+ * is exchanged for a kernel-signed C2S token. Kernel resolves the cred_pair_id
+ * against the tenants' {@code cred_pairs} (the cluster-admin cred_pair is seeded
+ * as a root-namespace cred_pair), verifies the JWT signature against the stored
+ * JWK public key, and mints a token whose {@code service_entitlements} and
+ * {@code namespace} come from the cred_pair. That token gates the management RPCs
+ * (ClusterAdmin/TenantAdmin) through the single C2S entitlement authorizer,
+ * identically to IDP-user tokens.
  *
- * <p>{@code mintClientToken} (C2S client cred_pair) is still a skeleton; deeper
- * C2S-cred_pair support lands later with CloudAuth.
+ * <p>{@code mintP2SToken} is retired (P2S removed in v3) — see that method.
  */
 public class MintClientServiceImpl implements MintClient.MintClientHandler {
     private static final Logger logger = LoggerFactory.getLogger(MintClientServiceImpl.class);
 
-    private static final long DEFAULT_P2S_TTL_SECONDS = 3600; // 1 hour
+    private static final long DEFAULT_TOKEN_TTL_SECONDS = 3600; // 1 hour
 
     private final ConfigMap configMap;
     private final KeyRotator keyRotator;
@@ -47,19 +47,11 @@ public class MintClientServiceImpl implements MintClient.MintClientHandler {
         this.configMap = configMap;
         this.keyRotator = keyRotator;
         this.tokenIssuer = tokenIssuer;
-        logger.info("MintClientServiceImpl initialised (P2S mint enabled; client-cred_pair mint skeleton)");
+        logger.info("MintClientServiceImpl initialised (cred_pair mint via MintClientToken)");
     }
 
     @Override
     public Tokenrequest.TokenMintResponse mintClientToken(Caller caller, Tokenrequest.MintClientTokenRequest request)
-            throws ProtoException {
-        logger.warn("MintClient.MintClientToken called but not implemented yet (caller={})", caller);
-        throw new ProtoException(ProtoException.UNIMPLEMENTED,
-                "MintClient.MintClientToken is not yet implemented");
-    }
-
-    @Override
-    public Tokenrequest.TokenMintResponse mintP2SToken(Caller caller, Tokenrequest.MintP2STokenRequest request)
             throws ProtoException {
         // Parse the presented cred_pair proof JWT.
         TokenWrapper proof;
@@ -124,7 +116,7 @@ public class MintClientServiceImpl implements MintClient.MintClientHandler {
                 throw new ProtoException(ProtoException.INVALID_ARGUMENT, "exp must be in the future");
             }
         } else {
-            exp = now + DEFAULT_P2S_TTL_SECONDS;
+            exp = now + DEFAULT_TOKEN_TTL_SECONDS;
         }
 
         // Mint a C2S token carrying the cred_pair's entitlements + namespace.
@@ -147,5 +139,17 @@ public class MintClientServiceImpl implements MintClient.MintClientHandler {
         return Tokenrequest.TokenMintResponse.newBuilder()
                 .setAccessToken(proto)
                 .build();
+    }
+
+    /**
+     * Retired: P2S no longer exists in v3. The cred_pair → token exchange is
+     * {@link #mintClientToken}; this RPC remains only to satisfy the generated
+     * handler interface and will be removed from the proto in a follow-up.
+     */
+    @Override
+    public Tokenrequest.TokenMintResponse mintP2SToken(Caller caller, Tokenrequest.MintP2STokenRequest request)
+            throws ProtoException {
+        throw new ProtoException(ProtoException.UNIMPLEMENTED,
+                "MintP2SToken is retired (no P2S in v3); use MintClient.MintClientToken");
     }
 }

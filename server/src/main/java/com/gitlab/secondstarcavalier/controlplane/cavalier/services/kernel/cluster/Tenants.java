@@ -264,11 +264,14 @@ public final class Tenants {
             return;
         }
         // config:[CONFIG_RPCS_ANY] — grants every kernel ClusterAdmin/TenantAdmin
-        // RPC. Use the proto enum's numeric value (CONFIG_RPCS_ANY = 99) via
-        // addConfigValue to avoid depending on the generated enum class symbol.
-        Entitlements.TokenEntitlements allConfig = Entitlements.TokenEntitlements.newBuilder()
-                .addConfigValue(99)
-                .build();
+        // RPC. Built via protobuf descriptor reflection (enum value 99 =
+        // CONFIG_RPCS_ANY) so it doesn't depend on the generated enum class's
+        // package/nesting, which varies with java_multiple_files.
+        Entitlements.TokenEntitlements.Builder entBuilder = Entitlements.TokenEntitlements.newBuilder();
+        com.google.protobuf.Descriptors.FieldDescriptor configField =
+                entBuilder.getDescriptorForType().findFieldByName("config");
+        entBuilder.addRepeatedField(configField, configField.getEnumType().findValueByNumber(99));
+        Entitlements.TokenEntitlements allConfig = entBuilder.build();
         Credentials.KernelTenantConfig.Builder kernelCfg = Credentials.KernelTenantConfig.newBuilder();
         for (Credentials.ClusterCredPair ccp : clusterCredPairs) {
             JwkOuterClass.Jwk jwk = pemToEd25519Jwk(ccp.getPublicKey(), ccp.getId());

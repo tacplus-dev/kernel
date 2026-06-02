@@ -518,6 +518,11 @@ public class ClusterServer {
 
 			// Feed ServiceHealthState into each ServiceConnection.
 			var healthMap = backendServers.services().getServiceHealthMap();
+			// This pod's own hostname (e.g. "kernel-0") for self-registration below;
+			// captured into a final so the poller lambda can reference it. It resolves
+			// via the per-pod service AND matches the pod's TLS cert SAN.
+			final String selfGrpcHost = (hostname != null && !hostname.isEmpty()
+					&& !hostname.equals("0.0.0.0")) ? hostname : "kernel-0";
 			Thread healthPoller = new Thread(() -> {
 				while (!Thread.currentThread().isInterrupted()) {
 					// Self-register the kernel as a resolvable backend so the gateway
@@ -532,12 +537,6 @@ public class ClusterServer {
 								.setServiceId("kernel")
 								.setInstanceId(instanceName)
 								.setStatus(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_HEALTHY);
-						// Advertise this pod's own hostname (e.g. "kernel-0"): it resolves
-						// via the per-pod service AND matches the pod's TLS cert SAN
-						// (the headless "kernel" name is NOT in the cert SAN), so the
-						// gateway's proxy TLS to the backend verifies.
-						String selfGrpcHost = (hostname != null && !hostname.isEmpty()
-								&& !hostname.equals("0.0.0.0")) ? hostname : "kernel-0";
 						ib.getGrpcEndpointBuilder().setHost(selfGrpcHost).setPort(grpcPort);
 						healthMap.putInstances("kernel@" + instanceName, ib.build());
 					} catch (Exception e) {

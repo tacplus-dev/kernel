@@ -520,6 +520,23 @@ public class ClusterServer {
 			var healthMap = backendServers.services().getServiceHealthMap();
 			Thread healthPoller = new Thread(() -> {
 				while (!Thread.currentThread().isInterrupted()) {
+					// Self-register the kernel as a resolvable backend so the gateway
+					// can proxy /kernel.* RPCs (ClusterAdmin/TenantAdmin/MintClient)
+					// to it. Other services publish ServiceInstanceHealth via S2S; the
+					// kernel hosts the map and writes its own entry directly. Refreshed
+					// each cycle (well within the 30s TTL). Endpoint is the headless
+					// "kernel" service on the gRPC port (server-TLS, no client cert).
+					try {
+						var ib = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.ServiceInstanceHealth.newBuilder()
+								.setId("kernel@" + instanceName)
+								.setServiceId("kernel")
+								.setInstanceId(instanceName)
+								.setStatus(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_HEALTHY);
+						ib.getGrpcEndpointBuilder().setHost("kernel").setPort(grpcPort);
+						healthMap.putInstances("kernel@" + instanceName, ib.build());
+					} catch (Exception e) {
+						logger.debug("kernel self-register failed: {}", e.getMessage());
+					}
 					try {
 						var instances = new java.util.ArrayList<>(healthMap.proto().getInstancesList());
 						// Deduplicate by host:port: when multiple instances share the same endpoint,

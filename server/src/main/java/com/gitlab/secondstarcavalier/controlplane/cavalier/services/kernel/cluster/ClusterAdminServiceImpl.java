@@ -47,7 +47,10 @@ public class ClusterAdminServiceImpl implements ClusterAdmin.ClusterAdminHandler
         if (name.contains("/")) {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT, "tenant name must be a leaf segment (no '/')");
         }
-        String fullNs = Tenants.joinNamespace(spiffePrefixReader.get(), name);
+        // Key tenants by the leading-slash namespace (matching token/OPA
+        // namespaces), not the bare trust-domain, so tenant/project records line
+        // up with the namespaces carried in minted tokens.
+        String fullNs = Tenants.joinNamespace(SpiffeIds.namespaceRoot(spiffePrefixReader.get()), name);
 
         Entitlements.TokenEntitlements ent = request.hasEntitlements() ? request.getEntitlements() : null;
         String credId = Tenants.newCredPairId();
@@ -80,7 +83,10 @@ public class ClusterAdminServiceImpl implements ClusterAdmin.ClusterAdminHandler
         if (name.isEmpty()) {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT, "tenant name must not be empty");
         }
-        String fullNs = Tenants.joinNamespace(spiffePrefixReader.get(), name);
+        // Key tenants by the leading-slash namespace (matching token/OPA
+        // namespaces), not the bare trust-domain, so tenant/project records line
+        // up with the namespaces carried in minted tokens.
+        String fullNs = Tenants.joinNamespace(SpiffeIds.namespaceRoot(spiffePrefixReader.get()), name);
         Tenants.deleteTenant(configMap, fullNs);
         logger.info("DeleteTenant ns={}", fullNs);
         return Kernel.DeleteTenantResponse.getDefaultInstance();

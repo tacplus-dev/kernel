@@ -903,6 +903,24 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		if (!isService) {
 			resp.setRefreshToken(newToken.getProto());
 		}
+		// Batch mint: also return one service token per requested audience, so a
+		// bootstrap/login call can hand back RT + AT + N ST in a single round
+		// trip. Each service token is minted from the freshly issued access token
+		// via the normal access→service exchange path.
+		if (!request.getServiceAudsList().isEmpty()) {
+			TokenWrapper accessWrapper = TokenWrapper.from(accessProto);
+			for (String svcAud : request.getServiceAudsList()) {
+				if (svcAud.isEmpty()) {
+					throw new StatusException(Status.INVALID_ARGUMENT,
+							"service_auds entries must be non-empty");
+				}
+				Tokenrequest.TokenMintRequest svcReq = Tokenrequest.TokenMintRequest.newBuilder()
+						.setAud(svcAud)
+						.setExp(request.getExp())
+						.build();
+				resp.addServiceTokens(exchangeKernelToken(svcReq, accessWrapper).getAccessToken());
+			}
+		}
 		return resp.build();
 	}
 
@@ -1022,6 +1040,35 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 					// TODO: reject once WorkloadState locality lookups are wired
 				}
 			}
+		}
+
+		// Batch mint (AT + N ST in one call): when the caller lists service_auds,
+		// return the access token plus one service token per audience. Each
+		// service token is minted via the normal access→service exchange path
+		// (recursing with the freshly minted access token as input), so S2S/U2S
+		// entitlement scoping and delegate authorization are applied exactly as
+		// for a standalone service-token request.
+		if (!request.getServiceAudsList().isEmpty()) {
+			TokenOuterClass.Token accessProto = isRefresh
+					? mintAccessFromRefresh(inputToken, signingKey, now, exp, request.getProject())
+					: inputToken.getProto();
+			TokenWrapper accessWrapper = TokenWrapper.from(accessProto);
+
+			Tokenrequest.TokenMintResponse.Builder batch =
+					Tokenrequest.TokenMintResponse.newBuilder().setAccessToken(accessProto);
+			for (String svcAud : request.getServiceAudsList()) {
+				if (svcAud.isEmpty()) {
+					throw new StatusException(Status.INVALID_ARGUMENT,
+							"service_auds entries must be non-empty");
+				}
+				Tokenrequest.TokenMintRequest svcReq = Tokenrequest.TokenMintRequest.newBuilder()
+						.setAud(svcAud)
+						.setExp(request.getExp())
+						.build();
+				Tokenrequest.TokenMintResponse svcResp = exchangeKernelToken(svcReq, accessWrapper);
+				batch.addServiceTokens(svcResp.getAccessToken());
+			}
+			return batch.build();
 		}
 
 		// Refresh tokens cannot directly mint service-specific tokens.

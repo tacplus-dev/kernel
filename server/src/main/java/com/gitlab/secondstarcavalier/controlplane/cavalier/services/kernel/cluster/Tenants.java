@@ -263,14 +263,24 @@ public final class Tenants {
         if (clusterCredPairs == null || clusterCredPairs.isEmpty()) {
             return;
         }
-        // config:[CONFIG_RPCS_ANY] — grants every kernel ClusterAdmin/TenantAdmin
-        // RPC. Built via protobuf descriptor reflection (enum value 99 =
-        // CONFIG_RPCS_ANY) so it doesn't depend on the generated enum class's
-        // package/nesting, which varies with java_multiple_files.
+        // All-entitlements for the cluster-admin cred_pair: for every repeated
+        // per-service RPC-enum field on TokenEntitlements, add that enum's _ANY
+        // value (number 99). This is the "cluster cred = all entitlements at
+        // root" of the v3 model, and is built by iterating the descriptor's
+        // fields so it depends on neither a specific field name nor a generated
+        // enum-class symbol (both of which vary across the generated code).
         Entitlements.TokenEntitlements.Builder entBuilder = Entitlements.TokenEntitlements.newBuilder();
-        com.google.protobuf.Descriptors.FieldDescriptor configField =
-                entBuilder.getDescriptorForType().findFieldByName("config");
-        entBuilder.addRepeatedField(configField, configField.getEnumType().findValueByNumber(99));
+        for (com.google.protobuf.Descriptors.FieldDescriptor f
+                : entBuilder.getDescriptorForType().getFields()) {
+            if (f.isRepeated()
+                    && f.getType() == com.google.protobuf.Descriptors.FieldDescriptor.Type.ENUM) {
+                com.google.protobuf.Descriptors.EnumValueDescriptor any =
+                        f.getEnumType().findValueByNumber(99);
+                if (any != null) {
+                    entBuilder.addRepeatedField(f, any);
+                }
+            }
+        }
         Entitlements.TokenEntitlements allConfig = entBuilder.build();
         Credentials.KernelTenantConfig.Builder kernelCfg = Credentials.KernelTenantConfig.newBuilder();
         for (Credentials.ClusterCredPair ccp : clusterCredPairs) {

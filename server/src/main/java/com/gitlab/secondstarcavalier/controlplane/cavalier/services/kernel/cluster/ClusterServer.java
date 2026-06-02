@@ -702,12 +702,17 @@ public class ClusterServer {
 			var kernelConfigMap = backendServers.services().getConfigMap();
 
 			// Seed the cluster-admin cred_pairs (kernel.Config.cluster_cred_pairs)
-			// as a root TenantConfigEntry so MintP2SToken can authenticate them
-			// (token namespace = cluster root, entitlements = config:ANY). This is
-			// what lets cavalierctl call ClusterAdmin/TenantAdmin to provision
-			// tenants and projects.
-			Tenants.seedClusterCredPairs(kernelConfigMap, cfg.getClusterCredPairsList(),
-					SpiffeIds.namespaceRoot(spiffePrefix));
+			// as a root TenantConfigEntry so MintClientToken can authenticate them
+			// (token namespace = cluster root, all entitlements). This is what lets
+			// the cluster admin call ClusterAdmin/TenantAdmin to provision tenants
+			// and projects. Non-fatal: a seeding failure must never crash kernel
+			// boot — log and continue (cluster-admin auth just won't be available).
+			try {
+				Tenants.seedClusterCredPairs(kernelConfigMap, cfg.getClusterCredPairsList(),
+						SpiffeIds.namespaceRoot(spiffePrefix));
+			} catch (Exception e) {
+				logger.warn("Failed to seed cluster-admin cred_pairs (continuing): {}", e.toString(), e);
+			}
 
 			// ClusterAdmin/TenantAdmin are ordinary C2S services: the shared
 			// kernelAuthorizer enforces the entitlement + level-or-below check

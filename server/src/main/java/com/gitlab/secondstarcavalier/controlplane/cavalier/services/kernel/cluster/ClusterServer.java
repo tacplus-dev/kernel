@@ -716,47 +716,10 @@ public class ClusterServer {
 			serverBuilder.addService(externalTokenMintWrapper);
 			logger.info("ExternalTokenMintService registered on gRPC server");
 
-			// Multi-tenancy control plane (cluster-scope + tenant-scope RPCs).
-			// Handlers read/write the kernel ConfigState (tenants + tenant_configs)
-			// via the generated typed ConfigMap. CredPair signed-request auth is
-			// not yet implemented; today the C2S auth interceptor's level-or-below
-			// check on the target_namespace_field is the sole gate.
-			var kernelConfigMap = backendServers.services().getConfigMap();
-
-			// Seed the cluster-admin cred_pairs (kernel.Config.cluster_cred_pairs)
-			// as a root TenantConfigEntry so MintClientToken can authenticate them
-			// (token namespace = cluster root, all entitlements). This is what lets
-			// the cluster admin call ClusterAdmin/TenantAdmin to provision tenants
-			// and projects. Non-fatal: a seeding failure must never crash kernel
-			// boot — log and continue (cluster-admin auth just won't be available).
-			try {
-				Tenants.seedClusterCredPairs(kernelConfigMap, cfg.getClusterCredPairsList(),
-						SpiffeIds.namespaceRoot(spiffePrefix));
-			} catch (Exception e) {
-				logger.warn("Failed to seed cluster-admin cred_pairs (continuing): {}", e.toString(), e);
-			}
-
-			// ClusterAdmin/TenantAdmin are ordinary C2S services: the shared
-			// kernelAuthorizer enforces the entitlement + level-or-below check
-			// (target_namespace_field) declaratively per the generated wrapper —
-			// no manual per-method registration.
-			var clusterAdminImpl = new ClusterAdminServiceImpl(kernelConfigMap, () -> spiffePrefix);
-			var clusterAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ClusterAdmin(clusterAdminImpl, kernelAuthorizer);
-			serverBuilder.addService(clusterAdminWrapper);
-			logger.info("ClusterAdminService registered on gRPC server");
-
-			var tenantAdminImpl = new TenantAdminServiceImpl(kernelConfigMap);
-			var tenantAdminWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.TenantAdmin(tenantAdminImpl, kernelAuthorizer);
-			serverBuilder.addService(tenantAdminWrapper);
-			logger.info("TenantAdminService registered on gRPC server");
-
-			// MintClient — cred_pair → bearer token. Its RPCs are auth_disabled
-			// (they verify a cred_pair JWT in the body), but the wrapper still takes
-			// the mandatory Authorizer.
-			var mintClientImpl = new MintClientServiceImpl(kernelConfigMap, keyRotator, tokenIssuer);
-			var mintClientWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.MintClient(mintClientImpl, kernelAuthorizer);
-			serverBuilder.addService(mintClientWrapper);
-			logger.info("MintClientService registered on gRPC server");
+			// Tenancy (ClusterAdmin/TenantAdmin) moved to the `config` service and
+			// MintClient (cred_pair → token) moved to the `mint` service. Kernel no
+			// longer owns the tenant ConfigState (removed from kernel.proto), so the
+			// former kernelConfigMap + cred_pair seeding are gone.
 
 			// TLS certificate lifecycle service (ManageCert bidi stream for auto_tls services).
 			this.tlsCertService = new TlsCertServiceImpl(

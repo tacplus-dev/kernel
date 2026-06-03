@@ -9,61 +9,115 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * Generates service-specific view servers owned by the kernel code generator.
+ * Generates the cluster's cross-boundary view servers (one per named view that
+ * any collection registers into via (spec.view_member)).
+ *
+ * view_member is repeated: a collection may feed multiple views (e.g. an
+ * internal signing key that belongs to both JwkVerifyingKeysView and
+ * GatewayJwksView). Each known view renders the generic ViewServer template
+ * with its own gRPC/proto classes; all views aggregate jwk.Jwk entries.
  */
 public class ViewServerGenerator {
 
+    /** Per-view codegen parameters. The message types differ per view; the
+     *  aggregated value type (jwk.Jwk) is shared. */
+    private record ViewSpec(
+            String className,        // e.g. JwkVerifyingKeysViewServer
+            String grpcSimple,       // e.g. JwkVerifyingKeysViewServiceGrpc
+            String grpcSubPkg,       // e.g. jwkview
+            String protoOuter,       // e.g. Jwkview
+            String respType,         // e.g. JwkViewResponse
+            String getReqType,       // e.g. JwkViewGetRequest
+            String getRespType,      // e.g. JwkViewGetResponse
+            String resourceName) {}  // e.g. jwk_verifying_keys_view
+
+    private static final Map<String, ViewSpec> KNOWN_VIEWS = new LinkedHashMap<>();
+    static {
+        KNOWN_VIEWS.put("JwkVerifyingKeysView", new ViewSpec(
+                "JwkVerifyingKeysViewServer", "JwkVerifyingKeysViewServiceGrpc", "jwkview",
+                "Jwkview", "JwkViewResponse", "JwkViewGetRequest", "JwkViewGetResponse",
+                "jwk_verifying_keys_view"));
+        KNOWN_VIEWS.put("GatewayJwksView", new ViewSpec(
+                "GatewayJwksViewServer", "GatewayJwksViewServiceGrpc", "gatewayjwksview",
+                "Gatewayjwksview", "GatewayJwksViewResponse", "GatewayJwksViewGetRequest",
+                "GatewayJwksViewGetResponse", "gateway_jwks_view"));
+    }
+
     public static void generate(GeneratorContext ctx) throws IOException {
-        if (!hasJwkVerifyingKeysView(ctx)) {
+        Set<String> declaredViews = collectViewNames(ctx);
+        if (declaredViews.isEmpty()) {
             return;
         }
 
         String pkg = ctx.getJavaPackageBase() + ".views";
-        Map<String, String> vars = new LinkedHashMap<>();
-        vars.put("HEADER", GeneratorContext.header("jwk_view_server"));
-        vars.put("PACKAGE", pkg);
-        vars.put("JWK_OUTER_CLASS", ctx.getTypesPackageBase() + ".types.libs.jwk.JwkOuterClass");
-        vars.put("JWK_VIEW_GRPC_CLASS", ctx.getTypesPackageBase() + ".types.libs.jwkview.JwkVerifyingKeysViewServiceGrpc");
-        vars.put("JWK_VIEW_PROTO_CLASS", ctx.getTypesPackageBase() + ".types.libs.jwkview.Jwkview");
-        vars.put("SECURITY_AUTH_CLASS", ctx.getJavaPackageBase() + ".SecurityAuthenticator");
-        vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.libs.trace.Trace.TraceRequest");
-
-        String content = TemplateEngine.render("JwkVerifyingKeysViewServer.java.template", vars);
         Path dir = ctx.getOutputDir().resolve("src/main/java/" + pkg.replace('.', '/'));
-        Files.createDirectories(dir);
-        Files.writeString(dir.resolve("JwkVerifyingKeysViewServer.java"), content);
+
+        for (String viewName : declaredViews) {
+            ViewSpec spec = KNOWN_VIEWS.get(viewName);
+            if (spec == null) {
+                // Unknown view name — no proto service to bind; skip (a typo in
+                // view_member or a view not yet wired into KNOWN_VIEWS).
+                continue;
+            }
+
+            String grpcFqn = ctx.getTypesPackageBase() + ".types.libs." + spec.grpcSubPkg() + "." + spec.grpcSimple();
+            String protoFqn = ctx.getTypesPackageBase() + ".types.libs." + spec.grpcSubPkg() + "." + spec.protoOuter();
+
+            Map<String, String> vars = new LinkedHashMap<>();
+            vars.put("HEADER", GeneratorContext.header("view_server"));
+            vars.put("PACKAGE", pkg);
+            vars.put("CLASS_NAME", spec.className());
+            vars.put("VIEW_NAME", viewName);
+            vars.put("JWK_OUTER_CLASS", ctx.getTypesPackageBase() + ".types.libs.jwk.JwkOuterClass");
+            vars.put("GRPC_FQN", grpcFqn);
+            vars.put("GRPC_IMPL", spec.grpcSimple() + "." + spec.grpcSimple() + "ImplBase");
+            vars.put("PROTO_FQN", protoFqn);
+            vars.put("RESP_TYPE", spec.protoOuter() + "." + spec.respType());
+            vars.put("GET_REQ_TYPE", spec.protoOuter() + "." + spec.getReqType());
+            vars.put("GET_RESP_TYPE", spec.protoOuter() + "." + spec.getRespType());
+            vars.put("RESOURCE_NAME", spec.resourceName());
+            vars.put("SECURITY_AUTH_CLASS", ctx.getJavaPackageBase() + ".SecurityAuthenticator");
+            vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.libs.trace.Trace.TraceRequest");
+
+            String content = TemplateEngine.render("ViewServer.java.template", vars);
+            Files.createDirectories(dir);
+            Files.writeString(dir.resolve(spec.className() + ".java"), content);
+        }
     }
 
-    private static boolean hasJwkVerifyingKeysView(GeneratorContext ctx) {
+    /** Collect every distinct view name registered by any state collection's
+     *  (repeated) view_member annotation. */
+    private static Set<String> collectViewNames(GeneratorContext ctx) {
+        Set<String> views = new LinkedHashSet<>();
         for (FileDescriptor fileDesc : ctx.getParser().getAllFiles().values()) {
             for (MessageDescriptor msg : fileDesc.getMessages()) {
-                // Check both simple and structured service_state annotations
-                boolean hasServiceState = false;
-                AnnotationValue backendRoot = msg.getAnnotations().get("service_state");
-                if (backendRoot != null && backendRoot.getStringValue() != null && !backendRoot.getStringValue().isEmpty()) {
-                    hasServiceState = true;
-                }
-                if (!hasServiceState) {
-                    java.util.List<AnnotationValue> repeated = msg.getRepeatedAnnotations("service_state");
-                    if (!repeated.isEmpty() && repeated.get(0).isStruct()) {
-                        var struct = repeated.get(0).getStructValue();
-                        if (struct.containsKey("name") || struct.containsKey("tag")) {
-                            hasServiceState = true;
+                if (!hasServiceState(msg)) continue;
+                for (FieldDescriptor field : msg.getFields()) {
+                    for (AnnotationValue vm : field.getRepeatedAnnotations("view_member")) {
+                        if (vm.getStringValue() != null && !vm.getStringValue().isEmpty()) {
+                            views.add(vm.getStringValue());
                         }
                     }
                 }
-                if (!hasServiceState) continue;
-
-                for (FieldDescriptor field : msg.getFields()) {
-                    AnnotationValue viewMember = field.getAnnotations().get("view_member");
-                    if (viewMember != null && "JwkVerifyingKeysView".equals(viewMember.getStringValue())) {
-                        return true;
-                    }
-                }
             }
+        }
+        return views;
+    }
+
+    private static boolean hasServiceState(MessageDescriptor msg) {
+        AnnotationValue backendRoot = msg.getAnnotations().get("service_state");
+        if (backendRoot != null && backendRoot.getStringValue() != null && !backendRoot.getStringValue().isEmpty()) {
+            return true;
+        }
+        java.util.List<AnnotationValue> repeated = msg.getRepeatedAnnotations("service_state");
+        if (!repeated.isEmpty() && repeated.get(0).isStruct()) {
+            var struct = repeated.get(0).getStructValue();
+            return struct.containsKey("name") || struct.containsKey("tag");
         }
         return false;
     }

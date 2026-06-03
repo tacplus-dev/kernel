@@ -3,8 +3,8 @@
 package {{PACKAGE}};
 
 import {{JWK_OUTER_CLASS}};
-import {{JWK_VIEW_GRPC_CLASS}};
-import {{JWK_VIEW_PROTO_CLASS}};
+import {{GRPC_FQN}};
+import {{PROTO_FQN}};
 import {{SECURITY_AUTH_CLASS}};
 import io.grpc.Status;
 import io.grpc.stub.ServerCallStreamObserver;
@@ -23,20 +23,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * JwkVerifyingKeysViewServer implements the JwkVerifyingKeysViewService gRPC service.
+ * {{CLASS_NAME}} implements the {{VIEW_NAME}} gRPC service.
  *
- * <p>Aggregates all collections annotated with (spec.view_member) = "JwkVerifyingKeysView"
+ * <p>Aggregates all collections annotated with (spec.view_member) = "{{VIEW_NAME}}"
  * into a single read-only view. Watch RPCs use polling-based change detection (500ms).
  */
-public class JwkVerifyingKeysViewServer
-        extends JwkVerifyingKeysViewServiceGrpc.JwkVerifyingKeysViewServiceImplBase
+public class {{CLASS_NAME}}
+        extends {{GRPC_IMPL}}
         implements Closeable {
 
-    private static final Logger logger = LoggerFactory.getLogger(JwkVerifyingKeysViewServer.class);
+    private static final Logger logger = LoggerFactory.getLogger({{CLASS_NAME}}.class);
 
     private final ScheduledExecutorService scheduler =
         Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "JwkVerifyingKeysViewWatcher");
+            Thread t = new Thread(r, "{{CLASS_NAME}}Watcher");
             t.setDaemon(true);
             return t;
         });
@@ -46,7 +46,7 @@ public class JwkVerifyingKeysViewServer
     private final List<WatcherEntry> watchers = new CopyOnWriteArrayList<>();
 
     @SafeVarargs
-    public JwkVerifyingKeysViewServer(SecurityAuthenticator authenticator,
+    public {{CLASS_NAME}}(SecurityAuthenticator authenticator,
             Supplier<Map<String, JwkOuterClass.Jwk>>... memberMapSuppliers) {
         this.authenticator = authenticator;
         this.memberMaps = List.of(memberMapSuppliers);
@@ -54,17 +54,17 @@ public class JwkVerifyingKeysViewServer
     }
 
     @Override
-    public void watch({{TRACE_REQUEST_TYPE}} request, StreamObserver<Jwkview.JwkViewResponse> observer) {
+    public void watch({{TRACE_REQUEST_TYPE}} request, StreamObserver<{{RESP_TYPE}}> observer) {
         try {
-            authenticator.checkAccess("*", "jwk_verifying_keys_view", SecurityAuthenticator.OperationType.READ);
+            authenticator.checkAccess("*", "{{RESOURCE_NAME}}", SecurityAuthenticator.OperationType.READ);
         } catch (Exception e) {
             observer.onError(Status.PERMISSION_DENIED
-                .withDescription("access denied to JwkVerifyingKeysView")
+                .withDescription("access denied to {{VIEW_NAME}}")
                 .asRuntimeException());
             return;
         }
 
-        Jwkview.JwkViewResponse snapshot = buildMergedResponse();
+        {{RESP_TYPE}} snapshot = buildMergedResponse();
         if (snapshot.getEntriesCount() > 0) {
             observer.onNext(snapshot);
         }
@@ -73,19 +73,19 @@ public class JwkVerifyingKeysViewServer
         watchers.add(entry);
 
         if (observer instanceof ServerCallStreamObserver) {
-            ((ServerCallStreamObserver<Jwkview.JwkViewResponse>) observer)
+            ((ServerCallStreamObserver<{{RESP_TYPE}}>) observer)
                 .setOnCancelHandler(() -> watchers.remove(entry));
         }
     }
 
     @Override
-    public void get(Jwkview.JwkViewGetRequest request,
-            StreamObserver<Jwkview.JwkViewGetResponse> observer) {
+    public void get({{GET_REQ_TYPE}} request,
+            StreamObserver<{{GET_RESP_TYPE}}> observer) {
         try {
-            authenticator.checkAccess("*", "jwk_verifying_keys_view", SecurityAuthenticator.OperationType.READ);
+            authenticator.checkAccess("*", "{{RESOURCE_NAME}}", SecurityAuthenticator.OperationType.READ);
         } catch (Exception e) {
             observer.onError(Status.PERMISSION_DENIED
-                .withDescription("access denied to JwkVerifyingKeysView")
+                .withDescription("access denied to {{VIEW_NAME}}")
                 .asRuntimeException());
             return;
         }
@@ -96,7 +96,7 @@ public class JwkVerifyingKeysViewServer
                 Map<String, JwkOuterClass.Jwk> map = source.get();
                 JwkOuterClass.Jwk value = map.get(kid);
                 if (value != null) {
-                    observer.onNext(Jwkview.JwkViewGetResponse.newBuilder()
+                    observer.onNext({{GET_RESP_TYPE}}.newBuilder()
                         .setValue(value)
                         .setFound(true)
                         .build());
@@ -108,7 +108,7 @@ public class JwkVerifyingKeysViewServer
             }
         }
 
-        observer.onNext(Jwkview.JwkViewGetResponse.newBuilder()
+        observer.onNext({{GET_RESP_TYPE}}.newBuilder()
             .setFound(false)
             .build());
         observer.onCompleted();
@@ -118,10 +118,10 @@ public class JwkVerifyingKeysViewServer
         if (watchers.isEmpty()) {
             return;
         }
-        Jwkview.JwkViewResponse current = buildMergedResponse();
+        {{RESP_TYPE}} current = buildMergedResponse();
         for (WatcherEntry entry : watchers) {
             try {
-                Jwkview.JwkViewResponse lastSent = entry.lastSent.get();
+                {{RESP_TYPE}} lastSent = entry.lastSent.get();
                 if (!current.equals(lastSent)) {
                     entry.observer.onNext(current);
                     entry.lastSent.set(current);
@@ -133,7 +133,7 @@ public class JwkVerifyingKeysViewServer
         }
     }
 
-    private Jwkview.JwkViewResponse buildMergedResponse() {
+    private {{RESP_TYPE}} buildMergedResponse() {
         Map<String, JwkOuterClass.Jwk> merged = new LinkedHashMap<>();
         for (Supplier<Map<String, JwkOuterClass.Jwk>> source : memberMaps) {
             try {
@@ -142,7 +142,7 @@ public class JwkVerifyingKeysViewServer
                 logger.warn("Failed to read from member map: {}", e.getMessage());
             }
         }
-        return Jwkview.JwkViewResponse.newBuilder()
+        return {{RESP_TYPE}}.newBuilder()
             .putAllEntries(merged)
             .build();
     }
@@ -160,11 +160,11 @@ public class JwkVerifyingKeysViewServer
     }
 
     private static class WatcherEntry {
-        final StreamObserver<Jwkview.JwkViewResponse> observer;
-        final AtomicReference<Jwkview.JwkViewResponse> lastSent;
+        final StreamObserver<{{RESP_TYPE}}> observer;
+        final AtomicReference<{{RESP_TYPE}}> lastSent;
 
-        WatcherEntry(StreamObserver<Jwkview.JwkViewResponse> observer,
-                     Jwkview.JwkViewResponse initial) {
+        WatcherEntry(StreamObserver<{{RESP_TYPE}}> observer,
+                     {{RESP_TYPE}} initial) {
             this.observer = observer;
             this.lastSent = new AtomicReference<>(initial);
         }

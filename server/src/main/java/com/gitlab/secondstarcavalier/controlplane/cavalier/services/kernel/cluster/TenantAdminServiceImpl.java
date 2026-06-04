@@ -22,7 +22,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * TenantAdminServiceImpl is kernel's single tenant/project control plane
- * (the {@code TenantAdmin} C2S service, SCOPE_TENANT). It implements all nine
+ * (the {@code TenantAdmin} C2S service). It implements all nine
  * RPCs over the uniform namespace tree (ROOT "/" + tenants + projects).
  *
  * <p>Tenants/projects live in the kernel {@link ConfigMap} keyed by their full
@@ -548,7 +548,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
      * root namespace, holding full entitlements (every service's {@code _RPCS_ANY})
      * and {@code namespaces=["*"]}. The minted token therefore carries
      * {@code namespace=}root, which is at-or-above any tenant/project for the
-     * SCOPE_TENANT level-or-below check (TenantAdmin). Idempotent: re-running
+     * generated level-or-below check (TenantAdmin). Idempotent: re-running
      * overwrites the root entry. No-op when the list is empty.
      */
     static void seedRootCredPairs(

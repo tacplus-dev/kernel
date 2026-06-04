@@ -482,6 +482,17 @@ public class ClusterServer {
 			final String spiffePrefix = (configuredSpiffePrefix != null && !configuredSpiffePrefix.isEmpty())
 					? configuredSpiffePrefix : "local/dev";
 
+			// Seed/refresh the root-admin cred_pairs (kernel.Config.root_cred_pairs)
+			// into the root namespace's TenantConfig so MintClientToken can resolve
+			// them (token namespace = root, full entitlements). This is what lets
+			// the cluster/root admin call TenantAdmin to provision tenants/projects.
+			try {
+				TenantAdminServiceImpl.seedRootCredPairs(kernelConfigMap, cfg.getRootCredPairsList(),
+						SpiffeIds.namespaceRoot(spiffePrefix));
+			} catch (Exception e) {
+				logger.warn("Failed to seed root cred_pairs: {}", e.getMessage());
+			}
+
 			// Mandatory, fail-closed Authorizer shared by the kernel's token-auth
 			// gRPC wrappers. The kernel is the JWKS authority, so it uses a LOCAL
 			// key source (verify against its own keys) rather than the

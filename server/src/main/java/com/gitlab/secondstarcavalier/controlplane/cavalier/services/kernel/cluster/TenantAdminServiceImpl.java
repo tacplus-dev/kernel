@@ -514,6 +514,78 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         return json.substring(q1 + 1, q2);
     }
 
+    /**
+     * Builds a "full entitlements" {@link Entitlements.TokenEntitlements} that
+     * grants every service's {@code *_RPCS_ANY} value. Descriptor-driven: for
+     * each repeated enum field whose enum type has a value with number 99 (the
+     * {@code _RPCS_ANY} convention), value 99 is added to that field. Fields
+     * lacking a 99 value are skipped. This depends on neither generated enum
+     * symbols (which don't resolve under java_multiple_files) nor specific
+     * service field names.
+     */
+    static Entitlements.TokenEntitlements buildFullEntitlements() {
+        Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
+        for (Descriptors.FieldDescriptor f : builder.getDescriptorForType().getFields()) {
+            if (!f.isRepeated() || f.getType() != Descriptors.FieldDescriptor.Type.ENUM) {
+                continue;
+            }
+            Descriptors.EnumValueDescriptor any = f.getEnumType().findValueByNumber(99);
+            if (any == null) {
+                continue;
+            }
+            builder.addRepeatedField(f, any);
+        }
+        return builder.build();
+    }
+
+    /**
+     * Seeds the root-admin cred_pairs (from {@code kernel.Config.root_cred_pairs})
+     * into the root namespace's {@code TenantConfig}, so the standard
+     * {@code MintClientToken} resolution path can authenticate them.
+     *
+     * <p>Each input {@link Credentials.CredPair} (whose {@code public_key} is
+     * ALREADY a {@code jwk.Jwk} — no PEM conversion) is re-emitted owned by the
+     * root namespace, holding full entitlements (every service's {@code _RPCS_ANY})
+     * and {@code namespaces=["*"]}. The minted token therefore carries
+     * {@code namespace=}root, which is at-or-above any tenant/project for the
+     * SCOPE_TENANT level-or-below check (TenantAdmin). Idempotent: re-running
+     * overwrites the root entry. No-op when the list is empty.
+     */
+    static void seedRootCredPairs(
+            ConfigMap configMap,
+            List<Credentials.CredPair> rootCredPairs,
+            String rootNamespace) throws ProtoException {
+        if (rootCredPairs == null || rootCredPairs.isEmpty()) {
+            return;
+        }
+        Entitlements.TokenEntitlements fullEntitlements = buildFullEntitlements();
+        Timestamp now = nowTs();
+        Credentials.KernelTenantConfig.Builder kernelCfg = Credentials.KernelTenantConfig.newBuilder();
+        for (Credentials.CredPair in : rootCredPairs) {
+            Credentials.CredPair.Builder cp = Credentials.CredPair.newBuilder()
+                    .setId(in.getId())
+                    .setTenantName(rootNamespace)
+                    .setPublicKey(in.getPublicKey())
+                    .setEntitlements(fullEntitlements)
+                    .addNamespaces("*")
+                    .setCreatedAt(now);
+            if (!in.getDescription().isEmpty()) {
+                cp.setDescription(in.getDescription());
+            }
+            kernelCfg.addCredPairs(cp.build());
+        }
+        TenantConfigOuterClass.TenantConfig cfg = TenantConfigOuterClass.TenantConfig.newBuilder()
+                .setKernel(kernelCfg.build())
+                .build();
+        Kernel.TenantConfigEntry entry = Kernel.TenantConfigEntry.newBuilder()
+                .setTenantName(rootNamespace)
+                .setConfig(cfg)
+                .build();
+        configMap.putTenantConfigs(rootNamespace, entry);
+        logger.info("Seeded {} root cred_pair(s) into root namespace {}",
+                rootCredPairs.size(), rootNamespace);
+    }
+
     private static Timestamp nowTs() {
         Instant n = Instant.now();
         return Timestamp.newBuilder().setSeconds(n.getEpochSecond()).setNanos(n.getNano()).build();

@@ -640,6 +640,29 @@ public class ClusterServer {
 			serverBuilder.addService(mintWrapper);
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
 
+			// TLS certificate lifecycle service (tlscert.TlsCertService/ManageCert
+			// bidi stream): kernel is the cluster cert authority for auto_tls
+			// services. Each service streams here to obtain/renew its per-instance
+			// TLS cert under its per-service intermediate CA (Ca state). Without
+			// this, services cannot get serving certs and never become ready.
+			var tlsCertService = new TlsCertServiceImpl(
+					cfg.getTlsCertLifetimeSeconds() > 0 ? cfg.getTlsCertLifetimeSeconds() : 86400,
+					signingCa,
+					serviceName -> caState.getServiceCas(serviceName),
+					(serviceName, certPair) -> {
+						try {
+							caState.putServiceCas(serviceName, certPair);
+							persistKernelState();
+						} catch (Exception e) {
+							throw new RuntimeException("putServiceCas failed", e);
+						}
+					},
+					() -> spiffePrefix,
+					allKeysSupplier);
+			serverBuilder.addService(tlsCertService);
+			logger.info("TlsCertService registered (ManageCert auto-TLS, cert lifetime={}s)",
+					cfg.getTlsCertLifetimeSeconds() > 0 ? cfg.getTlsCertLifetimeSeconds() : 86400);
+
 			// CLI token broker — mediates nonce matching between oauth instances.
 			var cliTokenBroker = new CliTokenBrokerServiceImpl(identityService, hazelcast);
 			var cliTokenBrokerWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker(cliTokenBroker, kernelAuthorizer);

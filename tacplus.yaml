@@ -2,3 +2,8 @@ tacplus-version: "1.2.x"
 language: java
 pkg: com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel
 output-dir: tacplus/target/generated-sources
+clients:
+  c2s:
+    enabled: true
+  w2s:
+    enabled: false

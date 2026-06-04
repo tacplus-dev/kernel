@@ -9,7 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster.ClusterServer;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.persistence.PersistenceManager;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.PersistenceProvider;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.logger.LogbackConfigurator;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
@@ -40,20 +40,14 @@ public class Bootstrap {
 				config.getListener(),
 				config.getClusterName());
 
-		// Create persistence
-		int grpcPort = config.getListener().getPort();
-
-		String hostname = System.getenv("HOSTNAME");
-		if (hostname == null || hostname.isEmpty()) {
-			hostname = config.getListener().getHost();
-		}
-		String instanceName = (hostname != null && !hostname.isEmpty() && !hostname.equals("0.0.0.0"))
-				? "node-" + hostname
-				: "node-" + grpcPort;
-
-		PersistenceManager.PersistenceConfig persistenceConfig = PersistenceManager.PersistenceConfig.fromEnv();
-		PersistenceManager persistence = new PersistenceManager(Path.of(config.getPersistenceDir()), instanceName,
-				persistenceConfig);
+		// Kernel no longer maintains durable persistence — its durable JWT-signing
+		// layer (KeyRotator) and the kernel-wide persistence subsystem
+		// (RedoLog/FullDumper/StateRestorer/PersistenceManager) have been removed.
+		// Hazelcast is now in-memory coordination only; every map is config-seeded,
+		// rebuildable, or ephemeral. The no-op provider keeps the in-memory map
+		// registry (used for cluster stats) without any redo log / snapshot /
+		// restore-on-boot.
+		PersistenceProvider persistence = PersistenceProvider.disabled();
 
 		ClusterServer server;
 		try {

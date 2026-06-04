@@ -3,8 +3,6 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 
 import static com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster.PeerContext.PEER_KEY;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.MetaData;
-
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.HazelcastManager;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.PersistenceProvider;
 // StateServer is in this package
@@ -42,7 +40,6 @@ import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContextBuilder;
 import io.grpc.protobuf.services.HealthStatusManager;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.Auth;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.ExternalTokenMint;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.Mint;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.trace.Trace;
 import io.grpc.CallCredentials;
@@ -53,8 +50,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.io.IOException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -89,8 +84,6 @@ public class ClusterServer {
 	private final ClusterSetLogLevelHandler clusterSetLogLevelHandler;
 	private final HealthStatusManager healthManager;
 	private final Server grpcServer;
-	private final KeyRotator keyRotator;
-	private final ExternalJwkResolver externalJwkResolver;
 	private final ImmutableCertChain signingCa;
 	private final TlsCertServiceImpl tlsCertService;
 
@@ -151,30 +144,18 @@ public class ClusterServer {
 				instanceName,
 				hazelcast.getCluster().getMembers().size());
 
-		// 2. Health management (start as NOT_SERVING until restore completes)
+		// 2. Health management
 		this.healthManager = new HealthStatusManager();
 		healthManager.setStatus("", ServingStatus.NOT_SERVING);
 
-		// 3. Create backend servers FIRST so maps are registered in MapRegistry
-		// before persistence restore runs. StateRestorer needs the maps to exist
-		// so it can apply redo log entries to them.
+		// 3. Create backend servers. The kernel's durable persistence layer has
+		// been removed — `persistence` is now a no-op PersistenceProvider that
+		// only tracks maps in the in-memory MapRegistry (for cluster stats) and
+		// attaches no redo log / snapshot / restore. Hazelcast is in-memory
+		// coordination only; every map is config-seeded, rebuildable, or
+		// ephemeral.
 		HazelcastManager manager = new HazelcastManager(hazelcast, persistence);
 		this.backendServers = new BackendServers(manager);
-
-		// 4. Initialize persistence (restore from redo log)
-		int nodeCount = cfg.getNodeCount() > 0 ? cfg.getNodeCount() : members.size();
-		if (persistence.isEnabled()) {
-			int initialQuorumForPersistence = nodeCount / 2 + 1;
-			try {
-				persistence.initialize(hazelcast, initialQuorumForPersistence);
-			} catch (IOException e) {
-				logger.warn(
-						"Persistence initialization failed — disabling persistence. "
-								+ "Data will converge from peers.",
-						e);
-				persistence.disable();
-			}
-		}
 
 		// All boundaries are convergent — quorum is always available
 		backendServers.services().setQuorumAvailable(true);
@@ -262,11 +243,8 @@ public class ClusterServer {
 						grpcPort,
 						e.getMember().getAddress(),
 						totalSize);
-				// Re-publish this node's signing key into the now-merged IMap so all
-				// nodes in the cluster can validate tokens this node issues.
-				if (keyRotator != null) {
-					keyRotator.republishCurrentKey();
-				}
+				// Kernel no longer signs JWTs (minting moved to the mint service),
+				// so there is no signing key to republish on cluster merge.
 				clusterPublisher.onMembershipChange();
 			}
 
@@ -411,53 +389,16 @@ public class ClusterServer {
 		// Health service is always registered
 		serverBuilder.addService(healthManager.getHealthService());
 
-		// Create and register the identity service (token minting + X509 signing).
+		// Create and register the identity service (X509 cert signing + workload
+		// identity). JWT token minting has moved to the mint service, so the
+		// kernel no longer holds a JWT signing key (KeyRotator removed) nor an
+		// external-IdP JWKS resolver (that was only for the moved minting paths).
 		{
 			var identityState = backendServers.services().getIdentityMap();
 			var caState = backendServers.services().getCaMap();
 
-			if (cfg.getDelegatesCount() > 0) {
-				long maxTokenLifetime = cfg.getMaxTokenLifetimeSeconds() > 0
-					? cfg.getMaxTokenLifetimeSeconds()
-					: 2592000; // 30 days default
-				Path signingKeyPath = Paths.get(cfg.getPersistenceDir(), Helpers.SIGNING_KEY_FILE);
-				this.keyRotator = new KeyRotator(
-						cfg.getKeyRotationIntervalSeconds() > 0
-								? cfg.getKeyRotationIntervalSeconds()
-								: 86400,
-						maxTokenLifetime,
-						jwk -> {
-							try {
-								String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
-								identityState.putVerifyingKeys(kid, jwk);
-							} catch (Exception e) {
-								throw new RuntimeException("putVerifyingKeys failed", e);
-							}
-						},
-						kid -> identityState.deleteVerifyingKeys(Objects.requireNonNull(kid, "kid")),
-						() -> {
-							try {
-								return new java.util.ArrayList<>(
-										identityState.proto().getVerifyingKeysList());
-							} catch (Exception e) {
-								logger.warn("Failed to read verifying keys: {}", e.getMessage());
-								return List.of();
-							}
-						},
-						signingKeyPath);
-
-				final java.util.List<ExternalJwkResolver.TrustedIssuer> trustedIssuers =
-						cfg.getTrustedIssuersList().stream()
-								.map(ie -> new ExternalJwkResolver.TrustedIssuer(
-										ie.getIssuer(), ie.getJwksUri(), ie.getCaPem()))
-								.toList();
-				this.externalJwkResolver = new ExternalJwkResolver(allKeysSupplier, () -> trustedIssuers);
-			} else {
-				this.keyRotator = null;
-				this.externalJwkResolver = null;
-			}
-
 			// Use cavalier-issued signing chain from bootstrap config (intermediate CA).
+			// These are the cluster CA keys used by X509Mint — NOT a JWT signing key.
 			this.signingCa = ImmutableCertChain.from(cfg.getSigningCa());
 
 			// Populate Ca.ca_certs with cluster root CA(s) from bootstrap config.
@@ -490,13 +431,12 @@ public class ClusterServer {
 				logger.warn("Failed to seed ServiceConfigState: {}", e.getMessage());
 			}
 
+			// Publish the cluster FQDN to Identity state so services (e.g.
+			// letsencrypt) can discover it. Kernel no longer mints tokens, so the
+			// former token-issuer URL derived here is gone.
 			String fqdn = cfg.getFqdn();
-			final String tokenIssuer;
 			if (fqdn != null && !fqdn.isEmpty()) {
-				tokenIssuer = "https://" + fqdn + Helpers.REST_ROOT_PATH;
 				identityState.putFqdn(Kernel.IdentityFqdn.newBuilder().setFqdn(fqdn).build());
-			} else {
-				tokenIssuer = MetaData.PROJECT_NAME;
 			}
 			// Per-service connections for outbound S2S communication.
 			// Uses tacplus ServiceConnection.channelFactory() — single code path for
@@ -512,9 +452,11 @@ public class ClusterServer {
 
 			// One ServiceConnection per target service. Each manages its own connection
 			// pool and selects the best endpoint based on health reports.
-			var opaConn = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection("opa", s2sChannelFactory);
+			// Kernel no longer calls OPA (entitlement/proxy-policy evaluation moved to
+			// the mint service along with minting). The only remaining kernel outbound
+			// S2S is best-effort eventbus trace publishing.
 			var eventbusConn = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection("eventbus", s2sChannelFactory);
-			var allConns = java.util.List.of(opaConn, eventbusConn);
+			var allConns = java.util.List.of(eventbusConn);
 
 			// Feed ServiceHealthState into each ServiceConnection.
 			var healthMap = backendServers.services().getServiceHealthMap();
@@ -584,34 +526,16 @@ public class ClusterServer {
 			}, "health-poller");
 			healthPoller.setDaemon(true);
 
-			// GrpcS2SClients with per-target ChannelProviders.
-			var grpcClients = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.GrpcS2SClients(
-					new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection.ChannelProvider(opaConn),
-					aud -> () -> {
-						try {
-							return mintSelfToken(keyRotator, tokenIssuer, aud, () -> spiffePrefix);
-						} catch (Exception e) {
-							throw new RuntimeException("failed to self-mint token for " + aud, e);
-						}
-					});
-
 			healthPoller.start();
 
+			// Slimmed identity service: X509 cert signing + workload identity only.
+			// JWT minting (and its OPA dependency) moved to the mint service.
+			// verifyingKeysReader is used ONLY to verify inbound caller bearer tokens.
 			var identityService = new IdentityServiceImpl(
-					cfg.getDefaultTokenExpirySeconds(),
-					cfg.getMaxTokenLifetimeSeconds(),
-					cfg.getOfflineTokenLifetimeSeconds(),
-					externalJwkResolver,
-					keyRotator,
 					allKeysSupplier,
-					() -> delegates,
-					com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.SecurityInterceptor.SERVICE_ENTITLEMENTS,
 					signingCa,
 					serviceName -> caState.getServiceCas(serviceName),
-					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair),
-					() -> spiffePrefix,
-					tokenIssuer,
-					grpcClients.userentitlementsOpaEval());
+					(serviceName, certPair) -> caState.putServiceCas(serviceName, certPair));
 
 			Mint mintWrapper = new Mint(identityService, kernelAuthorizer);
 
@@ -625,14 +549,16 @@ public class ClusterServer {
 				public void applyRequestMetadata(RequestInfo ri, java.util.concurrent.Executor exec,
 						MetadataApplier applier) {
 					exec.execute(() -> {
-						try {
-							String tok = mintSelfToken(keyRotator, tokenIssuer, "eventbus", () -> spiffePrefix);
-							Metadata hdrs = new Metadata();
-							hdrs.put(AUTH_HEADER_KEY, "Bearer " + tok);
-							applier.apply(hdrs);
-						} catch (Exception ex) {
-							applier.fail(Status.UNAUTHENTICATED.withCause(ex));
-						}
+						// TODO(mint-wire): kernel's self-mint (its own S2S token for the
+						// best-effort eventbus trace stream) must be obtained from the
+						// mint service via the generated ServiceManager bootstrap
+						// (token_minter=mint), lazily/best-effort. Kernel no longer holds
+						// a JWT signing key (KeyRotator deleted), so it cannot self-mint
+						// locally. Until the SM bootstrap is wired, fail the call so the
+						// trace publisher backs off and retries — the kernel boots fine
+						// without trace publishing (it is purely best-effort).
+						applier.fail(Status.UNIMPLEMENTED.withDescription(
+								"kernel self-mint moved to mint service; SM bootstrap not yet wired (TODO(mint-wire))"));
 					});
 				}
 			};
@@ -696,29 +622,13 @@ public class ClusterServer {
 			serverBuilder.addService(cliTokenBrokerWrapper);
 			logger.info("CliTokenBrokerService registered on gRPC server");
 
-			// C2S token exchange — users exchange access tokens for service-scoped tokens.
-			var tokenExchangeService = new TokenExchangeServiceImpl(
-					cfg.getDefaultTokenExpirySeconds(),
-					cfg.getMaxTokenLifetimeSeconds(),
-					keyRotator,
-					allKeysSupplier,
-					tokenIssuer);
-			serverBuilder.addService(tokenExchangeService);
-			logger.info("TokenExchangeService registered on gRPC server");
-
-			// External token minting — proxy services call this to obtain a short-lived external
-			// token for forwarding to third-party APIs. OPA proxy policy is evaluated here.
-			var externalTokenMintImpl = new ExternalTokenMintServiceImpl(
-					keyRotator, allKeysSupplier, grpcClients.proxypolicyOpaEval());
-			var externalTokenMintWrapper = new ExternalTokenMint(externalTokenMintImpl, kernelAuthorizer);
-			externalTokenMintWrapper.setInstanceId(instanceName);
-			externalTokenMintWrapper.setTracePublisher((ExternalTokenMint.TracePublisher) event -> traceQueue.offer(event));
-			serverBuilder.addService(externalTokenMintWrapper);
-			logger.info("ExternalTokenMintService registered on gRPC server");
-
-			// Tenancy (ClusterAdmin/TenantAdmin) moved to the `config` service and
-			// MintClient (cred_pair → token) moved to the `mint` service. Kernel no
-			// longer owns the tenant ConfigState (removed from kernel.proto), so the
+			// JWT token minting has been removed from the kernel entirely:
+			//   - kernel.TokenExchange (C2S Exchange) → removed (mint owns minting).
+			//   - kernel.ExternalTokenMint (WIF) → moved to mint.Mint.MintExternalToken.
+			//   - kernel.MintClient (cred_pair → token) → moved to mint.Mint.MintClientToken.
+			//   - kernel.Mint.{MintServiceToken,MintUserToken,TokenMint} → moved to mint.Mint.
+			// Tenancy (ClusterAdmin/TenantAdmin) moved to the `config` service. Kernel
+			// no longer owns the tenant ConfigState (removed from kernel.proto), so the
 			// former kernelConfigMap + cred_pair seeding are gone.
 
 			// TLS certificate lifecycle service (ManageCert bidi stream for auto_tls services).
@@ -770,24 +680,12 @@ public class ClusterServer {
 	public void start() throws IOException {
 		grpcServer.start();
 		clusterPublisher.start();
-		if (keyRotator != null) {
-			keyRotator.start();
-		}
-		if (externalJwkResolver != null) {
-			externalJwkResolver.start();
-		}
 		logger.info("gRPC server started on port {}", grpcPort);
 	}
 
 	public void shutdown() {
 		if (tlsCertService != null) {
 			tlsCertService.stop();
-		}
-		if (keyRotator != null) {
-			keyRotator.stop();
-		}
-		if (externalJwkResolver != null) {
-			externalJwkResolver.stop();
 		}
 		clusterPublisher.stop();
 		healthManager.enterTerminalState();
@@ -805,43 +703,6 @@ public class ClusterServer {
 
 	public int getGrpcPort() {
 		return grpcPort;
-	}
-
-	/**
-	 * Self-mints a service token using the kernel's own KeyRotator.
-	 * Used for kernel's outgoing S2S calls (e.g., to uncleopa) where kernel
-	 * cannot use IdentityManager (bootstrap ordering: IdentityManager calls
-	 * MintServiceToken, but kernel IS the token issuer).
-	 */
-	private static String mintSelfToken(KeyRotator keyRotator, String tokenIssuer,
-			String audience, Supplier<String> spiffePrefixReader) throws Exception {
-		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.key.ImmutableKey signingKey =
-				keyRotator.getActiveSigningKey();
-		if (signingKey == null) {
-			throw new IllegalStateException("no active signing key for self-mint");
-		}
-		long now = java.time.Instant.now().getEpochSecond();
-		long exp = now + 3600; // 1 hour
-
-		String spiffeId = SpiffeIds.build(spiffePrefixReader.get(), "kernel");
-
-		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.token.TokenWrapper token =
-				com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.token.TokenWrapper.create()
-						.setIssuer(tokenIssuer)
-						.setSubject(spiffeId)
-						.setAudience(audience)
-						.setIssuedAt(now)
-						.setExpiration(exp)
-						.setJTI(java.util.UUID.randomUUID().toString());
-
-		token.setSubType("service");
-		token.setTokenUse("service");
-		token.setAzp(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel.getDescriptor().getPackage());
-		token.setPrincipal(spiffeId);
-		token.setNamespace(SpiffeIds.namespaceFromSpiffe(spiffeId));
-
-		token.sign(signingKey);
-		return token.getBase64();
 	}
 
 }

@@ -72,9 +72,8 @@ public class MapRegistry {
 	}
 
 	/**
-	 * Sets the parser for a map if not already set. Called by
-	 * {@link PersistenceMapListener} when the first protobuf value is
-	 * observed. Thread-safe.
+	 * Sets the parser for a map if not already set. Detected lazily when the
+	 * first protobuf value is observed. Thread-safe.
 	 */
 	public void setParserIfAbsent(String name, Parser<? extends MessageLite> parser) {
 		MapInfo info = maps.get(name);

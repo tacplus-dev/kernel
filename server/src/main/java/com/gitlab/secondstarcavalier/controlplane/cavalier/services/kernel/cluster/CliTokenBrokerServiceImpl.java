@@ -1,7 +1,6 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.map.IMap;
@@ -27,8 +26,6 @@ public class CliTokenBrokerServiceImpl implements
 	private static final Logger logger = LoggerFactory.getLogger(CliTokenBrokerServiceImpl.class);
 	private static final long NONCE_TTL_SECONDS = 300;
 	private static final String DELIVERY_PREFIX = "delivery:";
-
-	private final IdentityServiceImpl identityService;
 
 	// Local: instance_id → gRPC stream (streams can't cross nodes)
 	private final ConcurrentHashMap<String, StreamObserver<Kernel.CliTokenBrokerResponse>> instanceStreams =
@@ -61,8 +58,10 @@ public class CliTokenBrokerServiceImpl implements
 		}
 	}
 
+	// NOTE: the IdentityServiceImpl param is retained for wiring compatibility
+	// but is no longer used — user-token minting moved to the mint service
+	// (TODO(mint-wire) in handleCompleteNonce).
 	public CliTokenBrokerServiceImpl(IdentityServiceImpl identityService, HazelcastInstance hazelcast) {
-		this.identityService = identityService;
 		this.nonceMap = hazelcast.getMap("cli-token-broker");
 
 		// Listen for cross-node token deliveries.
@@ -161,21 +160,19 @@ public class CliTokenBrokerServiceImpl implements
 					return;
 				}
 
-				// Mint the token
-				String refreshToken;
-				try {
-					Tokenrequest.TokenMintResponse mintResponse = identityService.mintUserTokenInternal(
-							complete.getSubject(),
-							complete.hasClaims() ? complete.getClaims() : null,
-							0, complete.getTraceId(), "oauth",
-							// offline_access stays false until the cavalier daemon is
-							// switched to OT semantics (cavalier PLAN items 3-7).
-							false);
-					refreshToken = mintResponse.getRefreshToken().getBase64();
-				} catch (IdentityServiceImpl.StatusException e) {
-					logger.error("CliTokenBroker: mint failed for nonce {}", nonce.substring(0, 8), e);
-					return;
-				}
+				// TODO(mint-wire): user-token minting has moved out of the kernel
+				// into the `mint` service (the authoritative token_minter). The
+				// kernel no longer signs JWTs (KeyRotator deleted,
+				// IdentityServiceImpl minting removed). To complete CLI login this
+				// broker must obtain the user's refresh token from the mint service
+				// S2S — passing the verified subject + IdP claims that the oauth
+				// instance attested in CompleteNonce — instead of minting locally.
+				// Until that kernel→mint S2S call is wired, the nonce is matched but
+				// no token can be delivered; the CLI will time out and retry.
+				logger.warn("CliTokenBroker: token minting moved to mint service and is not yet wired "
+						+ "(TODO(mint-wire)); cannot deliver token for nonce {} (subject={})",
+						nonce.substring(0, 8), complete.getSubject());
+				return;
 
 				// Try local delivery first
 				StreamObserver<Kernel.CliTokenBrokerResponse> localStream =

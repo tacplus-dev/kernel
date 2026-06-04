@@ -58,10 +58,10 @@ public class CliTokenBrokerServiceImpl implements
 		}
 	}
 
-	// NOTE: the IdentityServiceImpl param is retained for wiring compatibility
-	// but is no longer used — user-token minting moved to the mint service
-	// (TODO(mint-wire) in handleCompleteNonce).
-	public CliTokenBrokerServiceImpl(IdentityServiceImpl identityService, HazelcastInstance hazelcast) {
+	// Token SIGNING/minting moved out of the kernel into the mint service, so
+	// this broker no longer takes a signing service — it only matches nonces and
+	// delivers the token that mint produces (TODO(mint-wire) in handleCompleteNonce).
+	public CliTokenBrokerServiceImpl(HazelcastInstance hazelcast) {
 		this.nonceMap = hazelcast.getMap("cli-token-broker");
 
 		// Listen for cross-node token deliveries.
@@ -169,32 +169,16 @@ public class CliTokenBrokerServiceImpl implements
 				// instance attested in CompleteNonce — instead of minting locally.
 				// Until that kernel→mint S2S call is wired, the nonce is matched but
 				// no token can be delivered; the CLI will time out and retry.
+				//
+				// Once kernel→mint S2S is wired, mint returns a refresh token for
+				// the verified subject/claims; deliver it to the owning oauth
+				// instance — locally via instanceStreams.get(entry.instanceId), or
+				// cross-node by writing NonceEntry(entry.instanceId, refreshToken)
+				// to nonceMap under DELIVERY_PREFIX + nonce (the entry listener on
+				// the owning node replays it). See the entry listener above.
 				logger.warn("CliTokenBroker: token minting moved to mint service and is not yet wired "
 						+ "(TODO(mint-wire)); cannot deliver token for nonce {} (subject={})",
 						nonce.substring(0, 8), complete.getSubject());
-				return;
-
-				// Try local delivery first
-				StreamObserver<Kernel.CliTokenBrokerResponse> localStream =
-						instanceStreams.get(entry.instanceId);
-				if (localStream != null) {
-					localStream.onNext(Kernel.CliTokenBrokerResponse.newBuilder()
-							.setTokenDelivery(Kernel.CliTokenBrokerTokenDelivery.newBuilder()
-									.setNonce(nonce)
-									.setRefreshToken(refreshToken)
-									.build())
-							.build());
-					localNonceOwners.remove(nonce);
-					logger.info("CliTokenBroker: token delivered locally for nonce {} → instance {}",
-							nonce.substring(0, 8), entry.instanceId);
-				} else {
-					// Cross-node: store delivery in IMap for the listener on the owning node
-					nonceMap.put(DELIVERY_PREFIX + nonce,
-							new NonceEntry(entry.instanceId, refreshToken),
-							NONCE_TTL_SECONDS, TimeUnit.SECONDS);
-					logger.info("CliTokenBroker: token stored for cross-node delivery, nonce {}",
-							nonce.substring(0, 8));
-				}
 			}
 
 			@Override

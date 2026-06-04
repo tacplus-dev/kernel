@@ -145,6 +145,14 @@ public class CliTokenBrokerServiceImpl implements
 			private void handleCompleteNonce(Kernel.CliTokenBrokerCompleteNonce complete) {
 				String nonce = complete.getNonce();
 
+				// Kernel is now a pure pub/sub: it mints NOTHING. oauth is the
+				// authorized broker and has ALREADY minted the user's refresh
+				// token via mint.MintUserToken. CompleteNonce carries that token
+				// (field 4); the kernel only matches the nonce and forwards the
+				// received token via TokenDelivery. (subject/claims are reserved
+				// in the proto — the old local-minting path is gone.)
+				String refreshToken = complete.getRefreshToken();
+
 				// Retry — IMap replication may lag slightly across nodes
 				NonceEntry entry = null;
 				for (int attempt = 0; attempt < 10; attempt++) {
@@ -160,25 +168,29 @@ public class CliTokenBrokerServiceImpl implements
 					return;
 				}
 
-				// TODO(mint-wire): user-token minting has moved out of the kernel
-				// into the `mint` service (the authoritative token_minter). The
-				// kernel no longer signs JWTs (KeyRotator deleted,
-				// IdentityServiceImpl minting removed). To complete CLI login this
-				// broker must obtain the user's refresh token from the mint service
-				// S2S — passing the verified subject + IdP claims that the oauth
-				// instance attested in CompleteNonce — instead of minting locally.
-				// Until that kernel→mint S2S call is wired, the nonce is matched but
-				// no token can be delivered; the CLI will time out and retry.
-				//
-				// Once kernel→mint S2S is wired, mint returns a refresh token for
-				// the verified subject/claims; deliver it to the owning oauth
-				// instance — locally via instanceStreams.get(entry.instanceId), or
-				// cross-node by writing NonceEntry(entry.instanceId, refreshToken)
-				// to nonceMap under DELIVERY_PREFIX + nonce (the entry listener on
-				// the owning node replays it). See the entry listener above.
-				logger.warn("CliTokenBroker: token minting moved to mint service and is not yet wired "
-						+ "(TODO(mint-wire)); cannot deliver token for nonce {} (subject={})",
-						nonce.substring(0, 8), complete.getSubject());
+				// Deliver the oauth-minted token to the owning oauth instance.
+				// Local fast path if that instance's stream is on this node;
+				// otherwise hand off cross-node via the DELIVERY_PREFIX entry
+				// (the entry listener on the owning node replays it).
+				StreamObserver<Kernel.CliTokenBrokerResponse> localStream =
+						instanceStreams.get(entry.instanceId);
+				if (localStream != null) {
+					localNonceOwners.remove(nonce);
+					localStream.onNext(Kernel.CliTokenBrokerResponse.newBuilder()
+							.setTokenDelivery(Kernel.CliTokenBrokerTokenDelivery.newBuilder()
+									.setNonce(nonce)
+									.setRefreshToken(refreshToken)
+									.build())
+							.build());
+					logger.info("CliTokenBroker: token delivered for nonce {} → instance {}",
+							nonce.substring(0, 8), entry.instanceId);
+				} else {
+					nonceMap.put(DELIVERY_PREFIX + nonce,
+							new NonceEntry(entry.instanceId, refreshToken),
+							NONCE_TTL_SECONDS, TimeUnit.SECONDS);
+					logger.info("CliTokenBroker: token queued for cross-node delivery for nonce {} → instance {}",
+							nonce.substring(0, 8), entry.instanceId);
+				}
 			}
 
 			@Override

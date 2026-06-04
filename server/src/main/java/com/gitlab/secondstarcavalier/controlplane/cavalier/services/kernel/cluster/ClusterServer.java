@@ -190,9 +190,35 @@ public class ClusterServer {
 			delegatePublicKeys.addAll(delegate.getCredPairsList());
 		}
 
+		// BOOTSTRAP / SHORT-LIVED trust anchors. The operator seeds these public
+		// keys (Config.bootstrap_verifying_keys) so the kernel — now a pure
+		// pub/sub that mints nothing — TRUSTS mint's one-time bootstrap S2S call
+		// that installs mint's REAL signing keys. Each entry carries an absolute
+		// Unix `not_after`; we drop already-expired entries at boot (they are
+		// short-TTL) and never refresh them — mint deletes its bootstrap key after
+		// installing its real keys (cold-start only; see INTEGRATION_PLAN A0).
+		// Folded into the SAME verifying-key trust set as delegate keys + the
+		// runtime IdentityState verifying keys (allKeysSupplier below).
+		final var bootstrapPublicKeys = new java.util.ArrayList<JwkOuterClass.Jwk>();
+		{
+			long nowSeconds = System.currentTimeMillis() / 1000;
+			for (Kernel.BootstrapVerifyingKey bootstrap : cfg.getBootstrapVerifyingKeysList()) {
+				long notAfter = bootstrap.getNotAfter();
+				if (notAfter <= nowSeconds) {
+					logger.warn("Ignoring expired bootstrap verifying key (kid={}, not_after={}, now={})",
+							bootstrap.getKey().getKid(), notAfter, nowSeconds);
+					continue;
+				}
+				bootstrapPublicKeys.add(bootstrap.getKey());
+				logger.info("Trusting bootstrap verifying key (kid={}, not_after={}) — short-lived",
+						bootstrap.getKey().getKid(), notAfter);
+			}
+		}
+
 		// Combined key supplier
 		Supplier<List<JwkOuterClass.Jwk>> allKeysSupplier = () -> {
 			var keys = new java.util.ArrayList<>(delegatePublicKeys);
+			keys.addAll(bootstrapPublicKeys);
 			try {
 				keys.addAll(backendServers
 						.services()

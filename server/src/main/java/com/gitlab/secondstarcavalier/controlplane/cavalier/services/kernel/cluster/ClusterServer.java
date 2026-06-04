@@ -630,7 +630,7 @@ public class ClusterServer {
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
 
 			// CLI token broker — mediates nonce matching between oauth instances.
-			var cliTokenBroker = new CliTokenBrokerServiceImpl(hazelcast);
+			var cliTokenBroker = new CliTokenBrokerServiceImpl(identityService, hazelcast);
 			var cliTokenBrokerWrapper = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker(cliTokenBroker, kernelAuthorizer);
 			serverBuilder.addService(cliTokenBrokerWrapper);
 			logger.info("CliTokenBrokerService registered on gRPC server");

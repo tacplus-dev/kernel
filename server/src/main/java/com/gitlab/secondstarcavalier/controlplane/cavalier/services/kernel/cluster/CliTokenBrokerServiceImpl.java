@@ -2,6 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.map.IMap;
 import io.grpc.stub.StreamObserver;
@@ -36,6 +37,7 @@ public class CliTokenBrokerServiceImpl implements
 
 	// Distributed: nonce → NonceEntry (instance_id + timestamp)
 	private final IMap<String, NonceEntry> nonceMap;
+	private final IdentityServiceImpl identityService;
 
 	public static class NonceEntry implements Serializable {
 		private static final long serialVersionUID = 1L;
@@ -58,10 +60,12 @@ public class CliTokenBrokerServiceImpl implements
 		}
 	}
 
-	// Token SIGNING/minting moved out of the kernel into the mint service, so
-	// this broker no longer takes a signing service — it only matches nonces and
-	// delivers the token that mint produces (TODO(mint-wire) in handleCompleteNonce).
-	public CliTokenBrokerServiceImpl(HazelcastInstance hazelcast) {
+	// Kernel is the cluster trust root and the sole token authority. On
+	// CompleteNonce the broker mints the user's token via the in-process Mint
+	// handler (identityService) using the broker-attested subject+claims, then
+	// delivers it to the waiting oauth instance.
+	public CliTokenBrokerServiceImpl(IdentityServiceImpl identityService, HazelcastInstance hazelcast) {
+		this.identityService = identityService;
 		this.nonceMap = hazelcast.getMap("cli-token-broker");
 
 		// Listen for cross-node token deliveries.
@@ -145,14 +149,6 @@ public class CliTokenBrokerServiceImpl implements
 			private void handleCompleteNonce(Kernel.CliTokenBrokerCompleteNonce complete) {
 				String nonce = complete.getNonce();
 
-				// Kernel is now a pure pub/sub: it mints NOTHING. oauth is the
-				// authorized broker and has ALREADY minted the user's refresh
-				// token via mint.MintUserToken. CompleteNonce carries that token
-				// (field 4); the kernel only matches the nonce and forwards the
-				// received token via TokenDelivery. (subject/claims are reserved
-				// in the proto — the old local-minting path is gone.)
-				String refreshToken = complete.getRefreshToken();
-
 				// Retry — IMap replication may lag slightly across nodes
 				NonceEntry entry = null;
 				for (int attempt = 0; attempt < 10; attempt++) {
@@ -165,6 +161,20 @@ public class CliTokenBrokerServiceImpl implements
 
 				if (entry == null || entry.isExpired()) {
 					logger.warn("CliTokenBroker: CompleteNonce — nonce not found or expired: {}", nonce.substring(0, 8));
+					return;
+				}
+
+				// Kernel mints the user's token from the broker-attested subject +
+				// claims (azp = oauth, the authorized broker), then delivers it.
+				String refreshToken;
+				try {
+					Tokenrequest.TokenMintResponse mintResponse = identityService.mintUserTokenInternal(
+							complete.getSubject(),
+							complete.hasClaims() ? complete.getClaims() : null,
+							0, "", "oauth", false);
+					refreshToken = mintResponse.getRefreshToken().getBase64();
+				} catch (IdentityServiceImpl.StatusException e) {
+					logger.error("CliTokenBroker: mint failed for nonce {}", nonce.substring(0, 8), e);
 					return;
 				}
 

@@ -75,7 +75,13 @@ public class ViewServerGenerator {
             vars.put("VIEW_NAME", viewName);
             vars.put("JWK_OUTER_CLASS", ctx.getTypesPackageBase() + ".types.libs.jwk.JwkOuterClass");
             vars.put("GRPC_FQN", grpcFqn);
-            vars.put("GRPC_IMPL", spec.grpcSimple() + "." + spec.grpcSimple() + "ImplBase");
+            // protoc-gen-grpc-java names the server base <ServiceName>ImplBase,
+            // where ServiceName is the grpc class name minus its trailing "Grpc"
+            // (e.g. JwkVerifyingKeysViewServiceGrpc -> JwkVerifyingKeysViewServiceImplBase).
+            String grpcServiceName = spec.grpcSimple().endsWith("Grpc")
+                    ? spec.grpcSimple().substring(0, spec.grpcSimple().length() - "Grpc".length())
+                    : spec.grpcSimple();
+            vars.put("GRPC_IMPL", spec.grpcSimple() + "." + grpcServiceName + "ImplBase");
             vars.put("PROTO_FQN", protoFqn);
             vars.put("RESP_TYPE", spec.protoOuter() + "." + spec.respType());
             vars.put("GET_REQ_TYPE", spec.protoOuter() + "." + spec.getReqType());

@@ -1531,6 +1531,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		// Store the intermediate CA keypair in the Ca state.
 		X509.X509CertChain intermediateProto = X509.X509CertChain.newBuilder()
+				.setId(serviceName)
 				.setKey(intermediateKey)
 				.addChain(intermediateCert)
 				.build();

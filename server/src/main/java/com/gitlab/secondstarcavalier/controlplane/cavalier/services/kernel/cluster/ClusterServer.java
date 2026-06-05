@@ -743,13 +743,9 @@ public class ClusterServer {
 			for (X509.X509Cert cert : snapshot.getCaCertsList()) {
 				caState.putCaCerts(Objects.requireNonNull(cert.getId(), "caCert.id"), cert);
 			}
-			// NOTE: service_cas are NOT rehydrated. The Ca.service_cas map is keyed
-			// by service name, but X509CertChain carries no service-name field, so
-			// the key cannot be recovered from the snapshot's flat list without
-			// parsing the leaf cert's URI SAN. Per the proto, each per-service
-			// intermediate CA is lazily (re)created on the next X509Mint for that
-			// service, so dropping them across a restart is non-fatal. (See report
-			// assumption: service_cas restore is intentionally a no-op.)
+			// NOTE: service_cas are NOT rehydrated here yet. X509CertChain.id now
+			// carries the service-name key, so this can become a normal restore path
+			// once kernel persistence is wired to replay service_cas.
 			if (snapshot.getServiceCasCount() > 0) {
 				logger.info("Skipping rehydrate of {} service_cas (re-created on next X509Mint)",
 						snapshot.getServiceCasCount());

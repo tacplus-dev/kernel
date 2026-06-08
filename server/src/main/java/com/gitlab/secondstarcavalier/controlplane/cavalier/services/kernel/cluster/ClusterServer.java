@@ -610,8 +610,8 @@ public class ClusterServer {
 
 			// Both OPA clients (user-entitlement eval + proxy-policy eval). Each is
 			// @Nullable in IdentityServiceImpl — null when OPA isn't reachable.
-			var userEntitlementsOpa = grpcClients.userentitlementsOpaEval();
-			var proxyPolicyOpa = grpcClients.proxypolicyOpaEval();
+			var userEntitlementsOpa = grpcClients.vservices().userentitlementsOpaEval();
+			var proxyPolicyOpa = grpcClients.vservices().proxypolicyOpaEval();
 
 			var identityService = new IdentityServiceImpl(
 					cfg.getDefaultTokenExpirySeconds(),

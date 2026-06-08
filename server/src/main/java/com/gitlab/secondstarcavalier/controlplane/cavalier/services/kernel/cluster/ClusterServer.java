@@ -592,9 +592,11 @@ public class ClusterServer {
 			}, "health-poller");
 			healthPoller.setDaemon(true);
 
-			// GrpcS2SClients with a per-target ChannelProvider for OPA. The token
+			// GrpcClients with a per-target ChannelProvider for OPA. The token
 			// provider self-mints a kernel service token (kernel IS the issuer).
-			var grpcClients = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.GrpcS2SClients(
+			// (tacplus v1.2.187 folded the vservices.GrpcS2SClients aggregator into
+			// the generated s2sm.internal.grpc.clients.GrpcClients.)
+			var grpcClients = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.clients.GrpcClients(
 					new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.serviceconnection.ServiceConnection.ChannelProvider(opaConn),
 					aud -> () -> {
 						try {

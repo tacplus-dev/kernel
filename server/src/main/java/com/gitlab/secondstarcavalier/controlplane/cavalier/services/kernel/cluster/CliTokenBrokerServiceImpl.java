@@ -1,8 +1,8 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.tokenrequest.Tokenrequest;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.map.IMap;
 import io.grpc.stub.StreamObserver;
@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit;
  * entry listener on the node holding the stream picks it up.
  */
 public class CliTokenBrokerServiceImpl implements
-		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker.CliTokenBrokerHandler {
+		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker.CliTokenBrokerHandler {
 
 	private static final Logger logger = LoggerFactory.getLogger(CliTokenBrokerServiceImpl.class);
 	private static final long NONCE_TTL_SECONDS = 300;
@@ -100,7 +100,7 @@ public class CliTokenBrokerServiceImpl implements
 
 	@Override
 	public StreamObserver<Kernel.CliTokenBrokerRequest> brokerStream(
-			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.Caller caller,
+			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.servicemanager.Caller caller,
 			StreamObserver<Kernel.CliTokenBrokerResponse> responseObserver) {
 
 		return new StreamObserver<>() {

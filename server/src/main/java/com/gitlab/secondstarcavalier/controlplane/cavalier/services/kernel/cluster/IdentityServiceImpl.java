@@ -1,28 +1,28 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.jwk.ImmutableJwk;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.key.ImmutableKey;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.token.TokenWrapper;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.x509.ImmutableCertChain;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.key.KeyOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.token.Helpers;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.token.TokenOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.token.TokenOuterClass.JwtPayloadType;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.token.TokenOuterClass.TokenUse;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.token.TokenOuterClass.SubType;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.x509.X509;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.tokenrequest.Tokenrequest;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.servers.services.kernel.Mint;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.servicemanager.Caller;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.errors.ProtoException;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.vservices.userentitlements.Userentitlements;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.entitlements.Entitlements;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.userentitlements.OpaEvalGrpcClient;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.vservices.proxypolicy.Proxypolicy;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.credentials.Credentials;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.jwk.ImmutableJwk;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.key.ImmutableKey;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.token.TokenWrapper;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.x509.ImmutableCertChain;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.jwk.JwkOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.key.KeyOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.token.Helpers;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.token.TokenOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.token.TokenOuterClass.JwtPayloadType;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.token.TokenOuterClass.TokenUse;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.token.TokenOuterClass.SubType;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.x509.X509;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.tokenrequest.Tokenrequest;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.Mint;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.servicemanager.Caller;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.errors.ProtoException;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.vservices.userentitlements.Userentitlements;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.generated.entitlements.Entitlements;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.clients.vservices.userentitlements.OpaEvalGrpcClient;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.vservices.proxypolicy.Proxypolicy;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 import io.grpc.Status;
 
@@ -164,7 +164,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	@Nullable
 	private final OpaEvalGrpcClient opaEvalClient;
 	@Nullable
-	private final com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.proxypolicy.OpaEvalGrpcClient proxyPolicyOpaClient;
+	private final com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.clients.vservices.proxypolicy.OpaEvalGrpcClient proxyPolicyOpaClient;
 	private final ConfigMap configMap;
 
 	public IdentityServiceImpl(
@@ -181,7 +181,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			Supplier<String> spiffePrefixReader,
 			String tokenIssuer,
 			@Nullable OpaEvalGrpcClient opaEvalClient,
-			@Nullable com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.s2sm.internal.grpc.clients.vservices.proxypolicy.OpaEvalGrpcClient proxyPolicyOpaClient,
+			@Nullable com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.clients.vservices.proxypolicy.OpaEvalGrpcClient proxyPolicyOpaClient,
 			ConfigMap configMap) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
@@ -719,7 +719,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 
 		boolean isRefresh = request.getTokenPurpose() ==
-				com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.token.TokenOuterClass.TokenPurpose.TOKEN_PURPOSE_REFRESH;
+				com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.token.TokenOuterClass.TokenPurpose.TOKEN_PURPOSE_REFRESH;
 
 		TokenWrapper newToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)

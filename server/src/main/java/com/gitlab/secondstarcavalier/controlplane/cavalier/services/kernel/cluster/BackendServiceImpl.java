@@ -4,14 +4,14 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 import static com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster.PeerContext.PEER_KEY;
 
 // StateServer is in this package
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.host.HostOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.grpcconfig.ClusterServiceGrpc;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.ClusterInfo;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.ClusterMember;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.ClusterState;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.LogMessage;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.MemberStatus;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.grpcconfig.Grpcconfig.PingResponse;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.host.HostOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.grpcconfig.ClusterServiceGrpc;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.grpcconfig.Grpcconfig.ClusterInfo;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.grpcconfig.Grpcconfig.ClusterMember;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.grpcconfig.Grpcconfig.ClusterState;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.grpcconfig.Grpcconfig.LogMessage;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.grpcconfig.Grpcconfig.MemberStatus;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.grpcconfig.Grpcconfig.PingResponse;
 import com.hazelcast.core.HazelcastInstance;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
@@ -47,7 +47,7 @@ public class BackendServiceImpl extends ClusterServiceGrpc.ClusterServiceImplBas
     }
 
     @Override
-    public void log(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.trace.Trace.TraceRequest request, StreamObserver<LogMessage> responseObserver) {
+    public void log(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.trace.Trace.TraceRequest request, StreamObserver<LogMessage> responseObserver) {
         String peer = PEER_KEY.get();
         if (peer == null) {
             peer = "unknown";
@@ -65,7 +65,7 @@ public class BackendServiceImpl extends ClusterServiceGrpc.ClusterServiceImplBas
     }
 
     @Override
-    public void ping(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.trace.Trace.TraceRequest request, StreamObserver<PingResponse> responseObserver) {
+    public void ping(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.trace.Trace.TraceRequest request, StreamObserver<PingResponse> responseObserver) {
         PingResponse response = PingResponse.newBuilder()
                 .setStatus(MemberStatus.MEMBER_STATUS_READY)
                 .build();
@@ -75,7 +75,7 @@ public class BackendServiceImpl extends ClusterServiceGrpc.ClusterServiceImplBas
     }
 
     @Override
-    public void subscribe(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.trace.Trace.TraceRequest request, StreamObserver<ClusterState> responseObserver) {
+    public void subscribe(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.trace.Trace.TraceRequest request, StreamObserver<ClusterState> responseObserver) {
         String peer = PEER_KEY.get();
         if (peer == null) {
             peer = "unknown";

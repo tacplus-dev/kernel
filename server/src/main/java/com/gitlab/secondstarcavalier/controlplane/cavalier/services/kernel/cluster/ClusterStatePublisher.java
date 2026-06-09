@@ -3,8 +3,8 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.MapRegistry;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.PersistenceProvider;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.hazelcast.Hazelcast;
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ClusterMap;
 import com.hazelcast.cluster.Member;

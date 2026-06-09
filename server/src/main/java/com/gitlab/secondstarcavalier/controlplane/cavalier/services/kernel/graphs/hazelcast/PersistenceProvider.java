@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.hazelcast.Hazelcast.ConsistencyType;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.hazelcast.Hazelcast.ConsistencyType;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.IMap;
 import com.hazelcast.core.HazelcastInstance;
 import java.io.IOException;

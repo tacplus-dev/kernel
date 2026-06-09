@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.diskstore.Snapshot;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.diskstore.stores.DiskStores;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.libs.jwk.JwkOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.diskstore.Snapshot;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.diskstore.stores.DiskStores;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.jwk.JwkOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;

@@ -17,7 +17,7 @@
 		<!-- Tacplus generated types -->
 		<dependency>
 			<groupId>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel</groupId>
-			<artifactId>kernel-tacplus</artifactId>
+			<artifactId>kernel-model</artifactId>
 		</dependency>
 		<!-- Protocol Buffers -->
 		<dependency>
@@ -184,7 +184,7 @@
 					</execution>
 				</executions>
 				<configuration>
-					<protoDir>${project.basedir}/../tacplus/target/generated-sources/tacplus/proto-annotated</protoDir>
+					<protoDir>${project.basedir}/../tacplus/target/generated-sources/model/proto-annotated</protoDir>
 					<outputDir>${project.build.directory}/generated-sources/tacplus-backend</outputDir>
 					<javaPackageBase>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend</javaPackageBase>
 					<peerContextClass>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster.PeerContext</peerContextClass>

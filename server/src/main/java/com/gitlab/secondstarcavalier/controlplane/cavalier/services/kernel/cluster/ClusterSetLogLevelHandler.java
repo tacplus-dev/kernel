@@ -3,8 +3,8 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.ClusterStateServiceGrpc;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.ClusterStateServiceGrpc;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
 import com.google.protobuf.Empty;
 import io.grpc.ServerMethodDefinition;
 import io.grpc.ServerServiceDefinition;

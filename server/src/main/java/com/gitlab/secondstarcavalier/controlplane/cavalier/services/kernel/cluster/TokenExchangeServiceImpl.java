@@ -1,8 +1,8 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.entitlements.Entitlements;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.generated.entitlements.Entitlements;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
 
 /**
  * Entitlement-scoping helper used by the consolidated kernel {@code Mint}
@@ -27,7 +27,7 @@ final class TokenExchangeServiceImpl {
 		if (Kernel.getDescriptor().getPackage().equals(targetAud)) {
 			return entitlements;
 		}
-		return com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.generated.entitlements.Helpers
+		return com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.generated.entitlements.Helpers
 				.scopeToEntitlements(entitlements, targetAud);
 	}
 }

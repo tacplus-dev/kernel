@@ -31,7 +31,7 @@
 		</dependency>
 		<dependency>
 			<groupId>com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel</groupId>
-			<artifactId>kernel-tacplus</artifactId>
+			<artifactId>kernel-model</artifactId>
 		</dependency>
 	</dependencies>
 	<properties>

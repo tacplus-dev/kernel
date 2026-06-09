@@ -10,9 +10,9 @@ import org.slf4j.LoggerFactory;
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster.ClusterServer;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.PersistenceProvider;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.logger.LogbackConfigurator;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Helpers;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.logger.LogbackConfigurator;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Helpers;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
 
 /**
  * Shared bootstrap logic for kernel nodes. Resolves a

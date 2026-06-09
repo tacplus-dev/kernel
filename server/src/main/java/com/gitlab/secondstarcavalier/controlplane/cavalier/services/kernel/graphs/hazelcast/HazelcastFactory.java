@@ -1,10 +1,10 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.x509.ImmutableCert;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.libs.x509.ImmutableCertChain;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Helpers;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.x509.ImmutableCert;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.x509.ImmutableCertChain;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Helpers;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.SerializerRegistry;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.Manager;
 import com.hazelcast.config.Config;
@@ -21,7 +21,7 @@ import java.security.cert.Certificate;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.hazelcast.Hazelcast;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.hazelcast.Hazelcast;
 
 /**
  * Factory for creating a configured Hazelcast instance from a
@@ -71,7 +71,7 @@ public class HazelcastFactory {
 
 		// Network timeouts
 		if (cfg.hasNetwork()) {
-			Hazelcast.NetworkConfig net = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplus.types.common.hazelcast.Helpers
+			Hazelcast.NetworkConfig net = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.hazelcast.Helpers
 					.networkConfigDefaults(cfg.getNetwork()).build();
 			tcpIpConfig.setConnectionTimeoutSeconds((int) net.getConnectTimeoutSeconds());
 			hzConfig.setProperty(

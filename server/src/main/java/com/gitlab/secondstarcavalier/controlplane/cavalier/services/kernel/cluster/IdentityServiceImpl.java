@@ -1395,6 +1395,19 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	private X509.X509CertChain doX509Mint(Tokenrequest.X509MintRequest request) throws StatusException, Exception {
+		String traceId = UUID.randomUUID().toString();
+		long startNanos = System.nanoTime();
+		X509.X509CertRequest originalCertRequest = request.getCertRequest();
+		logger.info("X509Mint[{}] begin aud={}, inputToken={}, keyId={}, issuer={}, exp={}, dnsSans={}, uriSans={}",
+				traceId,
+				request.getAud(),
+				!request.getInputToken().isEmpty(),
+				originalCertRequest.hasKey() ? originalCertRequest.getKey().getId() : "",
+				originalCertRequest.getIssuer(),
+				originalCertRequest.getExp(),
+				originalCertRequest.getDnsNamesCount(),
+				originalCertRequest.getUriSansCount());
+
 		// Authenticate caller from raw Bearer token (MintService is auth-exempt,
 		// so SecurityInterceptor doesn't validate — we do it manually here).
 		// Fall back to input_token from request body (gateway-mediated calls).
@@ -1412,11 +1425,14 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		} catch (Exception e) {
 			throw new StatusException(Status.UNAUTHENTICATED, "invalid token: " + e.getMessage());
 		}
+		logger.info("X509Mint[{}] parsed token kid={}, sub={}", traceId, token.getKid(), token.getSubject());
 
 		// Verify token signature against cluster keys.
 		String kid = token.getKid();
 		JwkOuterClass.Jwk matchingKey = null;
-		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+		List<JwkOuterClass.Jwk> verifyingKeys = verifyingKeysReader.get();
+		logger.info("X509Mint[{}] loaded {} verifying keys", traceId, verifyingKeys.size());
+		for (JwkOuterClass.Jwk jwk : verifyingKeys) {
 			if (kid.equals(jwk.getKid())) {
 				matchingKey = jwk;
 				break;
@@ -1430,6 +1446,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		} catch (Exception e) {
 			throw new StatusException(Status.UNAUTHENTICATED, "token verification failed: " + e.getMessage());
 		}
+		logger.info("X509Mint[{}] verified token in {}ms", traceId, elapsedMillis(startNanos));
 
 		// Kernel-minted service tokens encode the canonical SPIFFE URI in the
 		// `sub` claim (e.g. "spiffe://local/dev/oauth"). That URI IS the
@@ -1450,7 +1467,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// Intermediate CA state is keyed by bare service name, matching the
 		// ManageCert path. The full SPIFFE URI remains the leaf cert identity.
 		String serviceName = SpiffeIds.serviceName(spiffeId);
-		ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
+		logger.info("X509Mint[{}] resolving intermediate CA service={}, spiffeId={}",
+				traceId, serviceName, spiffeId);
+		ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(traceId, serviceName, signingCa);
+		logger.info("X509Mint[{}] intermediate CA ready service={} in {}ms",
+				traceId, serviceName, elapsedMillis(startNanos));
 
 		// Enrich cert request with the SPIFFE URI SAN (canonical identity).
 		X509.X509CertRequest enrichedRequest = request.getCertRequest().toBuilder()
@@ -1458,7 +1479,17 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.build();
 
 		// Sign the enriched cert request with the intermediate CA.
+		logger.info("X509Mint[{}] signing leaf service={}, keyId={}, issuer={}, exp={}, dnsSans={}, uriSans={}",
+				traceId,
+				serviceName,
+				enrichedRequest.hasKey() ? enrichedRequest.getKey().getId() : "",
+				enrichedRequest.getIssuer(),
+				enrichedRequest.getExp(),
+				enrichedRequest.getDnsNamesCount(),
+				enrichedRequest.getUriSansCount());
 		X509.X509Cert leafCert = intermediateCa.sign(enrichedRequest);
+		logger.info("X509Mint[{}] leaf signed service={} in {}ms",
+				traceId, serviceName, elapsedMillis(startNanos));
 
 		// Build response: leaf cert + intermediate CA cert in chain.
 		X509.X509CertChain certChain = X509.X509CertChain.newBuilder()
@@ -1472,6 +1503,10 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		return certChain;
 	}
 
+	private static long elapsedMillis(long startNanos) {
+		return (System.nanoTime() - startNanos) / 1_000_000L;
+	}
+
 	/**
 	 * Gets or creates a per-service intermediate CA.
 	 * The intermediate CA is signed by the root CA with BasicConstraints CA:TRUE, pathlen:0.
@@ -1479,19 +1514,36 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 */
 	private synchronized ImmutableCertChain getOrCreateIntermediateCa(
 			String serviceName, ImmutableCertChain rootCa) throws Exception {
+		return getOrCreateIntermediateCa(null, serviceName, rootCa);
+	}
+
+	private synchronized ImmutableCertChain getOrCreateIntermediateCa(
+			String traceId, String serviceName, ImmutableCertChain rootCa) throws Exception {
+		long startNanos = System.nanoTime();
 
 		// Check if intermediate CA already exists for this service.
 		X509.X509CertChain existing = serviceCaReader.apply(serviceName);
 		if (existing != null && existing.getChainCount() > 0) {
+			if (traceId != null) {
+				logger.info("X509Mint[{}] found existing intermediate CA service={}, chainLength={} in {}ms",
+						traceId, serviceName, existing.getChainCount(), elapsedMillis(startNanos));
+			}
 			return ImmutableCertChain.from(existing);
 		}
 
 		// Generate EC P-384 keypair for the intermediate CA.
 		// Ed25519 is avoided because Netty (used by Keycloak/Quarkus) has known
 		// compatibility issues with Ed25519 in TLS certificate chains.
+		if (traceId != null) {
+			logger.info("X509Mint[{}] generating intermediate CA key service={}", traceId, serviceName);
+		}
 		KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
 		kpg.initialize(new ECGenParameterSpec("secp384r1"));
 		KeyPair intermediateKeyPair = kpg.generateKeyPair();
+		if (traceId != null) {
+			logger.info("X509Mint[{}] generated intermediate CA key service={} in {}ms",
+					traceId, serviceName, elapsedMillis(startNanos));
+		}
 
 		String intermediateId = serviceName + "-intermediate-ca";
 		long now = Instant.now().getEpochSecond();
@@ -1515,7 +1567,15 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.setPathLenConstraint(0)
 				.build();
 
+		if (traceId != null) {
+			logger.info("X509Mint[{}] signing intermediate CA service={} issuer={}",
+					traceId, serviceName, intermediateRequest.getIssuer());
+		}
 		X509.X509Cert intermediateCert = rootCa.sign(intermediateRequest);
+		if (traceId != null) {
+			logger.info("X509Mint[{}] signed intermediate CA service={} in {}ms",
+					traceId, serviceName, elapsedMillis(startNanos));
+		}
 
 		// Build the private key proto.
 		byte[] privKeyBytes = intermediateKeyPair.getPrivate().getEncoded();
@@ -1537,8 +1597,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.addChain(intermediateCert)
 				.build();
 
+		if (traceId != null) {
+			logger.info("X509Mint[{}] writing intermediate CA service={}", traceId, serviceName);
+		}
 		serviceCaWriter.accept(serviceName, intermediateProto);
-		logger.info("Created intermediate CA for service: {}", serviceName);
+		logger.info("Created intermediate CA for service: {}{}", serviceName,
+				traceId != null ? " traceId=" + traceId : "");
 
 		return ImmutableCertChain.from(intermediateProto);
 	}

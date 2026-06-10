@@ -519,6 +519,9 @@ public class ClusterServer {
 			// RemoteJwkSource consumers use.
 			var kernelAuthorizer = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.grpcserver.Authorizer(
 					spiffePrefix, new LocalJwkSource(allKeysSupplier));
+			Mint.registerMethodAuth(kernelAuthorizer);
+			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker.registerMethodAuth(kernelAuthorizer);
+			TenantAdmin.registerMethodAuth(kernelAuthorizer);
 
 			// Seed ServiceConfigState with spiffe_prefix so all services receive it.
 			try {

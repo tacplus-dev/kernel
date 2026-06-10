@@ -626,8 +626,9 @@ public class ClusterServer {
 					(serviceName, certPair) -> {
 						try {
 							caState.putServiceCas(serviceName, certPair);
-							// A new per-service intermediate CA must survive a restart.
-							persistKernelState();
+							// service_cas are currently rebuilt on demand at startup, not
+							// rehydrated from disk, so keep cert minting off the persistence
+							// hot path.
 						} catch (Exception e) {
 							throw new RuntimeException("putServiceCas failed", e);
 						}
@@ -654,7 +655,9 @@ public class ClusterServer {
 					(serviceName, certPair) -> {
 						try {
 							caState.putServiceCas(serviceName, certPair);
-							persistKernelState();
+							// service_cas are currently rebuilt on demand at startup, not
+							// rehydrated from disk, so keep cert minting off the persistence
+							// hot path.
 						} catch (Exception e) {
 							throw new RuntimeException("putServiceCas failed", e);
 						}

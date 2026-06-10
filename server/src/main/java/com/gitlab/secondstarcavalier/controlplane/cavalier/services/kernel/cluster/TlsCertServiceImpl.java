@@ -267,10 +267,10 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			// Cancel any pending renewal from a previous cert.
 			cancelRenewal();
 
-			// Intermediate CA is keyed by the canonical SPIFFE URI so both
+			// Intermediate CA state is keyed by bare service name so both
 			// X509Mint and ManageCert produce certs under the same per-service
-			// intermediate. Naming stays consistent across cert-issuing paths.
-			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(spiffeId, signingCa);
+			// intermediate. The full SPIFFE URI remains the leaf cert identity.
+			ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
 
 			// Build cert request from the CSR's public key. URI SAN is the
 			// canonical SPIFFE URI (already validated against the caller's

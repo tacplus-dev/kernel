@@ -9,7 +9,9 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graph
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.PersistenceProvider;
 // StateServer is in this package
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.x509.ImmutableCertChain;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.jwk.JwkOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.errors.ProtoException;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.grpcconfig.Grpcconfig;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Helpers;
@@ -32,6 +34,8 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.ServerServiceDefinition;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.ServerTransportFilter;
 import io.grpc.health.v1.HealthCheckResponse.ServingStatus;
 import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
@@ -74,6 +78,22 @@ public class ClusterServer {
 
 	private static final Metadata.Key<String> AUTH_HEADER_KEY =
 			Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+
+	private static StatusRuntimeException toGrpcError(Exception e) {
+		if (e instanceof StatusRuntimeException statusRuntimeException) {
+			return statusRuntimeException;
+		}
+		if (e instanceof ProtoException protoException) {
+			return Status.fromCodeValue(protoException.getCode())
+					.withDescription(protoException.getMessage())
+					.withCause(protoException)
+					.asRuntimeException();
+		}
+		return Status.INTERNAL
+				.withDescription(e.getMessage() == null ? e.toString() : e.getMessage())
+				.withCause(e)
+				.asRuntimeException();
+	}
 
 	private final int grpcPort;
 	private final HazelcastInstance hazelcast;
@@ -639,7 +659,28 @@ public class ClusterServer {
 					proxyPolicyOpa,
 					kernelConfigMap);
 
-			Mint mintWrapper = new Mint(identityService, kernelAuthorizer);
+			Mint mintWrapper = new Mint(identityService, kernelAuthorizer) {
+				@Override
+				public void x509Mint(Tokenrequest.X509MintRequest request,
+						io.grpc.stub.StreamObserver<X509.X509CertChain> responseObserver) {
+					try {
+						logger.info("X509Mint direct dispatch aud={}, inputToken={}, keyId={}, issuer={}, exp={}",
+								request.getAud(),
+								!request.getInputToken().isEmpty(),
+								request.hasCertRequest() && request.getCertRequest().hasKey()
+										? request.getCertRequest().getKey().getId()
+										: "",
+								request.hasCertRequest() ? request.getCertRequest().getIssuer() : "",
+								request.hasCertRequest() ? request.getCertRequest().getExp() : 0);
+						X509.X509CertChain response = identityService.x509Mint(null, request);
+						responseObserver.onNext(response);
+						responseObserver.onCompleted();
+					} catch (Exception e) {
+						logger.error("X509Mint direct dispatch failed", e);
+						responseObserver.onError(toGrpcError(e));
+					}
+				}
+			};
 			serverBuilder.addService(mintWrapper);
 			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
 

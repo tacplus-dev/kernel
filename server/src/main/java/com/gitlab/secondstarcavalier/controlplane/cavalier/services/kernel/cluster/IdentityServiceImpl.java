@@ -1447,9 +1447,10 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 					"X509Mint requires a kernel-minted service token; sub is not a SPIFFE URI: " + spiffeId);
 		}
 
-		// Intermediate CA is keyed by the SPIFFE URI itself so naming stays
-		// consistent across all cert-issuing paths (X509Mint + TlsCertService).
-		ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(spiffeId, signingCa);
+		// Intermediate CA state is keyed by bare service name, matching the
+		// ManageCert path. The full SPIFFE URI remains the leaf cert identity.
+		String serviceName = SpiffeIds.serviceName(spiffeId);
+		ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(serviceName, signingCa);
 
 		// Enrich cert request with the SPIFFE URI SAN (canonical identity).
 		X509.X509CertRequest enrichedRequest = request.getCertRequest().toBuilder()

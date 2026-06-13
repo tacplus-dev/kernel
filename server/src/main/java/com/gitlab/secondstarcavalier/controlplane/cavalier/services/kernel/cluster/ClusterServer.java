@@ -495,12 +495,12 @@ public class ClusterServer {
 		// Kernel identity + tenancy control plane (the cluster trust root).
 		{
 			final var delegates = cfg.getDelegatesList();
-			// SPIFFE prefix for URI construction (defaults applied by Helpers).
-			// This is the SPIFFE trust-domain (no leading slash); the leading-slash
-			// namespace claim is derived from it via SpiffeIds / TokenWrapper bridges.
-			String configuredSpiffePrefix = cfg.getSpiffePrefix();
-			final String spiffePrefix = (configuredSpiffePrefix != null && !configuredSpiffePrefix.isEmpty())
-					? configuredSpiffePrefix : "local/dev";
+			// SPIFFE trust domain (URI authority, no slash) plus deployment
+			// location path. These replace the retired combined spiffe_prefix.
+			String configuredTrustDomain = cfg.getSpiffeTrustDomain();
+			final String spiffeTrustDomain = (configuredTrustDomain != null && !configuredTrustDomain.isEmpty())
+					? configuredTrustDomain : "local.dev";
+			final String spiffeLocationPath = cfg.getLocationPath();
 
 			// Seed/refresh the root-admin cred_pairs (kernel.Config.root_cred_pairs)
 			// into the root namespace's TenantConfig so MintClientToken can resolve
@@ -508,7 +508,7 @@ public class ClusterServer {
 			// the cluster/root admin call TenantAdmin to provision tenants/projects.
 			try {
 				TenantAdminServiceImpl.seedRootCredPairs(kernelConfigMap, cfg.getRootCredPairsList(),
-						SpiffeIds.namespaceRoot(spiffePrefix));
+						SpiffeIds.namespaceRoot());
 			} catch (Exception e) {
 				logger.warn("Failed to seed root cred_pairs: {}", e.getMessage());
 			}
@@ -516,20 +516,25 @@ public class ClusterServer {
 			// Mandatory, fail-closed Authorizer shared by the kernel's token-auth
 			// gRPC wrappers. The kernel is the JWKS authority, so it uses a LOCAL
 			// key source (verify against its own keys) rather than the
-			// RemoteJwkSource consumers use.
+			// RemoteJwkSource consumers use. SPIFFE IDs are self-describing, so the
+			// Authorizer derives caller scope from token subjects instead of a
+			// configured prefix.
 			var kernelAuthorizer = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.grpcserver.Authorizer(
-					spiffePrefix, new LocalJwkSource(allKeysSupplier));
+					new LocalJwkSource(allKeysSupplier));
 			Mint.registerMethodAuth(kernelAuthorizer);
 			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker.registerMethodAuth(kernelAuthorizer);
 			TenantAdmin.registerMethodAuth(kernelAuthorizer);
 
-			// Seed ServiceConfigState with spiffe_prefix so all services receive it.
+			// Seed ServiceConfigState with the trust domain and location path so all
+			// services build identities under the same self-describing SPIFFE root.
 			try {
 				backendServers.libs().getServiceConfigStateMap().putConfig(
 						Grpcconfig.Config.newBuilder()
-								.setSpiffePrefix(spiffePrefix)
+								.setSpiffeTrustDomain(spiffeTrustDomain)
+								.setLocationPath(spiffeLocationPath)
 								.build());
-				logger.info("Seeded ServiceConfigState spiffe_prefix={}", spiffePrefix);
+				logger.info("Seeded ServiceConfigState spiffe_trust_domain={}, location_path={}",
+						spiffeTrustDomain, spiffeLocationPath);
 			} catch (Exception e) {
 				logger.warn("Failed to seed ServiceConfigState: {}", e.getMessage());
 			}
@@ -623,7 +628,7 @@ public class ClusterServer {
 					new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.serviceconnection.ServiceConnection.ChannelProvider(opaConn),
 					aud -> () -> {
 						try {
-							return mintSelfToken(keyRotator, tokenIssuer, aud, () -> spiffePrefix);
+							return mintSelfToken(keyRotator, tokenIssuer, aud, () -> spiffeTrustDomain);
 						} catch (Exception e) {
 							throw new RuntimeException("failed to self-mint token for " + aud, e);
 						}
@@ -656,7 +661,7 @@ public class ClusterServer {
 							throw new RuntimeException("putServiceCas failed", e);
 						}
 					},
-					() -> spiffePrefix,
+					() -> spiffeTrustDomain,
 					tokenIssuer,
 					userEntitlementsOpa,
 					proxyPolicyOpa,
@@ -706,7 +711,7 @@ public class ClusterServer {
 							throw new RuntimeException("putServiceCas failed", e);
 						}
 					},
-					() -> spiffePrefix,
+					() -> spiffeTrustDomain,
 					allKeysSupplier);
 			serverBuilder.addService(tlsCertService);
 			logger.info("TlsCertService registered (ManageCert auto-TLS, cert lifetime={}s)",
@@ -723,7 +728,7 @@ public class ClusterServer {
 			// check (target_namespace_field) declaratively per the generated
 			// wrapper. Mutating writes trigger a fresh disk snapshot.
 			var tenantAdminImpl = new TenantAdminServiceImpl(
-					kernelConfigMap, () -> spiffePrefix, this::persistKernelState);
+					kernelConfigMap, () -> spiffeTrustDomain, this::persistKernelState);
 			var tenantAdminWrapper = new TenantAdmin(tenantAdminImpl, kernelAuthorizer);
 			serverBuilder.addService(tenantAdminWrapper);
 			logger.info("TenantAdminService registered on gRPC server");
@@ -882,7 +887,7 @@ public class ClusterServer {
 	 * token because kernel IS the token issuer.
 	 */
 	private static String mintSelfToken(KeyRotator keyRotator, String tokenIssuer,
-			String audience, Supplier<String> spiffePrefixReader) throws Exception {
+			String audience, Supplier<String> trustDomainReader) throws Exception {
 		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.key.ImmutableKey signingKey =
 				keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		if (signingKey == null) {
@@ -891,7 +896,7 @@ public class ClusterServer {
 		long now = java.time.Instant.now().getEpochSecond();
 		long exp = now + 3600; // 1 hour
 
-		String spiffeId = SpiffeIds.build(spiffePrefixReader.get(), "kernel");
+		String spiffeId = SpiffeIds.build(trustDomainReader.get(), "kernel");
 
 		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.token.TokenWrapper token =
 				com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.token.TokenWrapper.create()

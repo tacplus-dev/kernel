@@ -44,20 +44,20 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     private static final Logger logger = LoggerFactory.getLogger(TenantAdminServiceImpl.class);
 
     private final ConfigMap configMap;
-    private final Supplier<String> spiffePrefixReader;
+    private final Supplier<String> trustDomainReader;
     private final Runnable persistHook;
 
     /**
      * @param configMap          kernel ConfigState accessor (tenants / tenant_configs / project_configs)
-     * @param spiffePrefixReader cluster trust-domain prefix supplier (root namespace = "/" + prefix)
+     * @param trustDomainReader  SPIFFE trust domain supplier (authorization root namespace is "/")
      * @param persistHook        invoked after every mutating RPC so the kernel persists a new disk snapshot
      */
     public TenantAdminServiceImpl(
             ConfigMap configMap,
-            Supplier<String> spiffePrefixReader,
+            Supplier<String> trustDomainReader,
             Runnable persistHook) {
         this.configMap = configMap;
-        this.spiffePrefixReader = spiffePrefixReader;
+        this.trustDomainReader = trustDomainReader;
         this.persistHook = persistHook != null ? persistHook : () -> {};
         logger.info("TenantAdminServiceImpl initialised");
     }

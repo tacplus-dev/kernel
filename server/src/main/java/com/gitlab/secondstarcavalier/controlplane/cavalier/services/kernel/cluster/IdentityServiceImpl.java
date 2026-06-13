@@ -3,6 +3,7 @@ package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.clus
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.jwk.ImmutableJwk;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.key.ImmutableKey;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.spiffe.Spiffe;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.token.TokenWrapper;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.jwk.JwkOuterClass;
@@ -159,7 +160,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private final ImmutableCertChain signingCa;
 	private final Function<String, X509.X509CertChain> serviceCaReader;
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
-	private final Supplier<String> spiffePrefixReader;
+	private final Supplier<String> trustDomainReader;
 	private final String tokenIssuer;
 	@Nullable
 	private final OpaEvalGrpcClient opaEvalClient;
@@ -178,7 +179,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			ImmutableCertChain signingCa,
 			Function<String, X509.X509CertChain> serviceCaReader,
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
-			Supplier<String> spiffePrefixReader,
+			Supplier<String> trustDomainReader,
 			String tokenIssuer,
 			@Nullable OpaEvalGrpcClient opaEvalClient,
 			@Nullable com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.clients.vservices.proxypolicy.OpaEvalGrpcClient proxyPolicyOpaClient,
@@ -193,7 +194,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
-		this.spiffePrefixReader = spiffePrefixReader;
+		this.trustDomainReader = trustDomainReader;
 		this.tokenIssuer = (tokenIssuer != null && !tokenIssuer.isEmpty()) ? tokenIssuer : Kernel.getDescriptor().getPackage();
 		this.opaEvalClient = opaEvalClient;
 		this.proxyPolicyOpaClient = proxyPolicyOpaClient;
@@ -470,7 +471,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		if (ns != null && !ns.isEmpty()) {
 			return ns;
 		}
-		return SpiffeIds.namespaceRoot(spiffePrefixReader.get());
+		return SpiffeIds.namespaceRoot();
 	}
 
 	/**
@@ -602,7 +603,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				logger.info("Generated new instance_id={} for sub={}", instanceId, delegateName);
 			}
 
-			String spiffeId = SpiffeIds.build(spiffePrefixReader.get(), delegateName);
+			String spiffeId = SpiffeIds.build(trustDomainReader.get(), delegateName);
 			Map<String, Object> extraClaims = new java.util.LinkedHashMap<>();
 			extraClaims.put("instance_id", instanceId);
 			extraClaims.put("sub_type", SUB_TYPE_SERVICE);
@@ -737,8 +738,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// Delegation is always a broker minting on behalf of a user.
 		newToken.setTokenUse(isRefresh ? TOKEN_USE_REFRESH : TOKEN_USE_ACCESS);
 		newToken.setSubType(SUB_TYPE_USER);
-		// User tokens live at the cluster root — can level-or-below to any tenant.
-		newToken.setNamespace(SpiffeIds.namespaceRoot(spiffePrefixReader.get()));
+		// User tokens live at the cluster root and can level-or-below to any tenant.
+		newToken.setNamespace(SpiffeIds.namespaceRoot());
 		if (isRefresh) {
 			newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		}
@@ -817,7 +818,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		boolean isServiceMint = SUB_TYPE_SERVICE.equals(extraClaims.get("sub_type"));
 		newToken.setNamespace(isServiceMint
 				? SpiffeIds.namespaceFromSpiffe(subject)
-				: SpiffeIds.namespaceRoot(spiffePrefixReader.get()));
+				: SpiffeIds.namespaceRoot());
 
 		for (Map.Entry<String, Object> entry : extraClaims.entrySet()) {
 			newToken.setCustomField(entry.getKey(), entry.getValue());
@@ -1679,8 +1680,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			throw new StatusException(Status.INVALID_ARGUMENT, "workload_name must match [a-zA-Z0-9_-]+");
 		}
 
-		// Construct child SPIFFE URI.
-		String childSub = callerSub + "/" + workloadName;
+		// Construct child SPIFFE URI via the generated self-describing helper.
+		String childSub = Spiffe.workloadSpiffeId(callerSub, workloadName);
 
 		// Mint bootstrap token (short-lived).
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);

@@ -54,7 +54,7 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	private final ImmutableCertChain signingCa;
 	private final Function<String, X509.X509CertChain> serviceCaReader;
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
-	private final Supplier<String> spiffePrefixReader;
+	private final Supplier<String> trustDomainReader;
 	private final Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader;
 	private final ScheduledExecutorService scheduler;
 
@@ -63,7 +63,7 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	 * @param signingCa            cavalier-issued signing chain (intermediate CA)
 	 * @param serviceCaReader      reads per-service intermediate CA from Ca state
 	 * @param serviceCaWriter      writes per-service intermediate CA to Ca state
-	 * @param spiffePrefixReader   SPIFFE deployment prefix
+	 * @param trustDomainReader    SPIFFE trust domain
 	 * @param verifyingKeysReader  active kernel JWKs for validating caller tokens
 	 */
 	public TlsCertServiceImpl(
@@ -71,13 +71,13 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			ImmutableCertChain signingCa,
 			Function<String, X509.X509CertChain> serviceCaReader,
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
-			Supplier<String> spiffePrefixReader,
+			Supplier<String> trustDomainReader,
 			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader) {
 		this.certLifetimeSeconds = certLifetimeSeconds;
 		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
-		this.spiffePrefixReader = spiffePrefixReader;
+		this.trustDomainReader = trustDomainReader;
 		this.verifyingKeysReader = verifyingKeysReader;
 		this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
 			Thread t = new Thread(r, "tls-cert-renewal");

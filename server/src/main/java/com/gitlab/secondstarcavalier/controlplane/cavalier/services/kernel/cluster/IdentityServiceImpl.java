@@ -27,6 +27,8 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 import io.grpc.Status;
 
+import com.google.protobuf.Descriptors;
+import com.google.protobuf.Message;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 
@@ -391,7 +393,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// they belong to. Fall back to the cluster root when the policy returns none.
 		newToken.setNamespace(namespaceFromOpaOrRoot(opaResult));
 
-		newToken.setServiceEntitlements(expanded);
+		setFlatServiceEntitlements(newToken, expanded);
 
 		if (claims != null) {
 			newToken.setClaimsFromStruct(claims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
@@ -411,7 +413,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		logger.info("MintUserToken: sub={}, azp={}, exp={}, offline={}, service_entitlements={}",
 				subject, delegate.getName(), exp, offlineAccess,
-				newToken.getServiceEntitlements());
+				newToken.getCustomField(SERVICE_ENTITLEMENTS));
 
 		// The access token is always short-lived and never outlives its parent.
 		// A long-lived OT must not be mirrored into a long-lived AT.
@@ -458,6 +460,172 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static Entitlements.TokenEntitlements expandEntitlements(
 			Userentitlements.EntitlementEvalResult result) {
 		return result.getTokenEntitlements();
+	}
+
+	/**
+	 * JWTs carry service_entitlements as flat grant strings:
+	 * {"grants":["OPENAI_ANY"],"azp":["delegate"]}. The generated proto may be
+	 * either the older repeated EntitlementGrant message or the newer repeated
+	 * string shape, so conversion is descriptor-driven during the transition.
+	 */
+	private static void setFlatServiceEntitlements(TokenWrapper token, Entitlements.TokenEntitlements entitlements) {
+		if (token == null || entitlements == null) {
+			return;
+		}
+		token.setCustomField(SERVICE_ENTITLEMENTS, flatServiceEntitlementsJson(entitlements));
+	}
+
+	private static Entitlements.TokenEntitlements readServiceEntitlements(TokenWrapper token) {
+		if (token == null) {
+			return null;
+		}
+		Entitlements.TokenEntitlements typed = token.getServiceEntitlements();
+		if (typed != null && !entitlementGrantTokens(typed).isEmpty()) {
+			return typed;
+		}
+		String raw = token.getCustomField(SERVICE_ENTITLEMENTS);
+		Entitlements.TokenEntitlements parsed = parseServiceEntitlementsClaim(raw);
+		return parsed != null ? parsed : typed;
+	}
+
+	private static String flatServiceEntitlementsJson(Entitlements.TokenEntitlements entitlements) {
+		com.google.gson.JsonObject obj = new com.google.gson.JsonObject();
+		com.google.gson.JsonArray grants = new com.google.gson.JsonArray();
+		for (String token : entitlementGrantTokens(entitlements)) {
+			grants.add(token);
+		}
+		obj.add("grants", grants);
+		if (entitlements.getAzpCount() > 0) {
+			com.google.gson.JsonArray azp = new com.google.gson.JsonArray();
+			for (String value : entitlements.getAzpList()) {
+				azp.add(value);
+			}
+			obj.add("azp", azp);
+		}
+		return new com.google.gson.Gson().toJson(obj);
+	}
+
+	private static Entitlements.TokenEntitlements parseServiceEntitlementsClaim(String raw) {
+		if (raw == null || raw.isEmpty()) {
+			return null;
+		}
+		try {
+			com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(raw);
+			if (el.isJsonPrimitive() && el.getAsJsonPrimitive().isString()) {
+				String nested = el.getAsString();
+				if (nested.startsWith("{") || nested.startsWith("[")) {
+					el = com.google.gson.JsonParser.parseString(nested);
+				}
+			}
+			java.util.ArrayList<String> grants = new java.util.ArrayList<>();
+			java.util.ArrayList<String> azp = new java.util.ArrayList<>();
+			collectEntitlementClaim(el, grants, azp);
+			return buildTokenEntitlements(grants, azp);
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
+	private static void collectEntitlementClaim(
+			com.google.gson.JsonElement el, List<String> grants, List<String> azp) {
+		if (el == null || el.isJsonNull()) {
+			return;
+		}
+		if (el.isJsonPrimitive()) {
+			com.google.gson.JsonPrimitive prim = el.getAsJsonPrimitive();
+			if (prim.isString()) {
+				grants.add(prim.getAsString());
+			}
+			return;
+		}
+		if (el.isJsonArray()) {
+			for (com.google.gson.JsonElement item : el.getAsJsonArray()) {
+				collectEntitlementClaim(item, grants, azp);
+			}
+			return;
+		}
+		if (!el.isJsonObject()) {
+			return;
+		}
+		com.google.gson.JsonObject obj = el.getAsJsonObject();
+		com.google.gson.JsonElement token = obj.get("token");
+		if (token != null && token.isJsonPrimitive()) {
+			grants.add(token.getAsString());
+		}
+		com.google.gson.JsonElement grantList = obj.get("grants");
+		if (grantList != null) {
+			collectEntitlementClaim(grantList, grants, azp);
+		}
+		com.google.gson.JsonElement azpList = obj.get("azp");
+		if (azpList != null && azpList.isJsonArray()) {
+			for (com.google.gson.JsonElement item : azpList.getAsJsonArray()) {
+				if (item.isJsonPrimitive()) {
+					azp.add(item.getAsString());
+				}
+			}
+		}
+		for (Map.Entry<String, com.google.gson.JsonElement> entry : obj.entrySet()) {
+			String key = entry.getKey();
+			if (!key.equals("token") && !key.equals("grants") && !key.equals("azp")) {
+				collectEntitlementClaim(entry.getValue(), grants, azp);
+			}
+		}
+	}
+
+	private static List<String> entitlementGrantTokens(Entitlements.TokenEntitlements entitlements) {
+		java.util.ArrayList<String> tokens = new java.util.ArrayList<>();
+		if (entitlements == null) {
+			return tokens;
+		}
+		Descriptors.FieldDescriptor grantsField =
+				entitlements.getDescriptorForType().findFieldByName("grants");
+		if (grantsField == null || !grantsField.isRepeated()) {
+			return tokens;
+		}
+		int count = entitlements.getRepeatedFieldCount(grantsField);
+		for (int i = 0; i < count; i++) {
+			Object value = entitlements.getRepeatedField(grantsField, i);
+			if (value instanceof String) {
+				tokens.add((String) value);
+			} else if (value instanceof Message) {
+				Message msg = (Message) value;
+				Descriptors.FieldDescriptor tokenField =
+						msg.getDescriptorForType().findFieldByName("token");
+				if (tokenField != null) {
+					Object token = msg.getField(tokenField);
+					if (token instanceof String && !((String) token).isEmpty()) {
+						tokens.add((String) token);
+					}
+				}
+			}
+		}
+		return tokens;
+	}
+
+	private static Entitlements.TokenEntitlements buildTokenEntitlements(List<String> grants, List<String> azp) {
+		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
+		Descriptors.FieldDescriptor grantsField =
+				builder.getDescriptorForType().findFieldByName("grants");
+		if (grantsField != null && grantsField.isRepeated()) {
+			for (String token : grants) {
+				if (token == null || token.isEmpty()) {
+					continue;
+				}
+				if (grantsField.getType() == Descriptors.FieldDescriptor.Type.STRING) {
+					builder.addRepeatedField(grantsField, token);
+				} else if (grantsField.getType() == Descriptors.FieldDescriptor.Type.MESSAGE) {
+					Message.Builder grantBuilder = builder.newBuilderForField(grantsField);
+					Descriptors.FieldDescriptor tokenField =
+							grantBuilder.getDescriptorForType().findFieldByName("token");
+					if (tokenField != null) {
+						grantBuilder.setField(tokenField, token);
+						builder.addRepeatedField(grantsField, grantBuilder.build());
+					}
+				}
+			}
+		}
+		builder.addAllAzp(azp);
+		return builder.build();
 	}
 
 	/**
@@ -1120,9 +1288,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 			// Scope service_entitlements to the target service and its vservices.
 			if (!request.getAud().isEmpty()) {
-				Entitlements.TokenEntitlements te = newToken.getServiceEntitlements();
+				Entitlements.TokenEntitlements te = readServiceEntitlements(newToken);
 				if (te != null) {
-					newToken.setServiceEntitlements(
+					setFlatServiceEntitlements(newToken,
 							TokenExchangeServiceImpl.scopeToService(te, request.getAud()));
 				}
 			}
@@ -2141,7 +2309,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 		token.setNamespace(namespace);
-		token.setServiceEntitlements(matched.getEntitlements());
+		setFlatServiceEntitlements(token, matched.getEntitlements());
 		token.sign(signingKey);
 
 		logger.info("Minted cred_pair token: cred_pair={} namespace={} exp={}",

@@ -2,7 +2,9 @@
 
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.collection.CollectionRuntime;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.servicemanager.Caller;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.grants.Grants;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.TenantAdmin;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.generated.entitlements.Entitlements;
@@ -11,7 +13,6 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 
-import com.google.protobuf.Descriptors;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -133,10 +134,10 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     }
 
     @Override
-    public Kernel.ListTenantsResponse listTenants(Caller caller, Kernel.ListTenantsRequest request)
+    public CollectionRuntime.Page<Kernel.Tenant> listTenants(
+            Caller caller, Kernel.ListTenantsRequest request, CollectionRuntime.PageParams page)
             throws ProtoException {
         String parentNs = require(request.getParentNamespace(), "parent_namespace");
-        Kernel.ListTenantsResponse.Builder rb = Kernel.ListTenantsResponse.newBuilder();
         Kernel.ConfigState state = configMap.proto();
         // tenants are keyed by full namespace path, but proto() loses the map
         // keys. Recover candidate immediate-child tenant namespaces from the
@@ -164,13 +165,15 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
                 }
             }
         }
+        List<Kernel.Tenant> tenants = new ArrayList<>();
         for (String key : candidates) {
             Kernel.Tenant t = configMap.getTenants(key);
             if (!t.getName().isEmpty()) {
-                rb.addTenants(t);
+                tenants.add(t);
             }
         }
-        return rb.build();
+        tenants.sort(java.util.Comparator.comparing(Kernel.Tenant::getName));
+        return pageByStringKey(tenants, page, Kernel.Tenant::getName);
     }
 
     // ========================================================================
@@ -189,7 +192,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     }
 
     @Override
-    public TenantConfigOuterClass.TenantConfig setTenantConfig(
+    public TenantConfigOuterClass.TenantConfig updateTenantConfig(
             Caller caller, Kernel.SetTenantConfigRequest request) throws ProtoException {
         String ns = require(request.getTenantNamespace(), "tenant_namespace");
         if (!request.hasConfig()) {
@@ -272,7 +275,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     }
 
     @Override
-    public Kernel.ProjectConfig setProjectConfig(
+    public Kernel.ProjectConfig updateProjectConfig(
             Caller caller, Kernel.SetProjectConfigRequest request) throws ProtoException {
         String ns = require(request.getProjectNamespace(), "project_namespace");
         if (!request.hasConfig()) {
@@ -289,16 +292,20 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     }
 
     @Override
-    public Kernel.ListProjectsResponse listProjects(
-            Caller caller, Kernel.ListProjectsRequest request) throws ProtoException {
+    public CollectionRuntime.Page<Kernel.ProjectNamespace> listProjects(
+            Caller caller, Kernel.ListProjectsRequest request, CollectionRuntime.PageParams page)
+            throws ProtoException {
         String tenantNs = require(request.getTenantNamespace(), "tenant_namespace");
-        Kernel.ListProjectsResponse.Builder rb = Kernel.ListProjectsResponse.newBuilder();
+        List<Kernel.ProjectNamespace> projects = new ArrayList<>();
         for (Kernel.ProjectConfigEntry e : configMap.proto().getProjectConfigsList()) {
             if (isImmediateChild(e.getProjectNamespace(), tenantNs)) {
-                rb.addProjectNamespaces(e.getProjectNamespace());
+                projects.add(Kernel.ProjectNamespace.newBuilder()
+                        .setProjectNamespace(e.getProjectNamespace())
+                        .build());
             }
         }
-        return rb.build();
+        projects.sort(java.util.Comparator.comparing(Kernel.ProjectNamespace::getProjectNamespace));
+        return pageByStringKey(projects, page, Kernel.ProjectNamespace::getProjectNamespace);
     }
 
     @Override
@@ -375,14 +382,51 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         return out;
     }
 
+    private static <T> CollectionRuntime.Page<T> pageByStringKey(
+            List<T> orderedItems, CollectionRuntime.PageParams page, java.util.function.Function<T, String> keyFn)
+            throws ProtoException {
+        String after = pageCursorKey(page);
+        long limit = page == null ? 0 : page.limit;
+        if (limit <= 0) {
+            return new CollectionRuntime.Page<>(java.util.Collections.emptyList(), null, orderedItems.size());
+        }
+
+        List<T> items = new ArrayList<>();
+        CollectionRuntime.Cursor nextAfter = null;
+        for (T item : orderedItems) {
+            String key = keyFn.apply(item);
+            if (after != null && key.compareTo(after) <= 0) {
+                continue;
+            }
+            if (items.size() >= limit) {
+                nextAfter = cursorFor(keyFn.apply(items.get(items.size() - 1)));
+                break;
+            }
+            items.add(item);
+        }
+        return new CollectionRuntime.Page<>(items, nextAfter, orderedItems.size());
+    }
+
+    private static String pageCursorKey(CollectionRuntime.PageParams page) throws ProtoException {
+        if (page == null || page.after == null) {
+            return null;
+        }
+        if (page.after.keys == null || page.after.keys.size() != 1) {
+            throw new ProtoException(ProtoException.INVALID_ARGUMENT,
+                    "page_token cursor does not match the collection order");
+        }
+        return page.after.keys.get(0);
+    }
+
+    private static CollectionRuntime.Cursor cursorFor(String key) {
+        return new CollectionRuntime.Cursor(java.util.Collections.singletonList(key));
+    }
+
     /**
-     * Subset check: every repeated-enum grant in {@code candidate} must be
-     * present in {@code ceiling}'s same field, OR {@code ceiling} grants the
-     * {@code _ANY} (99) value for that field. Descriptor-driven so it depends
-     * on neither specific field names nor generated enum symbols (which vary
-     * across regenerated code). A null/empty ceiling means "no grants" (only an
-     * empty candidate is a subset). An unbounded ceiling (ROOT) is handled by
-     * the caller passing {@code null} and skipping the check entirely.
+     * Subset check for native flat grant tokens. Wildcards are expanded through
+     * the generated Grants catalog before comparison. A null/empty ceiling means
+     * "no grants" (only an empty candidate is a subset). An unbounded ceiling
+     * (ROOT) is handled by the caller passing {@code null} and skipping the check.
      */
     static boolean entitlementsSubsetOf(
             Entitlements.TokenEntitlements candidate, Entitlements.TokenEntitlements ceiling) {
@@ -392,60 +436,27 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (ceiling == null) {
             ceiling = Entitlements.TokenEntitlements.getDefaultInstance();
         }
-        for (Descriptors.FieldDescriptor f : candidate.getDescriptorForType().getFields()) {
-            if (!f.isRepeated() || f.getType() != Descriptors.FieldDescriptor.Type.ENUM) {
-                continue;
-            }
-            int candCount = candidate.getRepeatedFieldCount(f);
-            if (candCount == 0) {
-                continue;
-            }
-            // Does the ceiling grant _ANY (99) for this service field?
-            boolean ceilingAny = false;
-            int ceilCount = ceiling.getRepeatedFieldCount(f);
-            java.util.Set<Integer> ceilNums = new java.util.HashSet<>();
-            for (int i = 0; i < ceilCount; i++) {
-                Descriptors.EnumValueDescriptor v =
-                        (Descriptors.EnumValueDescriptor) ceiling.getRepeatedField(f, i);
-                ceilNums.add(v.getNumber());
-                if (v.getNumber() == 99) {
-                    ceilingAny = true;
-                }
-            }
-            if (ceilingAny) {
-                continue;
-            }
-            for (int i = 0; i < candCount; i++) {
-                Descriptors.EnumValueDescriptor v =
-                        (Descriptors.EnumValueDescriptor) candidate.getRepeatedField(f, i);
-                // A candidate _ANY only fits if the ceiling also has _ANY (handled above).
-                if (!ceilNums.contains(v.getNumber())) {
-                    return false;
-                }
-            }
-        }
-        return true;
+        return Grants.containsAll(candidate.getGrantsList(), ceiling.getGrantsList());
     }
 
     /**
-     * Returns true if these entitlements grant any kernel-service RPC (the
-     * {@code kernel} TokenEntitlements field), which is what authorizes the
-     * holder to call TenantAdmin RPCs. Descriptor-driven on the field name
-     * "kernel"; any value in that repeated field (including {@code _ANY}=99)
-     * counts as TenantAdmin-capable.
+     * Returns true if these entitlements grant any kernel TenantAdmin RPC.
+     * Wildcards are expanded through the generated Grants catalog first, so
+     * KERNEL_ANY / KERNEL_PAGE_ANY / KERNEL_READ_ANY work as intended.
      */
     static boolean isTenantAdminCapable(Entitlements.TokenEntitlements entitlements) {
         if (entitlements == null) {
             return false;
         }
-        Descriptors.FieldDescriptor kernelField =
-                entitlements.getDescriptorForType().findFieldByName("kernel");
-        if (kernelField == null) {
-            // Generated TokenEntitlements lacks a kernel field — cannot evaluate
-            // the min-admin invariant on a service basis; fail closed.
-            return false;
+        for (String token : Grants.normalize(entitlements.getGrantsList())) {
+            var grantInfo = Grants.lookup(token);
+            if (grantInfo.isPresent()
+                    && "kernel".equals(grantInfo.get().pkg)
+                    && "TenantAdmin".equals(grantInfo.get().service)) {
+                return true;
+            }
         }
-        return entitlements.getRepeatedFieldCount(kernelField) > 0;
+        return false;
     }
 
     /**
@@ -515,25 +526,16 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     }
 
     /**
-     * Builds a "full entitlements" {@link Entitlements.TokenEntitlements} that
-     * grants every service's {@code *_RPCS_ANY} value. Descriptor-driven: for
-     * each repeated enum field whose enum type has a value with number 99 (the
-     * {@code _RPCS_ANY} convention), value 99 is added to that field. Fields
-     * lacking a 99 value are skipped. This depends on neither generated enum
-     * symbols (which don't resolve under java_multiple_files) nor specific
-     * service field names.
+     * Builds a "full entitlements" {@link Entitlements.TokenEntitlements} using
+     * every package-level ANY wildcard from the generated grant catalog.
      */
     static Entitlements.TokenEntitlements buildFullEntitlements() {
         Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
-        for (Descriptors.FieldDescriptor f : builder.getDescriptorForType().getFields()) {
-            if (!f.isRepeated() || f.getType() != Descriptors.FieldDescriptor.Type.ENUM) {
-                continue;
+        for (String token : Grants.tokens()) {
+            var grantInfo = Grants.lookup(token);
+            if (grantInfo.isPresent() && "ANY".equals(grantInfo.get().capability)) {
+                builder.addGrants(token);
             }
-            Descriptors.EnumValueDescriptor any = f.getEnumType().findValueByNumber(99);
-            if (any == null) {
-                continue;
-            }
-            builder.addRepeatedField(f, any);
         }
         return builder.build();
     }

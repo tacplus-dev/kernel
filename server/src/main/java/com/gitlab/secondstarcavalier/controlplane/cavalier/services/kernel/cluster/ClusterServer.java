@@ -568,7 +568,7 @@ public class ClusterServer {
 			// Per-service connections for outbound S2S (OPA). Uses tacplus
 			// ServiceConnection.channelFactory() — single code path for TLS context
 			// + channel creation.
-			java.util.function.Function<String, io.grpc.ManagedChannel> s2sChannelFactory;
+			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.serviceconnection.ServiceConnection.ChannelFactory s2sChannelFactory;
 			try {
 				s2sChannelFactory = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.serviceconnection.ServiceConnection.channelFactory(cfg.getTrustedCasList());
 			} catch (Exception e) {
@@ -669,7 +669,7 @@ public class ClusterServer {
 
 			Mint mintWrapper = new Mint(identityService, kernelAuthorizer) {
 				@Override
-				public void x509Mint(Tokenrequest.X509MintRequest request,
+				public void mintX509Cert(Tokenrequest.X509MintRequest request,
 						io.grpc.stub.StreamObserver<X509.X509CertChain> responseObserver) {
 					try {
 						logger.info("X509Mint direct dispatch aud={}, inputToken={}, keyId={}, issuer={}, exp={}",
@@ -680,7 +680,7 @@ public class ClusterServer {
 										: "",
 								request.hasCertRequest() ? request.getCertRequest().getIssuer() : "",
 								request.hasCertRequest() ? request.getCertRequest().getExp() : 0);
-						X509.X509CertChain response = identityService.x509Mint(null, request);
+						X509.X509CertChain response = identityService.mintX509Cert(null, request);
 						responseObserver.onNext(response);
 						responseObserver.onCompleted();
 					} catch (Exception e) {

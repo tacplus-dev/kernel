@@ -204,11 +204,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	// ========================================================================
-	// TokenMint RPC (legacy — delegates to doTokenMint)
+	// MintToken RPC (legacy — delegates to doTokenMint)
 	// ========================================================================
 
 	@Override
-	public Tokenrequest.TokenMintResponse tokenMint(Caller caller, Tokenrequest.TokenMintRequest request)
+	public Tokenrequest.TokenMintResponse mintToken(Caller caller, Tokenrequest.TokenMintRequest request)
 			throws ProtoException {
 		try {
 			return doTokenMint(request);
@@ -1547,11 +1547,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	// ========================================================================
-	// X509Mint RPC
+	// MintX509Cert RPC
 	// ========================================================================
 
 	@Override
-	public X509.X509CertChain x509Mint(Caller caller, Tokenrequest.X509MintRequest request)
+	public X509.X509CertChain mintX509Cert(Caller caller, Tokenrequest.X509MintRequest request)
 			throws ProtoException {
 		try {
 			return doX509Mint(request);
@@ -1781,7 +1781,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	// ========================================================================
 
 	@Override
-	public Tokenrequest.WorkloadMintResponse workloadMint(Caller caller,
+	public Tokenrequest.WorkloadMintResponse mintWorkload(Caller caller,
 			Tokenrequest.WorkloadMintRequest request) throws ProtoException {
 		try {
 			return doWorkloadMint(request);
@@ -1944,7 +1944,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	@Override
-	public void workloadRevoke(Caller caller,
+	public void revokeWorkload(Caller caller,
 			Kernel.WorkloadRevokeRequest request) throws ProtoException {
 		try {
 			doWorkloadRevoke(request);

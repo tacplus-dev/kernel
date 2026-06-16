@@ -37,7 +37,7 @@
                 .build();
 
             {{HELPERS_REF}}.validate{{TYPE_NAME}}(authoritative);
-            {{FIELD_CAMEL}}Map.set(compositeKey, authoritative);
+            {{TTL_SET_CALL}}
             responseObserver.onNext({{OUTER_CLASS}}.MapEmpty.getDefaultInstance());
             responseObserver.onCompleted();
         } catch (ProtoException e) {

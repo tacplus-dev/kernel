@@ -526,6 +526,10 @@ public class BackendServiceServerGenerator {
 		vars.put("FIELD_PASCAL", b.getFieldPascal());
 		vars.put("MAP_NAME", b.getMapName());
 		vars.put("HELPERS_REF", ctx.getHelpersRef(svc, b));
+		long ttlSeconds = b.getEvictionTtlSeconds();
+		vars.put("TTL_SET_CALL", ttlSeconds > 0
+				? b.getFieldCamel() + "Map.set(compositeKey, authoritative, " + ttlSeconds + "L, TimeUnit.SECONDS);"
+				: b.getFieldCamel() + "Map.set(compositeKey, authoritative);");
 		vars.put("OUTER_CLASS", outerClassName);
 		vars.put("SERVICE_PREFIX", servicePrefix);
 		vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.libs.trace.Trace.TraceRequest");

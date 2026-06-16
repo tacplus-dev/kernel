@@ -101,6 +101,7 @@ public class BoundaryAnalyzer {
 			AnnotationValue topicAnn = field.getAnnotations().get("topic");
 			AnnotationValue leaderAnn = field.getAnnotations().get("leader");
 			AnnotationValue ikAnn = field.getAnnotations().get("instance_keyed");
+			AnnotationValue ttlAnn = field.getAnnotations().get("eviction_ttl_seconds");
 			AnnotationValue persistAnn = field.getAnnotations().get("persistence");
 
 			boolean hasQueue = queueAnn != null && queueAnn.getBoolValue();
@@ -146,6 +147,7 @@ public class BoundaryAnalyzer {
 			b.setPrivateField(isPrivate);
 			b.setCrossPackage(isCrossPackage);
 			b.setCrossPkg(crossPkg);
+			b.setEvictionTtlSeconds(parseLongAnnotation(ttlAnn));
 
 			if (isLeader) {
 				b.setLeader(true);
@@ -268,5 +270,23 @@ public class BoundaryAnalyzer {
 
 		// Try same package across files
 		return parser.findMessage(backendRootPkg, typeName);
+	}
+
+	private static long parseLongAnnotation(AnnotationValue annotation) {
+		if (annotation == null) {
+			return 0L;
+		}
+		String raw = annotation.getEnumValue();
+		if (raw == null || raw.isBlank()) {
+			raw = annotation.getStringValue();
+		}
+		if (raw == null || raw.isBlank()) {
+			return 0L;
+		}
+		try {
+			return Long.parseLong(raw);
+		} catch (NumberFormatException e) {
+			return 0L;
+		}
 	}
 }

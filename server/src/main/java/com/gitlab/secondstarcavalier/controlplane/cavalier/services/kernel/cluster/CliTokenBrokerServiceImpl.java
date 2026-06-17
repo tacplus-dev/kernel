@@ -26,7 +26,10 @@ public class CliTokenBrokerServiceImpl implements
 
 	private static final Logger logger = LoggerFactory.getLogger(CliTokenBrokerServiceImpl.class);
 	private static final long NONCE_TTL_SECONDS = 300;
+	private static final int MAX_BUFFERED_DELIVERIES = 1024;
 	private static final String DELIVERY_PREFIX = "delivery:";
+	private static final String CONSUMED_PREFIX = "consumed:";
+	private static final String DELIVERY_CAP_LOCK = "delivery-cap-lock";
 
 	// Local: instance_id → gRPC stream (streams can't cross nodes)
 	private final ConcurrentHashMap<String, StreamObserver<Kernel.CliTokenBrokerResponse>> instanceStreams =
@@ -37,7 +40,12 @@ public class CliTokenBrokerServiceImpl implements
 
 	// Distributed: nonce → NonceEntry (instance_id + timestamp)
 	private final IMap<String, NonceEntry> nonceMap;
-	private final IdentityServiceImpl identityService;
+	private final TokenMinter tokenMinter;
+
+	@FunctionalInterface
+	interface TokenMinter {
+		String mint(Kernel.CliTokenBrokerCompleteNonce complete, String nonce);
+	}
 
 	public static class NonceEntry implements Serializable {
 		private static final long serialVersionUID = 1L;
@@ -50,9 +58,13 @@ public class CliTokenBrokerServiceImpl implements
 		}
 
 		public NonceEntry(String instanceId, String refreshToken) {
+			this(instanceId, refreshToken, System.currentTimeMillis() / 1000);
+		}
+
+		NonceEntry(String instanceId, String refreshToken, long createdAt) {
 			this.instanceId = instanceId;
 			this.refreshToken = refreshToken;
-			this.createdAt = System.currentTimeMillis() / 1000;
+			this.createdAt = createdAt;
 		}
 
 		public boolean isExpired() {
@@ -65,7 +77,22 @@ public class CliTokenBrokerServiceImpl implements
 	// handler (identityService) using the broker-attested subject+claims, then
 	// delivers it to the waiting oauth instance.
 	public CliTokenBrokerServiceImpl(IdentityServiceImpl identityService, HazelcastInstance hazelcast) {
-		this.identityService = identityService;
+		this((complete, nonce) -> {
+			try {
+				Tokenrequest.TokenMintResponse mintResponse = identityService.mintUserTokenInternal(
+						complete.getSubject(),
+						complete.hasClaims() ? complete.getClaims() : null,
+						0, "", "oauth", false);
+				return mintResponse.getRefreshToken().getBase64();
+			} catch (IdentityServiceImpl.StatusException e) {
+				logger.error("CliTokenBroker: mint failed for nonce {}", nonce.substring(0, 8), e);
+				return null;
+			}
+		}, hazelcast);
+	}
+
+	CliTokenBrokerServiceImpl(TokenMinter tokenMinter, HazelcastInstance hazelcast) {
+		this.tokenMinter = tokenMinter;
 		this.nonceMap = hazelcast.getMap("cli-token-broker");
 
 		// Listen for cross-node token deliveries.
@@ -120,27 +147,37 @@ public class CliTokenBrokerServiceImpl implements
 					case REGISTER_NONCE -> {
 						if (instanceId == null) { logger.warn("RegisterNonce before Register"); return; }
 						String nonce = request.getRegisterNonce().getNonce();
-						nonceMap.put(nonce, new NonceEntry(instanceId), NONCE_TTL_SECONDS, TimeUnit.SECONDS);
-						localNonceOwners.put(nonce, instanceId);
-						logger.info("CliTokenBroker: nonce registered: {} → instance {}", nonce.substring(0, 8), instanceId);
 
 						// Buffered delivery: if CompleteNonce already minted a token while the
 						// owning oauth instance was disconnected (or before any instance
 						// registered), the refresh_token sits in nonceMap keyed by
 						// DELIVERY_PREFIX + nonce. Replay it now that we have a stream.
 						NonceEntry pending = nonceMap.remove(DELIVERY_PREFIX + nonce);
-						if (pending != null && pending.refreshToken != null && !pending.isExpired()) {
-							responseObserver.onNext(Kernel.CliTokenBrokerResponse.newBuilder()
-									.setTokenDelivery(Kernel.CliTokenBrokerTokenDelivery.newBuilder()
-											.setNonce(nonce)
-											.setRefreshToken(pending.refreshToken)
-											.build())
-									.build());
-							nonceMap.remove(nonce);
-							localNonceOwners.remove(nonce);
-							logger.info("CliTokenBroker: buffered token replayed for nonce {} → instance {}",
-									nonce.substring(0, 8), instanceId);
+						if (pending != null) {
+							if (pending.refreshToken != null && !pending.isExpired()) {
+								responseObserver.onNext(Kernel.CliTokenBrokerResponse.newBuilder()
+										.setTokenDelivery(Kernel.CliTokenBrokerTokenDelivery.newBuilder()
+												.setNonce(nonce)
+												.setRefreshToken(pending.refreshToken)
+												.build())
+										.build());
+								markNonceConsumed(nonce);
+								logger.info("CliTokenBroker: buffered token replayed for nonce {} → instance {}",
+										nonce.substring(0, 8), instanceId);
+							} else {
+								logger.warn("CliTokenBroker: buffered token expired for nonce {}", nonce.substring(0, 8));
+							}
+							return;
 						}
+
+						if (isNonceConsumed(nonce)) {
+							logger.warn("CliTokenBroker: RegisterNonce rejected for consumed nonce {}", nonce.substring(0, 8));
+							return;
+						}
+
+						nonceMap.put(nonce, new NonceEntry(instanceId), NONCE_TTL_SECONDS, TimeUnit.SECONDS);
+						localNonceOwners.put(nonce, instanceId);
+						logger.info("CliTokenBroker: nonce registered: {} → instance {}", nonce.substring(0, 8), instanceId);
 					}
 					case COMPLETE_NONCE -> handleCompleteNonce(request.getCompleteNonce());
 					default -> logger.warn("Unknown message type: {}", request.getMsgCase());
@@ -149,6 +186,11 @@ public class CliTokenBrokerServiceImpl implements
 
 			private void handleCompleteNonce(Kernel.CliTokenBrokerCompleteNonce complete) {
 				String nonce = complete.getNonce();
+
+				if (isNonceConsumed(nonce)) {
+					logger.warn("CliTokenBroker: CompleteNonce rejected for consumed nonce {}", nonce.substring(0, 8));
+					return;
+				}
 
 				// Retry — IMap replication may lag slightly across nodes
 				NonceEntry entry = null;
@@ -161,13 +203,18 @@ public class CliTokenBrokerServiceImpl implements
 				}
 
 				if (entry == null) {
+					if (nonceMap.containsKey(DELIVERY_PREFIX + nonce)) {
+						logger.warn("CliTokenBroker: CompleteNonce ignored for already-buffered nonce {}",
+								nonce.substring(0, 8));
+						return;
+					}
 					String refreshToken = mintRefreshToken(complete, nonce);
 					if (refreshToken == null) return;
-					nonceMap.put(DELIVERY_PREFIX + nonce,
-							new NonceEntry("", refreshToken),
-							NONCE_TTL_SECONDS, TimeUnit.SECONDS);
-					logger.info("CliTokenBroker: token buffered before nonce registration for nonce {}",
-							nonce.substring(0, 8));
+					if (queueTokenDelivery(nonce, new NonceEntry("", refreshToken))) {
+						markNonceConsumed(nonce);
+						logger.info("CliTokenBroker: token buffered before nonce registration for nonce {}",
+								nonce.substring(0, 8));
+					}
 					return;
 				}
 				if (entry.isExpired()) {
@@ -194,28 +241,81 @@ public class CliTokenBrokerServiceImpl implements
 									.setRefreshToken(refreshToken)
 									.build())
 							.build());
+					markNonceConsumed(nonce);
 					logger.info("CliTokenBroker: token delivered for nonce {} → instance {}",
 							nonce.substring(0, 8), entry.instanceId);
 				} else {
-					nonceMap.put(DELIVERY_PREFIX + nonce,
-							new NonceEntry(entry.instanceId, refreshToken),
-							NONCE_TTL_SECONDS, TimeUnit.SECONDS);
-					logger.info("CliTokenBroker: token queued for cross-node delivery for nonce {} → instance {}",
-							nonce.substring(0, 8), entry.instanceId);
+					if (queueTokenDelivery(nonce, new NonceEntry(entry.instanceId, refreshToken))) {
+						markNonceConsumed(nonce);
+						logger.info("CliTokenBroker: token queued for cross-node delivery for nonce {} → instance {}",
+								nonce.substring(0, 8), entry.instanceId);
+					}
 				}
 			}
 
-			private String mintRefreshToken(Kernel.CliTokenBrokerCompleteNonce complete, String nonce) {
+			private boolean queueTokenDelivery(String nonce, NonceEntry delivery) {
+				String key = DELIVERY_PREFIX + nonce;
+				boolean locked = false;
 				try {
-					Tokenrequest.TokenMintResponse mintResponse = identityService.mintUserTokenInternal(
-							complete.getSubject(),
-							complete.hasClaims() ? complete.getClaims() : null,
-							0, "", "oauth", false);
-					return mintResponse.getRefreshToken().getBase64();
-				} catch (IdentityServiceImpl.StatusException e) {
-					logger.error("CliTokenBroker: mint failed for nonce {}", nonce.substring(0, 8), e);
-					return null;
+					locked = nonceMap.tryLock(DELIVERY_CAP_LOCK, 2, TimeUnit.SECONDS, 5, TimeUnit.SECONDS);
+					if (!locked) {
+						logger.warn("CliTokenBroker: refusing to buffer token for nonce {} — delivery buffer lock busy",
+								nonce.substring(0, 8));
+						return false;
+					}
+
+					if (!nonceMap.containsKey(key) && bufferedDeliveryCount() >= MAX_BUFFERED_DELIVERIES) {
+						logger.warn("CliTokenBroker: refusing to buffer token for nonce {} — delivery buffer full ({})",
+								nonce.substring(0, 8), MAX_BUFFERED_DELIVERIES);
+						return false;
+					}
+
+					NonceEntry existing = nonceMap.putIfAbsent(key, delivery, NONCE_TTL_SECONDS, TimeUnit.SECONDS);
+					if (existing != null) {
+						logger.warn("CliTokenBroker: refusing to replace existing buffered token for nonce {}",
+								nonce.substring(0, 8));
+						return false;
+					}
+					return true;
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+					logger.warn("CliTokenBroker: interrupted while buffering token for nonce {}", nonce.substring(0, 8));
+					return false;
+				} finally {
+					if (locked) {
+						nonceMap.unlock(DELIVERY_CAP_LOCK);
+					}
 				}
+			}
+
+			private int bufferedDeliveryCount() {
+				int count = 0;
+				for (String key : nonceMap.keySet()) {
+					if (!key.startsWith(DELIVERY_PREFIX)) continue;
+					NonceEntry entry = nonceMap.get(key);
+					if (entry == null) continue;
+					if (entry.isExpired()) {
+						nonceMap.remove(key);
+						continue;
+					}
+					count++;
+				}
+				return count;
+			}
+
+			private boolean isNonceConsumed(String nonce) {
+				NonceEntry entry = nonceMap.get(CONSUMED_PREFIX + nonce);
+				return entry != null && !entry.isExpired();
+			}
+
+			private void markNonceConsumed(String nonce) {
+				nonceMap.put(CONSUMED_PREFIX + nonce, new NonceEntry(""), NONCE_TTL_SECONDS, TimeUnit.SECONDS);
+				nonceMap.remove(nonce);
+				localNonceOwners.remove(nonce);
+			}
+
+			private String mintRefreshToken(Kernel.CliTokenBrokerCompleteNonce complete, String nonce) {
+				return tokenMinter.mint(complete, nonce);
 			}
 
 			@Override

@@ -47,3 +47,9 @@
 - Added a CI post-package check that `server/target/kernel.jar` contains
   `MintGrpc.getMintX509CertMethod`, so a stale generated method table cannot
   silently ship again.
+- Fixed external WIF audience construction for Anthropic proxy tokens:
+  policy-supplied upstream audiences now become the external assertion `aud`
+  directly, instead of being collapsed into a synthetic `service:audience`
+  value that Anthropic cannot exact-match.
+- Verification passed:
+  - `JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-21.0.8.jdk/Contents/Home mvn -pl server -am -Dtest=ExternalSigningKeyTypeTest -Dsurefire.failIfNoSpecifiedTests=false test`

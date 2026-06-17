@@ -61,4 +61,26 @@ class ExternalSigningKeyTypeTest {
 		assertTrue(err.getMessage().contains("KEY_TYPE_EC"));
 		assertTrue(err.getMessage().contains("ES256"));
 	}
+
+	@Test
+	void externalAudienceUsesPolicyAudienceWhenProvided() {
+		assertEquals("https://api.anthropic.com",
+				IdentityServiceImpl.externalAudienceForPolicy(
+						"anthropic", List.of("https://api.anthropic.com")));
+	}
+
+	@Test
+	void externalAudienceSkipsBlankPolicyAudiences() {
+		assertEquals("https://api.anthropic.com",
+				IdentityServiceImpl.externalAudienceForPolicy(
+						"anthropic", List.of("", "  ", "https://api.anthropic.com")));
+	}
+
+	@Test
+	void externalAudienceFallsBackToCallerAudienceWithoutPolicyAudience() {
+		assertEquals("anthropic",
+				IdentityServiceImpl.externalAudienceForPolicy("anthropic", List.of()));
+		assertEquals("",
+				IdentityServiceImpl.externalAudienceForPolicy(null, null));
+	}
 }

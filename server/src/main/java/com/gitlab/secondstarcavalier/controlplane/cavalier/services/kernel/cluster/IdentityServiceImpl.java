@@ -2119,15 +2119,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			throw ProtoException.newErrPermissionDenied(null, reason);
 		}
 
-		// Determine effective audience: {callerAud}:{qualifier} where qualifier is the
-		// first append_aud value returned by OPA, or "default" if OPA returned nothing.
-		// Example: caller aud "anthropic" + OPA "pizza" => "anthropic:pizza"
-		//          caller aud "anthropic" + OPA (none)  => "anthropic:default"
+		// Determine the external assertion audience. Federation providers match aud
+		// exactly, so an OPA-supplied upstream audience becomes the assertion aud.
+		// The original service audience has already been validated by proxy policy.
 		String callerAud = userToken.getAudience();
-		if (callerAud == null) callerAud = "";
 		var appendAuds = opaResult.getAppendAudList();
-		String qualifier = appendAuds.isEmpty() ? "default" : appendAuds.get(0);
-		String effectiveAud = callerAud.isEmpty() ? qualifier : callerAud + ":" + qualifier;
+		String effectiveAud = externalAudienceForPolicy(callerAud, appendAuds);
 
 		// Determine effective token_use. OPA must return TOKEN_USE_EXTERNAL or unset;
 		// any other value is rejected to prevent external tokens being replayed internally.
@@ -2192,6 +2189,17 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.setDstUrl(resolvedUrl)
 				.setAuthType(authType)
 				.build();
+	}
+
+	static String externalAudienceForPolicy(String callerAud, List<String> appendAuds) {
+		if (appendAuds != null) {
+			for (String aud : appendAuds) {
+				if (aud != null && !aud.isBlank()) {
+					return aud;
+				}
+			}
+		}
+		return callerAud == null ? "" : callerAud;
 	}
 
 	/**

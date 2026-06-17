@@ -136,6 +136,7 @@ public class CliTokenBrokerServiceImpl implements
 											.setRefreshToken(pending.refreshToken)
 											.build())
 									.build());
+							nonceMap.remove(nonce);
 							localNonceOwners.remove(nonce);
 							logger.info("CliTokenBroker: buffered token replayed for nonce {} → instance {}",
 									nonce.substring(0, 8), instanceId);
@@ -159,24 +160,25 @@ public class CliTokenBrokerServiceImpl implements
 					}
 				}
 
-				if (entry == null || entry.isExpired()) {
-					logger.warn("CliTokenBroker: CompleteNonce — nonce not found or expired: {}", nonce.substring(0, 8));
+				if (entry == null) {
+					String refreshToken = mintRefreshToken(complete, nonce);
+					if (refreshToken == null) return;
+					nonceMap.put(DELIVERY_PREFIX + nonce,
+							new NonceEntry("", refreshToken),
+							NONCE_TTL_SECONDS, TimeUnit.SECONDS);
+					logger.info("CliTokenBroker: token buffered before nonce registration for nonce {}",
+							nonce.substring(0, 8));
+					return;
+				}
+				if (entry.isExpired()) {
+					logger.warn("CliTokenBroker: CompleteNonce — nonce expired: {}", nonce.substring(0, 8));
 					return;
 				}
 
 				// Kernel mints the user's token from the broker-attested subject +
 				// claims (azp = oauth, the authorized broker), then delivers it.
-				String refreshToken;
-				try {
-					Tokenrequest.TokenMintResponse mintResponse = identityService.mintUserTokenInternal(
-							complete.getSubject(),
-							complete.hasClaims() ? complete.getClaims() : null,
-							0, "", "oauth", false);
-					refreshToken = mintResponse.getRefreshToken().getBase64();
-				} catch (IdentityServiceImpl.StatusException e) {
-					logger.error("CliTokenBroker: mint failed for nonce {}", nonce.substring(0, 8), e);
-					return;
-				}
+				String refreshToken = mintRefreshToken(complete, nonce);
+				if (refreshToken == null) return;
 
 				// Deliver the oauth-minted token to the owning oauth instance.
 				// Local fast path if that instance's stream is on this node;
@@ -200,6 +202,19 @@ public class CliTokenBrokerServiceImpl implements
 							NONCE_TTL_SECONDS, TimeUnit.SECONDS);
 					logger.info("CliTokenBroker: token queued for cross-node delivery for nonce {} → instance {}",
 							nonce.substring(0, 8), entry.instanceId);
+				}
+			}
+
+			private String mintRefreshToken(Kernel.CliTokenBrokerCompleteNonce complete, String nonce) {
+				try {
+					Tokenrequest.TokenMintResponse mintResponse = identityService.mintUserTokenInternal(
+							complete.getSubject(),
+							complete.hasClaims() ? complete.getClaims() : null,
+							0, "", "oauth", false);
+					return mintResponse.getRefreshToken().getBase64();
+				} catch (IdentityServiceImpl.StatusException e) {
+					logger.error("CliTokenBroker: mint failed for nonce {}", nonce.substring(0, 8), e);
+					return null;
 				}
 			}
 

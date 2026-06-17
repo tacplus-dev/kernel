@@ -29,14 +29,17 @@ import io.grpc.Context;
 import io.grpc.Contexts;
 import io.grpc.Grpc;
 import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
 import io.grpc.Server;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
+import io.grpc.ServerMethodDefinition;
 import io.grpc.ServerServiceDefinition;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.ServerTransportFilter;
+import io.grpc.protobuf.ProtoUtils;
 import io.grpc.health.v1.HealthCheckResponse.ServingStatus;
 import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
@@ -44,10 +47,12 @@ import io.grpc.netty.shaded.io.netty.handler.ssl.ClientAuth;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContextBuilder;
 import io.grpc.protobuf.services.HealthStatusManager;
+import io.grpc.stub.ServerCalls;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.servicemanager.Auth;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.Mint;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.TenantAdmin;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -78,6 +83,15 @@ public class ClusterServer {
 
 	private static final Metadata.Key<String> AUTH_HEADER_KEY =
 			Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+	private static final String MINT_SERVICE_NAME = "kernel.Mint";
+	private static final String MINT_X509_CERT_METHOD_NAME = MINT_SERVICE_NAME + "/MintX509Cert";
+	private static final MethodDescriptor<Tokenrequest.X509MintRequest, X509.X509CertChain> MINT_X509_CERT_METHOD =
+			MethodDescriptor.<Tokenrequest.X509MintRequest, X509.X509CertChain>newBuilder()
+					.setType(MethodDescriptor.MethodType.UNARY)
+					.setFullMethodName(MINT_X509_CERT_METHOD_NAME)
+					.setRequestMarshaller(ProtoUtils.marshaller(Tokenrequest.X509MintRequest.getDefaultInstance()))
+					.setResponseMarshaller(ProtoUtils.marshaller(X509.X509CertChain.getDefaultInstance()))
+					.build();
 
 	private static StatusRuntimeException toGrpcError(Exception e) {
 		if (e instanceof StatusRuntimeException statusRuntimeException) {
@@ -93,6 +107,46 @@ public class ClusterServer {
 				.withDescription(e.getMessage() == null ? e.toString() : e.getMessage())
 				.withCause(e)
 				.asRuntimeException();
+	}
+
+	private static ServerServiceDefinition ensureMintX509CertBinding(
+			ServerServiceDefinition base,
+			IdentityServiceImpl identityService) {
+		boolean hasMintX509Cert = base.getMethods().stream()
+				.anyMatch(method -> method.getMethodDescriptor().getFullMethodName().equals(MINT_X509_CERT_METHOD_NAME));
+		if (hasMintX509Cert) {
+			return base;
+		}
+
+		ServerServiceDefinition.Builder builder = ServerServiceDefinition.builder(base.getServiceDescriptor().getName());
+		for (ServerMethodDefinition<?, ?> method : base.getMethods()) {
+			builder.addMethod((ServerMethodDefinition<?, ?>) method);
+		}
+		builder.addMethod(
+				MINT_X509_CERT_METHOD,
+				ServerCalls.asyncUnaryCall((Tokenrequest.X509MintRequest request,
+						io.grpc.stub.StreamObserver<X509.X509CertChain> responseObserver) -> {
+					try {
+						com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.tokenrequest.Helpers.validateX509MintRequest(request);
+						X509.X509CertChain response = identityService.mintX509Cert(null, request);
+						responseObserver.onNext(response);
+						responseObserver.onCompleted();
+					} catch (Exception e) {
+						logger.error("MintX509Cert direct binding failed", e);
+						responseObserver.onError(toGrpcError(e));
+					}
+				}));
+		logger.warn("{} missing from generated Mint service definition; installed direct kernel binding",
+				MINT_X509_CERT_METHOD_NAME);
+		return builder.build();
+	}
+
+	private static List<String> methodNames(ServerServiceDefinition serviceDefinition) {
+		List<String> methods = new ArrayList<>();
+		for (ServerMethodDefinition<?, ?> method : serviceDefinition.getMethods()) {
+			methods.add(method.getMethodDescriptor().getFullMethodName());
+		}
+		return methods;
 	}
 
 	private final int grpcPort;
@@ -689,8 +743,11 @@ public class ClusterServer {
 					}
 				}
 			};
-			serverBuilder.addService(mintWrapper);
-			logger.info("MintService registered on gRPC server ({} delegates)", delegates.size());
+			ServerServiceDefinition mintServiceDefinition =
+					ensureMintX509CertBinding(mintWrapper.bindService(), identityService);
+			serverBuilder.addService(mintServiceDefinition);
+			logger.info("MintService registered on gRPC server ({} delegates, methods={})",
+					delegates.size(), methodNames(mintServiceDefinition));
 
 			// TLS certificate lifecycle service (tlscert.TlsCertService/ManageCert
 			// bidi stream): kernel is the cluster cert authority for auto_tls

@@ -37,3 +37,13 @@
   `:8443`.
 - Next kernel tag is a rebuild-only compatibility tag so Java generated server
   descriptors pick up the current mint RPC name from tacplus/proto.
+- Kernel `v1.2.187-main.265` rolled to all three pods, but a direct grpcurl
+  check against `pod/kernel-0` still returned `UNIMPLEMENTED` for
+  `kernel.Mint/MintX509Cert` while `MintServiceToken` was live.
+- Added a source-level kernel binding guard: if the generated `Mint` service
+  definition omits `MintX509Cert`, `ClusterServer` installs the missing unary
+  method explicitly against the existing `IdentityServiceImpl.mintX509Cert`
+  implementation and logs the registered method table at startup.
+- Added a CI post-package check that `server/target/kernel.jar` contains
+  `MintGrpc.getMintX509CertMethod`, so a stale generated method table cannot
+  silently ship again.

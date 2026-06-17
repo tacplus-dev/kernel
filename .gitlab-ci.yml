@@ -96,6 +96,10 @@ build:
     - *tacplus-build
   script:
     - mvn -pl server -am -Dtacplus.skip=true -Dmaven.test.skip=true package
+    - |
+      javap -classpath server/target/kernel.jar \
+        com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.MintGrpc \
+        | grep -q 'getMintX509CertMethod'
   artifacts:
     paths:
       - server/target/kernel.jar

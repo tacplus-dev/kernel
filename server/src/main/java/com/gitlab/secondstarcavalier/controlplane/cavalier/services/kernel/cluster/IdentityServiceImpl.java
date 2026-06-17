@@ -152,6 +152,43 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static final String TOKEN_USE_EXTERNAL =
 			Helpers.tokenUseToString(TokenUse.TOKEN_USE_EXTERNAL);
 
+	static record ExternalSigningSelection(
+			KeyRotator.SigAlg signingAlg,
+			ImmutableKey signingKey) {}
+
+	static KeyRotator.SigAlg externalSigningAlgForKeyType(KeyOuterClass.KeyType requestedKeyType)
+			throws ProtoException {
+		if (requestedKeyType == null
+				|| requestedKeyType == KeyOuterClass.KeyType.KEY_TYPE_UNDEFINED) {
+			return KeyRotator.SigAlg.ED25519;
+		}
+
+		return switch (requestedKeyType) {
+			case KEY_TYPE_OKP -> KeyRotator.SigAlg.ED25519;
+			case KEY_TYPE_EC -> KeyRotator.SigAlg.ES256;
+			case KEY_TYPE_RSA -> throw ProtoException.newErrMissingInvalidData(null,
+					"requested_signing_key_type KEY_TYPE_RSA is not supported by kernel signing keys");
+			case UNRECOGNIZED -> throw ProtoException.newErrMissingInvalidData(null,
+					"requested_signing_key_type has unknown enum value");
+			default -> throw ProtoException.newErrMissingInvalidData(null,
+					"unsupported requested_signing_key_type: %s", requestedKeyType);
+		};
+	}
+
+	static ExternalSigningSelection externalSigningKeyForRequest(
+			KeyRotator keyRotator,
+			KeyOuterClass.KeyType requestedKeyType) throws ProtoException {
+		KeyRotator.SigAlg signingAlg = externalSigningAlgForKeyType(requestedKeyType);
+		ImmutableKey signingKey = keyRotator.getActiveSigningKey(signingAlg);
+		if (signingKey == null) {
+			throw ProtoException.newErrGeneral(null,
+					"no active signing key for requested_signing_key_type "
+							+ requestedKeyType + " (" + signingAlg + ")");
+		}
+
+		return new ExternalSigningSelection(signingAlg, signingKey);
+	}
+
 	private final long defaultTokenExpirySeconds;
 	private final long maxTokenLifetimeSeconds;
 	private final long offlineTokenLifetimeSeconds;
@@ -2139,18 +2176,16 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			}
 		}
 
-		// Sign with the active ES256 key (WIF — Anthropic's /v1/oauth/token rejects EdDSA).
-		// TokenWrapper.sign auto-derives the JWT alg from the key.
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ES256);
-		if (signingKey == null) {
-			throw ProtoException.newErrGeneral(null, "no active signing key");
-		}
-		externalToken.sign(signingKey);
+		// TokenWrapper.sign auto-derives the JWT alg from the requested key family.
+		ExternalSigningSelection signingSelection =
+				externalSigningKeyForRequest(keyRotator, request.getRequestedSigningKeyType());
+		externalToken.sign(signingSelection.signingKey());
 
 		var authType = opaResult.getAuthType();
 		String callerId = (caller != null) ? caller.getRequestId() : "unknown";
-		logger.info("external token minted: caller_req={}, sub={}, aud={}, append_aud={}, metadata={}, dst_url={}, auth_type={}",
-				callerId, userToken.getSubject(), effectiveAud, appendAuds, metadata, resolvedUrl, authType);
+		logger.info("external token minted: caller_req={}, sub={}, aud={}, append_aud={}, metadata={}, dst_url={}, auth_type={}, signing_alg={}",
+				callerId, userToken.getSubject(), effectiveAud, appendAuds, metadata, resolvedUrl,
+				authType, signingSelection.signingAlg());
 
 		return Tokenrequest.ExternalTokenMintResponse.newBuilder()
 				.setToken(externalToken.getProto())

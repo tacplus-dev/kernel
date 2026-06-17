@@ -53,3 +53,7 @@
   value that Anthropic cannot exact-match.
 - Verification passed:
   - `JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-21.0.8.jdk/Contents/Home mvn -pl server -am -Dtest=ExternalSigningKeyTypeTest -Dsurefire.failIfNoSpecifiedTests=false test`
+- Tagged and rolled kernel `v1.2.192-main.275`; pipeline `2609429991`
+  completed green and all three kernel pods are Ready on the tag.
+- Live verification after rollout confirmed Anthropic WIF exchange succeeds
+  with ES256 public discovery and the corrected upstream audience.

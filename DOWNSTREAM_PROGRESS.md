@@ -26,3 +26,14 @@
   both work during token minting and service-token scoping.
 - Verification passed:
   - `JAVA_HOME=/Library/Java/JavaVirtualMachines/graalvm-jdk-24.0.2+11.1/Contents/Home mvn -Dmaven.test.skip=true package`
+
+## 2026-06-17
+
+- OPA `v1.2.187-main.194` built with tacplus `v1.2.213` and now calls
+  `kernel.Mint/MintX509Cert` during startup X509 minting.
+- Live kernel `v1.2.187-main.264` still returned
+  `UNIMPLEMENTED: Method not found: kernel.Mint/MintX509Cert`, so OPA stayed
+  in the generated `ServiceManager` constructor retry loop before binding
+  `:8443`.
+- Next kernel tag is a rebuild-only compatibility tag so Java generated server
+  descriptors pick up the current mint RPC name from tacplus/proto.

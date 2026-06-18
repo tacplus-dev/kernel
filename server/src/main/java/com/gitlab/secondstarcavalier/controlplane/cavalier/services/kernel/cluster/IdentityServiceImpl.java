@@ -1141,7 +1141,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		// Offline Token (OT) input. An OT mints a short-lived access token for the
 		// data plane, or — when offline_access is set — a fresh OT (renewal). It can
-		// never directly mint a service-scoped token; that must go OT → AT → ST.
+		// never directly mint a service-scoped token via aud; batch service_auds are
+		// derived from the freshly minted AT so the chain remains OT → AT → ST.
 		if (TOKEN_USE_OFFLINE.equals(tokenUse)) {
 			if (!request.getAud().isEmpty()) {
 				throw new StatusException(Status.INVALID_ARGUMENT,
@@ -1164,9 +1165,23 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			TokenOuterClass.Token at = mintAccessFromRefresh(
 					inputToken, otSigningKey, otNow, otAccessExp, request.getProject(),
 					accessEntitlements);
-			return Tokenrequest.TokenMintResponse.newBuilder()
-					.setAccessToken(at)
-					.build();
+			Tokenrequest.TokenMintResponse.Builder resp = Tokenrequest.TokenMintResponse.newBuilder()
+					.setAccessToken(at);
+			if (!request.getServiceAudsList().isEmpty()) {
+				TokenWrapper accessWrapper = TokenWrapper.from(at);
+				for (String svcAud : request.getServiceAudsList()) {
+					if (svcAud.isEmpty()) {
+						throw new StatusException(Status.INVALID_ARGUMENT,
+								"service_auds entries must be non-empty");
+					}
+					Tokenrequest.TokenMintRequest svcReq = Tokenrequest.TokenMintRequest.newBuilder()
+							.setAud(svcAud)
+							.setExp(request.getExp())
+							.build();
+					resp.addServiceTokens(exchangeKernelToken(svcReq, accessWrapper).getAccessToken());
+				}
+			}
+			return resp.build();
 		}
 
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);

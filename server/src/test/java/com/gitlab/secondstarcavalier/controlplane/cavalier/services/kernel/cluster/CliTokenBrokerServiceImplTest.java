@@ -38,7 +38,8 @@ class CliTokenBrokerServiceImplTest {
 	void normalRegisterThenCompleteDeliversToken() {
 		CapturingObserver responses = new CapturingObserver();
 		AtomicInteger mintCount = new AtomicInteger();
-		StreamObserver<Kernel.CliTokenBrokerRequest> requests = broker(responses, mintCount);
+		List<Boolean> offlineAccessValues = new ArrayList<>();
+		StreamObserver<Kernel.CliTokenBrokerRequest> requests = broker(responses, mintCount, offlineAccessValues);
 		requests.onNext(register("oauth-a"));
 		responses.clear();
 
@@ -46,6 +47,24 @@ class CliTokenBrokerServiceImplTest {
 		requests.onNext(completeNonce(NONCE_A, "user-a"));
 
 		assertEquals(1, mintCount.get());
+		assertEquals(List.of(false), offlineAccessValues);
+		assertTokenDeliveries(responses, "refresh-user-a");
+	}
+
+	@Test
+	void offlineAccessNonceRequestsOfflineToken() {
+		CapturingObserver responses = new CapturingObserver();
+		AtomicInteger mintCount = new AtomicInteger();
+		List<Boolean> offlineAccessValues = new ArrayList<>();
+		StreamObserver<Kernel.CliTokenBrokerRequest> requests = broker(responses, mintCount, offlineAccessValues);
+		requests.onNext(register("oauth-a"));
+		responses.clear();
+
+		requests.onNext(registerNonce(NONCE_A, true));
+		requests.onNext(completeNonce(NONCE_A, "user-a"));
+
+		assertEquals(1, mintCount.get());
+		assertEquals(List.of(true), offlineAccessValues);
 		assertTokenDeliveries(responses, "refresh-user-a");
 	}
 
@@ -93,9 +112,15 @@ class CliTokenBrokerServiceImplTest {
 
 	private StreamObserver<Kernel.CliTokenBrokerRequest> broker(
 			CapturingObserver responses, AtomicInteger mintCount) {
+		return broker(responses, mintCount, new ArrayList<>());
+	}
+
+	private StreamObserver<Kernel.CliTokenBrokerRequest> broker(
+			CapturingObserver responses, AtomicInteger mintCount, List<Boolean> offlineAccessValues) {
 		hazelcast = Hazelcast.newHazelcastInstance(hazelcastConfig());
-		CliTokenBrokerServiceImpl service = new CliTokenBrokerServiceImpl((complete, nonce) -> {
+		CliTokenBrokerServiceImpl service = new CliTokenBrokerServiceImpl((complete, nonce, offlineAccess) -> {
 			mintCount.incrementAndGet();
+			offlineAccessValues.add(offlineAccess);
 			return "refresh-" + complete.getSubject();
 		}, hazelcast);
 		return service.brokerStream(null, responses);
@@ -119,9 +144,14 @@ class CliTokenBrokerServiceImplTest {
 	}
 
 	private static Kernel.CliTokenBrokerRequest registerNonce(String nonce) {
+		return registerNonce(nonce, false);
+	}
+
+	private static Kernel.CliTokenBrokerRequest registerNonce(String nonce, boolean offlineAccess) {
 		return Kernel.CliTokenBrokerRequest.newBuilder()
 				.setRegisterNonce(Kernel.CliTokenBrokerRegisterNonce.newBuilder()
-						.setNonce(nonce))
+						.setNonce(nonce)
+						.setOfflineAccess(offlineAccess))
 				.build();
 	}
 

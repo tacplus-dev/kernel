@@ -44,26 +44,40 @@ public class CliTokenBrokerServiceImpl implements
 
 	@FunctionalInterface
 	interface TokenMinter {
-		String mint(Kernel.CliTokenBrokerCompleteNonce complete, String nonce);
+		String mint(Kernel.CliTokenBrokerCompleteNonce complete, String nonce, boolean offlineAccess);
 	}
 
 	public static class NonceEntry implements Serializable {
 		private static final long serialVersionUID = 1L;
 		public final String instanceId;
 		public final String refreshToken; // only set for delivery entries
+		public final boolean offlineAccess; // only meaningful for nonce registrations
 		public final long createdAt;
 
 		public NonceEntry(String instanceId) {
-			this(instanceId, null);
+			this(instanceId, null, false);
 		}
 
 		public NonceEntry(String instanceId, String refreshToken) {
-			this(instanceId, refreshToken, System.currentTimeMillis() / 1000);
+			this(instanceId, refreshToken, false);
+		}
+
+		public NonceEntry(String instanceId, boolean offlineAccess) {
+			this(instanceId, null, offlineAccess);
+		}
+
+		public NonceEntry(String instanceId, String refreshToken, boolean offlineAccess) {
+			this(instanceId, refreshToken, offlineAccess, System.currentTimeMillis() / 1000);
 		}
 
 		NonceEntry(String instanceId, String refreshToken, long createdAt) {
+			this(instanceId, refreshToken, false, createdAt);
+		}
+
+		NonceEntry(String instanceId, String refreshToken, boolean offlineAccess, long createdAt) {
 			this.instanceId = instanceId;
 			this.refreshToken = refreshToken;
+			this.offlineAccess = offlineAccess;
 			this.createdAt = createdAt;
 		}
 
@@ -77,12 +91,12 @@ public class CliTokenBrokerServiceImpl implements
 	// handler (identityService) using the broker-attested subject+claims, then
 	// delivers it to the waiting oauth instance.
 	public CliTokenBrokerServiceImpl(IdentityServiceImpl identityService, HazelcastInstance hazelcast) {
-		this((complete, nonce) -> {
+		this((complete, nonce, offlineAccess) -> {
 			try {
 				Tokenrequest.TokenMintResponse mintResponse = identityService.mintUserTokenInternal(
 						complete.getSubject(),
 						complete.hasClaims() ? complete.getClaims() : null,
-						0, "", "oauth", false);
+						0, "", "oauth", offlineAccess);
 				return mintResponse.getRefreshToken().getBase64();
 			} catch (IdentityServiceImpl.StatusException e) {
 				logger.error("CliTokenBroker: mint failed for nonce {}", nonce.substring(0, 8), e);
@@ -175,7 +189,7 @@ public class CliTokenBrokerServiceImpl implements
 							return;
 						}
 
-						nonceMap.put(nonce, new NonceEntry(instanceId), NONCE_TTL_SECONDS, TimeUnit.SECONDS);
+						nonceMap.put(nonce, new NonceEntry(instanceId, request.getRegisterNonce().getOfflineAccess()), NONCE_TTL_SECONDS, TimeUnit.SECONDS);
 						localNonceOwners.put(nonce, instanceId);
 						logger.info("CliTokenBroker: nonce registered: {} → instance {}", nonce.substring(0, 8), instanceId);
 					}
@@ -208,7 +222,7 @@ public class CliTokenBrokerServiceImpl implements
 								nonce.substring(0, 8));
 						return;
 					}
-					String refreshToken = mintRefreshToken(complete, nonce);
+					String refreshToken = mintRefreshToken(complete, nonce, false);
 					if (refreshToken == null) return;
 					if (queueTokenDelivery(nonce, new NonceEntry("", refreshToken))) {
 						markNonceConsumed(nonce);
@@ -224,7 +238,7 @@ public class CliTokenBrokerServiceImpl implements
 
 				// Kernel mints the user's token from the broker-attested subject +
 				// claims (azp = oauth, the authorized broker), then delivers it.
-				String refreshToken = mintRefreshToken(complete, nonce);
+				String refreshToken = mintRefreshToken(complete, nonce, entry.offlineAccess);
 				if (refreshToken == null) return;
 
 				// Deliver the oauth-minted token to the owning oauth instance.
@@ -314,8 +328,8 @@ public class CliTokenBrokerServiceImpl implements
 				localNonceOwners.remove(nonce);
 			}
 
-			private String mintRefreshToken(Kernel.CliTokenBrokerCompleteNonce complete, String nonce) {
-				return tokenMinter.mint(complete, nonce);
+			private String mintRefreshToken(Kernel.CliTokenBrokerCompleteNonce complete, String nonce, boolean offlineAccess) {
+				return tokenMinter.mint(complete, nonce, offlineAccess);
 			}
 
 			@Override

@@ -5,6 +5,7 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.key.ImmutableKey;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.spiffe.Spiffe;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.token.TokenWrapper;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.grants.Grants;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.key.KeyOuterClass;
@@ -430,8 +431,6 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// they belong to. Fall back to the cluster root when the policy returns none.
 		newToken.setNamespace(namespaceFromOpaOrRoot(opaResult));
 
-		setFlatServiceEntitlements(newToken, expanded);
-
 		if (claims != null) {
 			newToken.setClaimsFromStruct(claims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
 		}
@@ -448,14 +447,14 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		newToken.sign(signingKey);
 
-		logger.info("MintUserToken: sub={}, azp={}, exp={}, offline={}, service_entitlements={}",
-				subject, delegate.getName(), exp, offlineAccess,
-				newToken.getCustomField(SERVICE_ENTITLEMENTS));
+		logger.info("MintUserToken: sub={}, azp={}, exp={}, offline={}",
+				subject, delegate.getName(), exp, offlineAccess);
 
 		// The access token is always short-lived and never outlives its parent.
 		// A long-lived OT must not be mirrored into a long-lived AT.
 		long accessExp = Math.min(exp, now + defaultTokenExpirySeconds);
-		TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, accessExp);
+		TokenOuterClass.Token accessProto = mintAccessFromRefresh(
+				newToken, signingKey, now, accessExp, null, expanded);
 		return Tokenrequest.TokenMintResponse.newBuilder()
 				.setRefreshToken(newToken.getProto())
 				.setAccessToken(accessProto)
@@ -490,26 +489,45 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	/**
-	 * Extracts the TokenEntitlements returned directly by OPA.
-	 * OPA is responsible for all entitlement expansion — kernel embeds the
-	 * result as-is in the JWT service_entitlements claim.
+	 * Extracts and normalizes the TokenEntitlements returned by OPA. OPA may
+	 * return operator/UI convenience grants such as ANTHROPIC_ANY; runtime tokens
+	 * carry exact RPC grants only.
 	 */
 	private static Entitlements.TokenEntitlements expandEntitlements(
 			Userentitlements.EntitlementEvalResult result) {
-		return result.getTokenEntitlements();
+		return normalizeServiceEntitlements(result.getTokenEntitlements());
 	}
 
 	/**
 	 * JWTs carry service_entitlements as flat grant strings:
-	 * {"grants":["OPENAI_ANY"],"azp":["delegate"]}. The generated proto may be
-	 * either the older repeated EntitlementGrant message or the newer repeated
-	 * string shape, so conversion is descriptor-driven during the transition.
+	 * {"grants":["OPENAI_PROXY_CREATE_CHAT_COMPLETION"],"azp":["delegate"]}.
+	 * The generated proto may be either the older repeated EntitlementGrant
+	 * message or the newer repeated string shape, so conversion is descriptor-
+	 * driven during the transition.
 	 */
 	private static void setFlatServiceEntitlements(TokenWrapper token, Entitlements.TokenEntitlements entitlements) {
 		if (token == null || entitlements == null) {
 			return;
 		}
-		token.setCustomField(SERVICE_ENTITLEMENTS, flatServiceEntitlementsJson(entitlements));
+		token.setCustomField(SERVICE_ENTITLEMENTS,
+				flatServiceEntitlementsJson(normalizeServiceEntitlements(entitlements)));
+	}
+
+	static Entitlements.TokenEntitlements normalizeServiceEntitlements(
+			Entitlements.TokenEntitlements entitlements) {
+		if (entitlements == null) {
+			return Entitlements.TokenEntitlements.getDefaultInstance();
+		}
+		return buildTokenEntitlements(
+				Grants.normalize(entitlementGrantTokens(entitlements)),
+				entitlements.getAzpList());
+	}
+
+	private Entitlements.TokenEntitlements resolveCurrentAccessEntitlements(
+			TokenWrapper sessionToken) throws StatusException {
+		Userentitlements.EntitlementEvalResult opaResult =
+				resolveEntitlementsViaOpa(buildClaimsStruct(sessionToken), "");
+		return expandEntitlements(opaResult);
 	}
 
 	private static Entitlements.TokenEntitlements readServiceEntitlements(TokenWrapper token) {
@@ -1141,8 +1159,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			// The AT is scoped to the requested (or default) project — this is the
 			// project-switch path for offline-token holders.
 			long otAccessExp = otNow + defaultTokenExpirySeconds;
+			Entitlements.TokenEntitlements accessEntitlements =
+					resolveCurrentAccessEntitlements(inputToken);
 			TokenOuterClass.Token at = mintAccessFromRefresh(
-					inputToken, otSigningKey, otNow, otAccessExp, request.getProject());
+					inputToken, otSigningKey, otNow, otAccessExp, request.getProject(),
+					accessEntitlements);
 			return Tokenrequest.TokenMintResponse.newBuilder()
 					.setAccessToken(at)
 					.build();
@@ -1195,7 +1216,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// for a standalone service-token request.
 		if (!request.getServiceAudsList().isEmpty()) {
 			TokenOuterClass.Token accessProto = isRefresh
-					? mintAccessFromRefresh(inputToken, signingKey, now, exp, request.getProject())
+					? mintAccessFromRefresh(inputToken, signingKey, now, exp, request.getProject(),
+							resolveCurrentAccessEntitlements(inputToken))
 					: inputToken.getProto();
 			TokenWrapper accessWrapper = TokenWrapper.from(accessProto);
 
@@ -1247,6 +1269,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 						Status.PERMISSION_DENIED,
 						"delegate " + subject + " not authorized for service " + targetAud);
 			}
+		}
+
+		Entitlements.TokenEntitlements refreshAccessEntitlements = null;
+		if (isRefresh && !isS2S) {
+			refreshAccessEntitlements = resolveCurrentAccessEntitlements(inputToken);
 		}
 
 		TokenWrapper newToken;
@@ -1321,6 +1348,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				if (projectNs != null) {
 					newToken.setNamespace(projectNs);
 				}
+				setFlatServiceEntitlements(newToken, refreshAccessEntitlements);
 			}
 
 			// Scope service_entitlements to the target service and its vservices.
@@ -1348,7 +1376,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 */
 	private TokenOuterClass.Token mintAccessFromRefresh(TokenWrapper refreshToken,
 			ImmutableKey signingKey, long now, long exp) throws StatusException {
-		return mintAccessFromRefresh(refreshToken, signingKey, now, exp, null);
+		return mintAccessFromRefresh(refreshToken, signingKey, now, exp, null, null);
 	}
 
 	/**
@@ -1360,10 +1388,22 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private TokenOuterClass.Token mintAccessFromRefresh(TokenWrapper refreshToken,
 			ImmutableKey signingKey, long now, long exp, String requestedProject)
 			throws StatusException {
+		return mintAccessFromRefresh(refreshToken, signingKey, now, exp, requestedProject, null);
+	}
+
+	/**
+	 * As {@link #mintAccessFromRefresh(TokenWrapper, ImmutableKey, long, long, String)},
+	 * but also stamps the current OPA-resolved service entitlements onto the AT.
+	 */
+	private TokenOuterClass.Token mintAccessFromRefresh(TokenWrapper refreshToken,
+			ImmutableKey signingKey, long now, long exp, String requestedProject,
+			@Nullable Entitlements.TokenEntitlements accessEntitlements)
+			throws StatusException {
 		TokenWrapper accessToken = TokenWrapper.from(refreshToken.getProto().toBuilder()
 				.setSignature("")
 				.setBase64("")
 				.removePayload("typ")
+				.removePayload(SERVICE_ENTITLEMENTS)
 				.build());
 		accessToken.setTokenUse(TOKEN_USE_ACCESS);
 		// v3: an IDP user's access token is scoped to exactly one project. The
@@ -1383,6 +1423,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.setJTI(UUID.randomUUID().toString());
 		if (parentJti != null && !parentJti.isEmpty()) {
 			accessToken.setCustomField("parent_jti", parentJti);
+		}
+		if (accessEntitlements != null) {
+			setFlatServiceEntitlements(accessToken, accessEntitlements);
 		}
 		accessToken.sign(signingKey);
 		return accessToken.getProto();
@@ -1493,6 +1536,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		TokenWrapper freshOt = TokenWrapper.from(oldOt.getProto().toBuilder()
 				.setSignature("")
 				.setBase64("")
+				.removePayload(SERVICE_ENTITLEMENTS)
 				.build());
 		freshOt.setIssuedAt(now)
 				.setExpiration(exp)
@@ -1502,7 +1546,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		// Also hand back a fresh short-lived AT for immediate data-plane use.
 		long accessExp = now + defaultTokenExpirySeconds;
-		TokenOuterClass.Token at = mintAccessFromRefresh(freshOt, signingKey, now, accessExp);
+		TokenOuterClass.Token at = mintAccessFromRefresh(freshOt, signingKey, now, accessExp,
+				null, resolveCurrentAccessEntitlements(freshOt));
 
 		logger.info("Renewed offline token (OT): sub={}, exp={}", freshOt.getSubject(), exp);
 		return Tokenrequest.TokenMintResponse.newBuilder()

@@ -1790,11 +1790,17 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// Check if intermediate CA already exists for this service.
 		X509.X509CertChain existing = serviceCaReader.apply(serviceName);
 		if (existing != null && existing.getChainCount() > 0) {
-			if (traceId != null) {
-				logger.info("X509Mint[{}] found existing intermediate CA service={}, chainLength={} in {}ms",
-						traceId, serviceName, existing.getChainCount(), elapsedMillis(startNanos));
+			ImmutableCertChain reusable = ServiceIntermediateCa.reusable(serviceName, existing, rootCa, logger);
+			if (reusable == null) {
+				logger.info("Recreating intermediate CA for service: {}{}", serviceName,
+						traceId != null ? " traceId=" + traceId : "");
+			} else {
+				if (traceId != null) {
+					logger.info("X509Mint[{}] found existing intermediate CA service={}, chainLength={} in {}ms",
+							traceId, serviceName, existing.getChainCount(), elapsedMillis(startNanos));
+				}
+				return reusable;
 			}
-			return ImmutableCertChain.from(existing);
 		}
 
 		// Generate EC P-384 keypair for the intermediate CA.

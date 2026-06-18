@@ -350,7 +350,11 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 		// Check if intermediate CA already exists for this service.
 		X509.X509CertChain existing = serviceCaReader.apply(serviceName);
 		if (existing != null && existing.getChainCount() > 0) {
-			return ImmutableCertChain.from(existing);
+			ImmutableCertChain reusable = ServiceIntermediateCa.reusable(serviceName, existing, rootCa, logger);
+			if (reusable != null) {
+				return reusable;
+			}
+			logger.info("Recreating intermediate CA for service: {}", serviceName);
 		}
 
 		// Generate EC P-384 keypair for the intermediate CA.

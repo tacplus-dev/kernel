@@ -258,29 +258,34 @@ class MintServiceTokenKubernetesTest {
     }
 
     @Test
-    void multipleCredentialProofs_collapseToLastSet_oneofIsExclusive() throws Exception {
-        // The `oneof credential_proof` makes the ">1 credential" state
-        // unrepresentable: setting input_token then kubernetes_token on the
-        // builder clears input_token. This is the structural half of the H5
-        // "reject >1" requirement — the wire format itself enforces exclusivity,
-        // so a single credential always reaches the router. The runtime count
-        // guard in mintServiceToken remains as defense-in-depth for raw clients,
-        // but cannot be triggered through the generated builder/parser.
+    void multipleCredentialProofs_rejectedByRuntimeGuard() throws Exception {
+        // The credential fields are FLAT proto fields (not a oneof), because the
+        // Rust/Go identity-manager templates construct the request with flat field
+        // names. So setting two of them leaves BOTH populated — the wire format does
+        // not enforce exclusivity. Exclusivity (the H5 "reject >1" requirement) is
+        // enforced entirely by the runtime credentialCount guard in mintServiceToken,
+        // which fires before any verifier work.
         Tokenrequest.MintServiceTokenRequest req = Tokenrequest.MintServiceTokenRequest.newBuilder()
-                .setInputToken("input-wins-first")
+                .setInputToken("input-and-k8s-both-set")
                 .setKubernetesToken(fakeJwt())
                 .build();
 
-        assertEquals(Tokenrequest.MintServiceTokenRequest.CredentialProofCase.KUBERNETES_TOKEN,
-                req.getCredentialProofCase());
-        assertTrue(req.getInputToken().isEmpty(), "oneof must clear the previously-set member");
-
-        // And it round-trips through the wire keeping only the last member.
+        // Flat fields: both are retained (no oneof auto-clear), and survive a wire
+        // round-trip.
+        assertFalse(req.getInputToken().isEmpty());
+        assertFalse(req.getKubernetesToken().isEmpty());
         Tokenrequest.MintServiceTokenRequest reparsed =
                 Tokenrequest.MintServiceTokenRequest.parseFrom(req.toByteArray());
-        assertEquals(Tokenrequest.MintServiceTokenRequest.CredentialProofCase.KUBERNETES_TOKEN,
-                reparsed.getCredentialProofCase());
-        assertTrue(reparsed.getInputToken().isEmpty());
+        assertFalse(reparsed.getInputToken().isEmpty());
+        assertFalse(reparsed.getKubernetesToken().isEmpty());
+
+        // The runtime guard rejects the >1 state with INVALID_ARGUMENT and never
+        // reaches the verifier seam.
+        FakeKubernetesTokenVerifier spy = FakeKubernetesTokenVerifier.neverCalled();
+        IdentityServiceImpl svc = newService(spy);
+        assertEquals(ProtoException.INVALID_ARGUMENT,
+                codeOf(() -> svc.mintServiceToken(CALLER, req)));
+        assertFalse(spy.wasInvoked(), "multi-credential request must be rejected before the verifier");
     }
 
     @Test

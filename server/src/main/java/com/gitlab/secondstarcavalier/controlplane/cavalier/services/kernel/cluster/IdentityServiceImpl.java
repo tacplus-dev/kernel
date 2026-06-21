@@ -330,21 +330,23 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			// the legacy mint request. Each path resolves a Delegate first, then
 			// passes the RESOLVED delegate identity into the continuity cross-check
 			// (the H5 confused-deputy fix) — never a token-derived subject.
-			switch (request.getCredentialProofCase()) {
-				case KUBERNETES_TOKEN:
-					return mintFromKubernetesToken(request);
-				case CLOUD_PROOF:
-					// cloud_proof is a no-op in the legacy router today (it is copied but
-					// never read). Route it to an explicit UNIMPLEMENTED stub rather than
-					// silently dropping it, until the cloud path is audited (plan Q7).
-					throw new StatusException(Status.UNIMPLEMENTED,
-							"cloud_proof credential is not yet implemented in the mint path");
-				case INPUT_TOKEN:
-					return doTokenMint(adaptToLegacy(request));
-				case CREDENTIALPROOF_NOT_SET:
-				default:
-					throw new StatusException(Status.INVALID_ARGUMENT,
-							"exactly one credential proof must be set (input_token, cloud_proof, or kubernetes_token)");
+			// Route by credential field presence. The credentials are flat proto
+			// fields (not a oneof) because the Rust/Go identity-manager templates
+			// construct the request with flat field names; exclusivity is enforced
+			// by the credentialCount guard above, so exactly one is set here.
+			if (!request.getKubernetesToken().isEmpty()) {
+				return mintFromKubernetesToken(request);
+			} else if (request.hasCloudProof()) {
+				// cloud_proof is a no-op in the legacy router today (it is copied but
+				// never read). Route it to an explicit UNIMPLEMENTED stub rather than
+				// silently dropping it, until the cloud path is audited (plan Q7).
+				throw new StatusException(Status.UNIMPLEMENTED,
+						"cloud_proof credential is not yet implemented in the mint path");
+			} else if (!request.getInputToken().isEmpty()) {
+				return doTokenMint(adaptToLegacy(request));
+			} else {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exactly one credential proof must be set (input_token, cloud_proof, or kubernetes_token)");
 			}
 		} catch (StatusException e) {
 			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());

@@ -1,5 +1,35 @@
 # Identity and Token Architecture
 
+## Authority Boundaries
+
+The identity system has a small number of distinct authorities. Keeping them
+separate is what makes the trust model auditable.
+
+1. **The operator deploys.** It provisions clusters and workloads and is the
+   only component that wires environment-specific verifiers (e.g. the live
+   Kubernetes token verifier — see below). The operator does not mint identity.
+2. **kmaker makes kernels only.** kmaker signs kernel certificates
+   (`MintKernelCert`) bound to verified pod facts. It is the certificate
+   authority for *kernels*; it does not mint Cavalier tokens or ordinary service
+   identities.
+3. **Kernel mints Cavalier tokens and ordinary service certs.** Kernel is the
+   signing authority for all S2S/C2S tokens and for ordinary service TLS
+   certificates (the SPIFFE-keyed leaf+intermediate chain issued from
+   `TokenMint` when the caller's `sub` is a SPIFFE URI).
+4. **Kubernetes tokens, `cloud_proof`, and `cred_pair` `input_token`s are
+   layered delegate proofs.** They are *inputs* a service presents to the
+   kernel to prove which delegate it is. They are never themselves Cavalier
+   identity; the kernel resolves them to a registered delegate and then mints
+   its own tokens. A presented credential's facts (e.g. a verified pod's SA)
+   are cross-checked, never trusted verbatim.
+
+> Field names/numbers settled in Phase 2 are authoritative:
+> `MintServiceTokenRequest.credential_proof` is a `oneof` of
+> `input_token = 1`, `cloud_proof = 2`, `kubernetes_token = 8`, and
+> `Delegate.kubernetes_service_accounts = 5` (repeated
+> `KubernetesServiceAccountMatcher`). The kernel-side cert RPC keeps its
+> existing name `MintKernelCert` (it is not being renamed to `SignKernelCert`).
+
 ## S2S (Service-to-Service) Tokens
 
 ### Bootstrap
@@ -40,6 +70,48 @@ Kernel does not decide whether a service may talk to another service at request 
 ### Signing Authority
 
 All S2S tokens are signed by kernel and kernel only. There is no fallthrough to external IdP resolution for S2S flows. If the `kid` does not match a registered delegate cred pair, the request is not treated as S2S.
+
+### Credential Layering (Phase 2)
+
+The cred-pair JWT described above is one of three mutually exclusive ways a
+service can prove which delegate it is when minting an S2S token. A
+`MintServiceTokenRequest` carries **exactly one** credential in its
+`oneof credential_proof`:
+
+- **`input_token` (= 1)** — the existing cred-pair bootstrap JWT (above). Fully
+  implemented.
+- **`cloud_proof` (= 2)** — a cloud-native identity proof (AWS STS / GCP /
+  Azure). **Stub:** the mint path routes this to an explicit
+  `UNIMPLEMENTED` rather than silently accepting it.
+- **`kubernetes_token` (= 8)** — a projected Kubernetes service-account JWT.
+  The kernel structurally checks the token, hands it to a swappable
+  `KubernetesTokenVerifier` seam, then maps the verified `(namespace,
+  service_account)` to a delegate via that delegate's
+  `kubernetes_service_accounts` matchers (`Delegate.kubernetes_service_accounts
+  = 5`).
+
+Because `credential_proof` is a `oneof`, new clients can only set one
+credential. The mint path additionally counts the flat fields and rejects any
+request that somehow sets more than one, so a pre-`oneof` / raw client cannot
+smuggle multiple proofs.
+
+Whichever credential is used, if the request also carries a `continuity_token`
+the kernel cross-checks it against the **resolved delegate's canonical SPIFFE
+id** — i.e. the identity the prior refresh token actually carries — not against
+anything derived from the presented credential. This binds continuity to the
+delegate the kernel resolved, not to attacker-controlled token contents.
+
+**Kubernetes path is not yet live.** The real `kubernetes_token` verifier is
+**not wired** in the kernel as merged on `main`. The default
+`KubernetesTokenVerifier` is `UnwiredKubernetesTokenVerifier`, which **fails
+closed**: every `kubernetes_token` is rejected with `UNIMPLEMENTED`. Phase 2
+ships the kernel-side vertical (proto, routing, SA→delegate mapping, continuity
+cross-check, and an in-memory fake for tests) but no production verifier. The
+real verifier — a TokenReview client against the API server, or a local
+SA-issuer JWKS verifier — depends on operator Phase 3 (projected tokens with
+the kernel audience plus a `tokenreviews/create` RBAC grant for the kernel
+service account). Swapping it in is a wiring change in `ClusterServer`; the
+routing in `IdentityServiceImpl` does not change.
 
 ## C2S (Client-to-Service) Tokens
 
@@ -106,7 +178,7 @@ C2S Token Exchange:
 
 ## Key Invariants
 
-1. **All tokens in the system are signed by kernel.** The only exception is the throwaway cred pair JWT used for S2S bootstrap (which is verified and discarded).
+1. **All Cavalier tokens in the system are signed by kernel.** The exceptions are the *layered delegate proofs* a service presents to bootstrap an S2S token — the throwaway cred pair JWT, a `cloud_proof`, or a `kubernetes_token` — which kernel verifies, resolves to a delegate, and discards. They are never re-emitted as Cavalier identity.
 2. **Only OAuth (and fleetwood) validate external IdP tokens.** No other service ever sees or validates non-kernel tokens.
 3. **Destination services enforce access policy**, not kernel. Kernel mints tokens; destinations decide who may call them.
 4. **`azp` records who brokered the token.** For S2S: the delegate name. For C2S: the on-behalf-of service (oauth, fleetwood, etc.).

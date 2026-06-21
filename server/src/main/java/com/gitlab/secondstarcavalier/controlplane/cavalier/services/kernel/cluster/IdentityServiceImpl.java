@@ -116,6 +116,30 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 	private static final Pattern WORKLOAD_NAME_PATTERN = Pattern.compile("[a-zA-Z0-9_-]+");
 
+	// Plausible-kid gate, mirroring SecurityInterceptor/SecurityAuthenticator (Phase 0.1
+	// DoS-hardening). Production kids are base64url(24 bytes) = 32 chars of [A-Za-z0-9_-]
+	// (see generateRandomID); we accept the permissive-but-safe superset up to KID_MAX_LENGTH
+	// so a bogus/oversized kid is cheaply rejected before any key-set scan.
+	private static final int KID_MAX_LENGTH =
+			Integer.getInteger("tacplus.auth.kidMaxLength", 128);
+	private static final Pattern KID_FORMAT = Pattern.compile("^[A-Za-z0-9_-]{1,512}$");
+
+	/**
+	 * Phase 0.1 fast-rejection gate: is {@code kid} a plausible key id worth scanning
+	 * the verifying-key set for? Cheap format + length check (configurable cap via
+	 * {@code tacplus.auth.kidMaxLength}, permissive {@code [A-Za-z0-9_-]} charset) so an
+	 * attacker-supplied bogus/oversized kid is rejected before any O(keys) lookup. This
+	 * is the single implementation; every externally-influenced kid scan calls it and
+	 * then throws its own call-site-appropriate status on {@code false}. Validation only:
+	 * deliberately NO sleep/retry/semaphore — the blocking just-published-key retry lives
+	 * exclusively on the cross-kernel propagation (data-plane interceptor) path.
+	 */
+	private static boolean isPlausibleKid(String kid) {
+		return kid != null
+				&& kid.length() <= KID_MAX_LENGTH
+				&& KID_FORMAT.matcher(kid).matches();
+	}
+
 	// v3 project-scoping session claims, stamped on a user's refresh/offline token
 	// from the OPA result at login. They let a refresh→access exchange scope the
 	// AT to one authorized project (and switch projects) without re-running login.
@@ -329,6 +353,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		String kid = callerToken.getKid();
 		if (kid == null || kid.isEmpty()) {
 			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
+		}
+		// Phase 0.1: reject implausible (malformed/oversized) kids before scanning the
+		// verifying-key set. Same UNAUTHENTICATED-unknown-key contract as the miss below;
+		// validation only, no retry.
+		if (!isPlausibleKid(kid)) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"caller token signed with unknown key: " + kid);
 		}
 
 		JwkOuterClass.Jwk matchingKey = null;
@@ -765,7 +796,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// by other services). Without this ordering, CredPair throwaway JWTs
 		// would match a verifying key and incorrectly route to exchangeKernelToken.
 		String kid = inputToken.getKid();
-		if (!kid.isEmpty()) {
+		// Phase 0.1: only an implausible (malformed/oversized) kid skips the kernel
+		// key-set scan here — kernel-owned cred_pair/verifying kids are always plausible
+		// (base64url, within the cap), so a bogus kid cannot match and we avoid the
+		// O(keys) scan. Routing contract is preserved: a non-matching/implausible kid
+		// still falls through to the external-token path below. Validation only, no retry.
+		if (!kid.isEmpty() && isPlausibleKid(kid)) {
 			for (Kernel.Delegate delegate : delegatesReader.get()) {
 				for (JwkOuterClass.Jwk jwk : delegate.getCredPairsList()) {
 					if (kid.equals(jwk.getKid())) {
@@ -869,6 +905,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		String kid = callerToken.getKid();
 		if (kid == null || kid.isEmpty()) {
 			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
+		}
+		// Phase 0.1: reject implausible (malformed/oversized) kids before scanning the
+		// verifying-key set, mirroring the UNAUTHENTICATED-unknown-key miss below.
+		// Validation only, no retry.
+		if (!isPlausibleKid(kid)) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"caller token signed with unknown key: " + kid);
 		}
 
 		JwkOuterClass.Jwk matchingKey = null;
@@ -1107,6 +1150,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		String kid = inputToken.getKid();
 		if (kid.isEmpty()) {
 			throw new StatusException(Status.INVALID_ARGUMENT, "input_token missing kid header");
+		}
+		// Phase 0.1: reject implausible (malformed/oversized) kids before scanning the
+		// verifying-key set, mirroring the UNAUTHENTICATED-unknown-key miss below.
+		// Validation only, no retry.
+		if (!isPlausibleKid(kid)) {
+			throw new StatusException(Status.UNAUTHENTICATED, "refresh token signed with unknown key: " + kid);
 		}
 
 		JwkOuterClass.Jwk matchingKey = null;
@@ -1599,6 +1648,15 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		if (kid == null || kid.isEmpty()) {
 			throw new StatusException(Status.INVALID_ARGUMENT, "continuity_token missing kid");
 		}
+		// Phase 0.1: reject implausible kids cheaply, consistent with the data-plane
+		// interceptor's gate. Note: unlike the data-plane path we deliberately do NOT add a
+		// Thread.sleep retry loop here — this runs inside the mint RPC handler in the kernel
+		// that itself owns/publishes the verifying keys, so the just-published-key propagation
+		// race the interceptor compensates for does not apply, and a blocking retry on a mint
+		// handler would reintroduce the very pool-exhaustion DoS we are closing elsewhere.
+		if (!isPlausibleKid(kid)) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "continuity_token has malformed kid");
+		}
 		JwkOuterClass.Jwk matchingKey = null;
 		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
 			if (kid.equals(jwk.getKid())) {
@@ -1695,6 +1753,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		// Verify token signature against cluster keys.
 		String kid = token.getKid();
+		// Phase 0.1: reject implausible (malformed/oversized) kids before scanning the
+		// verifying-key set, mirroring the UNAUTHENTICATED-unknown-key miss below.
+		// Validation only, no retry.
+		if (!isPlausibleKid(kid)) {
+			throw new StatusException(Status.UNAUTHENTICATED, "token signed with unknown key: " + kid);
+		}
 		JwkOuterClass.Jwk matchingKey = null;
 		List<JwkOuterClass.Jwk> verifyingKeys = verifyingKeysReader.get();
 		logger.info("X509Mint[{}] loaded {} verifying keys", traceId, verifyingKeys.size());
@@ -1915,6 +1979,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		if (kid == null || kid.isEmpty()) {
 			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
 		}
+		// Phase 0.1: reject implausible (malformed/oversized) kids before scanning the
+		// verifying-key set, mirroring the UNAUTHENTICATED-unknown-key miss below.
+		// Validation only, no retry.
+		if (!isPlausibleKid(kid)) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token signed with unknown key: " + kid);
+		}
 		JwkOuterClass.Jwk matchingKey = null;
 		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
 			if (kid.equals(jwk.getKid())) {
@@ -2077,6 +2147,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		if (kid == null || kid.isEmpty()) {
 			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
 		}
+		// Phase 0.1: reject implausible (malformed/oversized) kids before scanning the
+		// verifying-key set, mirroring the UNAUTHENTICATED-unknown-key miss below.
+		// Validation only, no retry.
+		if (!isPlausibleKid(kid)) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token signed with unknown key: " + kid);
+		}
 		JwkOuterClass.Jwk matchingKey = null;
 		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
 			if (kid.equals(jwk.getKid())) {
@@ -2135,6 +2211,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		String kid = userToken.getKid();
 		if (kid == null || kid.isEmpty()) {
 			throw ProtoException.newErrMissingInvalidData(null, "user_token missing kid header");
+		}
+		// Phase 0.1: reject implausible (malformed/oversized) kids before scanning the
+		// verifying-key set, mirroring the PERMISSION_DENIED-unknown-key miss below.
+		// Validation only, no retry.
+		if (!isPlausibleKid(kid)) {
+			throw ProtoException.newErrPermissionDenied(null,
+					"user_token signed with unknown key: " + kid);
 		}
 
 		ImmutableJwk matchingKey = null;

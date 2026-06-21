@@ -20,11 +20,13 @@ import org.slf4j.LoggerFactory;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 /**
  * SecurityInterceptor validates JWT bearer tokens on every gRPC call and
@@ -49,6 +51,44 @@ import java.util.function.Supplier;
 public class SecurityInterceptor implements ServerInterceptor {
 
     private static final Logger logger = LoggerFactory.getLogger(SecurityInterceptor.class);
+
+    // --- Unknown-kid retry / DoS-hardening knobs (configurable via system properties) ---
+    // The retry loop sleeps a gRPC handler thread waiting for a just-published JWK to
+    // propagate into shared kernel state. Each of these guards a distinct DoS vector:
+    //   * the timeout bounds how long a single thread is parked,
+    //   * the semaphore bounds how many threads may be parked at once (pool exhaustion),
+    //   * the kid format gate + negative cache short-circuit bogus kids before any sleep.
+    private static final long UNKNOWN_KID_RETRY_TIMEOUT_MILLIS =
+            Long.getLong("tacplus.auth.unknownKidRetryTimeoutMillis", 750L);
+    private static final long UNKNOWN_KID_INITIAL_BACKOFF_MILLIS =
+            Long.getLong("tacplus.auth.unknownKidInitialBackoffMillis", 25L);
+    private static final long UNKNOWN_KID_MAX_BACKOFF_MILLIS =
+            Long.getLong("tacplus.auth.unknownKidMaxBackoffMillis", 250L);
+
+    /** Max number of handler threads that may concurrently sit in the unknown-kid retry loop. */
+    private static final int UNKNOWN_KID_MAX_CONCURRENT_RETRIERS =
+            Integer.getInteger("tacplus.auth.unknownKidMaxConcurrentRetriers", 8);
+
+    /** Bounded positive token cache. */
+    private static final int TOKEN_CACHE_MAX_ENTRIES =
+            Integer.getInteger("tacplus.auth.tokenCacheMaxEntries", 10_000);
+
+    /** Bounded negative cache for recently-missed kids. */
+    private static final int NEGATIVE_KID_CACHE_MAX_ENTRIES =
+            Integer.getInteger("tacplus.auth.negativeKidCacheMaxEntries", 1_024);
+    private static final long NEGATIVE_KID_CACHE_TTL_MILLIS =
+            Long.getLong("tacplus.auth.negativeKidCacheTtlMillis", 1_000L);
+
+    /**
+     * Plausible-kid gate. Production kids are base64url(24 bytes) = 32 chars of
+     * {@code [A-Za-z0-9_-]} (see generateRandomID). We accept the permissive-but-safe
+     * superset of base64url strings up to 128 chars so legacy / longer kids are not
+     * rejected, while still cheaply rejecting obvious junk (control chars, oversized
+     * blobs) before any retry budget is spent. Configurable via system property.
+     */
+    private static final int KID_MAX_LENGTH =
+            Integer.getInteger("tacplus.auth.kidMaxLength", 128);
+    private static final Pattern KID_FORMAT = Pattern.compile("^[A-Za-z0-9_-]{1,512}$");
 
     /** Context key for the authenticated caller's subject (sub claim). */
     public static final Context.Key<String> CALLER_SUBJECT_KEY = Context.key("caller-subject");
@@ -96,8 +136,24 @@ public class SecurityInterceptor implements ServerInterceptor {
         SERVICE_ENTITLEMENTS = Map.copyOf(m);
     }
 
-    /** Cache of validated tokens: raw JWT string -> cached caller info. */
-    private final ConcurrentHashMap<String, CachedCaller> tokenCache = new ConcurrentHashMap<>();
+    /**
+     * Bounded cache of validated tokens: raw JWT string -> cached caller info.
+     * Access-order LRU with a hard size cap; entries also carry a per-entry expiry
+     * and are proactively evicted, so a flood of distinct (valid) tokens cannot grow
+     * the map without bound. Guarded by its own monitor.
+     */
+    private final BoundedTtlCache<String, CachedCaller> tokenCache =
+            new BoundedTtlCache<>(TOKEN_CACHE_MAX_ENTRIES);
+
+    /**
+     * Bounded negative cache of recently-missed kids. A bogus kid is recorded here so
+     * repeated probes short-circuit instantly instead of each spending the retry budget.
+     */
+    private final BoundedTtlCache<String, Boolean> negativeKidCache =
+            new BoundedTtlCache<>(NEGATIVE_KID_CACHE_MAX_ENTRIES);
+
+    /** Bounds the number of handler threads concurrently parked in the unknown-kid retry loop. */
+    private final Semaphore retrySlots = new Semaphore(Math.max(1, UNKNOWN_KID_MAX_CONCURRENT_RETRIERS));
 
     /**
      * @param requiredAudience expected "aud" claim in tokens
@@ -301,10 +357,7 @@ public class SecurityInterceptor implements ServerInterceptor {
     private CachedCaller resolveCallerFromToken(String rawToken) {
         CachedCaller cached = tokenCache.get(rawToken);
         if (cached != null) {
-            if (Instant.now().getEpochSecond() < cached.expiresAt) {
-                return cached;
-            }
-            tokenCache.remove(rawToken);
+            return cached;
         }
 
         TokenWrapper tw = TokenWrapper.parse(rawToken);
@@ -314,8 +367,12 @@ public class SecurityInterceptor implements ServerInterceptor {
             throw new SecurityException("token missing kid header");
         }
 
-        List<JwkOuterClass.Jwk> keys = keyProvider.get();
-        JwkOuterClass.Jwk matchingKey = findKeyByKid(keys, kid);
+        // H2 gate (a): reject implausible kids before spending any retry budget.
+        if (kid.length() > KID_MAX_LENGTH || !KID_FORMAT.matcher(kid).matches()) {
+            throw new SecurityException("malformed kid");
+        }
+
+        JwkOuterClass.Jwk matchingKey = waitForKeyByKid(kid);
         if (matchingKey == null) {
             throw new SecurityException("unknown kid: " + kid);
         }
@@ -332,7 +389,8 @@ public class SecurityInterceptor implements ServerInterceptor {
         long exp = tw.getExpiration();
         CachedCaller result = new CachedCaller(subject, instanceId, exp, entitlements);
         if (exp > 0) {
-            tokenCache.put(rawToken, result);
+            // exp is an absolute epoch-second; the cache stores an absolute epoch-milli expiry.
+            tokenCache.put(rawToken, result, exp * 1000L);
         }
 
         return result;
@@ -366,7 +424,68 @@ public class SecurityInterceptor implements ServerInterceptor {
         }
     }
 
+    private JwkOuterClass.Jwk waitForKeyByKid(String kid) {
+        // Fast path: key already present — no retry budget, no permit needed.
+        JwkOuterClass.Jwk immediate = findKeyByKid(keyProvider.get(), kid);
+        if (immediate != null) {
+            return immediate;
+        }
+
+        // H2(b)/#4: a recently-missed kid short-circuits without spending any retry budget.
+        if (negativeKidCache.get(kid) != null) {
+            return null;
+        }
+
+        // H1: bound the number of threads that may park in the retry loop. If no permit is
+        // immediately available, fail fast (do NOT block) so the handler thread is freed; the
+        // UNAUTHENTICATED status is retryable, so a legitimate client can try again shortly.
+        if (!retrySlots.tryAcquire()) {
+            logger.warn("[auth] unknown-kid retry slots exhausted — failing fast for kid (len={})",
+                    kid.length());
+            throw new SecurityException("authentication temporarily unavailable, retry");
+        }
+        try {
+            // Re-check under the permit: the key may have arrived while we were acquiring.
+            JwkOuterClass.Jwk jwk = findKeyByKid(keyProvider.get(), kid);
+            if (jwk != null) {
+                return jwk;
+            }
+
+            long deadlineNanos = System.nanoTime() + UNKNOWN_KID_RETRY_TIMEOUT_MILLIS * 1_000_000L;
+            long backoffMillis = UNKNOWN_KID_INITIAL_BACKOFF_MILLIS;
+
+            while (true) {
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    // Remember the miss so subsequent probes short-circuit (#4 negative cache).
+                    negativeKidCache.put(kid, Boolean.TRUE,
+                            System.currentTimeMillis() + NEGATIVE_KID_CACHE_TTL_MILLIS);
+                    return null;
+                }
+
+                long sleepMillis = Math.min(backoffMillis, Math.max(1, remainingNanos / 1_000_000L));
+                try {
+                    Thread.sleep(sleepMillis);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+                backoffMillis = Math.min(backoffMillis * 2, UNKNOWN_KID_MAX_BACKOFF_MILLIS);
+
+                jwk = findKeyByKid(keyProvider.get(), kid);
+                if (jwk != null) {
+                    return jwk;
+                }
+            }
+        } finally {
+            retrySlots.release();
+        }
+    }
+
     private static JwkOuterClass.Jwk findKeyByKid(List<JwkOuterClass.Jwk> keys, String kid) {
+        if (keys == null) {
+            return null;
+        }
         for (JwkOuterClass.Jwk jwk : keys) {
             if (kid.equals(jwk.getKid())) {
                 return jwk;
@@ -410,6 +529,67 @@ public class SecurityInterceptor implements ServerInterceptor {
             this.instanceId = instanceId;
             this.expiresAt = expiresAt;
             this.entitlements = entitlements;
+        }
+    }
+
+    /**
+     * Bounded, TTL-evicting cache. Access-order LRU with a hard size cap (oldest entry
+     * evicted on overflow) plus a per-entry absolute expiry (epoch millis). Expired entries
+     * are removed on access and opportunistically swept on insert, so neither a flood of
+     * distinct keys nor stale entries can grow the map without bound. All access is
+     * synchronized on the instance — adequate for the auth fast path, which is dominated by
+     * signature verification rather than map contention.
+     */
+    private static final class BoundedTtlCache<K, V> {
+        private final int maxEntries;
+        private final LinkedHashMap<K, CacheEntry<V>> map;
+
+        BoundedTtlCache(int maxEntries) {
+            this.maxEntries = Math.max(1, maxEntries);
+            this.map = new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<K, CacheEntry<V>> eldest) {
+                    return size() > BoundedTtlCache.this.maxEntries;
+                }
+            };
+        }
+
+        synchronized V get(K key) {
+            CacheEntry<V> e = map.get(key);
+            if (e == null) {
+                return null;
+            }
+            if (System.currentTimeMillis() >= e.expiresAtMillis) {
+                map.remove(key);
+                return null;
+            }
+            return e.value;
+        }
+
+        synchronized void put(K key, V value, long expiresAtMillis) {
+            sweepExpired();
+            map.put(key, new CacheEntry<>(value, expiresAtMillis));
+        }
+
+        /** Bounded sweep of expired entries so eviction is not purely lazy on re-presentation. */
+        private void sweepExpired() {
+            long now = System.currentTimeMillis();
+            java.util.Iterator<Map.Entry<K, CacheEntry<V>>> it = map.entrySet().iterator();
+            while (it.hasNext()) {
+                if (now >= it.next().getValue().expiresAtMillis) {
+                    it.remove();
+                }
+            }
+        }
+
+        private static final class CacheEntry<V> {
+            final V value;
+            final long expiresAtMillis;
+
+            CacheEntry(V value, long expiresAtMillis) {
+                this.value = value;
+                this.expiresAtMillis = expiresAtMillis;
+            }
         }
     }
 }

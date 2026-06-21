@@ -77,6 +77,7 @@ import org.slf4j.LoggerFactory;
 public class ClusterServer {
 
 	private static final Logger logger = LoggerFactory.getLogger(ClusterServer.class);
+	private static final String DEFAULT_KUBERNETES_TOKEN_AUDIENCE = "cavalier-kernel";
 
 	/** Context key for the raw Bearer token (available for all methods, including auth-exempt). */
 	static final Context.Key<String> RAW_AUTH_TOKEN_KEY = Context.key("raw-auth-token");
@@ -107,6 +108,27 @@ public class ClusterServer {
 				.withDescription(e.getMessage() == null ? e.toString() : e.getMessage())
 				.withCause(e)
 				.asRuntimeException();
+	}
+
+	private static String kubernetesTokenAudience() {
+		String audience = System.getenv("KERNEL_K8S_TOKEN_AUDIENCE");
+		return audience == null || audience.isBlank() ? DEFAULT_KUBERNETES_TOKEN_AUDIENCE : audience.strip();
+	}
+
+	private static KubernetesTokenVerifier kubernetesTokenVerifier() {
+		try {
+			return TokenReviewKubernetesTokenVerifier.inCluster();
+		} catch (IllegalStateException e) {
+			logger.info("Kubernetes TokenReview verifier not configured: {}", e.getMessage());
+			return null;
+		} catch (Exception e) {
+			logger.warn("Kubernetes TokenReview verifier is unavailable: {}", e.getMessage());
+			return (token, requiredAudience) -> {
+				throw new KubernetesTokenVerifier.K8sTokenVerificationException(
+						Status.UNAVAILABLE,
+						"kubernetes TokenReview verifier is unavailable: " + e.getMessage());
+			};
+		}
 	}
 
 	private static ServerServiceDefinition ensureMintX509CertBinding(
@@ -694,6 +716,8 @@ public class ClusterServer {
 			// @Nullable in IdentityServiceImpl — null when OPA isn't reachable.
 			var userEntitlementsOpa = grpcClients.vservices().userentitlementsOpaEval();
 			var proxyPolicyOpa = grpcClients.vservices().proxypolicyOpaEval();
+			KubernetesTokenVerifier kubernetesTokenVerifier = kubernetesTokenVerifier();
+			String kubernetesTokenAudience = kubernetesTokenAudience();
 
 			var identityService = new IdentityServiceImpl(
 					cfg.getDefaultTokenExpirySeconds(),
@@ -720,14 +744,8 @@ public class ClusterServer {
 					userEntitlementsOpa,
 					proxyPolicyOpa,
 					kernelConfigMap,
-					// Phase 2: no real Kubernetes token verifier is wired yet (depends on
-					// operator Phase 3 projected tokens + kernel TokenReview RBAC). Pass
-					// null so IdentityServiceImpl installs the fail-closed UNIMPLEMENTED
-					// verifier; swap in TokenReviewVerifier / LocalJwksVerifier here when
-					// Phase 3 lands. The required audience (plan Open Q6) is likewise
-					// unresolved, so pass empty until configured.
-					null,
-					null);
+					kubernetesTokenVerifier,
+					kubernetesTokenAudience);
 
 			Mint mintWrapper = new Mint(identityService, kernelAuthorizer) {
 				@Override

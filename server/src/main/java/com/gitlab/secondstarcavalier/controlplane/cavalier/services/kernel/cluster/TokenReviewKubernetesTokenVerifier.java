@@ -9,6 +9,7 @@ import com.google.gson.JsonParser;
 import io.grpc.Status;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -25,6 +26,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 
@@ -47,7 +49,7 @@ public final class TokenReviewKubernetesTokenVerifier implements KubernetesToken
     private static final String TOKENREVIEWS_PATH = "/apis/authentication.k8s.io/v1/tokenreviews";
 
     private final URI tokenReviewUri;
-    private final String reviewerToken;
+    private final Supplier<String> reviewerTokenSupplier;
     private final HttpClient client;
     private final Duration timeout;
 
@@ -60,25 +62,59 @@ public final class TokenReviewKubernetesTokenVerifier implements KubernetesToken
             String reviewerToken,
             HttpClient client,
             Duration timeout) {
+        this(apiServerUri, fixedReviewerToken(reviewerToken), client, timeout);
+    }
+
+    /**
+     * Production constructor that re-reads the reviewer token on every {@link #verify} call via the
+     * supplied {@code reviewerTokenSupplier}. The kernel's projected service-account token rotates
+     * (BoundServiceAccountToken), so the reviewer credential must be re-read per call rather than
+     * cached once. The supplier is not invoked here.
+     */
+    TokenReviewKubernetesTokenVerifier(
+            URI apiServerUri,
+            Supplier<String> reviewerTokenSupplier,
+            HttpClient client,
+            Duration timeout) {
         if (apiServerUri == null) {
             throw new IllegalArgumentException("apiServerUri is required");
         }
+        if (reviewerTokenSupplier == null) {
+            throw new IllegalArgumentException("reviewerTokenSupplier is required");
+        }
+        this.tokenReviewUri = apiServerUri.resolve(TOKENREVIEWS_PATH);
+        this.reviewerTokenSupplier = reviewerTokenSupplier;
+        this.client = client == null ? HttpClient.newHttpClient() : client;
+        this.timeout = timeout == null ? DEFAULT_TIMEOUT : timeout;
+    }
+
+    private static Supplier<String> fixedReviewerToken(String reviewerToken) {
         if (reviewerToken == null || reviewerToken.isBlank()) {
             throw new IllegalArgumentException("reviewerToken is required");
         }
-        this.tokenReviewUri = apiServerUri.resolve(TOKENREVIEWS_PATH);
-        this.reviewerToken = reviewerToken.strip();
-        this.client = client == null ? HttpClient.newHttpClient() : client;
-        this.timeout = timeout == null ? DEFAULT_TIMEOUT : timeout;
+        String stripped = reviewerToken.strip();
+        return () -> stripped;
     }
 
     static TokenReviewKubernetesTokenVerifier inCluster()
             throws IOException, GeneralSecurityException {
         URI apiServerUri = inClusterApiServerUri();
         String tokenFile = getenvDefault("KERNEL_KUBE_TOKEN_FILE", DEFAULT_TOKEN_FILE);
-        String reviewerToken = Files.readString(Path.of(tokenFile), StandardCharsets.UTF_8).strip();
+        Path tokenPath = Path.of(tokenFile);
+        // Read once at startup to fail-fast on misconfiguration (missing/empty token file),
+        // but do not cache the value: verify() re-reads the file per call to follow rotation.
+        Files.readString(tokenPath, StandardCharsets.UTF_8);
         HttpClient client = inClusterHttpClient();
-        return new TokenReviewKubernetesTokenVerifier(apiServerUri, reviewerToken, client);
+        return new TokenReviewKubernetesTokenVerifier(
+                apiServerUri, () -> readReviewerToken(tokenPath), client, DEFAULT_TIMEOUT);
+    }
+
+    private static String readReviewerToken(Path path) {
+        try {
+            return Files.readString(path, StandardCharsets.UTF_8).strip();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     @Override
@@ -88,6 +124,17 @@ public final class TokenReviewKubernetesTokenVerifier implements KubernetesToken
             throw new K8sTokenVerificationException(
                     Status.UNIMPLEMENTED,
                     "kernel Kubernetes token audience is not configured");
+        }
+
+        // Re-read the kernel reviewer token per call: the projected SA token rotates, so a cached
+        // value goes stale (HTTP 401 after ~1h). Fail closed if the current token cannot be read.
+        String reviewerToken;
+        try {
+            reviewerToken = reviewerTokenSupplier.get();
+        } catch (RuntimeException e) {
+            throw new K8sTokenVerificationException(
+                    Status.UNAVAILABLE,
+                    "unable to read kernel reviewer token: " + e.getMessage());
         }
 
         JsonObject body = new JsonObject();

@@ -14,8 +14,12 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
 class TokenReviewKubernetesTokenVerifierTest {
@@ -121,6 +125,62 @@ class TokenReviewKubernetesTokenVerifierTest {
                     expectFailure(server.uri(), TOKEN, AUDIENCE);
             assertEquals(Status.UNAVAILABLE.getCode(), ex.status().getCode());
             assertTrue(ex.getMessage().contains("HTTP 503"));
+        }
+    }
+
+    @Test
+    void verifyReReadsReviewerTokenPerCall() throws Exception {
+        // The kernel's projected SA token rotates; the verifier must re-read it on every call
+        // rather than caching it once at construction.
+        CopyOnWriteArrayList<String> seenAuthHeaders = new CopyOnWriteArrayList<>();
+        try (MockTokenReviewServer server = MockTokenReviewServer.responding(exchange -> {
+            seenAuthHeaders.add(exchange.getRequestHeaders().getFirst("Authorization"));
+            send(exchange, 201, """
+                    {
+                      "status": {
+                        "authenticated": true,
+                        "audiences": ["cavalier-kernel"],
+                        "user": {"username": "system:serviceaccount:cavalier:oauth"}
+                      }
+                    }
+                    """);
+        })) {
+            AtomicInteger calls = new AtomicInteger();
+            Supplier<String> rotating = () -> "reviewer-token-" + calls.incrementAndGet();
+            var verifier = new TokenReviewKubernetesTokenVerifier(
+                    server.uri(), rotating, HttpClient.newHttpClient(), Duration.ofSeconds(10));
+
+            verifier.verify(TOKEN, AUDIENCE);
+            verifier.verify(TOKEN, AUDIENCE);
+
+            assertEquals(2, seenAuthHeaders.size());
+            assertEquals("Bearer reviewer-token-1", seenAuthHeaders.get(0));
+            assertEquals("Bearer reviewer-token-2", seenAuthHeaders.get(1));
+            assertTrue(!seenAuthHeaders.get(0).equals(seenAuthHeaders.get(1)),
+                    "successive verify() calls must send different reviewer tokens");
+        }
+    }
+
+    @Test
+    void verifyFailsClosedWhenReviewerTokenUnreadable() throws Exception {
+        try (MockTokenReviewServer server = MockTokenReviewServer.json(200, """
+                {"status":{"authenticated":true,"audiences":["cavalier-kernel"],
+                 "user":{"username":"system:serviceaccount:cavalier:oauth"}}}
+                """)) {
+            Supplier<String> failing = () -> {
+                throw new java.io.UncheckedIOException(
+                        new IOException("token file vanished"));
+            };
+            var verifier = new TokenReviewKubernetesTokenVerifier(
+                    server.uri(), failing, HttpClient.newHttpClient(), Duration.ofSeconds(10));
+            try {
+                verifier.verify(TOKEN, AUDIENCE);
+                fail("expected verifier failure");
+            } catch (KubernetesTokenVerifier.K8sTokenVerificationException ex) {
+                assertEquals(Status.UNAVAILABLE.getCode(), ex.status().getCode());
+                assertTrue(ex.getMessage().contains("unable to read kernel reviewer token"));
+                assertTrue(ex.getMessage().contains("token file vanished"));
+            }
         }
     }
 

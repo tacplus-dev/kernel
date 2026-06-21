@@ -226,6 +226,14 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
 	private final Supplier<String> trustDomainReader;
 	private final String tokenIssuer;
+	// Phase 2: Kubernetes service-account token credential support. The verifier
+	// is a swappable seam (TokenReview vs local JWKS — review M1 / plan Q6); it
+	// defaults to UnwiredKubernetesTokenVerifier (fails UNIMPLEMENTED) until the
+	// real impl lands with operator Phase 3. The audience is the configured
+	// kernel/Cavalier workload audience the projected token must carry — never the
+	// kmaker audience (plan invariant lines 341-349).
+	private final KubernetesTokenVerifier kubernetesTokenVerifier;
+	private final String kubernetesTokenAudience;
 	@Nullable
 	private final OpaEvalGrpcClient opaEvalClient;
 	@Nullable
@@ -247,7 +255,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			String tokenIssuer,
 			@Nullable OpaEvalGrpcClient opaEvalClient,
 			@Nullable com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.clients.vservices.proxypolicy.OpaEvalGrpcClient proxyPolicyOpaClient,
-			ConfigMap configMap) {
+			ConfigMap configMap,
+			@Nullable KubernetesTokenVerifier kubernetesTokenVerifier,
+			@Nullable String kubernetesTokenAudience) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
 		this.offlineTokenLifetimeSeconds = offlineTokenLifetimeSeconds > 0 ? offlineTokenLifetimeSeconds : DEFAULT_OFFLINE_TOKEN_LIFETIME_SECONDS;
@@ -263,6 +273,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		this.opaEvalClient = opaEvalClient;
 		this.proxyPolicyOpaClient = proxyPolicyOpaClient;
 		this.configMap = configMap;
+		// Default to the fail-closed UNIMPLEMENTED verifier so an un-wired kernel
+		// never silently accepts a kubernetes_token.
+		this.kubernetesTokenVerifier =
+				kubernetesTokenVerifier != null ? kubernetesTokenVerifier : new UnwiredKubernetesTokenVerifier();
+		this.kubernetesTokenAudience = kubernetesTokenAudience != null ? kubernetesTokenAudience : "";
 	}
 
 	// ========================================================================
@@ -290,17 +305,47 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	public Tokenrequest.TokenMintResponse mintServiceToken(Caller caller,
 			Tokenrequest.MintServiceTokenRequest request) throws ProtoException {
 		try {
-			// S2S fields map 1:1 — convert to legacy request and delegate.
-			Tokenrequest.TokenMintRequest legacyRequest = Tokenrequest.TokenMintRequest.newBuilder()
-					.setInputToken(request.getInputToken())
-					.setCloudProof(request.getCloudProof())
-					.setContinuityToken(request.getContinuityToken())
-					.setAud(request.getAud())
-					.setExp(request.getExp())
-					.setTokenPurpose(request.getTokenPurpose())
-					.setLocalityToken(request.getLocalityToken())
-					.build();
-			return doTokenMint(legacyRequest);
+			// ---- Step 1 (H5): reject >1 / 0 credential proofs BEFORE any
+			// verifier-specific logic (no JWT parse, no TokenReview, no network).
+			// The oneof already collapses new clients to one credential, but a raw
+			// or pre-oneof client could still set multiple flat fields; this guard
+			// defends that case and is the ordering the malformed/multi-credential
+			// tests assert fires before the verifier seam is ever touched.
+			int credentialCount = 0;
+			if (!request.getInputToken().isEmpty()) {
+				credentialCount++;
+			}
+			if (request.hasCloudProof()) {
+				credentialCount++;
+			}
+			if (!request.getKubernetesToken().isEmpty()) {
+				credentialCount++;
+			}
+			if (credentialCount > 1) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exactly one credential proof must be set (got " + credentialCount + ")");
+			}
+
+			// ---- Step 5: route by credential type instead of blindly copying into
+			// the legacy mint request. Each path resolves a Delegate first, then
+			// passes the RESOLVED delegate identity into the continuity cross-check
+			// (the H5 confused-deputy fix) — never a token-derived subject.
+			switch (request.getCredentialProofCase()) {
+				case KUBERNETES_TOKEN:
+					return mintFromKubernetesToken(request);
+				case CLOUD_PROOF:
+					// cloud_proof is a no-op in the legacy router today (it is copied but
+					// never read). Route it to an explicit UNIMPLEMENTED stub rather than
+					// silently dropping it, until the cloud path is audited (plan Q7).
+					throw new StatusException(Status.UNIMPLEMENTED,
+							"cloud_proof credential is not yet implemented in the mint path");
+				case INPUT_TOKEN:
+					return doTokenMint(adaptToLegacy(request));
+				case CREDENTIALPROOF_NOT_SET:
+				default:
+					throw new StatusException(Status.INVALID_ARGUMENT,
+							"exactly one credential proof must be set (input_token, cloud_proof, or kubernetes_token)");
+			}
 		} catch (StatusException e) {
 			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
 		} catch (Exception e) {
@@ -308,6 +353,139 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			throw new ProtoException(ProtoException.INTERNAL, "service token mint failed: " + e.getMessage(), e);
 		}
 	}
+
+	/** Maps the split S2S request onto the legacy TokenMintRequest for the input_token path. */
+	private Tokenrequest.TokenMintRequest adaptToLegacy(Tokenrequest.MintServiceTokenRequest request) {
+		return Tokenrequest.TokenMintRequest.newBuilder()
+				.setInputToken(request.getInputToken())
+				.setContinuityToken(request.getContinuityToken())
+				.setAud(request.getAud())
+				.setExp(request.getExp())
+				.setTokenPurpose(request.getTokenPurpose())
+				.setLocalityToken(request.getLocalityToken())
+				.build();
+	}
+
+	/**
+	 * Kubernetes service-account token path (Phase 2).
+	 *
+	 * <p>Validates the projected SA token via the swappable
+	 * {@link KubernetesTokenVerifier}, maps the verified (namespace, SA) to a
+	 * Delegate, then mints exactly as the cred_pair path does after a delegate
+	 * match — so the K8s path's token output is identical to the cred_pair path's.
+	 */
+	private Tokenrequest.TokenMintResponse mintFromKubernetesToken(
+			Tokenrequest.MintServiceTokenRequest request) throws StatusException {
+
+		String token = request.getKubernetesToken();
+		// Structural pre-checks run BEFORE the verifier seam so a malformed token
+		// never spends a verifier round-trip / retry budget (H5 ordering).
+		if (token.isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "kubernetes_token is empty");
+		}
+		if (!isPlausibleJwt(token)) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "kubernetes_token is not a well-formed JWT");
+		}
+
+		VerifiedK8sIdentity identity;
+		try {
+			identity = kubernetesTokenVerifier.verify(token, kubernetesTokenAudience);
+		} catch (KubernetesTokenVerifier.K8sTokenVerificationException e) {
+			// The verifier owns the status (UNAUTHENTICATED for bad token/audience,
+			// UNAVAILABLE for backend down, UNIMPLEMENTED when un-wired). Never
+			// collapse to INTERNAL (review L1).
+			throw new StatusException(e.status(), e.getMessage());
+		}
+
+		// Belt-and-suspenders audience re-check (review M4): even though the
+		// verifier was asked for kubernetesTokenAudience, re-assert the returned
+		// audiences actually contain it, so a kmaker-only token cannot slip through.
+		if (!kubernetesTokenAudience.isEmpty() && !identity.audiences().contains(kubernetesTokenAudience)) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"kubernetes_token audiences " + identity.audiences()
+							+ " do not include required kernel audience");
+		}
+
+		Kernel.Delegate matchedDelegate = findDelegateByKubernetesServiceAccount(
+				identity.kubernetesNamespace(), identity.kubernetesServiceAccount());
+		if (matchedDelegate == null) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no delegate authorizes Kubernetes service account "
+							+ identity.kubernetesNamespace() + "/" + identity.kubernetesServiceAccount());
+		}
+
+		String delegateName = matchedDelegate.getName();
+		String spiffeId = SpiffeIds.build(trustDomainReader.get(), delegateName);
+
+		// Capture pod extras for audit (advisory for the service-token path).
+		if (!identity.podExtras().isEmpty()) {
+			logger.info("Kubernetes SA {}/{} -> delegate {} (pod extras: {})",
+					identity.kubernetesNamespace(), identity.kubernetesServiceAccount(),
+					delegateName, identity.podExtras());
+		}
+
+		String instanceId;
+		if (!request.getContinuityToken().isEmpty()) {
+			// H5 cross-check: bind the continuity token to the RESOLVED delegate's
+			// canonical SPIFFE subject (what the prior refresh token actually
+			// carries), NOT to anything derived from the presented K8s token.
+			instanceId = resolveInstanceIdFromContinuityToken(
+					request.getContinuityToken(), spiffeId);
+		} else {
+			instanceId = UUID.randomUUID().toString();
+			logger.info("Generated new instance_id={} for sub={}", instanceId, delegateName);
+		}
+
+		Map<String, Object> extraClaims = new java.util.LinkedHashMap<>();
+		extraClaims.put("instance_id", instanceId);
+		extraClaims.put("sub_type", SUB_TYPE_SERVICE);
+
+		// Reuse the cred_pair path's mint so output is identical. The legacy
+		// request carries only the "what to mint" fields here (no input_token).
+		Tokenrequest.TokenMintRequest mintShape = Tokenrequest.TokenMintRequest.newBuilder()
+				.setAud(request.getAud())
+				.setExp(request.getExp())
+				.setTokenPurpose(request.getTokenPurpose())
+				.setLocalityToken(request.getLocalityToken())
+				.build();
+		return mintRefreshToken(spiffeId, Kernel.getDescriptor().getPackage(), mintShape, extraClaims);
+	}
+
+	/** Resolves a Delegate by a verified (K8s namespace, service account) pair. */
+	private Kernel.Delegate findDelegateByKubernetesServiceAccount(String namespace, String serviceAccount) {
+		for (Kernel.Delegate delegate : delegatesReader.get()) {
+			for (Kernel.KubernetesServiceAccountMatcher matcher : delegate.getKubernetesServiceAccountsList()) {
+				if (matcher.getKubernetesNamespace().equals(namespace)
+						&& matcher.getKubernetesServiceAccount().equals(serviceAccount)) {
+					return delegate;
+				}
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Cheap structural check that a string is shaped like a compact JWS
+	 * (three base64url segments). Lets the k8s path reject garbage before
+	 * touching the verifier seam.
+	 */
+	private static boolean isPlausibleJwt(String token) {
+		if (token == null) {
+			return false;
+		}
+		String[] parts = token.split("\\.", -1);
+		if (parts.length != 3) {
+			return false;
+		}
+		for (String part : parts) {
+			if (part.isEmpty() || !JWT_SEGMENT_PATTERN.matcher(part).matches()) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static final Pattern JWT_SEGMENT_PATTERN = Pattern.compile("[A-Za-z0-9_-]+");
 
 	// ========================================================================
 	// MintUserToken RPC (C2S delegation — replaces TokenMint delegation path)
@@ -853,16 +1031,21 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			}
 
 			String delegateName = matchedDelegate.getName();
+			String spiffeId = SpiffeIds.build(trustDomainReader.get(), delegateName);
 
 			String instanceId;
 			if (!request.getContinuityToken().isEmpty()) {
-				instanceId = resolveInstanceIdFromContinuityToken(request, delegateName);
+				// H5: bind the continuity token to the resolved delegate's canonical
+				// SPIFFE subject (what the prior refresh token carries), not the bare
+				// delegate name. This also corrects a latent mismatch — the prior
+				// caller compared the SPIFFE-URI `sub` against the bare name.
+				instanceId = resolveInstanceIdFromContinuityToken(
+						request.getContinuityToken(), spiffeId);
 			} else {
 				instanceId = UUID.randomUUID().toString();
 				logger.info("Generated new instance_id={} for sub={}", instanceId, delegateName);
 			}
 
-			String spiffeId = SpiffeIds.build(trustDomainReader.get(), delegateName);
 			Map<String, Object> extraClaims = new java.util.LinkedHashMap<>();
 			extraClaims.put("instance_id", instanceId);
 			extraClaims.put("sub_type", SUB_TYPE_SERVICE);
@@ -1620,12 +1803,24 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.build();
 	}
 
-	private String resolveInstanceIdFromContinuityToken(Tokenrequest.TokenMintRequest request,
-			String bootstrapSubject) throws StatusException {
+	/**
+	 * Verifies the continuity token and returns its {@code instance_id}, after
+	 * asserting it was minted for {@code resolvedSubject} — the canonical
+	 * identity of the Delegate resolved by the credential path (cred_pair JWT or
+	 * Kubernetes SA), NOT a value taken from the presented continuity token. This
+	 * binding is the H5 confused-deputy fix: a continuity token minted for
+	 * delegate A cannot be replayed by a caller who authenticates as delegate B.
+	 *
+	 * @param rawContinuityToken the raw continuity (prior refresh) token.
+	 * @param resolvedSubject    the resolved delegate's canonical SPIFFE subject
+	 *                           (what the prior refresh token's {@code sub} carries).
+	 */
+	private String resolveInstanceIdFromContinuityToken(String rawContinuityToken,
+			String resolvedSubject) throws StatusException {
 
 		TokenWrapper continuityToken;
 		try {
-			continuityToken = TokenWrapper.parse(request.getContinuityToken());
+			continuityToken = TokenWrapper.parse(rawContinuityToken);
 		} catch (Exception e) {
 			throw new StatusException(Status.INVALID_ARGUMENT, "invalid continuity_token: " + e.getMessage());
 		}
@@ -1674,18 +1869,18 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 					Status.UNAUTHENTICATED, "continuity_token verification failed: " + e.getMessage());
 		}
 
-		if (!bootstrapSubject.equals(continuityToken.getSubject())) {
+		if (!resolvedSubject.equals(continuityToken.getSubject())) {
 			throw new StatusException(
 					Status.INVALID_ARGUMENT,
-					"continuity_token subject '" + continuityToken.getSubject() + "' does not match bootstrap subject '"
-							+ bootstrapSubject + "'");
+					"continuity_token subject '" + continuityToken.getSubject()
+							+ "' does not match the resolved delegate identity '" + resolvedSubject + "'");
 		}
 
 		String instanceId = continuityToken.getCustomField("instance_id");
 		if (instanceId == null || instanceId.isEmpty()) {
 			throw new StatusException(Status.INVALID_ARGUMENT, "continuity_token missing instance_id claim");
 		}
-		logger.info("Preserved instance_id={} via continuity token for sub={}", instanceId, bootstrapSubject);
+		logger.info("Preserved instance_id={} via continuity token for sub={}", instanceId, resolvedSubject);
 		return instanceId;
 	}
 

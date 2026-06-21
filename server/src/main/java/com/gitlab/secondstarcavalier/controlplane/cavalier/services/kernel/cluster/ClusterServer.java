@@ -719,7 +719,15 @@ public class ClusterServer {
 					tokenIssuer,
 					userEntitlementsOpa,
 					proxyPolicyOpa,
-					kernelConfigMap);
+					kernelConfigMap,
+					// Phase 2: no real Kubernetes token verifier is wired yet (depends on
+					// operator Phase 3 projected tokens + kernel TokenReview RBAC). Pass
+					// null so IdentityServiceImpl installs the fail-closed UNIMPLEMENTED
+					// verifier; swap in TokenReviewVerifier / LocalJwksVerifier here when
+					// Phase 3 lands. The required audience (plan Open Q6) is likewise
+					// unresolved, so pass empty until configured.
+					null,
+					null);
 
 			Mint mintWrapper = new Mint(identityService, kernelAuthorizer) {
 				@Override

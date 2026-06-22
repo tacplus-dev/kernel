@@ -308,18 +308,42 @@ class MintServiceTokenKubernetesTest {
     }
 
     @Test
-    void credPairPath_stillRoutesToLegacyMint() {
-        // A garbage input_token still routes through the legacy input_token path
-        // (it parses as a JWT but matches no cred_pair/verifying key), proving the
-        // router rewrite preserved the cred_pair/input_token route. The fake
-        // verifier must never be touched on the input_token path.
+    void inputTokenPath_unknownToken_rejectedUnauthenticated() {
+        // A well-formed but unknown input_token routes through the input_token
+        // (exchange) path, matches no kernel verifying key, and is rejected
+        // UNAUTHENTICATED. The fake k8s verifier must never be touched on the
+        // input_token path.
         FakeKubernetesTokenVerifier spy = FakeKubernetesTokenVerifier.neverCalled();
         IdentityServiceImpl svc = newService(spy);
 
-        // Unknown-but-well-formed JWT -> UNAUTHENTICATED from the legacy path.
+        // Unknown-but-well-formed JWT -> UNAUTHENTICATED from the input_token path.
         assertEquals(ProtoException.UNAUTHENTICATED,
                 codeOf(() -> svc.mintServiceToken(CALLER, inputTokenReq(fakeJwt()))));
         assertFalse(spy.wasInvoked(), "input_token path must not touch the k8s verifier");
+    }
+
+    @Test
+    void credPairBootstrapInputToken_nowRejectedUnauthenticated() {
+        // Cred_pair-bootstrap removal: an input_token whose kid matches a delegate's
+        // cred_pairs JWK used to be treated as a bootstrap throwaway JWT and minted a
+        // first refresh token. That static-keypair bootstrap arm is GONE. Even with a
+        // delegate carrying a matching cred_pairs entry, the input_token is no longer
+        // verified against cred_pairs and falls through to UNAUTHENTICATED (it is not a
+        // kernel-signed token). Service bootstrap is via kubernetes_token only.
+        //
+        // fakeJwt()'s header carries kid "k1"; install a delegate cred_pairs JWK with
+        // that same kid to prove the cred_pair match no longer routes to a mint.
+        delegates.add(Kernel.Delegate.newBuilder()
+                .setName(DELEGATE_NAME)
+                .addCredPairs(JwkOuterClass.Jwk.newBuilder().setKid("k1").build())
+                .build());
+
+        FakeKubernetesTokenVerifier spy = FakeKubernetesTokenVerifier.neverCalled();
+        IdentityServiceImpl svc = newService(spy);
+
+        assertEquals(ProtoException.UNAUTHENTICATED,
+                codeOf(() -> svc.mintServiceToken(CALLER, inputTokenReq(fakeJwt()))));
+        assertFalse(spy.wasInvoked(), "cred_pair input_token must not touch the k8s verifier");
     }
 
     // ---- helpers -----------------------------------------------------------

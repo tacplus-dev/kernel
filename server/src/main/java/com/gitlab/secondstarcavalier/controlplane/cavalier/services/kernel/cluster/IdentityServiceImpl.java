@@ -442,8 +442,10 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		extraClaims.put("instance_id", instanceId);
 		extraClaims.put("sub_type", SUB_TYPE_SERVICE);
 
-		// Reuse the cred_pair path's mint so output is identical. The legacy
-		// request carries only the "what to mint" fields here (no input_token).
+		// Mint via the shared mintRefreshToken helper. The legacy request carries
+		// only the "what to mint" fields here (no input_token). This is now the sole
+		// service-bootstrap caller of mintRefreshToken (the static cred_pair
+		// bootstrap arm that previously also called it has been removed).
 		Tokenrequest.TokenMintRequest mintShape = Tokenrequest.TokenMintRequest.newBuilder()
 				.setAud(request.getAud())
 				.setExp(request.getExp())
@@ -965,31 +967,19 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			throw new StatusException(Status.INVALID_ARGUMENT, "invalid input_token: " + e.getMessage());
 		}
 
-		// Route by token origin:
-		// 1. CredPair tokens (throwaway JWTs signed by a delegate's key) go to
-		//    the bootstrap path which generates instance_id and refresh tokens.
-		// 2. Kernel-signed tokens go to the exchange path.
-		// 3. Everything else (external IDP tokens) goes to the bootstrap path.
-		//
-		// CredPair keys must be checked BEFORE verifying keys because CredPair
-		// public keys are also in the verifying keys view (for JWT verification
-		// by other services). Without this ordering, CredPair throwaway JWTs
-		// would match a verifying key and incorrectly route to exchangeKernelToken.
+		// Route by token origin. The static-keypair cred_pair bootstrap arm has
+		// been removed (services now bootstrap via projected Kubernetes tokens on
+		// the kubernetes_token credential field); input_token here is only ever a
+		// kernel-signed token presented for EXCHANGE (refresh->access,
+		// access->service-scoped). It is verified solely against the kernel's own
+		// verifying keys.
 		String kid = inputToken.getKid();
 		// Phase 0.1: only an implausible (malformed/oversized) kid skips the kernel
-		// key-set scan here — kernel-owned cred_pair/verifying kids are always plausible
+		// key-set scan here — kernel-owned verifying kids are always plausible
 		// (base64url, within the cap), so a bogus kid cannot match and we avoid the
 		// O(keys) scan. Routing contract is preserved: a non-matching/implausible kid
-		// still falls through to the external-token path below. Validation only, no retry.
+		// still falls through to the UNAUTHENTICATED below. Validation only, no retry.
 		if (!kid.isEmpty() && isPlausibleKid(kid)) {
-			for (Kernel.Delegate delegate : delegatesReader.get()) {
-				for (JwkOuterClass.Jwk jwk : delegate.getCredPairsList()) {
-					if (kid.equals(jwk.getKid())) {
-						return exchangeExternalToRefresh(request, inputToken);
-					}
-				}
-			}
-
 			for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
 				if (kid.equals(jwk.getKid())) {
 					return exchangeKernelToken(request, inputToken);
@@ -997,70 +987,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			}
 		}
 
-		return exchangeExternalToRefresh(request, inputToken);
-	}
-
-	private Tokenrequest.TokenMintResponse exchangeExternalToRefresh(Tokenrequest.TokenMintRequest request,
-			TokenWrapper inputToken) throws StatusException {
-
-		String kid = inputToken.getKid();
-		if (kid.isEmpty()) {
-			throw new StatusException(Status.INVALID_ARGUMENT, "input_token missing kid header");
-		}
-
-		Kernel.Delegate matchedDelegate = null;
-		JwkOuterClass.Jwk matchedJwk = null;
-		for (Kernel.Delegate delegate : delegatesReader.get()) {
-			for (JwkOuterClass.Jwk jwk : delegate.getCredPairsList()) {
-				if (kid.equals(jwk.getKid())) {
-					matchedDelegate = delegate;
-					matchedJwk = jwk;
-					break;
-				}
-			}
-			if (matchedDelegate != null) {
-				break;
-			}
-		}
-
-		if (matchedDelegate != null) {
-			ImmutableJwk verificationKey = ImmutableJwk.from(matchedJwk);
-			try {
-				inputToken.verify(verificationKey);
-			} catch (Exception e) {
-				throw new StatusException(
-						Status.UNAUTHENTICATED, "bootstrap JWT verification failed: " + e.getMessage());
-			}
-
-			String delegateName = matchedDelegate.getName();
-			String spiffeId = SpiffeIds.build(trustDomainReader.get(), delegateName);
-
-			String instanceId;
-			if (!request.getContinuityToken().isEmpty()) {
-				// H5: bind the continuity token to the resolved delegate's canonical
-				// SPIFFE subject (what the prior refresh token carries), not the bare
-				// delegate name. This also corrects a latent mismatch — the prior
-				// caller compared the SPIFFE-URI `sub` against the bare name.
-				instanceId = resolveInstanceIdFromContinuityToken(
-						request.getContinuityToken(), spiffeId);
-			} else {
-				instanceId = UUID.randomUUID().toString();
-				logger.info("Generated new instance_id={} for sub={}", instanceId, delegateName);
-			}
-
-			Map<String, Object> extraClaims = new java.util.LinkedHashMap<>();
-			extraClaims.put("instance_id", instanceId);
-			extraClaims.put("sub_type", SUB_TYPE_SERVICE);
-
-			return mintRefreshToken(
-					spiffeId, Kernel.getDescriptor().getPackage(), request,
-					extraClaims);
-		}
-
-		// No delegate/cred_pair matched. Kernel makes NO external IdP calls: it is
-		// the cluster trust root and only exchanges its own credentials. External
-		// IdP tokens must be exchanged via MintUserToken by an authorized broker.
-		throw new StatusException(Status.UNAUTHENTICATED, "input_token is not a recognized kernel credential (cred_pair/delegate); external IdP tokens must be exchanged via MintUserToken by an authorized broker");
+		// Not a kernel-signed token. The static cred_pair bootstrap path that used
+		// to mint a first refresh token from a delegate-keypair-signed throwaway JWT
+		// is gone — services bootstrap via projected Kubernetes tokens
+		// (kubernetes_token). The kernel makes NO external IdP calls: it is the
+		// cluster trust root and only exchanges its own credentials. External IdP
+		// tokens must be exchanged via MintUserToken by an authorized broker.
+		throw new StatusException(Status.UNAUTHENTICATED, "input_token is not a recognized kernel-signed token; service bootstrap is via the kubernetes_token credential and external IdP tokens must be exchanged via MintUserToken by an authorized broker");
 	}
 
 	/**

@@ -54,31 +54,30 @@ itself need a ServiceToken to bootstrap — a circular dependency.
 
 By building TokenExchanger into kernel, the bootstrap flow becomes:
 
-1. Identity (or any service) has a **CredPair** — a public key registered
-   in kernel's Config, bound to a service identity (subject + principal).
-2. The service signs a bootstrap JWT with its CredPair private key.
-3. The service calls `TokenExchangerService.ExchangeToken(bootstrap_jwt)`.
-4. TokenExchanger recognizes the kid from the Config's `cred_pairs` list,
-   verifies the signature, and returns a **refresh token**.
-5. The service exchanges the refresh token for a short-lived **access token**
+1. Identity (or any service) presents a delegate proof to kernel. In-cluster
+   workloads use projected Kubernetes service-account tokens; cloud-native
+   workloads use `cloud_proof` once that verifier is implemented.
+2. Kernel resolves the proof to a configured delegate and returns a
+   **refresh token** plus initial **access token**.
+3. The service exchanges the refresh token for a short-lived **access token**
    scoped to the kernel backend.
-6. The service can now make authenticated gRPC calls to kernel (e.g.,
+4. The service can now make authenticated gRPC calls to kernel (e.g.,
    Identity publishes its JWKs to `IdentityState.verifying_keys`).
 
 ### What TokenExchanger does
 
 TokenExchanger performs exactly three operations:
 
-1. **CredPair token → refresh token**: Accepts a JWT signed by a CredPair
-   private key. Validates the signature against the matching CredPair public
-   key in Config. Returns a refresh token bound to that CredPair's identity.
+1. **Delegate proof → refresh token**: Accepts a Kubernetes service-account
+   token or cloud proof, resolves it to a delegate, and returns a refresh token
+   bound to that delegate identity.
 
 2. **Refresh token → access token**: Accepts a valid (unexpired) refresh
    token. Returns a short-lived access token for the kernel backend. The
    access token contains the service identity (sub, aud, instance_id).
 
 3. **Refresh token renewal**: Accepts an unexpired refresh token alongside a
-   fresh CredPair-signed token. Verifies both share the same subject and
+   fresh delegate proof. Verifies both resolve to the same subject and
    re-issues a new refresh token with the original `client_id` carrying over.
    This enables seamless token rotation without identity discontinuity.
 
@@ -103,15 +102,16 @@ Set via `Config.token_exchanger`:
 - `default_token_expiry_seconds` — Lifetime of issued access tokens (default: 1h)
 - `opa_entry_point` / `opa_bundle` — Optional OPA policy for authorization decisions
 
-### CredPairs
+### Delegate Proofs
 
-CredPairs are configured in `Config.cred_pairs`. Each binds a public key to
-a service identity:
+Delegates are configured in `Config.delegates`. Each delegate binds one service
+identity to one or more bootstrap matchers:
 
-- `kid` — Key ID, used to match incoming JWTs to this CredPair
-- `key` — JWK public key material
-- `subject_type` — Identity type (e.g., `"service"`)
-- `principal` — Identity name (e.g., `"identity"`, `"sentinel"`)
+- `kubernetes_service_accounts` — Kubernetes namespace/service-account pairs
+  that may authenticate as the delegate.
+- `cloud_identities` — Cloud-native identities that may authenticate as the
+  delegate once cloud proof verification is implemented.
+- `authorized_services` — Services the delegate may mint tokens for.
 
 ## Built-in State Roots
 
@@ -228,7 +228,7 @@ Rate limiting is per-service per-method. Violations are tracked in
 - `configs` — Per-frontend-service configurations (ConfigHolder)
 - `security` — Token validation policy (audience, max TTL)
 - `token_exchanger` — TokenExchanger configuration
-- `cred_pairs` — Public keys bound to service identities
+- `delegates` — Service identities, bootstrap matchers, and S2S mint grants
 
 ## Persistence
 

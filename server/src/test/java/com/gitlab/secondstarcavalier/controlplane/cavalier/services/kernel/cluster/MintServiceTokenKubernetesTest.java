@@ -324,26 +324,17 @@ class MintServiceTokenKubernetesTest {
 
     @Test
     void credPairBootstrapInputToken_nowRejectedUnauthenticated() {
-        // Cred_pair-bootstrap removal: an input_token whose kid matches a delegate's
-        // cred_pairs JWK used to be treated as a bootstrap throwaway JWT and minted a
-        // first refresh token. That static-keypair bootstrap arm is GONE. Even with a
-        // delegate carrying a matching cred_pairs entry, the input_token is no longer
-        // verified against cred_pairs and falls through to UNAUTHENTICATED (it is not a
-        // kernel-signed token). Service bootstrap is via kubernetes_token only.
-        //
-        // fakeJwt()'s header carries kid "k1"; install a delegate cred_pairs JWK with
-        // that same kid to prove the cred_pair match no longer routes to a mint.
-        delegates.add(Kernel.Delegate.newBuilder()
-                .setName(DELEGATE_NAME)
-                .addCredPairs(JwkOuterClass.Jwk.newBuilder().setKid("k1").build())
-                .build());
+        // Cred_pair-bootstrap removal: service delegates no longer carry static
+        // cred_pair public keys, so input_token cannot bootstrap a service identity.
+        // A non-kernel-signed token falls through to UNAUTHENTICATED. Service
+        // bootstrap is via kubernetes_token only.
 
         FakeKubernetesTokenVerifier spy = FakeKubernetesTokenVerifier.neverCalled();
         IdentityServiceImpl svc = newService(spy);
 
         assertEquals(ProtoException.UNAUTHENTICATED,
                 codeOf(() -> svc.mintServiceToken(CALLER, inputTokenReq(fakeJwt()))));
-        assertFalse(spy.wasInvoked(), "cred_pair input_token must not touch the k8s verifier");
+        assertFalse(spy.wasInvoked(), "input_token must not touch the k8s verifier");
     }
 
     // ---- helpers -----------------------------------------------------------

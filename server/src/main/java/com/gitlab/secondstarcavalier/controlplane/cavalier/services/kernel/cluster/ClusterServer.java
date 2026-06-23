@@ -293,17 +293,9 @@ public class ClusterServer {
 					return result;
 				});
 
-		// Capture delegate public keys from Config. Delegate cred_pair keys are
-		// trusted verifying keys folded into the same trust set as the runtime
-		// IdentityState verifying keys.
-		final var delegatePublicKeys = new java.util.ArrayList<JwkOuterClass.Jwk>();
-		for (Kernel.Delegate delegate : cfg.getDelegatesList()) {
-			delegatePublicKeys.addAll(delegate.getCredPairsList());
-		}
-
 		// Combined key supplier
 		Supplier<List<JwkOuterClass.Jwk>> allKeysSupplier = () -> {
-			var keys = new java.util.ArrayList<>(delegatePublicKeys);
+			var keys = new java.util.ArrayList<JwkOuterClass.Jwk>();
 			try {
 				keys.addAll(backendServers
 						.services()

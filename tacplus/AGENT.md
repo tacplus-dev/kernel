@@ -105,7 +105,7 @@ Each `RpcInfo` carries:
 
 ## Packages
 
-- `clients/cavalierctl`
+- `clients/operator`
 - `common/hazelcast`
 - `common/sensor`
 - `common/tokenrequest`

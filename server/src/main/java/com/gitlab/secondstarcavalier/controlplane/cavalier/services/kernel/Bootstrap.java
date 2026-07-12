@@ -10,7 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster.ClusterServer;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.PersistenceProvider;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.logger.LogbackConfigurator;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.logger.LogbackConfigurator;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
 

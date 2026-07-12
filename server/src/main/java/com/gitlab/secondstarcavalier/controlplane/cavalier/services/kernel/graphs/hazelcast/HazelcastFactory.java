@@ -1,8 +1,8 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.x509.ImmutableCert;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.x509.ImmutableCertChain;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.x509.ImmutableCert;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.SerializerRegistry;

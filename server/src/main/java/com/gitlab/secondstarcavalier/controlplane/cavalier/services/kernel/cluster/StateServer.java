@@ -5,8 +5,8 @@ import io.grpc.stub.StreamObserver;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.grpcconfig.Grpcconfig.LogMessage;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.logger.Logger.Level;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.grpcconfig.Grpcconfig.LogMessage;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.logger.Logger.Level;
 
 /**
  * Manages gRPC Log stream observers. Tracks connected client streams keyed by peer address

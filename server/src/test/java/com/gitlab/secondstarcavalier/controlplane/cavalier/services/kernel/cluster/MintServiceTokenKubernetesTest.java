@@ -1,15 +1,15 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.key.ImmutableKey;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.servicemanager.Caller;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.spiffe.Spiffe;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.token.TokenWrapper;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.errors.ProtoException;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.jwk.JwkOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.token.TokenOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.key.ImmutableKey;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.servicemanager.Caller;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.spiffe.Spiffe;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.token.TokenWrapper;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.errors.ProtoException;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.jwk.JwkOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.token.TokenOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.tokenrequest.Tokenrequest;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.tokenrequest.Tokenrequest;
 import io.grpc.Status;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -96,7 +96,7 @@ class MintServiceTokenKubernetesTest {
                 .setIssuedAt(now)
                 .setExpiration(now + 3600)
                 .setJTI(UUID.randomUUID().toString());
-        t.setTokenUse(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.token.Helpers
+        t.setTokenUse(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.token.Helpers
                 .tokenUseToString(TokenOuterClass.TokenUse.TOKEN_USE_REFRESH));
         t.setCustomField("instance_id", instanceId);
         t.sign(signingKey);

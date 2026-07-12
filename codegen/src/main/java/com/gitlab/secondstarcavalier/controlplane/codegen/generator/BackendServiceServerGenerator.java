@@ -317,7 +317,7 @@ public class BackendServiceServerGenerator {
 			for (SharedView v : views) {
 				String responseName = outerClassName + "." + v.getFieldPascal() + "EntriesResponse";
 				viewRpcs.append("\n    // --- ").append(v.getFieldPascal()).append(" (view) ---\n");
-				String traceRequestType = ctx.getTypesPackageBase() + ".types.libs.trace.Trace.TraceRequest";
+				String traceRequestType = ctx.getTypesPackageBase() + ".types.sys.trace.Trace.TraceRequest";
 				viewRpcs.append("\n    @Override\n");
 				viewRpcs.append("    public void watch").append(v.getFieldPascal())
 						.append("(").append(traceRequestType).append(" request,\n");
@@ -532,7 +532,7 @@ public class BackendServiceServerGenerator {
 				: b.getFieldCamel() + "Map.set(compositeKey, authoritative);");
 		vars.put("OUTER_CLASS", outerClassName);
 		vars.put("SERVICE_PREFIX", servicePrefix);
-		vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.libs.trace.Trace.TraceRequest");
+		vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.sys.trace.Trace.TraceRequest");
 		return vars;
 	}
 

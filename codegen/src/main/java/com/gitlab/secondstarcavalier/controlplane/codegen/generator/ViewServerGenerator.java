@@ -65,15 +65,15 @@ public class ViewServerGenerator {
                 continue;
             }
 
-            String grpcFqn = ctx.getTypesPackageBase() + ".types.libs." + spec.grpcSubPkg() + "." + spec.grpcSimple();
-            String protoFqn = ctx.getTypesPackageBase() + ".types.libs." + spec.grpcSubPkg() + "." + spec.protoOuter();
+            String grpcFqn = ctx.getTypesPackageBase() + ".types.sys." + spec.grpcSubPkg() + "." + spec.grpcSimple();
+            String protoFqn = ctx.getTypesPackageBase() + ".types.sys." + spec.grpcSubPkg() + "." + spec.protoOuter();
 
             Map<String, String> vars = new LinkedHashMap<>();
             vars.put("HEADER", GeneratorContext.header("view_server"));
             vars.put("PACKAGE", pkg);
             vars.put("CLASS_NAME", spec.className());
             vars.put("VIEW_NAME", viewName);
-            vars.put("JWK_OUTER_CLASS", ctx.getTypesPackageBase() + ".types.libs.jwk.JwkOuterClass");
+            vars.put("JWK_OUTER_CLASS", ctx.getTypesPackageBase() + ".types.sys.jwk.JwkOuterClass");
             vars.put("GRPC_FQN", grpcFqn);
             // protoc-gen-grpc-java names the server base <ServiceName>ImplBase,
             // where ServiceName is the grpc class name minus its trailing "Grpc"
@@ -88,7 +88,7 @@ public class ViewServerGenerator {
             vars.put("GET_RESP_TYPE", spec.protoOuter() + "." + spec.getRespType());
             vars.put("RESOURCE_NAME", spec.resourceName());
             vars.put("SECURITY_AUTH_CLASS", ctx.getJavaPackageBase() + ".SecurityAuthenticator");
-            vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.libs.trace.Trace.TraceRequest");
+            vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.sys.trace.Trace.TraceRequest");
 
             String content = TemplateEngine.render("ViewServer.java.template", vars);
             Files.createDirectories(dir);

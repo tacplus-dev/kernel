@@ -1,8 +1,8 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.errors.ProtoException;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.key.KeyOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.errors.ProtoException;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.key.KeyOuterClass;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

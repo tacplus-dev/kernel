@@ -2,7 +2,7 @@
 
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.spiffe.Spiffe;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.spiffe.Spiffe;
 
 /**
  * Thin kernel-side adapter over the generated {@link Spiffe} helper.

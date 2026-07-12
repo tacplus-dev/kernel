@@ -8,12 +8,12 @@ import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.HazelcastManager;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.graphs.hazelcast.PersistenceProvider;
 // StateServer is in this package
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.x509.ImmutableCertChain;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.tokenrequest.Tokenrequest;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.jwk.JwkOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.errors.ProtoException;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.x509.X509;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.grpcconfig.Grpcconfig;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.x509.ImmutableCertChain;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.tokenrequest.Tokenrequest;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.jwk.JwkOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.errors.ProtoException;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.x509.X509;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.grpcconfig.Grpcconfig;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.hazelcast.Hazelcast;
@@ -48,7 +48,7 @@ import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContextBuilder;
 import io.grpc.protobuf.services.HealthStatusManager;
 import io.grpc.stub.ServerCalls;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.servicemanager.Auth;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.servicemanager.Auth;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.Mint;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.TenantAdmin;
 import java.io.IOException;
@@ -149,7 +149,7 @@ public class ClusterServer {
 				ServerCalls.asyncUnaryCall((Tokenrequest.X509MintRequest request,
 						io.grpc.stub.StreamObserver<X509.X509CertChain> responseObserver) -> {
 					try {
-						com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.tokenrequest.Helpers.validateX509MintRequest(request);
+						com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.tokenrequest.Helpers.validateX509MintRequest(request);
 						X509.X509CertChain response = identityService.mintX509Cert(null, request);
 						responseObserver.onNext(response);
 						responseObserver.onCompleted();
@@ -504,7 +504,7 @@ public class ClusterServer {
 				.intercept(Auth.requestIdInterceptor())
 				// Populate AUTH_HEADER_CTX_KEY so the generated Authorizer on the
 				// C2S management wrappers (TenantAdmin) can read the bearer.
-				.intercept(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.grpcserver.Authorizer.interceptor())
+				.intercept(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.grpcserver.Authorizer.interceptor())
 				.intercept(backendServers.getAuthenticator().callerInterceptor());
 
 		serverBuilder.intercept(rateLimiter);
@@ -549,7 +549,7 @@ public class ClusterServer {
 			}
 		}
 		// Register libs gRPC services (ServiceConfigStateBackendService, etc.)
-		for (ServerServiceDefinition svc : backendServers.libs().getGrpcServices()) {
+		for (ServerServiceDefinition svc : backendServers.sys().getGrpcServices()) {
 			serverBuilder.addService(svc);
 		}
 		serverBuilder.addService(new BackendServiceImpl(backendServer, grpcPort, hazelcast, cfg.getClusterName()));
@@ -587,7 +587,7 @@ public class ClusterServer {
 			// RemoteJwkSource consumers use. SPIFFE IDs are self-describing, so the
 			// Authorizer derives caller scope from token subjects instead of a
 			// configured prefix.
-			var kernelAuthorizer = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.grpcserver.Authorizer(
+			var kernelAuthorizer = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.grpcserver.Authorizer(
 					new LocalJwkSource(allKeysSupplier));
 			Mint.registerMethodAuth(kernelAuthorizer);
 			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker.registerMethodAuth(kernelAuthorizer);
@@ -596,7 +596,7 @@ public class ClusterServer {
 			// Seed ServiceConfigState with the trust domain and location path so all
 			// services build identities under the same self-describing SPIFFE root.
 			try {
-				backendServers.libs().getServiceConfigStateMap().putConfig(
+				backendServers.sys().getServiceConfigStateMap().putConfig(
 						Grpcconfig.Config.newBuilder()
 								.setSpiffeTrustDomain(spiffeTrustDomain)
 								.setLocationPath(spiffeLocationPath)
@@ -636,14 +636,14 @@ public class ClusterServer {
 			// Per-service connections for outbound S2S (OPA). Uses tacplus
 			// ServiceConnection.channelFactory() — single code path for TLS context
 			// + channel creation.
-			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.serviceconnection.ServiceConnection.ChannelFactory s2sChannelFactory;
+			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.serviceconnection.ServiceConnection.ChannelFactory s2sChannelFactory;
 			try {
-				s2sChannelFactory = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.serviceconnection.ServiceConnection.channelFactory(cfg.getTrustedCasList());
+				s2sChannelFactory = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.serviceconnection.ServiceConnection.channelFactory(cfg.getTrustedCasList(), spiffeTrustDomain);
 			} catch (Exception e) {
 				throw new RuntimeException("Failed to create S2S channel factory", e);
 			}
 
-			var opaConn = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.serviceconnection.ServiceConnection("opa", s2sChannelFactory);
+			var opaConn = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.serviceconnection.ServiceConnection("opa", s2sChannelFactory);
 
 			// Feed ServiceHealthState into the OPA ServiceConnection.
 			var healthMap = backendServers.services().getServiceHealthMap();
@@ -656,11 +656,11 @@ public class ClusterServer {
 					// to it. Endpoint is the headless "kernel" service on the gRPC
 					// port (server-TLS, no client cert).
 					try {
-						var ib = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.healthreport.Healthreport.ServiceInstanceHealth.newBuilder()
+						var ib = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.healthreport.Healthreport.ServiceInstanceHealth.newBuilder()
 								.setId("kernel@" + instanceName)
 								.setServiceId("kernel")
 								.setInstanceId(instanceName)
-								.setStatus(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_HEALTHY);
+								.setStatus(com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.healthreport.Healthreport.InstanceStatus.INSTANCE_STATUS_HEALTHY);
 						ib.getGrpcEndpointBuilder().setHost(selfGrpcHost).setPort(grpcPort);
 						healthMap.putInstances("kernel@" + instanceName, ib.build());
 					} catch (Exception e) {
@@ -668,7 +668,7 @@ public class ClusterServer {
 					}
 					try {
 						var instances = new java.util.ArrayList<>(healthMap.proto().getInstancesList());
-						var relevant = new java.util.ArrayList<com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.healthreport.Healthreport.ServiceInstanceHealth>();
+						var relevant = new java.util.ArrayList<com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.healthreport.Healthreport.ServiceInstanceHealth>();
 						for (var inst : instances) {
 							var ep = inst.getGrpcEndpoint();
 							if (ep == null || ep.getHost().isEmpty() || ep.getPort() <= 0) continue;
@@ -693,7 +693,7 @@ public class ClusterServer {
 			// (tacplus v1.2.187 folded the vservices.GrpcS2SClients aggregator into
 			// the generated s2sm.internal.grpc.clients.GrpcClients.)
 			var grpcClients = new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.clients.GrpcClients(
-					new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.serviceconnection.ServiceConnection.ChannelProvider(opaConn),
+					new com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.serviceconnection.ServiceConnection.ChannelProvider(opaConn),
 					aud -> () -> {
 						try {
 							return mintSelfToken(keyRotator, tokenIssuer, aud, () -> spiffeTrustDomain);
@@ -963,7 +963,7 @@ public class ClusterServer {
 	 */
 	private static String mintSelfToken(KeyRotator keyRotator, String tokenIssuer,
 			String audience, Supplier<String> trustDomainReader) throws Exception {
-		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.key.ImmutableKey signingKey =
+		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.key.ImmutableKey signingKey =
 				keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		if (signingKey == null) {
 			throw new IllegalStateException("no active signing key for self-mint");
@@ -973,8 +973,8 @@ public class ClusterServer {
 
 		String spiffeId = SpiffeIds.build(trustDomainReader.get(), "kernel");
 
-		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.token.TokenWrapper token =
-				com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.token.TokenWrapper.create()
+		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.token.TokenWrapper token =
+				com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.token.TokenWrapper.create()
 						.setIssuer(tokenIssuer)
 						.setSubject(spiffeId)
 						.setAudience(audience)

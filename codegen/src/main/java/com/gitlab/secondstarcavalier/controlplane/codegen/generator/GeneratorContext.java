@@ -92,11 +92,11 @@ public class GeneratorContext {
 	}
 
 	public String getErrorsPackage() {
-		return typesPackageBase + ".types.libs.errors";
+		return typesPackageBase + ".types.sys.errors";
 	}
 
 	public String getSecurityPackage() {
-		return typesPackageBase + ".types.libs.backendsec";
+		return typesPackageBase + ".types.sys.backendsec";
 	}
 
 	public String getTokenPackage() {
@@ -108,7 +108,7 @@ public class GeneratorContext {
 	}
 
 	public String getJwkTypesPackage() {
-		return typesPackageBase + ".types.libs.jwk";
+		return typesPackageBase + ".types.sys.jwk";
 	}
 
 	/**
@@ -134,8 +134,8 @@ public class GeneratorContext {
 		// Let's derive from javaPackageBase: "com...backenddb.tacplusbackend"
 		// The libs sibling would be "com...backenddb.tacplus.libs"
 		// This matches: typesPackageBase = "com...backenddb.tacplus"
-		// So libsBase = typesPackageBase + ".libs"
-		return typesPackageBase + ".libs";
+		// So libsBase = typesPackageBase + ".chassis" (runtime libs moved libs->chassis)
+		return typesPackageBase + ".chassis";
 	}
 
 	/**

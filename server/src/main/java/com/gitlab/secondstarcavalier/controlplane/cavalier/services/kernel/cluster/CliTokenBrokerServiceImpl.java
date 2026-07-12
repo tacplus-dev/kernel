@@ -2,7 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.tokenrequest.Tokenrequest;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.tokenrequest.Tokenrequest;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.map.IMap;
 import io.grpc.stub.StreamObserver;
@@ -141,7 +141,7 @@ public class CliTokenBrokerServiceImpl implements
 
 	@Override
 	public StreamObserver<Kernel.CliTokenBrokerRequest> brokerStream(
-			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.servicemanager.Caller caller,
+			com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.servicemanager.Caller caller,
 			StreamObserver<Kernel.CliTokenBrokerResponse> responseObserver) {
 
 		return new StreamObserver<>() {

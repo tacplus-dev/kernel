@@ -43,7 +43,7 @@ public class BackendStoreServerGenerator {
         vars.put("KEY_FIELD_PASCAL", store.getKeyFieldPascal());
         vars.put("STORE_MAP_NAME", store.getValueTypeName() + "Store");
         vars.put("TARGET_SERVICE", store.getPackageName() + ".StoreService");
-        vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.libs.trace.Trace.TraceRequest");
+        vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.sys.trace.Trace.TraceRequest");
 
         String content = TemplateEngine.render("BackendStoreServiceServer.java.template", vars);
 

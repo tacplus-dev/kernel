@@ -2,14 +2,14 @@
 
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.collection.CollectionRuntime;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.servicemanager.Caller;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.collection.CollectionRuntime;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.servicemanager.Caller;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.grants.Grants;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.TenantAdmin;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.generated.tenant_config.TenantConfigOuterClass;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.errors.ProtoException;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.errors.ProtoException;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 

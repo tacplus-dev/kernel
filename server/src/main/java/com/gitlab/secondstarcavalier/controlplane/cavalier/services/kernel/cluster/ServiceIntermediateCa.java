@@ -1,8 +1,8 @@
 // Copyright (c) 2024 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.cluster;
 
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.libs.x509.ImmutableCertChain;
-import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.libs.x509.X509;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.x509.ImmutableCertChain;
+import com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.sys.x509.X509;
 import java.security.cert.X509Certificate;
 import org.slf4j.Logger;
 

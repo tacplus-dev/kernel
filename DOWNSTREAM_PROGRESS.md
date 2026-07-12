@@ -57,3 +57,36 @@
   completed green and all three kernel pods are Ready on the tag.
 - Live verification after rollout confirmed Anthropic WIF exchange succeeds
   with ES256 public discovery and the corrected upstream audience.
+
+## 2026-07-11
+
+- Full sys-rename migration to the current tacplus contract. Proto repo
+  (`platform/proto`) migrated: `libs/` -> `sys/` imports; `assert_max_length/
+  min_length` -> `assert_max_size/min_size` (value-preserving, double-size fields
+  deduped); `eventdb` -> `record` (+ `s2s` producer surface on the 4 record
+  messages); `tenant_config_slice`/`tenant_config_service` -> `config_slice`
+  {scope: `CONFIG_SLICE_SCOPE_TENANT`, service_name: "kernel"}; `hot_store` ->
+  `record_store`; colddb retired (`colddb.off` deleted, `TimeRange` moved to
+  `timedb.proto`); `common/tokenrequest.proto` deleted in favor of
+  `sys/tokenrequest.proto`.
+- tacplus fixes required (pushed to tacplus main): completed the
+  `common->sys` tokenrequest fold — restored 3 dropped messages
+  (`ExternalTokenMintResponse`, `WorkloadMintRequest/Response`) and the dropped
+  `ExternalTokenMintRequest.requested_signing_key_type` field, reconciling the
+  canonical contract with the kernel's committed shape.
+- Kernel handwritten Java: imports repointed `libs`->`chassis` (runtime) and
+  `types.libs`/`common.tokenrequest` -> `types.sys`/`sys.tokenrequest` (types);
+  `backendServers.libs()` -> `sys()`; `ServiceConnection.channelFactory()` now
+  takes the trust domain (fail-closed S2S TLS).
+- Kernel `codegen` plugin: emit `sys`/`chassis` packages so the regenerated
+  `tacplus-backend` tree compiles.
+- Test execution enabled: pinned `maven-surefire-plugin` 3.2.5 (the default
+  provider silently discovered 0 JUnit 5 tests) and dropped
+  `-Dmaven.test.skip=true` from the CI `build` job.
+- Verified against dev tacplus `tacplus-0-0` (containerized, temurin-21):
+  regen (375 Java files) -> `mvn -Dtacplus.skip=true package` BUILD SUCCESS ->
+  `mvn -Dtacplus.skip=true test` **36/36 pass** (Mint/CliTokenBroker/Identity/
+  ExternalSigningKeyType/TokenReview).
+- Note: CI `build` still pulls the released `$TACPLUS_IMAGE` (tacplus-1-2), so
+  these changes are exercised in CI only once the tacplus changes ship in a
+  release.

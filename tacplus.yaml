@@ -1,4 +1,6 @@
-tacplus-version: "1.2.x"
 language: java
 pkg: com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel
 output-dir: tacplus/target/generated-sources
+src: https://gitlab.com/secondstarcavalier/schematic/platform/proto-base.git
+sources:
+  - https://gitlab.com/secondstarcavalier/schematic/platform/proto-app.git

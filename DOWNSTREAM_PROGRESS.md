@@ -66,7 +66,7 @@
   deduped); `eventdb` -> `record` (+ `s2s` producer surface on the 4 record
   messages); `tenant_config_slice`/`tenant_config_service` -> `config_slice`
   {scope: `CONFIG_SLICE_SCOPE_TENANT`, service_name: "kernel"}; `hot_store` ->
-  `record_store`; colddb retired (`colddb.off` deleted, `TimeRange` moved to
+  `record_store`; legacy store retired (`TimeRange` moved to
   `timedb.proto`); `common/tokenrequest.proto` deleted in favor of
   `sys/tokenrequest.proto`.
 - tacplus fixes required (pushed to tacplus main): completed the

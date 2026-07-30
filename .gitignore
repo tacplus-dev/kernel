@@ -40,3 +40,4 @@ launcher-*
 # Claude Code
 .claude/
 proto
+launcher-linux-*

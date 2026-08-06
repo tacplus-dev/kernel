@@ -179,6 +179,7 @@ public class ClusterServer {
 	private final ClusterStatePublisher clusterPublisher;
 	private final ClusterSetLogLevelHandler clusterSetLogLevelHandler;
 	private final HealthStatusManager healthManager;
+	private final Server healthProbeServer;
 	private final Server grpcServer;
 	private final KeyRotator keyRotator;
 	private final KernelPersistence kernelPersistence;
@@ -244,6 +245,25 @@ public class ClusterServer {
 		// 2. Health management (start as NOT_SERVING until restore completes)
 		this.healthManager = new HealthStatusManager();
 		healthManager.setStatus("", ServingStatus.NOT_SERVING);
+
+		// Start plaintext health probe server BEFORE any kernel-dependent init,
+		// matching the pattern in the generated ServiceManager. This lets k8s
+		// startup probes connect while kernel is still initialising.
+		//
+		// The `> 0` guard mirrors the generated path. Without it a config that
+		// somehow carries 0 would bind an EPHEMERAL port rather than disabling the
+		// listener — silently wrong, and exactly the sort of gap that made this
+		// defect survive four rounds of diagnosis.
+		if (cfg.getHealthProbePort() > 0) {
+			try {
+				this.healthProbeServer = com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.grpcserver.GrpcServer
+						.startHealthProbeServer(cfg.getHealthProbePort(), healthManager);
+			} catch (Exception e) {
+				throw new RuntimeException("Failed to start health probe server on port " + cfg.getHealthProbePort(), e);
+			}
+		} else {
+			this.healthProbeServer = null;
+		}
 
 		// 3. Create backend servers. Kernel coordinates state in-memory via
 		// Hazelcast; its OWN durable state is persisted as a single atomic disk
@@ -940,6 +960,9 @@ public class ClusterServer {
 		}
 		clusterPublisher.stop();
 		healthManager.enterTerminalState();
+		if (healthProbeServer != null) {
+			healthProbeServer.shutdown();
+		}
 		grpcServer.shutdown();
 		jwkViewServer.close();
 		backendServers.services().close();

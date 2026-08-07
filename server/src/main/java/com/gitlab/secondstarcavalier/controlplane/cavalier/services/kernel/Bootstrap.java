@@ -30,6 +30,15 @@ public class Bootstrap {
 	public static void run(String[] args) throws Exception {
 		System.setProperty("hazelcast.internal.override.enterprise", "true");
 
+		// Install credential redaction and transport-logger pins as the FIRST action,
+		// before any gRPC channel exists. kernel does not reach the generated
+		// GrpcConfigLoader (it resolves its own Kernel.Config below), so the install
+		// that tacplus 6ed3608d added there never runs here. Without this, kernel logs
+		// raw "authorization: Bearer ey..." headers if any transport logger is at DEBUG
+		// -- the same leak that put 44 live JWTs in stratum's pod logs.
+		com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.chassis.logger.LogbackConfigurator
+				.install(null);
+
 		Kernel.Config config = resolveConfig(args);
 		if (config == null)
 			return;

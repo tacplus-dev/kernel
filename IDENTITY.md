@@ -10,15 +10,15 @@ separate is what makes the trust model auditable.
    Kubernetes token verifier — see below). The operator does not mint identity.
 2. **kmaker makes kernels only.** kmaker signs kernel certificates
    (`MintKernelCert`) bound to verified pod facts. It is the certificate
-   authority for *kernels*; it does not mint Cavalier tokens or ordinary service
+   authority for *kernels*; it does not mint Schematic tokens or ordinary service
    identities.
-3. **Kernel mints Cavalier tokens and ordinary service certs.** Kernel is the
+3. **Kernel mints Schematic tokens and ordinary service certs.** Kernel is the
    signing authority for all S2S/C2S tokens and for ordinary service TLS
    certificates (the SPIFFE-keyed leaf+intermediate chain issued from
    `TokenMint` when the caller's `sub` is a SPIFFE URI).
 4. **Kubernetes tokens, `cloud_proof`, and kernel-signed `input_token`s are
    layered delegate proofs.** They are *inputs* a service presents to the
-   kernel to prove which delegate it is. They are never themselves Cavalier
+   kernel to prove which delegate it is. They are never themselves Schematic
    identity; the kernel resolves them to a registered delegate and then mints
    its own tokens. A presented credential's facts (e.g. a verified pod's SA)
    are cross-checked, never trusted verbatim.
@@ -34,7 +34,7 @@ separate is what makes the trust model auditable.
 
 ### Bootstrap
 
-Cavalier configures a **delegate** for each service. In Kubernetes, each delegate
+Schematic configures a **delegate** for each service. In Kubernetes, each delegate
 is matched to one or more service accounts through
 `Delegate.kubernetes_service_accounts`. Each delegate entry specifies which
 services the delegate may mint tokens for. Currently each service can only mint
@@ -102,7 +102,7 @@ delegate the kernel resolved, not to attacker-controlled token contents.
 **Kubernetes path is live for Kubernetes deployments.** Operator projects the
 kernel-audience service-account token, kernel verifies it through its
 `KubernetesTokenVerifier`, and delegate matchers bind the verified pod identity
-to a Cavalier service identity.
+to a Schematic service identity.
 
 ## C2S (Client-to-Service) Tokens
 
@@ -169,7 +169,7 @@ C2S Token Exchange:
 
 ## Key Invariants
 
-1. **All Cavalier tokens in the system are signed by kernel.** The exceptions are the *layered delegate proofs* a service presents to bootstrap or exchange an S2S token — a `kubernetes_token`, a `cloud_proof`, or a kernel-signed `input_token` — which kernel verifies, resolves to a delegate, and discards. They are never re-emitted as Cavalier identity.
+1. **All Schematic tokens in the system are signed by kernel.** The exceptions are the *layered delegate proofs* a service presents to bootstrap or exchange an S2S token — a `kubernetes_token`, a `cloud_proof`, or a kernel-signed `input_token` — which kernel verifies, resolves to a delegate, and discards. They are never re-emitted as Schematic identity.
 2. **Only OAuth (and fleetwood) validate external IdP tokens.** No other service ever sees or validates non-kernel tokens.
 3. **Destination services enforce access policy**, not kernel. Kernel mints tokens; destinations decide who may call them.
 4. **`azp` records who brokered the token.** For S2S: the delegate name. For C2S: the on-behalf-of service (oauth, fleetwood, etc.).

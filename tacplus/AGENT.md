@@ -158,7 +158,7 @@ Each `RpcInfo` carries:
 - `services/oauth`
 - `services/openai`
 - `services/sentinel`
-- `utils/cavalier`
+- `utils/schematic`
 
 ## Documentation
 

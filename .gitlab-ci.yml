@@ -68,7 +68,7 @@ variables:
       | awk '{print $2}')
     if [ -n "$PROTO_TAG" ]; then
       echo "Resolved proto tag: $PROTO_TAG"
-      PROTO_CACHE_DIR="/root/.tacplus/cache/proto/gitlab.com-secondstarcavalier-controlplane-cavalier-proto"
+      PROTO_CACHE_DIR="/root/.tacplus/cache/proto/gitlab.com-secondstarcavalier-controlplane-schematic-proto"
       rm -rf "$PROTO_CACHE_DIR"
       mkdir -p "$(dirname "$PROTO_CACHE_DIR")"
       git clone --depth 1 --branch "$PROTO_TAG" \
@@ -98,7 +98,7 @@ build:
     - mvn -pl server -am -Dtacplus.skip=true package
     - |
       javap -classpath server/target/kernel.jar \
-        com.gitlab.secondstarcavalier.controlplane.cavalier.services.kernel.model.types.services.kernel.MintGrpc \
+        com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.MintGrpc \
         | grep -q 'getMintX509CertMethod'
   artifacts:
     paths:

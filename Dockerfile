@@ -19,7 +19,7 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.vendor="Second Star Cavalier LLC" \
       org.opencontainers.image.title="Kernel" \
-      org.opencontainers.image.description="Core kernel service for Cavalier control plane"
+      org.opencontainers.image.description="Core kernel service for Schematic control plane"
 
 COPY --from=setup --chown=65532:65532 /data /data
 COPY --from=setup --chown=65532:65532 /app/data /app/data

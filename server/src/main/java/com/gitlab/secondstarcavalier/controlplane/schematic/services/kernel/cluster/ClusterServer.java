@@ -572,7 +572,10 @@ public class ClusterServer {
 		for (ServerServiceDefinition svc : backendServers.sys().getGrpcServices()) {
 			serverBuilder.addService(svc);
 		}
-		serverBuilder.addService(new BackendServiceImpl(backendServer, grpcPort, hazelcast, cfg.getClusterName()));
+		// allKeysSupplier (declared above) is the same source the authenticator's
+		// key provider reads, so WatchJwks cannot disagree with verification.
+		serverBuilder.addService(new BackendServiceImpl(
+				backendServer, grpcPort, hazelcast, cfg.getClusterName(), allKeysSupplier));
 		serverBuilder.addService(io.grpc.ServerInterceptors.interceptForward(
 				jwkViewServer.bindService(),
 				backendServers.getAuthenticator().callerInterceptor()));

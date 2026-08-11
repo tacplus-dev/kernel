@@ -2,5 +2,3 @@ language: java
 pkg: com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel
 output-dir: tacplus/target/generated-sources
 src: https://gitlab.com/secondstarcavalier/schematic/platform/proto-base.git
-sources:
-  - https://gitlab.com/secondstarcavalier/schematic/platform/proto-app.git

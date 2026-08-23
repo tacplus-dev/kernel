@@ -8,7 +8,9 @@ import {{JWK_LIB_PACKAGE}}.ImmutableJwk;
 import {{JWK_TYPES_PACKAGE}}.JwkOuterClass;
 import io.grpc.Context;
 import io.grpc.Metadata;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
@@ -20,10 +22,12 @@ import org.slf4j.LoggerFactory;
  * SecurityAuthenticator provides caller identity extraction for generated
  * BackendServiceServer classes.
  *
- * <p>Authorization is enforced at the gRPC server level by SecurityInterceptor
- * using BackendSecurity policies from backenddb.proto. This class provides
- * the caller-extraction interceptor and a no-op checkAccess for the generated
- * per-service servers.
+ * <p>It also enforces per-graph authorization: {@link #checkAccess} is called by
+ * every generated state-service RPC with the graph it guards, the boundary field
+ * and the operation, and denies any caller absent from that graph's policy. The
+ * policies are the ones tacplus computes from the proto annotations — {@code rw}
+ * is the owning service, {@code ro} the owner plus every service that declares a
+ * {@code (spec.state_import)} of the root.
  *
  * <p>The {@link #callerInterceptor()} method returns a gRPC interceptor
  * that validates a JWT bearer token from the {@code authorization} metadata
@@ -83,6 +87,24 @@ public class SecurityAuthenticator {
     /** Context key for the authenticated caller's instance ID (instance_id claim). */
     public static final Context.Key<String> CALLER_INSTANCE_ID_KEY = Context.key("caller-instance-id");
 
+    /**
+     * Context key for the caller's LOCATION-AGNOSTIC service path
+     * ({@code TokenWrapper.servicePath()}) — the identity {@link #checkAccess}
+     * authorizes against, and the same one Authorizer matches auth_services on.
+     * Empty for tokens that carry no service identity (user/CLI tokens).
+     */
+    public static final Context.Key<String> CALLER_SERVICE_PATH_KEY = Context.key("caller-service-path");
+
+    /**
+     * Graph key passed by servers that have no computed state-root policy: the
+     * view servers (public JWKS projections, already exempt from authentication)
+     * and the store servers. ComputeSecurityPolicies emits policies for
+     * {@code (spec.service_state)} roots only, so those servers carry no policy
+     * to enforce and this value tells checkAccess so explicitly rather than by
+     * a silent map miss.
+     */
+    public static final String NO_POLICY_GRAPH = "*";
+
     /** Metadata key for the authorization header (bearer token). */
     public static final Metadata.Key<String> AUTH_METADATA_KEY =
         Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
@@ -112,6 +134,28 @@ public class SecurityAuthenticator {
     /** Bounds the number of handler threads concurrently parked in the unknown-kid retry loop. */
     private final Semaphore retrySlots = new Semaphore(Math.max(1, UNKNOWN_KID_MAX_CONCURRENT_RETRIERS));
 
+    /** Per-graph access policy, generated from the proto annotations. */
+    private static final class Policy {
+        final List<String> rw;
+        final List<String> ro;
+        final Map<String, List<String>> boundaryGrants;
+
+        Policy(List<String> rw, List<String> ro, Map<String, List<String>> boundaryGrants) {
+            this.rw = rw;
+            this.ro = ro;
+            this.boundaryGrants = boundaryGrants;
+        }
+    }
+
+    /** "&lt;proto package&gt;.&lt;state root&gt;" → policy, e.g. "kernel.Identity". */
+    private static final Map<String, Policy> GRAPH_POLICIES;
+
+    static {
+        Map<String, Policy> policies = new HashMap<>();
+{{POLICY_MAP_INIT}}
+        GRAPH_POLICIES = Map.copyOf(policies);
+    }
+
     public SecurityAuthenticator() {
     }
 
@@ -126,15 +170,68 @@ public class SecurityAuthenticator {
     }
 
     /**
-     * No-op — authorization is enforced at the gRPC server level by
-     * SecurityInterceptor using BackendSecurity policies.
+     * Authorizes the authenticated caller for an operation on a state graph.
      *
-     * @param targetService fully qualified backend service name
-     * @param boundary      boundary field name (e.g., "roster")
-     * @param op            the operation type (READ, WRITE, ADMIN)
+     * <p>Fail-closed: an unknown graph, a caller with no service identity, or a
+     * caller absent from the graph's policy is denied with PERMISSION_DENIED.
+     * The only allow-without-policy case is the explicit {@link #NO_POLICY_GRAPH}
+     * marker, which servers with no computed state-root policy pass.
+     *
+     * @param graph    "&lt;proto package&gt;.&lt;state root&gt;", e.g. "kernel.Identity"
+     * @param boundary boundary field name (e.g., "verifying_keys")
+     * @param op       the operation type (READ, WRITE, ADMIN)
      */
-    public void checkAccess(String targetService, String boundary, OperationType op) throws ProtoException {
-        // Authorization enforced by SecurityInterceptor at the gRPC level.
+    public void checkAccess(String graph, String boundary, OperationType op) throws ProtoException {
+        if (graph == null || graph.isEmpty() || NO_POLICY_GRAPH.equals(graph)) {
+            return;
+        }
+        Policy policy = GRAPH_POLICIES.get(graph);
+        if (policy == null) {
+            logger.warn("[authz] REJECTED {}.{} {} — no access policy for graph", graph, boundary, op);
+            throw ProtoException.newErrPermissionDenied(null,
+                    "no access policy for graph \"%s\"", graph);
+        }
+
+        String caller = CALLER_SERVICE_PATH_KEY.get();
+        if (caller == null || caller.isEmpty()) {
+            logger.warn("[authz] REJECTED {}.{} {} — caller has no service identity", graph, boundary, op);
+            throw ProtoException.newErrPermissionDenied(null,
+                    "caller has no service identity for \"%s\"", graph);
+        }
+
+        if (matchesAny(policy.rw, caller)) {
+            return;
+        }
+        if (op == OperationType.READ && matchesAny(policy.ro, caller)) {
+            return;
+        }
+        // boundary_callers grants access to one boundary irrespective of the
+        // graph-level rw/ro sets (queue consumers, topic publishers, commands).
+        if (matchesAny(policy.boundaryGrants.getOrDefault(boundary, List.of()), caller)) {
+            return;
+        }
+
+        logger.warn("[authz] REJECTED {}.{} {} — caller {} not in policy", graph, boundary, op, caller);
+        throw ProtoException.newErrPermissionDenied(null,
+                "service \"%s\" is not authorized for %s on \"%s.%s\"", caller, op, graph, boundary);
+    }
+
+    /**
+     * Matches a caller's service path against a policy subject list. Subjects are
+     * "service:&lt;name&gt;" (from ComputeSecurityPolicies) or bare "&lt;name&gt;"
+     * (from boundary_callers); "*" matches any caller. The comparison is exact
+     * against the LOCATION-AGNOSTIC service path, so the same service matches
+     * identically across clouds, accounts and clusters — the convention Authorizer
+     * already uses for auth_services.
+     */
+    private static boolean matchesAny(List<String> subjects, String servicePath) {
+        for (String subject : subjects) {
+            String name = subject.startsWith("service:") ? subject.substring("service:".length()) : subject;
+            if ("*".equals(name) || name.equals(servicePath)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -186,7 +283,8 @@ public class SecurityAuthenticator {
                     return new io.grpc.ServerCall.Listener<>() {};
                 }
                 io.grpc.Context ctx = io.grpc.Context.current()
-                    .withValue(CALLER_SERVICE_KEY, caller.serviceName);
+                    .withValue(CALLER_SERVICE_KEY, caller.serviceName)
+                    .withValue(CALLER_SERVICE_PATH_KEY, caller.servicePath);
                 if (caller.instanceId != null && !caller.instanceId.isEmpty()) {
                     ctx = ctx.withValue(CALLER_INSTANCE_ID_KEY, caller.instanceId);
                 }
@@ -258,9 +356,23 @@ public class SecurityAuthenticator {
         // Extract instance_id if present
         String instanceId = tw.getInstanceId();
 
+        // Location-agnostic service identity, for checkAccess. Only service and
+        // workload tokens have one; user/CLI tokens leave it empty, and checkAccess
+        // denies them on every policed graph.
+        String servicePath = "";
+        String subType = tw.getSubType();
+        if ("service".equals(subType) || "workload".equals(subType)) {
+            try {
+                servicePath = tw.servicePath();
+            } catch (RuntimeException e) {
+                throw new ProtoException(ProtoException.UNAUTHENTICATED,
+                        "token subject is not a valid service identity: " + e.getMessage());
+            }
+        }
+
         // Cache the result
         long exp = tw.getExpiration();
-        CachedCaller result = new CachedCaller(serviceName, instanceId, exp);
+        CachedCaller result = new CachedCaller(serviceName, servicePath, instanceId, exp);
         if (exp > 0) {
             // exp is an absolute epoch-second; the cache stores an absolute epoch-milli expiry.
             tokenCache.put(rawToken, result, exp * 1000L);
@@ -362,11 +474,13 @@ public class SecurityAuthenticator {
     /** Cached result of token validation. */
     private static final class CachedCaller {
         final String serviceName;
+        final String servicePath;
         final String instanceId;
         final long expiresAt;
 
-        CachedCaller(String serviceName, String instanceId, long expiresAt) {
+        CachedCaller(String serviceName, String servicePath, String instanceId, long expiresAt) {
             this.serviceName = serviceName;
+            this.servicePath = servicePath;
             this.instanceId = instanceId;
             this.expiresAt = expiresAt;
         }

@@ -6,6 +6,10 @@ public class BackendServiceInfo {
     private String serviceName;  // "BaseballStateBackendService"
     private String backendName;    // "BaseballState"
     private String backendRootMsg; // "BaseballState"
+    // The (spec.service_state) name, which defaults to the message name when the
+    // annotation omits it. Unlike backendName this is NOT suffix-stripped, so it
+    // matches the key tacplus writes into codegen-config.json's securityPolicies.
+    private String stateName;      // "BaseballState"
 
     public String getProtoFile() { return protoFile; }
     public void setProtoFile(String protoFile) { this.protoFile = protoFile; }
@@ -21,4 +25,7 @@ public class BackendServiceInfo {
 
     public String getBackendRootMsg() { return backendRootMsg; }
     public void setBackendRootMsg(String backendRootMsg) { this.backendRootMsg = backendRootMsg; }
+
+    public String getStateName() { return stateName; }
+    public void setStateName(String stateName) { this.stateName = stateName; }
 }

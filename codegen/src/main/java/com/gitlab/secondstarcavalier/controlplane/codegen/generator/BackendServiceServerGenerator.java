@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.gitlab.secondstarcavalier.controlplane.codegen.model.AccessPolicy;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendServiceInfo;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.SharedBackendInfo;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.SharedBoundary;
@@ -485,7 +486,7 @@ public class BackendServiceServerGenerator {
 		mainVars.put("OUTER_CLASS", outerClassName);
 		mainVars.put("CLASS_NAME", className);
 		mainVars.put("SERVICE_PREFIX", servicePrefix);
-		mainVars.put("TARGET_SERVICE", svc.getPackageName() + ".StateService");
+		mainVars.put("GRAPH", graphKey(svc, ctx));
 		mainVars.put("GRPC_BASE", grpcBase);
 		mainVars.put("BACKEND_MAP_CLASS_NAME", info.getClassName());
 		mainVars.put("LEADER_CONSTANTS", hasLeaders
@@ -514,6 +515,25 @@ public class BackendServiceServerGenerator {
 		Path dir = ctx.getOutputDir().resolve("src/main/java/" + pkg.replace('.', '/'));
 		Files.createDirectories(dir);
 		Files.writeString(dir.resolve(className + ".java"), content);
+	}
+
+	/**
+	 * The security-policy key for a state root: "&lt;proto package&gt;.&lt;state
+	 * root&gt;", matching the (package, name) pair tacplus writes into
+	 * codegen-config.json. A root with no computed policy (ComputeSecurityPolicies
+	 * skips state roots declared in infra protos) gets the explicit no-policy
+	 * marker rather than a key that would deny every caller at run time.
+	 */
+	private static String graphKey(BackendServiceInfo svc, GeneratorContext ctx) {
+		String key = svc.getPackageName() + "." + svc.getStateName();
+		for (AccessPolicy policy : ctx.getSecurityPolicies()) {
+			if (key.equals(policy.graphKey())) {
+				return key;
+			}
+		}
+		System.out.println("[tacplus-backend] WARNING: no security policy for state root \"" + key
+				+ "\" — its state RPCs are generated unauthorized");
+		return "*";
 	}
 
 	private static Map<String, String> boundaryVars(SharedBoundary b, String outerClassName,

@@ -29,7 +29,11 @@ public class {{CLASS_NAME}}
 
     private static final Logger logger = LoggerFactory.getLogger({{CLASS_NAME}}.class);
     private static final String CLASS_NAME = "{{STORE_MAP_NAME}}";
-    private static final String TARGET_SERVICE = "{{TARGET_SERVICE}}";
+    /**
+     * Stores are not (spec.service_state) roots, so ComputeSecurityPolicies emits
+     * no policy for them and there is nothing for checkAccess to enforce.
+     */
+    private static final String GRAPH = SecurityAuthenticator.NO_POLICY_GRAPH;
 
     private final SecurityAuthenticator authenticator;
     private final IMap<String, {{QUALIFIED_VALUE_TYPE}}> storeMap;
@@ -139,7 +143,7 @@ public class {{CLASS_NAME}}
 
     /** Check access for the given boundary and operation type. */
     private void checkAccess(String boundary, SecurityAuthenticator.OperationType op) throws ProtoException {
-        authenticator.checkAccess(TARGET_SERVICE, boundary, op);
+        authenticator.checkAccess(GRAPH, boundary, op);
     }
 
     /**

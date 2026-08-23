@@ -56,7 +56,7 @@ public class {{CLASS_NAME}}
     @Override
     public void watch({{TRACE_REQUEST_TYPE}} request, StreamObserver<{{RESP_TYPE}}> observer) {
         try {
-            authenticator.checkAccess("*", "{{RESOURCE_NAME}}", SecurityAuthenticator.OperationType.READ);
+            authenticator.checkAccess(SecurityAuthenticator.NO_POLICY_GRAPH, "{{RESOURCE_NAME}}", SecurityAuthenticator.OperationType.READ);
         } catch (Exception e) {
             observer.onError(Status.PERMISSION_DENIED
                 .withDescription("access denied to {{VIEW_NAME}}")
@@ -82,7 +82,7 @@ public class {{CLASS_NAME}}
     public void get({{GET_REQ_TYPE}} request,
             StreamObserver<{{GET_RESP_TYPE}}> observer) {
         try {
-            authenticator.checkAccess("*", "{{RESOURCE_NAME}}", SecurityAuthenticator.OperationType.READ);
+            authenticator.checkAccess(SecurityAuthenticator.NO_POLICY_GRAPH, "{{RESOURCE_NAME}}", SecurityAuthenticator.OperationType.READ);
         } catch (Exception e) {
             observer.onError(Status.PERMISSION_DENIED
                 .withDescription("access denied to {{VIEW_NAME}}")

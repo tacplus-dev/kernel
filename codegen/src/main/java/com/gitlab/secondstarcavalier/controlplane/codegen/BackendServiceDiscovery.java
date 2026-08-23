@@ -33,11 +33,15 @@ public class BackendServiceDiscovery {
             // Find messages with service_state annotation
             for (MessageDescriptor msg : fileDesc.getMessages()) {
                 String backendName = null;
+                // The annotation's own state name, never suffix-stripped — this is
+                // the key tacplus writes into codegen-config.json's securityPolicies.
+                String stateName = null;
 
                 // Check simple string annotation first
                 AnnotationValue ann = msg.getAnnotations().get("service_state");
                 if (ann != null && ann.getStringValue() != null && !ann.getStringValue().isEmpty()) {
                     backendName = ann.getStringValue();
+                    stateName = backendName;
                 }
 
                 // Check structured annotation (e.g. {name: "IdentityConfigState", store: "kernel"})
@@ -48,6 +52,7 @@ public class BackendServiceDiscovery {
                         if (first.isStruct()) {
                             if (first.getStructValue().containsKey("name")) {
                                 backendName = first.getStructValue().get("name");
+                                stateName = backendName;
                             } else if (first.getStructValue().containsKey("tag")) {
                                 // Fallback: derive backend name from message name,
                                 // stripping "State" suffix if present (convention:
@@ -58,6 +63,8 @@ public class BackendServiceDiscovery {
                                 } else {
                                     backendName = msgName;
                                 }
+                                // name omitted → the state name defaults to the message name.
+                                stateName = msgName;
                             }
                         }
                     }
@@ -74,6 +81,7 @@ public class BackendServiceDiscovery {
                 svc.setPackageName(packageName);
                 svc.setServiceName(backendName + "StateService");
                 svc.setBackendName(backendName);
+                svc.setStateName(stateName != null ? stateName : msg.getName());
                 svc.setBackendRootMsg(msg.getName());
                 services.add(svc);
             }

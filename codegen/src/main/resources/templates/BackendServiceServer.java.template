@@ -37,7 +37,8 @@ public class {{CLASS_NAME}}
 
     private static final Logger logger = LoggerFactory.getLogger({{CLASS_NAME}}.class);
     private static final String CLASS_NAME = {{BACKEND_MAP_CLASS_NAME}}.class.getName();
-    private static final String TARGET_SERVICE = "{{TARGET_SERVICE}}";
+    /** Policy key for this state root: "<proto package>.<state root>". */
+    private static final String GRAPH = "{{GRAPH}}";
 {{LEADER_CONSTANTS}}
     private final ScheduledExecutorService scheduler =
         Executors.newSingleThreadScheduledExecutor(r -> {
@@ -64,7 +65,7 @@ public class {{CLASS_NAME}}
 {{POLL_METHODS}}
     /** Check access for the given boundary and operation type. */
     private void checkAccess(String boundary, SecurityAuthenticator.OperationType op) throws ProtoException {
-        authenticator.checkAccess(TARGET_SERVICE, boundary, op);
+        authenticator.checkAccess(GRAPH, boundary, op);
     }
 
     /**

@@ -115,12 +115,48 @@ public class CodegenConfig {
         String name = extractStringField(obj, "name");
         if (name == null) return null;
 
+        String pkg = extractStringField(obj, "package");
         List<String> rw = extractStringArray(obj, "rw");
         List<String> ro = extractStringArray(obj, "ro");
+        Map<String, List<String>> boundaryGrants = parseBoundaryGrants(obj);
         boolean disableAuth = extractBoolField(obj, "disableAuth");
         boolean internal = extractBoolField(obj, "internal");
 
-        return new AccessPolicy(name, rw, ro, List.of(), disableAuth, internal);
+        return new AccessPolicy(name, pkg == null ? "" : pkg, rw, ro, List.of(),
+                boundaryGrants, disableAuth, internal);
+    }
+
+    /**
+     * Parses the optional "boundaryGrants" array of a policy object. Each entry is
+     * {"boundary": "<field>", "callers": [...], "type": "queue"|"topic"|"command"}.
+     * Only boundary and callers are consumed — the operation the caller is granted
+     * is the boundary itself, not a read/write mode.
+     */
+    private static Map<String, List<String>> parseBoundaryGrants(String obj) {
+        int idx = obj.indexOf("\"boundaryGrants\"");
+        if (idx < 0) return Map.of();
+        int arrayStart = obj.indexOf('[', idx);
+        int arrayEnd = findMatchingBracket(obj, arrayStart);
+        if (arrayStart < 0 || arrayEnd < arrayStart) return Map.of();
+
+        String arrayContent = obj.substring(arrayStart + 1, arrayEnd);
+        Map<String, List<String>> grants = new HashMap<>();
+        int pos = 0;
+        while (pos < arrayContent.length()) {
+            int objStart = arrayContent.indexOf('{', pos);
+            if (objStart < 0) break;
+            int objEnd = findMatchingBrace(arrayContent, objStart);
+            if (objEnd < 0) break;
+
+            String entry = arrayContent.substring(objStart, objEnd + 1);
+            String boundary = extractStringField(entry, "boundary");
+            List<String> callers = extractStringArray(entry, "callers");
+            if (boundary != null && !boundary.isEmpty() && !callers.isEmpty()) {
+                grants.put(boundary, callers);
+            }
+            pos = objEnd + 1;
+        }
+        return grants;
     }
 
     private static List<String> extractStringArray(String json, String fieldName) {

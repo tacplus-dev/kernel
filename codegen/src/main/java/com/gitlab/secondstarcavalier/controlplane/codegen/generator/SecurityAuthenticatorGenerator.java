@@ -38,6 +38,7 @@ public class SecurityAuthenticatorGenerator {
         vars.put("JWK_LIB_PACKAGE", ctx.getJwkLibPackage());
         vars.put("JWK_TYPES_PACKAGE", ctx.getJwkTypesPackage());
         vars.put("NO_AUTH_SKIP", noAuthSkipCondition);
+        vars.put("POLICY_MAP_INIT", buildAuthenticatorPolicyMapInit(ctx.getSecurityPolicies()));
 
         String content = TemplateEngine.render("SecurityAuthenticator.java.template", vars);
 
@@ -73,6 +74,39 @@ public class SecurityAuthenticatorGenerator {
 
         String content = TemplateEngine.render("SecurityInterceptor.java.template", vars);
         Files.writeString(dir.resolve("SecurityInterceptor.java"), content);
+    }
+
+    /**
+     * Builds the GRAPH_POLICIES initializer for SecurityAuthenticator.checkAccess.
+     * Keyed by "&lt;proto package&gt;.&lt;state root&gt;" — the same key the generated
+     * state servers pass — because the state root name alone does not identify a
+     * graph across packages.
+     */
+    private static String buildAuthenticatorPolicyMapInit(List<AccessPolicy> policies) {
+        StringBuilder sb = new StringBuilder();
+        for (AccessPolicy policy : policies) {
+            sb.append("        policies.put(\"").append(policy.graphKey()).append("\", new Policy(");
+            sb.append(toJavaList(policy.rw()));
+            sb.append(", ").append(toJavaList(policy.ro()));
+            sb.append(", ").append(toJavaMap(policy.boundaryGrants()));
+            sb.append("));\n");
+        }
+        return sb.toString();
+    }
+
+    private static String toJavaMap(Map<String, List<String>> grants) {
+        if (grants == null || grants.isEmpty()) {
+            return "Map.of()";
+        }
+        StringBuilder sb = new StringBuilder("Map.of(");
+        boolean first = true;
+        for (var entry : new java.util.TreeMap<>(grants).entrySet()) {
+            if (!first) sb.append(", ");
+            first = false;
+            sb.append("\"").append(entry.getKey()).append("\", ").append(toJavaList(entry.getValue()));
+        }
+        sb.append(")");
+        return sb.toString();
     }
 
     /**

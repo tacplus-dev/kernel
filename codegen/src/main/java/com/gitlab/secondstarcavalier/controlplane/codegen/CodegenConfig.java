@@ -36,6 +36,8 @@ import java.util.Map;
 public class CodegenConfig {
     public String javaPackageBase;
     public String interfacesPackage;
+    /** Token audiences this service accepts: its service label plus any vservice it hosts. */
+    public List<String> acceptedAudiences = new ArrayList<>();
     public List<AccessPolicy> securityPolicies = new ArrayList<>();
     /** Service name → list of RPC method names, for entitlements enforcement. */
     public Map<String, List<String>> serviceRPCMappings = new HashMap<>();
@@ -50,6 +52,7 @@ public class CodegenConfig {
         // Parse top-level string fields
         config.javaPackageBase = extractStringField(content, "javaPackageBase");
         config.interfacesPackage = extractStringField(content, "interfacesPackage");
+        config.acceptedAudiences = extractStringArray(content, "acceptedAudiences");
 
         // Parse securityPolicies array
         int policiesStart = content.indexOf("\"securityPolicies\"");

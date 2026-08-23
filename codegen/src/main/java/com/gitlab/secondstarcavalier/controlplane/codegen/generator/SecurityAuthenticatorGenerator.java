@@ -38,6 +38,7 @@ public class SecurityAuthenticatorGenerator {
         vars.put("JWK_LIB_PACKAGE", ctx.getJwkLibPackage());
         vars.put("JWK_TYPES_PACKAGE", ctx.getJwkTypesPackage());
         vars.put("NO_AUTH_SKIP", noAuthSkipCondition);
+        vars.put("ACCEPTED_AUDIENCES", buildAcceptedAudiences(ctx.getAcceptedAudiences()));
         vars.put("POLICY_MAP_INIT", buildAuthenticatorPolicyMapInit(ctx.getSecurityPolicies()));
 
         String content = TemplateEngine.render("SecurityAuthenticator.java.template", vars);
@@ -92,6 +93,24 @@ public class SecurityAuthenticatorGenerator {
             sb.append("));\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * Builds the ACCEPTED_AUDIENCES initializer. tacplus computes the set (service
+     * label plus hosted vservices) and publishes it in codegen-config.json; an empty
+     * set would make the audience check vacuous, so generation fails instead.
+     */
+    private static String buildAcceptedAudiences(List<String> audiences) {
+        if (audiences == null || audiences.isEmpty()) {
+            throw new IllegalStateException(
+                    "codegen-config.json carries no acceptedAudiences — regenerate with tacplus; "
+                            + "the state-plane audience check cannot be generated without it");
+        }
+        List<String> quoted = new ArrayList<>();
+        for (String aud : audiences) {
+            quoted.add("\"" + aud + "\"");
+        }
+        return String.join(", ", quoted);
     }
 
     private static String toJavaMap(Map<String, List<String>> grants) {

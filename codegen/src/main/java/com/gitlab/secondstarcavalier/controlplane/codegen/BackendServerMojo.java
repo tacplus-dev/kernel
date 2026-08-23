@@ -118,6 +118,7 @@ public class BackendServerMojo extends AbstractMojo {
 		// annotations).
 		List<AccessPolicy> securityPolicies = List.of();
 		Map<String, List<String>> serviceRPCMappings = new java.util.HashMap<>();
+		List<String> acceptedAudiences = List.of();
 		File configFile = new File(protoDir, "codegen-config.json");
 		if (configFile.exists()) {
 			try {
@@ -130,10 +131,12 @@ public class BackendServerMojo extends AbstractMojo {
 					interfacesPackage = cc.interfacesPackage;
 				securityPolicies = cc.securityPolicies;
 				serviceRPCMappings = cc.serviceRPCMappings;
+				acceptedAudiences = cc.acceptedAudiences;
 				getLog().info("Loaded codegen-config.json: javaPackageBase=" + javaPackageBase
 						+ ", interfacesPackage=" + interfacesPackage
 						+ ", policies=" + securityPolicies.size()
-						+ ", serviceRPCMappings=" + serviceRPCMappings.size());
+						+ ", serviceRPCMappings=" + serviceRPCMappings.size()
+						+ ", acceptedAudiences=" + acceptedAudiences);
 			} catch (IOException e) {
 				throw new MojoExecutionException("Failed to read codegen-config.json", e);
 			}
@@ -176,7 +179,8 @@ public class BackendServerMojo extends AbstractMojo {
 			// Step 3: Analyze boundaries for each service
 			Path outPath = outputDir.toPath();
 			GeneratorContext ctx = new GeneratorContext(javaPackageBase, typesPackageBase, interfacesPackage,
-					peerContextClass, outPath, protoDir.toPath(), parser, securityPolicies, serviceRPCMappings);
+					peerContextClass, outPath, protoDir.toPath(), parser, securityPolicies, serviceRPCMappings,
+					acceptedAudiences);
 
 			Map<BackendServiceInfo, SharedBackendInfo> infoMap = new LinkedHashMap<>();
 			for (BackendServiceInfo svc : services) {

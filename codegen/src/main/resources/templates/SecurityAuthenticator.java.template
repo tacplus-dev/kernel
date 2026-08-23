@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -42,6 +43,13 @@ import org.slf4j.LoggerFactory;
 public class SecurityAuthenticator {
 
     private static final Logger logger = LoggerFactory.getLogger(SecurityAuthenticator.class);
+
+    /**
+     * Token audiences this service accepts. Computed by tacplus — the service label
+     * plus every vservice this service hosts — and matched the same way the generated
+     * Authorizer matches its own {@code aud}.
+     */
+    private static final Set<String> ACCEPTED_AUDIENCES = Set.of({{ACCEPTED_AUDIENCES}});
 
     // --- Unknown-kid retry / DoS-hardening knobs (configurable via system properties) ---
     // The retry loop sleeps a gRPC handler thread waiting for a just-published JWK to
@@ -330,17 +338,12 @@ public class SecurityAuthenticator {
         ImmutableJwk immJwk = ImmutableJwk.from(matchingKey);
         tw.verify(immJwk);
 
-        // Reject refresh tokens — they should only be exchanged at the Mint endpoint.
-        String tokenUse = tw.getTokenUse();
-        if ("refresh".equals(tokenUse)) {
-            throw new ProtoException(ProtoException.UNAUTHENTICATED, "refresh tokens cannot be used for API access");
-        }
-        if (tokenUse.isEmpty()) {
-            // Legacy fallback: check typ claim
-            String typ = tw.getCustomField("typ");
-            if ("refresh".equals(typ)) {
-                throw new ProtoException(ProtoException.UNAUTHENTICATED, "refresh tokens cannot be used for API access");
-            }
+        rejectApiTokenClass(tw);
+
+        String aud = tw.getAudience();
+        if (!ACCEPTED_AUDIENCES.contains(aud)) {
+            throw new ProtoException(ProtoException.UNAUTHENTICATED,
+                    "token audience \"" + aud + "\" is not accepted by this service " + ACCEPTED_AUDIENCES);
         }
 
         // Extract caller identity from token claims.
@@ -379,6 +382,22 @@ public class SecurityAuthenticator {
         }
 
         return result;
+    }
+
+    /**
+     * Rejects every token class that must never authenticate an API call: refresh
+     * tokens (exchanged only at the Mint endpoint), and bootstrap, locality and
+     * external tokens. Ported from the generated Authorizer.rejectApiTokenClass,
+     * which enforces the same rule on every non-kernel service.
+     */
+    private static void rejectApiTokenClass(TokenWrapper tw) throws ProtoException {
+        String tokenUse = tw.getTokenUse();
+        if ("refresh".equals(tokenUse) || (tokenUse.isEmpty() && "refresh".equals(tw.getCustomField("typ")))) {
+            throw new ProtoException(ProtoException.UNAUTHENTICATED, "refresh tokens cannot be used for API access");
+        }
+        if ("bootstrap".equals(tokenUse) || "locality".equals(tokenUse) || "external".equals(tokenUse)) {
+            throw new ProtoException(ProtoException.UNAUTHENTICATED, tokenUse + " tokens cannot be used for API access");
+        }
     }
 
     /**

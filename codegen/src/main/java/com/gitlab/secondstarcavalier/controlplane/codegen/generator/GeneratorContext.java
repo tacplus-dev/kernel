@@ -31,23 +31,25 @@ public class GeneratorContext {
 	private final ProtoDescriptorParser parser;
 	private final List<AccessPolicy> securityPolicies;
 	private final Map<String, List<String>> serviceRPCMappings;
+	private final List<String> acceptedAudiences;
 
 	public GeneratorContext(String javaPackageBase, String typesPackageBase, String interfacesPackage,
 			String peerContextClass, Path outputDir, Path protoAnnotatedDir, ProtoDescriptorParser parser) {
 		this(javaPackageBase, typesPackageBase, interfacesPackage, peerContextClass, outputDir, protoAnnotatedDir,
-				parser, List.of(), Map.of());
+				parser, List.of(), Map.of(), List.of());
 	}
 
 	public GeneratorContext(String javaPackageBase, String typesPackageBase, String interfacesPackage,
 			String peerContextClass, Path outputDir, Path protoAnnotatedDir, ProtoDescriptorParser parser,
 			List<AccessPolicy> securityPolicies) {
 		this(javaPackageBase, typesPackageBase, interfacesPackage, peerContextClass, outputDir, protoAnnotatedDir,
-				parser, securityPolicies, Map.of());
+				parser, securityPolicies, Map.of(), List.of());
 	}
 
 	public GeneratorContext(String javaPackageBase, String typesPackageBase, String interfacesPackage,
 			String peerContextClass, Path outputDir, Path protoAnnotatedDir, ProtoDescriptorParser parser,
-			List<AccessPolicy> securityPolicies, Map<String, List<String>> serviceRPCMappings) {
+			List<AccessPolicy> securityPolicies, Map<String, List<String>> serviceRPCMappings,
+			List<String> acceptedAudiences) {
 		this.javaPackageBase = javaPackageBase;
 		this.typesPackageBase = typesPackageBase;
 		this.interfacesPackage = interfacesPackage;
@@ -57,6 +59,7 @@ public class GeneratorContext {
 		this.parser = parser;
 		this.securityPolicies = securityPolicies;
 		this.serviceRPCMappings = serviceRPCMappings != null ? serviceRPCMappings : Map.of();
+		this.acceptedAudiences = acceptedAudiences != null ? acceptedAudiences : List.of();
 	}
 
 	public String getJavaPackageBase() {
@@ -312,6 +315,14 @@ public class GeneratorContext {
 
 	public Map<String, List<String>> getServiceRPCMappings() {
 		return serviceRPCMappings;
+	}
+
+	/**
+	 * Token audiences this service accepts, as computed by tacplus: the service
+	 * label plus every vservice it hosts.
+	 */
+	public List<String> getAcceptedAudiences() {
+		return acceptedAudiences;
 	}
 
 	/**

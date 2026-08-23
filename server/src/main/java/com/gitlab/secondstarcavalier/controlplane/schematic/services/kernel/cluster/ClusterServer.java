@@ -411,7 +411,10 @@ public class ClusterServer {
 						logger.warn("Failed to read revocations for snapshot: {}", e.getMessage());
 						return List.of();
 					}
-				});
+				},
+				// Standing delegation grants have a durable home in the snapshot but no
+				// live store yet — the RPC surface that creates them is separate work.
+				List::of);
 
 		// Load the persisted snapshot and rehydrate Hazelcast-backed state before
 		// the rotator starts (signing_keys are restored into the rotator; the

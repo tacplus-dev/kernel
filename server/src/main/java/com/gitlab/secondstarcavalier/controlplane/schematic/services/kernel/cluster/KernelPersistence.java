@@ -18,7 +18,8 @@ import org.slf4j.LoggerFactory;
  * kernel's OWN whole-state snapshot ({@code KernelDiskState}). The kernel is the
  * cluster trust root and persists ONLY its own durable state — signing keys,
  * the public verifying set, the cluster CA + per-service intermediate CAs, the
- * tenant/project tree, and workload revocations — as one atomic object on its
+ * tenant/project tree, workload revocations, and standing delegation grants —
+ * as one atomic object on its
  * local volume. Ephemeral, rebuilt-at-runtime state (cluster membership,
  * service health, localities, FQDN, trusted CAs from Config) is deliberately
  * NOT snapshotted.
@@ -42,6 +43,7 @@ public final class KernelPersistence {
     private final Supplier<Kernel.Ca> caReader;
     private final Supplier<Kernel.ConfigState> configStateReader;
     private final Supplier<List<Kernel.WorkloadRevocation>> revocationsReader;
+    private final Supplier<List<Kernel.Grant>> grantsReader;
 
     /**
      * @param persistenceDir       the kernel persistence directory (Config.persistence_dir); the
@@ -51,6 +53,7 @@ public final class KernelPersistence {
      * @param caReader             current Ca state (ca_certs + service_cas)
      * @param configStateReader    current ConfigState (tenants + tenant_configs + project_configs)
      * @param revocationsReader    current workload revocations (WorkloadState.revocations)
+     * @param grantsReader         current standing delegation grants
      */
     public KernelPersistence(
             String persistenceDir,
@@ -58,7 +61,8 @@ public final class KernelPersistence {
             Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
             Supplier<Kernel.Ca> caReader,
             Supplier<Kernel.ConfigState> configStateReader,
-            Supplier<List<Kernel.WorkloadRevocation>> revocationsReader) {
+            Supplier<List<Kernel.WorkloadRevocation>> revocationsReader,
+            Supplier<List<Kernel.Grant>> grantsReader) {
         this.base = Paths.get(
                 (persistenceDir != null && !persistenceDir.isEmpty()) ? persistenceDir : "/var/lib/kernel");
         this.keyRotator = keyRotator;
@@ -66,6 +70,7 @@ public final class KernelPersistence {
         this.caReader = caReader;
         this.configStateReader = configStateReader;
         this.revocationsReader = revocationsReader;
+        this.grantsReader = grantsReader;
     }
 
     /**
@@ -84,7 +89,7 @@ public final class KernelPersistence {
             logger.info(
                     "Loaded kernel disk snapshot from {}: signing_keys={}, verifying_keys={}, "
                             + "ca_certs={}, service_cas={}, tenants={}, tenant_configs={}, "
-                            + "project_configs={}, revocations={}",
+                            + "project_configs={}, revocations={}, grants={}",
                     base,
                     state.getSigningKeysCount(),
                     state.getVerifyingKeysCount(),
@@ -93,7 +98,8 @@ public final class KernelPersistence {
                     state.getTenantsCount(),
                     state.getTenantConfigsCount(),
                     state.getProjectConfigsCount(),
-                    state.getWorkloadRevocationsCount());
+                    state.getWorkloadRevocationsCount(),
+                    state.getGrantsCount());
             return state;
         } catch (Exception e) {
             logger.warn("Failed to load kernel disk snapshot from {} (treating as cold start): {}",
@@ -131,6 +137,9 @@ public final class KernelPersistence {
             }
             if (revocationsReader != null) {
                 b.addAllWorkloadRevocations(revocationsReader.get());
+            }
+            if (grantsReader != null) {
+                b.addAllGrants(grantsReader.get());
             }
 
             DiskStores.saveKernelDiskState(base, NS, b.build(), Snapshot.Opts.defaults());

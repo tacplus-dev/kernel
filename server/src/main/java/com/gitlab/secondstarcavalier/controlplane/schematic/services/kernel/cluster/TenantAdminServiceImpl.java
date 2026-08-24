@@ -463,10 +463,14 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
      * If the caller's cred_pair belongs to {@code tenantNs}, returns its
      * cred_pair id; otherwise null (caller is an ancestor acting from above).
      *
-     * <p>The caller's verified token payload carries the cred_pair SPIFFE
-     * subject {@code spiffe://<prefix>/<tenant>/users/cred-pair:<id>}; the
-     * namespace component equals {@code tenantNs} when acting on its own tenant.
-     * We parse the verified JSON payload for {@code namespace}/{@code sub}.
+     * <p>The caller's verified token payload carries the cred_pair id in its
+     * {@code sub} claim. Two subject shapes reach this handler: the cred_pair
+     * tokens {@code MintClientToken} issues, whose subject is a bare
+     * {@code cred-pair:<id>} and whose tree position is the {@code namespace}
+     * claim; and the SPIFFE-URI form {@code
+     * spiffe://<prefix>/<tenant>/users/cred-pair:<id>}, which carries the tree
+     * position in its path. We parse the verified JSON payload for
+     * {@code namespace}/{@code sub}.
      */
     private String callerCredPairId(Caller caller, String tenantNs) {
         if (caller == null) {
@@ -477,10 +481,15 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
             return null;
         }
         String sub = jsonStringField(payload, "sub");
-        if (sub == null || !sub.startsWith("spiffe://")) {
+        if (sub == null) {
             return null;
         }
-        String callerNs = SpiffeIds.namespaceFromSpiffe(sub);
+        String callerNs = sub.startsWith("spiffe://")
+                ? SpiffeIds.namespaceFromSpiffe(sub)
+                : jsonStringField(payload, "namespace");
+        if (callerNs == null) {
+            return null;
+        }
         // Only the tenant's own cred_pair (namespace == tenantNs) triggers the
         // self-lockout guard; ancestors acting from above are exempt.
         if (!tenantNs.equals(callerNs)) {

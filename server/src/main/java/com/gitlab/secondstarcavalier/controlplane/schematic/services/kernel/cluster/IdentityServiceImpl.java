@@ -34,8 +34,10 @@ import com.google.protobuf.Message;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 
+import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.Base64;
@@ -1405,17 +1407,10 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		Kernel.Delegate delegate = findDelegateByName(subject);
 		boolean isS2S = delegate != null;
 
-		// Locality validation for workload tokens (child workloads present a locality_token on refresh).
-		// TODO: Wire WorkloadState map after codegen — look up parent's locality and compare.
+		// A child workload proves on refresh that it can still reach its parent, by
+		// presenting the locality token the parent registered in WorkloadState.
 		if (isRefresh) {
-			String parentSub = inputToken.getCustomField(PARENT_SUB);
-			if (parentSub != null && !parentSub.isEmpty()) {
-				String localityToken = request.getLocalityToken();
-				if (localityToken == null || localityToken.isEmpty()) {
-					logger.warn("Workload token refresh without locality_token: sub={}", subject);
-					// TODO: reject once WorkloadState locality lookups are wired
-				}
-			}
+			assertParentLocality(inputToken, request.getLocalityToken(), subject);
 		}
 
 		// Batch mint (AT + N ST in one call): when the caller lists service_auds,
@@ -2365,6 +2360,54 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		persistState.run();
 
 		logger.info("WorkloadRevoke: caller={}, target={}", callerSub, targetSpiffeId);
+	}
+
+	/**
+	 * Fails closed if a child workload's refresh does not carry the locality token its
+	 * parent registered in {@code WorkloadState.localities}, per the proto contract on
+	 * {@code WorkloadLocality}: the parent rotates a token, registers it under its own
+	 * SPIFFE ID and shares it with its children, so presenting it proves the child can
+	 * still reach the parent. The token is a shared secret, not an identity — compared
+	 * in constant time.
+	 *
+	 * <p>Enforced from the moment a parent registers a locality. Nothing writes
+	 * {@code WorkloadState.localities} yet — the parent-side registration is unbuilt — so
+	 * demanding a token from every child unconditionally would reject every workload
+	 * refresh in the fleet rather than tighten anything. Once a parent has registered,
+	 * both a missing and a mismatched token are rejected. This only ever denies a refresh
+	 * that previously succeeded; it never admits one that previously failed.
+	 *
+	 * @param inputToken    the refresh token being exchanged
+	 * @param localityToken the locality token the caller presented, possibly empty
+	 * @param subject       the child workload's SPIFFE ID, for the error and the log
+	 */
+	private void assertParentLocality(TokenWrapper inputToken, String localityToken, String subject)
+			throws StatusException {
+		String parentSub = inputToken.getCustomField(PARENT_SUB);
+		if (parentSub == null || parentSub.isEmpty()) return; // not a child workload
+
+		String expected = workloadMap.getLocalities(parentSub).getLocalityToken();
+		if (expected.isEmpty()) {
+			// The parent has registered no locality, so there is nothing to prove
+			// reachability against.
+			logger.warn("Workload token refresh with no locality registered by parent: sub={}, parent={}",
+					subject, parentSub);
+			return;
+		}
+
+		if (localityToken == null || localityToken.isEmpty()) {
+			logger.warn("Workload token refresh without locality_token: sub={}, parent={}", subject, parentSub);
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"workload " + subject + " must present a locality_token proving it can still reach "
+							+ parentSub);
+		}
+		if (!MessageDigest.isEqual(localityToken.getBytes(StandardCharsets.UTF_8),
+				expected.getBytes(StandardCharsets.UTF_8))) {
+			logger.warn("Workload token refresh with stale or foreign locality_token: sub={}, parent={}",
+					subject, parentSub);
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"locality_token does not match the locality registered by " + parentSub);
+		}
 	}
 
 	/**

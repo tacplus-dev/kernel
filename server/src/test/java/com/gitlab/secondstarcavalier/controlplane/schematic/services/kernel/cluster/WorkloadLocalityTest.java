@@ -51,7 +51,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Same harness as {@link WorkloadRevocationTest}: real gRPC calls against the real
  * generated {@link Mint} wrapper over {@link IdentityServiceImpl}, behind the same
- * {@link Authorizer#interceptor()} + raw-Bearer-forwarding interceptor pair
+ * {@link Authorizer#headerCaptureInterceptor()} + raw-Bearer-forwarding interceptor pair
  * {@code ClusterServer} installs in production. Nothing on the path under test is
  * mocked — the tokens are really signed by a real {@link KeyRotator} key and really
  * verified.
@@ -134,7 +134,7 @@ class WorkloadLocalityTest {
 		server = ServerBuilder.forPort(0)
 				.addService(ServerInterceptors.interceptForward(
 						new Mint(identityService, authorizer),
-						Authorizer.interceptor(),
+						Authorizer.headerCaptureInterceptor(),
 						rawAuthInterceptor()))
 				.build()
 				.start();

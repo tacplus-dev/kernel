@@ -526,8 +526,10 @@ public class ClusterServer {
 				.intercept(rpcInterceptor)
 				.intercept(Auth.requestIdInterceptor())
 				// Populate AUTH_HEADER_CTX_KEY so the generated Authorizer on the
-				// C2S management wrappers (TenantAdmin) can read the bearer.
-				.intercept(com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer.interceptor())
+				// C2S management wrappers (TenantAdmin) can read the bearer. This
+				// interceptor only captures the header; it rejects nothing. The
+				// authenticator installed immediately below is what enforces.
+				.intercept(com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer.headerCaptureInterceptor())
 				.intercept(backendServers.getAuthenticator().callerInterceptor());
 
 		serverBuilder.intercept(rateLimiter);

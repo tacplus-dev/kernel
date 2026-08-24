@@ -50,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * enforces it.
  *
  * <p>Drives real gRPC calls against the real generated {@link Mint} wrapper over
- * {@link IdentityServiceImpl}, behind the same {@link Authorizer#interceptor()} +
+ * {@link IdentityServiceImpl}, behind the same {@link Authorizer#headerCaptureInterceptor()} +
  * raw-Bearer-forwarding interceptor pair {@code ClusterServer} installs in
  * production, and asserts both directions: the revoked workload's refresh is
  * rejected, an unrevoked sibling's refresh still succeeds.
@@ -126,14 +126,14 @@ class WorkloadRevocationTest {
 		Mint.registerMethodAuth(authorizer);
 
 		// A real listening gRPC server carrying the production interceptor pair:
-		// Authorizer.interceptor() populates AUTH_HEADER_CTX_KEY for the generated
+		// Authorizer.headerCaptureInterceptor() populates AUTH_HEADER_CTX_KEY for the generated
 		// wrapper's checkAuth, and rawAuthInterceptor() forwards the raw Bearer the
 		// way ClusterServer's rpcInterceptor does so MintWorkload/RevokeWorkload can
 		// validate the caller themselves.
 		server = ServerBuilder.forPort(0)
 				.addService(ServerInterceptors.interceptForward(
 						new Mint(identityService, authorizer),
-						Authorizer.interceptor(),
+						Authorizer.headerCaptureInterceptor(),
 						rawAuthInterceptor()))
 				.build()
 				.start();

@@ -26,9 +26,8 @@ public class SecurityAuthenticatorGenerator {
     public static void generate(GeneratorContext ctx) throws IOException {
         String pkg = ctx.getJavaPackageBase();
 
-        // Build the no-auth service skip condition from proto annotations
-        List<String> noAuthServices = ctx.getNoAuthServiceNames();
-        String noAuthSkipCondition = buildNoAuthSkipCondition(noAuthServices);
+        // Build the no-auth skip sets from proto annotations
+        List<String> noAuthEntries = ctx.getNoAuthServiceNames();
 
         Map<String, String> vars = new LinkedHashMap<>();
         vars.put("HEADER", GeneratorContext.header("security_authenticator"));
@@ -37,7 +36,8 @@ public class SecurityAuthenticatorGenerator {
         vars.put("TOKEN_PACKAGE", ctx.getTokenPackage());
         vars.put("JWK_LIB_PACKAGE", ctx.getJwkLibPackage());
         vars.put("JWK_TYPES_PACKAGE", ctx.getJwkTypesPackage());
-        vars.put("NO_AUTH_SKIP", noAuthSkipCondition);
+        vars.put("NO_AUTH_SERVICES", buildNoAuthSet(noAuthEntries, false));
+        vars.put("NO_AUTH_METHODS", buildNoAuthSet(noAuthEntries, true));
         vars.put("ACCEPTED_AUDIENCES", buildAcceptedAudiences(ctx.getAcceptedAudiences()));
         vars.put("POLICY_MAP_INIT", buildAuthenticatorPolicyMapInit(ctx.getSecurityPolicies()));
 
@@ -178,20 +178,19 @@ public class SecurityAuthenticatorGenerator {
     }
 
     /**
-     * Builds the Java condition for skipping auth on no-auth services/methods.
-     * Entries without "/" are service-level: method.contains("ServiceName")
-     * Entries with "/" are per-method: method.contains("ServiceName/RpcName")
+     * Builds the contents of a Set.of(...) initializer for the no-auth skip list.
+     * Entries without "/" are service-level ("ServiceName"); entries with "/" are
+     * per-RPC ("ServiceName/RpcName"). Both are matched for exact equality at
+     * runtime, so a name that merely contains an entry is not exempt.
      */
-    private static String buildNoAuthSkipCondition(List<String> entries) {
-        if (entries.isEmpty()) {
-            return "false";
+    private static String buildNoAuthSet(List<String> entries, boolean perMethod) {
+        Set<String> selected = new LinkedHashSet<>();
+        for (String entry : entries) {
+            if (entry.contains("/") == perMethod) {
+                selected.add("\"" + entry + "\"");
+            }
         }
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < entries.size(); i++) {
-            if (i > 0) sb.append("\n                    || ");
-            sb.append("method.contains(\"").append(entries.get(i)).append("\")");
-        }
-        return sb.toString();
+        return String.join(", ", selected);
     }
 
     private static String toJavaList(List<String> items) {

@@ -51,6 +51,19 @@ public class SecurityAuthenticator {
      */
     private static final Set<String> ACCEPTED_AUDIENCES = Set.of({{ACCEPTED_AUDIENCES}});
 
+    /**
+     * Services that authenticate themselves and so skip the caller interceptor
+     * entirely. Simple service names, matched against the service-name component
+     * of the full method name for exact equality.
+     */
+    private static final Set<String> NO_AUTH_SERVICES = Set.of({{NO_AUTH_SERVICES}});
+
+    /**
+     * Individual {@code ServiceName/RpcName} paths that skip the caller interceptor,
+     * for RPCs annotated auth_disabled inside an otherwise authenticated service.
+     */
+    private static final Set<String> NO_AUTH_METHODS = Set.of({{NO_AUTH_METHODS}});
+
     // --- Unknown-kid retry / DoS-hardening knobs (configurable via system properties) ---
     // The retry loop sleeps a gRPC handler thread waiting for a just-published JWK to
     // propagate into shared kernel state. Each of these guards a distinct DoS vector:
@@ -243,6 +256,28 @@ public class SecurityAuthenticator {
     }
 
     /**
+     * Whether {@code fullMethodName} — a full {@code package.Service/Rpc} name — is
+     * exempt from the caller interceptor.
+     *
+     * <p>The skip list is matched against the method's service-name component compared
+     * for exact equality, never as a substring of the full name: a service or RPC whose
+     * name merely contains a skip-list entry (say {@code ClusterServiceV2}, or an RPC
+     * called {@code GetClusterServiceStats}) must not inherit its exemption.
+     */
+    private static boolean isNoAuthMethod(String fullMethodName) {
+        int slash = fullMethodName.indexOf('/');
+        if (slash < 0) {
+            return false;
+        }
+        String service = fullMethodName.substring(0, slash);
+        String simpleService = service.substring(service.lastIndexOf('.') + 1);
+        if (NO_AUTH_SERVICES.contains(simpleService)) {
+            return true;
+        }
+        return NO_AUTH_METHODS.contains(simpleService + "/" + fullMethodName.substring(slash + 1));
+    }
+
+    /**
      * Returns a gRPC ServerInterceptor that validates the JWT bearer token
      * from the {@code authorization} metadata header, extracts the
      * {@code service_name} claim as the caller identity, and stores it in
@@ -266,7 +301,7 @@ public class SecurityAuthenticator {
                 }
                 // Services with disable_auth_service = true handle their own auth.
                 // Skip the caller interceptor for them.
-                if ({{NO_AUTH_SKIP}}) {
+                if (isNoAuthMethod(method)) {
                     return next.startCall(call, headers);
                 }
                 String authHeader = headers.get(AUTH_METADATA_KEY);

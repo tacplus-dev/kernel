@@ -10,6 +10,8 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.token.TokenOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.tokenrequest.Tokenrequest;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.authz.InMemoryManager;
 import io.grpc.Status;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -67,6 +69,8 @@ class MintServiceTokenKubernetesTest {
                 null,            // opaEvalClient
                 null,            // proxyPolicyOpaClient
                 null,            // configMap
+                new WorkloadMap(new InMemoryManager()),
+                null,            // persistState
                 verifier,
                 KERNEL_AUDIENCE);
     }

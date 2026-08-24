@@ -26,6 +26,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.vservices.proxypolicy.Proxypolicy;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.ConfigMap;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import io.grpc.Status;
 
 import com.google.protobuf.Descriptors;
@@ -115,6 +116,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static final String SERVICE_ENTITLEMENTS = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_SERVICE_ENTITLEMENTS);
 
 	private static final Pattern WORKLOAD_NAME_PATTERN = Pattern.compile("[a-zA-Z0-9_-]+");
+
+	/** SPIFFE URI scheme prefix — the authority follows it. */
+	private static final String SPIFFE_PREFIX = Spiffe.SCHEME + "://";
 
 	// Plausible-kid gate, mirroring SecurityInterceptor/SecurityAuthenticator (Phase 0.1
 	// DoS-hardening). Production kids are base64url(24 bytes) = 32 chars of [A-Za-z0-9_-]
@@ -239,6 +243,19 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	@Nullable
 	private final com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.clients.vservices.proxypolicy.OpaEvalGrpcClient proxyPolicyOpaClient;
 	private final ConfigMap configMap;
+	/**
+	 * WorkloadState boundary access. Its {@code revocations} collection is the record
+	 * {@code RevokeWorkload} writes and every kernel-signed token exchange reads
+	 * (see {@link #assertNotRevoked}); required, never null — a kernel that
+	 * cannot record a revocation must fail the RPC, not report success.
+	 */
+	private final WorkloadMap workloadMap;
+	/**
+	 * Fired after a revocation lands so the write survives a restart. The disk
+	 * snapshot reads WorkloadState.revocations, but nothing else on this path
+	 * triggers a snapshot.
+	 */
+	private final Runnable persistState;
 
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
@@ -256,6 +273,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			@Nullable OpaEvalGrpcClient opaEvalClient,
 			@Nullable com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.clients.vservices.proxypolicy.OpaEvalGrpcClient proxyPolicyOpaClient,
 			ConfigMap configMap,
+			WorkloadMap workloadMap,
+			Runnable persistState,
 			@Nullable KubernetesTokenVerifier kubernetesTokenVerifier,
 			@Nullable String kubernetesTokenAudience) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
@@ -273,6 +292,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		this.opaEvalClient = opaEvalClient;
 		this.proxyPolicyOpaClient = proxyPolicyOpaClient;
 		this.configMap = configMap;
+		this.workloadMap = java.util.Objects.requireNonNull(workloadMap,
+				"workloadMap is required — workload revocation must be recorded and enforced");
+		this.persistState = persistState != null ? persistState : () -> { };
 		// Default to the fail-closed UNIMPLEMENTED verifier so an un-wired kernel
 		// never silently accepts a kubernetes_token.
 		this.kubernetesTokenVerifier =
@@ -1295,6 +1317,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			throw new StatusException(Status.UNAUTHENTICATED, "refresh token verification failed: " + e.getMessage());
 		}
 
+		// A revoked workload identity gets nothing further from the kernel. This is
+		// the single choke point for every kernel-signed exchange — bootstrap
+		// -> refresh, refresh -> access, access -> service — so an existing token
+		// held by a revoked workload stops buying new ones.
+		assertNotRevoked(inputToken.getSubject(), "workload");
+
 		// Bootstrap tokens are exchanged for real refresh+access pairs (workload bootstrap).
 		if (TOKEN_USE_BOOTSTRAP.equals(tokenUse)) {
 			ImmutableKey bsSigningKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
@@ -2154,6 +2182,10 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// Construct child SPIFFE URI via the generated self-describing helper.
 		String childSub = Spiffe.workloadSpiffeId(callerSub, workloadName);
 
+		// A revoked identity cannot be re-minted under the same SPIFFE ID, and the
+		// ancestor walk covers the caller too: a revoked parent can mint nothing.
+		assertNotRevoked(childSub, "workload");
+
 		// Mint bootstrap token (short-lived).
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		if (signingKey == null) {
@@ -2315,8 +2347,55 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 					"cannot revoke " + targetSpiffeId + " — not a descendant of " + callerSub);
 		}
 
-		// TODO: Write revocation to WorkloadState after codegen runs.
-		logger.info("WorkloadRevoke (deferred): caller={}, target={}", callerSub, targetSpiffeId);
+		// Record the revocation. Keyed by SPIFFE ID, so re-revoking is idempotent.
+		// Every kernel-signed token exchange reads this back through
+		// assertNotRevoked, and the disk snapshot carries it across restarts.
+		Kernel.WorkloadRevocation revocation = Kernel.WorkloadRevocation.newBuilder()
+				.setSpiffeId(targetSpiffeId)
+				.setRevokedBy(callerSub)
+				.setRevokedAtMs(Instant.now().toEpochMilli())
+				.build();
+		try {
+			workloadMap.putRevocations(targetSpiffeId, revocation);
+		} catch (Exception e) {
+			// Never report success on a revocation that did not land.
+			throw new StatusException(Status.INTERNAL,
+					"failed to record revocation for " + targetSpiffeId + ": " + e.getMessage());
+		}
+		persistState.run();
+
+		logger.info("WorkloadRevoke: caller={}, target={}", callerSub, targetSpiffeId);
+	}
+
+	/**
+	 * Fails closed if {@code spiffeId} — or any SPIFFE ancestor of it — carries a
+	 * {@code WorkloadState.revocations} record, per the proto contract on
+	 * {@code WorkloadRevocation}: revoking a parent revokes everything beneath it.
+	 *
+	 * <p>Non-SPIFFE subjects (user tokens) are not workloads and are not checked
+	 * here. The walk stops at the trust-domain authority, so a revocation can
+	 * never be recorded at a level that would deny the whole cluster.
+	 *
+	 * @param spiffeId the identity a token is being minted or exchanged for
+	 * @param what     call-site noun for the error message, e.g. "workload"
+	 */
+	private void assertNotRevoked(String spiffeId, String what) throws StatusException {
+		if (!SpiffeIds.isSpiffeUri(spiffeId)) return;
+		int authorityEnd = spiffeId.indexOf('/', SPIFFE_PREFIX.length());
+		if (authorityEnd < 0) return; // bare trust domain — no workload path to revoke
+
+		String candidate = spiffeId;
+		while (candidate.length() > authorityEnd) {
+			Kernel.WorkloadRevocation revocation = workloadMap.getRevocations(candidate);
+			if (!revocation.getSpiffeId().isEmpty()) {
+				logger.warn("Rejected revoked {}: sub={}, revocation={} by {}",
+						what, spiffeId, candidate, revocation.getRevokedBy());
+				throw new StatusException(Status.PERMISSION_DENIED,
+						what + " " + spiffeId + " is revoked (revocation recorded on "
+								+ candidate + " by " + revocation.getRevokedBy() + ")");
+			}
+			candidate = candidate.substring(0, candidate.lastIndexOf('/'));
+		}
 	}
 
 	// ========================================================================

@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit;
  * nothing else, and anything they might grow into should fail loudly rather than
  * silently do nothing.
  */
-final class InMemoryManager implements Manager {
+public final class InMemoryManager implements Manager {
 
 	private final Map<String, IMap<?, ?>> maps = new ConcurrentHashMap<>();
 

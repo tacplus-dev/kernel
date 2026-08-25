@@ -758,7 +758,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		return buildTokenEntitlements(
 				Grants.normalize(entitlementGrantTokens(entitlements)),
-				entitlements.getAzpList());
+				entitlements.getAzpList(),
+				entitlements.getPrincipalScope());
 	}
 
 	private Entitlements.TokenEntitlements resolveCurrentAccessEntitlements(
@@ -795,6 +796,15 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			}
 			obj.add("azp", azp);
 		}
+		// principal_scope: how wide this caller's authority over PRINCIPALS is.
+		// Written only when the policy stamped one, because absent and
+		// PRINCIPAL_SCOPE_SELF_ONLY mean the same thing to the reader and an
+		// empty string would be a third spelling of it. Without this the scope
+		// crossed opa -> kernel as a typed field and then died here, since this
+		// method — not protojson — is what composes the claim.
+		if (!entitlements.getPrincipalScope().isEmpty()) {
+			obj.addProperty("principal_scope", entitlements.getPrincipalScope());
+		}
 		return new com.google.gson.Gson().toJson(obj);
 	}
 
@@ -812,15 +822,17 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			}
 			java.util.ArrayList<String> grants = new java.util.ArrayList<>();
 			java.util.ArrayList<String> azp = new java.util.ArrayList<>();
-			collectEntitlementClaim(el, grants, azp);
-			return buildTokenEntitlements(grants, azp);
+			String[] principalScope = new String[] {""};
+			collectEntitlementClaim(el, grants, azp, principalScope);
+			return buildTokenEntitlements(grants, azp, principalScope[0]);
 		} catch (Exception e) {
 			return null;
 		}
 	}
 
 	private static void collectEntitlementClaim(
-			com.google.gson.JsonElement el, List<String> grants, List<String> azp) {
+			com.google.gson.JsonElement el, List<String> grants, List<String> azp,
+			String[] principalScope) {
 		if (el == null || el.isJsonNull()) {
 			return;
 		}
@@ -833,7 +845,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		if (el.isJsonArray()) {
 			for (com.google.gson.JsonElement item : el.getAsJsonArray()) {
-				collectEntitlementClaim(item, grants, azp);
+				collectEntitlementClaim(item, grants, azp, principalScope);
 			}
 			return;
 		}
@@ -847,7 +859,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		com.google.gson.JsonElement grantList = obj.get("grants");
 		if (grantList != null) {
-			collectEntitlementClaim(grantList, grants, azp);
+			collectEntitlementClaim(grantList, grants, azp, principalScope);
 		}
 		com.google.gson.JsonElement azpList = obj.get("azp");
 		if (azpList != null && azpList.isJsonArray()) {
@@ -857,10 +869,18 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				}
 			}
 		}
+		// principal_scope is a SCALAR sitting on the same object as grants, and the
+		// sweep below folds every unrecognised key into the grant list. Read it
+		// here or its VALUE arrives as a grant token no catalog ever declared.
+		com.google.gson.JsonElement scope = obj.get("principal_scope");
+		if (scope != null && scope.isJsonPrimitive() && scope.getAsJsonPrimitive().isString()) {
+			principalScope[0] = scope.getAsString();
+		}
 		for (Map.Entry<String, com.google.gson.JsonElement> entry : obj.entrySet()) {
 			String key = entry.getKey();
-			if (!key.equals("token") && !key.equals("grants") && !key.equals("azp")) {
-				collectEntitlementClaim(entry.getValue(), grants, azp);
+			if (!key.equals("token") && !key.equals("grants") && !key.equals("azp")
+					&& !key.equals("principal_scope")) {
+				collectEntitlementClaim(entry.getValue(), grants, azp, principalScope);
 			}
 		}
 	}
@@ -895,7 +915,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		return tokens;
 	}
 
-	private static Entitlements.TokenEntitlements buildTokenEntitlements(List<String> grants, List<String> azp) {
+	private static Entitlements.TokenEntitlements buildTokenEntitlements(
+			List<String> grants, List<String> azp, String principalScope) {
 		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
 		Descriptors.FieldDescriptor grantsField =
 				builder.getDescriptorForType().findFieldByName("grants");
@@ -918,6 +939,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			}
 		}
 		builder.addAllAzp(azp);
+		if (principalScope != null && !principalScope.isEmpty()) {
+			builder.setPrincipalScope(principalScope);
+		}
 		return builder.build();
 	}
 

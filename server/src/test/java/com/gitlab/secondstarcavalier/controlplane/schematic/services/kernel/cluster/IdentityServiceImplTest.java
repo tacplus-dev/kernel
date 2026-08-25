@@ -60,6 +60,57 @@ class IdentityServiceImplTest {
 	}
 
 	/**
+	 * principal_scope is how wide the caller's authority over PRINCIPALS is, and
+	 * the generated (spec.owner_default) guard reads it off the
+	 * service_entitlements claim. Normalisation rebuilds TokenEntitlements from
+	 * its parts, so a field it forgets to carry is a field that reaches no
+	 * service — the scope would cross opa -> kernel typed and then vanish one
+	 * method before the claim is written.
+	 */
+	@Test
+	void serviceEntitlementsNormalizationCarriesPrincipalScope() {
+		Entitlements.TokenEntitlements entitlements = Entitlements.TokenEntitlements.newBuilder()
+				.addAzp("oauth")
+				.setPrincipalScope("PRINCIPAL_SCOPE_ANY")
+				.build();
+
+		assertEquals("PRINCIPAL_SCOPE_ANY",
+				IdentityServiceImpl.normalizeServiceEntitlements(entitlements).getPrincipalScope());
+
+		// A caller the policy stamped nothing for stays unstamped: absent is what
+		// the guard fails closed on, and an empty string must not become a value.
+		assertEquals("", IdentityServiceImpl.normalizeServiceEntitlements(
+				Entitlements.TokenEntitlements.newBuilder().addAzp("oauth").build())
+				.getPrincipalScope());
+	}
+
+	/**
+	 * Every RPC in this system is made with a token scoped to one service
+	 * audience, so a scope that does not survive scopeToService is a scope no
+	 * handler ever sees.
+	 */
+	@Test
+	void serviceScopedTokenKeepsPrincipalScope() {
+		String wildcard = Grants.tokens().stream()
+				.filter(Grants::isWildcard)
+				.filter(token -> !Grants.expand(token).isEmpty())
+				.findFirst()
+				.orElseThrow(() -> new AssertionError(
+						"generated grant catalog has no expanding wildcard grant"));
+		String pkg = Grants.lookup(Grants.expand(wildcard).get(0)).orElseThrow().pkg;
+
+		Entitlements.TokenEntitlements scoped = TokenExchangeServiceImpl.scopeToService(
+				Entitlements.TokenEntitlements.newBuilder()
+						.addGrants(wildcard)
+						.setPrincipalScope("PRINCIPAL_SCOPE_ANY")
+						.build(),
+				pkg);
+
+		assertFalse(scoped.getGrantsList().isEmpty());
+		assertEquals("PRINCIPAL_SCOPE_ANY", scoped.getPrincipalScope());
+	}
+
+	/**
 	 * Regression: a requested project that arrives with a leading slash was
 	 * concatenated onto the tenant namespace verbatim. Minted live against the
 	 * cluster, the root tenant ("/") plus a CLI-supplied "/drpepper/prod"

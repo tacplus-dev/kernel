@@ -46,9 +46,15 @@ final class TokenExchangeServiceImpl {
 		if (scoped.isEmpty()) {
 			return Entitlements.TokenEntitlements.getDefaultInstance();
 		}
+		// principal_scope survives the narrowing. It says how wide the caller's
+		// authority over PRINCIPALS is, which is a property of the caller and not
+		// of the service being addressed; dropping it here would make every
+		// service-audience token self-scoped no matter what the policy stamped,
+		// and every real RPC in this system is made with an aud-scoped token.
 		return Entitlements.TokenEntitlements.newBuilder()
 				.addAllGrants(scoped)
 				.addAllAzp(entitlements.getAzpList())
+				.setPrincipalScope(entitlements.getPrincipalScope())
 				.build();
 	}
 }

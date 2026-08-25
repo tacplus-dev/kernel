@@ -1651,7 +1651,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 *
 	 * @throws StatusException PERMISSION_DENIED if the requested project is not authorized.
 	 */
-	private String projectScopedNamespace(TokenWrapper rt, String requestedProject)
+	static String projectScopedNamespace(TokenWrapper rt, String requestedProject)
 			throws StatusException {
 		String defaultProject = rt.getCustomField(CLAIM_DEFAULT_PROJECT);
 		String authJson = rt.getCustomField(CLAIM_AUTHORIZED_PROJECTS);
@@ -1659,9 +1659,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			return null; // not a project-scoped (IDP user) session
 		}
 		List<String> authorized = parseStringList(authJson);
-		String leaf = (requestedProject != null && !requestedProject.isEmpty())
+		String leaf = projectLeaf((requestedProject != null && !requestedProject.isEmpty())
 				? requestedProject
-				: defaultProject;
+				: defaultProject);
 		if (leaf == null || leaf.isEmpty()) {
 			return null; // nothing to scope to
 		}
@@ -1675,6 +1675,27 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		String base = tenantNs.endsWith("/") ? tenantNs.substring(0, tenantNs.length() - 1) : tenantNs;
 		return base + "/" + leaf;
+	}
+
+	/**
+	 * Normalizes a requested project to the leaf segment this method appends.
+	 * A caller that sends a leading slash (or a whole path) would otherwise be
+	 * concatenated verbatim onto the tenant namespace, producing a malformed
+	 * claim: root tenant {@code "/"} plus {@code "/drpepper/prod"} minted
+	 * {@code namespace: //drpepper/prod}, which {@code Spiffe.normalizeNamespace}
+	 * rejects as an empty segment, so every level-or-below check on that token
+	 * failed. Stripping here also makes the {@code authorized_projects} check
+	 * above compare the same value that is appended.
+	 */
+	private static String projectLeaf(String requestedProject) {
+		if (requestedProject == null) {
+			return null;
+		}
+		String leaf = requestedProject;
+		while (leaf.startsWith("/")) {
+			leaf = leaf.substring(1);
+		}
+		return leaf;
 	}
 
 	/** Parses a JSON string array (as written by Gson) into a list; null/blank → empty. */

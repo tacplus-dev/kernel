@@ -4,6 +4,7 @@ package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.clu
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.key.ImmutableKey;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.token.TokenWrapper;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.x509.ImmutableCertChain;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.grants.Grants;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.key.KeyOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.x509.X509;
@@ -22,24 +23,96 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class IdentityServiceImplTest {
+	/**
+	 * The wildcard under test is taken from the generated catalog rather than
+	 * named literally: this test used to assert on {@code ANTHROPIC_ANY} and
+	 * broke when the anthropic proxy left the platform (platform/proto
+	 * {@code operator.proto} now reserves "anthropic"), so no such grant is
+	 * generated any more. The behaviour being pinned is the expansion itself,
+	 * which does not depend on which service happens to ship today.
+	 */
 	@Test
 	void serviceEntitlementsNormalizeConvenienceWildcardsToExactRpcGrants() {
+		String wildcard = Grants.tokens().stream()
+				.filter(Grants::isWildcard)
+				.filter(token -> !Grants.expand(token).isEmpty())
+				.findFirst()
+				.orElseThrow(() -> new AssertionError(
+						"generated grant catalog has no expanding wildcard grant"));
+		List<String> expected = Grants.expand(wildcard);
+
 		Entitlements.TokenEntitlements entitlements = Entitlements.TokenEntitlements.newBuilder()
-				.addGrants("ANTHROPIC_ANY")
+				.addGrants(wildcard)
 				.addAzp("oauth")
 				.build();
 
 		Entitlements.TokenEntitlements normalized =
 				IdentityServiceImpl.normalizeServiceEntitlements(entitlements);
 
-		assertTrue(normalized.getGrantsList().contains("ANTHROPIC_PROXY_CREATE_MESSAGE"));
-		assertTrue(normalized.getGrantsList().contains("ANTHROPIC_PROXY_GENERATE_MESSAGE_STREAM"));
-		assertFalse(normalized.getGrantsList().contains("ANTHROPIC_ANY"));
+		assertTrue(normalized.getGrantsList().containsAll(expected));
+		assertFalse(normalized.getGrantsList().contains(wildcard));
 		assertFalse(normalized.getGrantsList().stream().anyMatch(grant -> grant.endsWith("_ANY")));
 		assertTrue(normalized.getAzpList().contains("oauth"));
+	}
+
+	/**
+	 * Regression: a requested project that arrives with a leading slash was
+	 * concatenated onto the tenant namespace verbatim. Minted live against the
+	 * cluster, the root tenant ("/") plus a CLI-supplied "/drpepper/prod"
+	 * produced {@code namespace: //drpepper/prod} — an empty path segment that
+	 * {@code Spiffe.normalizeNamespace} rejects, so every level-or-below check
+	 * on that token failed.
+	 */
+	@Test
+	void projectScopedNamespaceDoesNotDoubleTheLeadingSlash() throws Exception {
+		// The observed live case: the session sits at the root tenant, OPA
+		// returned no authorized_projects list, and the CLI sent its profile
+		// namespace ("/drpepper/prod") in TokenMintRequest.project. Before the
+		// fix this minted "//drpepper/prod".
+		assertEquals("/drpepper/prod", IdentityServiceImpl.projectScopedNamespace(
+				sessionToken("/", "/drpepper/prod", null), ""));
+
+		// A leading slash on an otherwise ordinary leaf.
+		assertEquals("/drpepper/prod", IdentityServiceImpl.projectScopedNamespace(
+				sessionToken("/drpepper", "/prod", null), ""));
+
+		// The documented leaf form is unchanged.
+		assertEquals("/drpepper/prod", IdentityServiceImpl.projectScopedNamespace(
+				sessionToken("/drpepper", "prod", AUTHORIZED), ""));
+
+		// Normalizing before the authorization check means a slash-prefixed
+		// request matches the bare leaf names OPA reports.
+		assertEquals("/drpepper/prod", IdentityServiceImpl.projectScopedNamespace(
+				sessionToken("/drpepper", "default", AUTHORIZED), "/prod"));
+
+		// And a whole path is now refused outright rather than silently minting
+		// a malformed namespace, because the check sees the value that is
+		// actually appended.
+		assertThrows(IdentityServiceImpl.StatusException.class,
+				() -> IdentityServiceImpl.projectScopedNamespace(
+						sessionToken("/", "/drpepper/prod", AUTHORIZED), ""));
+	}
+
+	private static final String AUTHORIZED = "[\"default\",\"prod\"]";
+
+	/**
+	 * A session token carrying the v3 project claims stamped at login.
+	 * {@code authorizedProjects} is null when the policy returned no list —
+	 * the shape the deployed policy produced when this defect was observed.
+	 */
+	private static TokenWrapper sessionToken(
+			String namespace, String defaultProject, String authorizedProjects) {
+		TokenWrapper token = TokenWrapper.create();
+		token.setNamespace(namespace);
+		token.setCustomField("default_project", defaultProject);
+		if (authorizedProjects != null) {
+			token.setCustomField("authorized_projects", authorizedProjects);
+		}
+		return token;
 	}
 
 	@Test

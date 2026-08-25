@@ -2,10 +2,13 @@
 package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster;
 
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.key.ImmutableKey;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.token.TokenWrapper;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.key.KeyOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.x509.X509;
+import com.google.protobuf.Struct;
+import com.google.protobuf.Value;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.spec.ECGenParameterSpec;
@@ -15,6 +18,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -48,6 +52,38 @@ class IdentityServiceImplTest {
 				"oauth", serviceCa, oldSigningCa, LoggerFactory.getLogger(getClass())));
 		assertNull(ServiceIntermediateCa.reusable(
 				"oauth", serviceCa, newSigningCa, LoggerFactory.getLogger(getClass())));
+	}
+
+	/**
+	 * Regression: origin_iss must survive the claim copy. It is an already
+	 * origin_-prefixed IdP claim AND a declared JwtPayloadType, so it is a member of
+	 * STANDARD_JWT_CLAIMS; when the skip check ran first the kernel dropped it on
+	 * every re-mint of an access token from a stored offline/refresh token, and the
+	 * entitlements policy — which derives the tenant from input.claims.origin_iss —
+	 * then resolved zero grants on a token that still parsed and authenticated.
+	 */
+	@Test
+	void alreadyOriginPrefixedClaimsSurviveTheClaimCopy() {
+		String idpIssuer = "https://keycloak.example.test/realms/schematic";
+		Struct claims = Struct.newBuilder()
+				.putFields("origin_iss", Value.newBuilder().setStringValue(idpIssuer).build())
+				.putFields("origin_sub", Value.newBuilder().setStringValue("idp-subject").build())
+				.putFields("email", Value.newBuilder().setStringValue("joeuser@example.test").build())
+				.putFields("token_use", Value.newBuilder().setStringValue("forged").build())
+				.build();
+
+		TokenWrapper token = TokenWrapper.create();
+		token.setClaimsFromStruct(claims,
+				IdentityServiceImpl.STANDARD_JWT_CLAIMS, IdentityServiceImpl.WELL_KNOWN_JWT_CLAIMS);
+
+		// The collision that caused the bug is real: origin_iss is a declared payload type.
+		assertTrue(IdentityServiceImpl.STANDARD_JWT_CLAIMS.contains("origin_iss"));
+
+		assertEquals(idpIssuer, token.getCustomField("origin_iss"));
+		assertEquals("idp-subject", token.getCustomField("origin_sub"));
+		assertEquals("joeuser@example.test", token.getCustomField("email"));
+		// A Schematic-internal claim supplied by the IdP is still dropped.
+		assertNull(token.getCustomField("token_use"));
 	}
 
 	private static ImmutableCertChain signingCa(String name) throws Exception {

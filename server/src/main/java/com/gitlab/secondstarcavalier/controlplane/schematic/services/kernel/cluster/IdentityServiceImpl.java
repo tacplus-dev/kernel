@@ -83,7 +83,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 	// Standard Schematic claims — all proto-defined JwtPayloadType values plus "typ".
 	// External IdP claims with these names get origin_ prefixed to avoid collision.
-	private static final Set<String> STANDARD_JWT_CLAIMS;
+	// Package-private so the claim-copy regression test can exercise the real sets.
+	static final Set<String> STANDARD_JWT_CLAIMS;
 	static {
 		var claims = new java.util.HashSet<>(Helpers.jwtPayloadTypeValidValues());
 		claims.add("typ");
@@ -91,7 +92,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	// Claims from external IdPs that get origin_ prefix to avoid collision with Schematic claims.
-	private static final Set<String> WELL_KNOWN_JWT_CLAIMS = Set.of(
+	static final Set<String> WELL_KNOWN_JWT_CLAIMS = Set.of(
 			"iss", "sub", "aud", "exp", "nbf", "iat", "jti");
 
 	// Legacy typ claim value — kept for backwards compatibility during rollout.

@@ -42,6 +42,14 @@ public class ProtoDescriptorParser {
     // Pattern for parsing structured annotation values like {target: "foo", mode: BAR}
     private static final Pattern STRUCT_FIELD_PATTERN = Pattern.compile(
             "(\\w+)\\s*:\\s*(\"[^\"]*\"|\\w+)");
+    // The repeated flags list on spec.rpc: flags: [RPC_FLAG_A, RPC_FLAG_B]
+    private static final Pattern RPC_FLAGS_PATTERN = Pattern.compile("flags\\s*:\\s*\\[([^\\]]*)\\]");
+    // spec.rpc flags that carry the exemption the retired method_s2s/method_c2s
+    // auth_disabled: true used to express: PUBLIC_NO_AUTH is unauthenticated outright,
+    // SELF_AUTHENTICATES authenticates the caller from the request body inside the
+    // handler. Both must skip the generated caller interceptor.
+    private static final Set<String> NO_AUTH_RPC_FLAGS =
+            Set.of("RPC_FLAG_PUBLIC_NO_AUTH", "RPC_FLAG_SELF_AUTHENTICATES");
 
     public ProtoDescriptorParser(Path protoDir) {
         this.protoDir = protoDir;
@@ -234,6 +242,17 @@ public class ProtoDescriptorParser {
                             while (fieldMatcher.find()) {
                                 if ("auth_disabled".equals(fieldMatcher.group(1)) && "true".equals(fieldMatcher.group(2))) {
                                     rpc.setDisableAuth(true);
+                                }
+                            }
+                        } else if ("rpc".equals(optName)) {
+                            // spec.rpc replaced method_s2s/method_c2s; the per-RPC auth
+                            // exemption now rides on the flags list, not auth_disabled.
+                            Matcher flagsMatcher = RPC_FLAGS_PATTERN.matcher(structBody);
+                            if (flagsMatcher.find()) {
+                                for (String flag : flagsMatcher.group(1).split(",")) {
+                                    if (NO_AUTH_RPC_FLAGS.contains(flag.trim())) {
+                                        rpc.setDisableAuth(true);
+                                    }
                                 }
                             }
                         }

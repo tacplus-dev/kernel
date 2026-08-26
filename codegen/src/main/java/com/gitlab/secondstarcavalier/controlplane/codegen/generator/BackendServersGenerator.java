@@ -293,7 +293,23 @@ public class BackendServersGenerator {
 
 		if (configHolderType != null && !configStateMappings.isEmpty()) {
 			getters.append("\n    /**\n");
+			getters.append("     * Reports whether a ConfigState root already holds a config.\n");
+			getters.append("     *\n");
+			getters.append("     * <p>A root is populated once anything has been written into it — the\n");
+			getters.append("     * bundle seed on a cold start, or a live config push. The absent case\n");
+			getters.append("     * reads back as the proto default (see the map's getConfig()).\n");
+			getters.append("     */\n");
+			getters.append("    private static boolean isPopulated(com.google.protobuf.Message config) {\n");
+			getters.append("        return config != null && !config.equals(config.getDefaultInstanceForType());\n");
+			getters.append("    }\n");
+			getters.append("\n    /**\n");
 			getters.append("     * Installs configs from a Services holder into per-service config state maps.\n");
+			getters.append("     *\n");
+			getters.append("     * <p>Seeding is create-only, per root: a root that is already populated is\n");
+			getters.append("     * left untouched. Kernel installs the bundle on every start, so an\n");
+			getters.append("     * unconditional put would revert live-pushed config on every restart.\n");
+			getters.append("     * A partially seeded cluster still gets its missing roots filled in.\n");
+			getters.append("     *\n");
 			getters.append("     * @return the number of configs installed\n");
 			getters.append("     */\n");
 			getters.append("    public int installServices(").append(configHolderType).append(" services) {\n");
@@ -302,9 +318,14 @@ public class BackendServersGenerator {
 				String mapField = mapping[0];
 				String configPrefix = mapping[1];
 				getters.append("        if (services.has").append(configPrefix).append("Config()) {\n");
-				getters.append("            ").append(mapField).append(".putConfig(services.get")
+				getters.append("            if (isPopulated(").append(mapField).append(".getConfig())) {\n");
+				getters.append("                logger.info(\"").append(configPrefix)
+						.append("ConfigState already populated — bundle seed skipped (create-only)\");\n");
+				getters.append("            } else {\n");
+				getters.append("                ").append(mapField).append(".putConfig(services.get")
 						.append(configPrefix).append("Config());\n");
-				getters.append("            installed++;\n");
+				getters.append("                installed++;\n");
+				getters.append("            }\n");
 				getters.append("        }\n");
 			}
 			getters.append("        return installed;\n");

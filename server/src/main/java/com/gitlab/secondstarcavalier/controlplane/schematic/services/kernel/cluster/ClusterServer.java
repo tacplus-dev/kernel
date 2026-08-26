@@ -864,13 +864,21 @@ public class ClusterServer {
 		}
 	}
 
+	/**
+	 * Seeds the bundle's per-service configs into the ConfigHolder boundary maps.
+	 * Kernel runs this on every start, so seeding is create-only: only roots that
+	 * are still empty are filled in. Populated roots — a live config push, or a
+	 * seed a surviving cluster member already holds — are left alone, so a
+	 * rolling restart cannot revert them to the bundle default.
+	 */
 	private void installConfigHolder(Kernel.Config config) {
 		if (!config.hasConfigs()) {
 			logger.info("No configs in Config — config state maps unchanged");
 			return;
 		}
 		int installed = backendServers.services().installServices(config.getConfigs());
-		logger.info("Installed {} config(s) into per-service config state maps", installed);
+		logger.info("Installed {} config(s) into empty per-service config state maps "
+				+ "(create-only; populated roots left unchanged)", installed);
 	}
 
 	/** Persists the kernel disk snapshot; safe to call from any thread. */

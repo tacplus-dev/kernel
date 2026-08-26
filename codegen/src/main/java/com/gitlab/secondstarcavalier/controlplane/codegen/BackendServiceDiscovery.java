@@ -53,7 +53,13 @@ public class BackendServiceDiscovery {
                             if (first.getStructValue().containsKey("name")) {
                                 backendName = first.getStructValue().get("name");
                                 stateName = backendName;
-                            } else if (first.getStructValue().containsKey("tag")) {
+                            } else {
+                                // Every other key of the annotation is optional, so the
+                                // struct form alone marks the state root -- do NOT gate
+                                // this on a particular sibling key. Gating it on `tag`
+                                // is what silently dropped all seven of kernel's own
+                                // states when that annotation was renamed to `label`.
+                                //
                                 // Fallback: derive backend name from message name,
                                 // stripping "State" suffix if present (convention:
                                 // GatewayTlsState → GatewayTls, Identity → Identity).

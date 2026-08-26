@@ -121,10 +121,8 @@ public class ViewServerGenerator {
             return true;
         }
         java.util.List<AnnotationValue> repeated = msg.getRepeatedAnnotations("service_state");
-        if (!repeated.isEmpty() && repeated.get(0).isStruct()) {
-            var struct = repeated.get(0).getStructValue();
-            return struct.containsKey("name") || struct.containsKey("tag");
-        }
-        return false;
+        // The struct form alone marks a state root; every key in it is optional.
+        // Matching on specific keys made this blind to `{label: [...]}` states.
+        return !repeated.isEmpty() && repeated.get(0).isStruct();
     }
 }

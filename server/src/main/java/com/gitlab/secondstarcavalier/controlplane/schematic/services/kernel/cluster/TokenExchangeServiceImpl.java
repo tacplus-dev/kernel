@@ -43,7 +43,7 @@ final class TokenExchangeServiceImpl {
 				}
 			}
 		}
-		if (scoped.isEmpty()) {
+		if (scoped.isEmpty() && entitlements.getDataGrantsCount() == 0) {
 			return Entitlements.TokenEntitlements.getDefaultInstance();
 		}
 		// principal_scope survives the narrowing. It says how wide the caller's
@@ -51,8 +51,17 @@ final class TokenExchangeServiceImpl {
 		// of the service being addressed; dropping it here would make every
 		// service-audience token self-scoped no matter what the policy stamped,
 		// and every real RPC in this system is made with an aud-scoped token.
+		//
+		// data_grants (BIG GOAL 3 item 7/9) survive the narrowing too, and
+		// unconditionally rather than filtered by targetAud like "grants" are:
+		// a data_grant names a (record type, field) egress unlock, not an RPC, so
+		// the per-service Grants catalog this method scopes "grants" against has
+		// no entry for it to match against in the first place. Dropping it here
+		// was the reason a query-scoped (aud=query) token never carried the data
+		// grant a login/kernel-aud token was correctly stamped with upstream.
 		return Entitlements.TokenEntitlements.newBuilder()
 				.addAllGrants(scoped)
+				.addAllDataGrants(entitlements.getDataGrantsList())
 				.addAllAzp(entitlements.getAzpList())
 				.setPrincipalScope(entitlements.getPrincipalScope())
 				.build();

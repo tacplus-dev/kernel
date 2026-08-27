@@ -758,6 +758,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		return buildTokenEntitlements(
 				Grants.normalize(entitlementGrantTokens(entitlements)),
+				entitlements.getDataGrantsList(),
 				entitlements.getAzpList(),
 				entitlements.getPrincipalScope());
 	}
@@ -789,6 +790,20 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			grants.add(token);
 		}
 		obj.add("grants", grants);
+		// data_grants (BIG GOAL 3 item 7/9): MAY_REDACT field unlocks, e.g.
+		// ACCOUNTINGRECORD_ACCOUNTING_RECORD_PRINCIPAL_SUB. Distinct from "grants"
+		// (RPC authorization) — these gate egress redaction of specific fields.
+		// Omitted when empty for the same reason principal_scope is: an absent
+		// key and an empty array read the same way to the egress sanitizer
+		// (fail-closed, no grants), so there is no need to spell out the empty
+		// case explicitly.
+		if (entitlements.getDataGrantsCount() > 0) {
+			com.google.gson.JsonArray dataGrants = new com.google.gson.JsonArray();
+			for (String value : entitlements.getDataGrantsList()) {
+				dataGrants.add(value);
+			}
+			obj.add("data_grants", dataGrants);
+		}
 		if (entitlements.getAzpCount() > 0) {
 			com.google.gson.JsonArray azp = new com.google.gson.JsonArray();
 			for (String value : entitlements.getAzpList()) {
@@ -821,17 +836,18 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				}
 			}
 			java.util.ArrayList<String> grants = new java.util.ArrayList<>();
+			java.util.ArrayList<String> dataGrants = new java.util.ArrayList<>();
 			java.util.ArrayList<String> azp = new java.util.ArrayList<>();
 			String[] principalScope = new String[] {""};
-			collectEntitlementClaim(el, grants, azp, principalScope);
-			return buildTokenEntitlements(grants, azp, principalScope[0]);
+			collectEntitlementClaim(el, grants, dataGrants, azp, principalScope);
+			return buildTokenEntitlements(grants, dataGrants, azp, principalScope[0]);
 		} catch (Exception e) {
 			return null;
 		}
 	}
 
 	private static void collectEntitlementClaim(
-			com.google.gson.JsonElement el, List<String> grants, List<String> azp,
+			com.google.gson.JsonElement el, List<String> grants, List<String> dataGrants, List<String> azp,
 			String[] principalScope) {
 		if (el == null || el.isJsonNull()) {
 			return;
@@ -845,7 +861,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		if (el.isJsonArray()) {
 			for (com.google.gson.JsonElement item : el.getAsJsonArray()) {
-				collectEntitlementClaim(item, grants, azp, principalScope);
+				collectEntitlementClaim(item, grants, dataGrants, azp, principalScope);
 			}
 			return;
 		}
@@ -859,7 +875,20 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		com.google.gson.JsonElement grantList = obj.get("grants");
 		if (grantList != null) {
-			collectEntitlementClaim(grantList, grants, azp, principalScope);
+			collectEntitlementClaim(grantList, grants, dataGrants, azp, principalScope);
+		}
+		// data_grants (BIG GOAL 3 item 7/9): kept out of the generic sweep below,
+		// same as azp/principal_scope — otherwise its values fold into "grants" as
+		// if they were RPC grant tokens (the bug this fixes; see
+		// platform/services/opa/internal/handler.go for the matching bug on the
+		// opa side of this same claim).
+		com.google.gson.JsonElement dataGrantList = obj.get("data_grants");
+		if (dataGrantList != null && dataGrantList.isJsonArray()) {
+			for (com.google.gson.JsonElement item : dataGrantList.getAsJsonArray()) {
+				if (item.isJsonPrimitive()) {
+					dataGrants.add(item.getAsString());
+				}
+			}
 		}
 		com.google.gson.JsonElement azpList = obj.get("azp");
 		if (azpList != null && azpList.isJsonArray()) {
@@ -878,9 +907,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		for (Map.Entry<String, com.google.gson.JsonElement> entry : obj.entrySet()) {
 			String key = entry.getKey();
-			if (!key.equals("token") && !key.equals("grants") && !key.equals("azp")
-					&& !key.equals("principal_scope")) {
-				collectEntitlementClaim(entry.getValue(), grants, azp, principalScope);
+			if (!key.equals("token") && !key.equals("grants") && !key.equals("data_grants")
+					&& !key.equals("azp") && !key.equals("principal_scope")) {
+				collectEntitlementClaim(entry.getValue(), grants, dataGrants, azp, principalScope);
 			}
 		}
 	}
@@ -916,7 +945,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	private static Entitlements.TokenEntitlements buildTokenEntitlements(
-			List<String> grants, List<String> azp, String principalScope) {
+			List<String> grants, List<String> dataGrants, List<String> azp, String principalScope) {
 		Entitlements.TokenEntitlements.Builder builder = Entitlements.TokenEntitlements.newBuilder();
 		Descriptors.FieldDescriptor grantsField =
 				builder.getDescriptorForType().findFieldByName("grants");
@@ -935,6 +964,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 						grantBuilder.setField(tokenField, token);
 						builder.addRepeatedField(grantsField, grantBuilder.build());
 					}
+				}
+			}
+		}
+		if (dataGrants != null) {
+			for (String grant : dataGrants) {
+				if (grant != null && !grant.isEmpty()) {
+					builder.addDataGrants(grant);
 				}
 			}
 		}

@@ -89,6 +89,60 @@ class IdentityServiceImplTest {
 	 * audience, so a scope that does not survive scopeToService is a scope no
 	 * handler ever sees.
 	 */
+	/**
+	 * data_grants (BIG GOAL 3 item 7/9): a MAY_REDACT field unlock, distinct from
+	 * "grants" (RPC authorization). Normalisation rebuilds TokenEntitlements from
+	 * its parts the same way it does for principal_scope above, and had the same
+	 * bug: the field crossed opa's EvalEntitlement result typed, and then this
+	 * method dropped it silently, so no token ever carried a data_grants claim.
+	 */
+	@Test
+	void serviceEntitlementsNormalizationCarriesDataGrants() {
+		Entitlements.TokenEntitlements entitlements = Entitlements.TokenEntitlements.newBuilder()
+				.addAzp("oauth")
+				.addDataGrants("ACCOUNTINGRECORD_ACCOUNTING_RECORD_PRINCIPAL_SUB")
+				.build();
+
+		assertEquals(List.of("ACCOUNTINGRECORD_ACCOUNTING_RECORD_PRINCIPAL_SUB"),
+				IdentityServiceImpl.normalizeServiceEntitlements(entitlements).getDataGrantsList());
+
+		// A caller the policy stamped no data grant for stays unstamped.
+		assertTrue(IdentityServiceImpl.normalizeServiceEntitlements(
+				Entitlements.TokenEntitlements.newBuilder().addAzp("oauth").build())
+				.getDataGrantsList().isEmpty());
+	}
+
+	/**
+	 * data_grants must survive an access→service (aud-scoped) exchange
+	 * unconditionally, the same way principal_scope does above — a data grant
+	 * names a (record type, field) egress unlock, not an RPC, so it has no entry
+	 * in the per-service Grants catalog "grants" is filtered against and would be
+	 * silently dropped by a naive port of the grants-scoping logic. This is the
+	 * bug that left a query-audience token (e.g. the one pull-accounting/Query
+	 * calls use) without the data_grants claim a kernel-audience/login token was
+	 * correctly stamped with, which is what accounting.correlates-to-row caught.
+	 */
+	@Test
+	void serviceScopedTokenKeepsDataGrants() {
+		String wildcard = Grants.tokens().stream()
+				.filter(Grants::isWildcard)
+				.filter(token -> !Grants.expand(token).isEmpty())
+				.findFirst()
+				.orElseThrow(() -> new AssertionError(
+						"generated grant catalog has no expanding wildcard grant"));
+		String pkg = Grants.lookup(Grants.expand(wildcard).get(0)).orElseThrow().pkg;
+
+		Entitlements.TokenEntitlements scoped = TokenExchangeServiceImpl.scopeToService(
+				Entitlements.TokenEntitlements.newBuilder()
+						.addGrants(wildcard)
+						.addDataGrants("ACCOUNTINGRECORD_ACCOUNTING_RECORD_PRINCIPAL_SUB")
+						.build(),
+				pkg);
+
+		assertEquals(List.of("ACCOUNTINGRECORD_ACCOUNTING_RECORD_PRINCIPAL_SUB"),
+				scoped.getDataGrantsList());
+	}
+
 	@Test
 	void serviceScopedTokenKeepsPrincipalScope() {
 		String wildcard = Grants.tokens().stream()

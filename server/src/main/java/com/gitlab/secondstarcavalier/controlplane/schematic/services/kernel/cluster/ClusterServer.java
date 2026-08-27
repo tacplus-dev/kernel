@@ -375,6 +375,13 @@ public class ClusterServer {
 				},
 				this::persistKernelState);
 
+		// Standing delegation grants (item 6, piece B): a live in-memory store
+		// seeded from Config.grants at boot, mirroring how delegates (below) are
+		// seeded. This is what MintDelegatedToken looks grants up by id against,
+		// and what finally gives KernelPersistence's grantsReader (below) real
+		// data instead of the former List::of stub.
+		final var liveGrants = new java.util.concurrent.CopyOnWriteArrayList<>(cfg.getGrantsList());
+
 		// KernelPersistence builds the KernelDiskState snapshot from the rotator's
 		// signing-key records plus the live boundary maps.
 		this.kernelPersistence = new KernelPersistence(
@@ -412,9 +419,10 @@ public class ClusterServer {
 						return List.of();
 					}
 				},
-				// Standing delegation grants have a durable home in the snapshot but no
-				// live store yet — the RPC surface that creates them is separate work.
-				List::of);
+				// Standing delegation grants have a real live store now (liveGrants,
+				// above), seeded from Config.grants at boot — the snapshot round-trip
+				// this supplier feeds is genuinely populated as of item 6, piece B.
+				() -> java.util.List.copyOf(liveGrants));
 
 		// Load the persisted snapshot and rehydrate Hazelcast-backed state before
 		// the rotator starts (signing_keys are restored into the rotator; the
@@ -746,6 +754,7 @@ public class ClusterServer {
 					keyRotator,
 					allKeysSupplier,
 					() -> delegates,
+					() -> liveGrants,
 					com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.SecurityInterceptor.SERVICE_ENTITLEMENTS,
 					signingCa,
 					serviceName -> caState.getServiceCas(serviceName),

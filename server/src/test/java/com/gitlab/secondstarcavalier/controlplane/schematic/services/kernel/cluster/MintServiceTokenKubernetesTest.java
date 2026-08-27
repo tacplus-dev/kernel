@@ -60,6 +60,7 @@ class MintServiceTokenKubernetesTest {
                 keyRotator,
                 () -> verifyingKeys,
                 () -> delegates,
+                List::of,        // grants
                 null,            // serviceEntitlements
                 null,            // signingCa (unused on the k8s/credpair mint path)
                 name -> null,    // serviceCaReader

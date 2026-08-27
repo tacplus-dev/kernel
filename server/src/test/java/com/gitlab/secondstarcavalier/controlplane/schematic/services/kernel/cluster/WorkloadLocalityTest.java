@@ -114,6 +114,7 @@ class WorkloadLocalityTest {
 				keyRotator,
 				() -> verifyingKeys,
 				List::of,        // delegates
+				List::of,        // grants
 				null,            // serviceEntitlements
 				null,            // signingCa (no cert minting on these paths)
 				name -> null,    // serviceCaReader

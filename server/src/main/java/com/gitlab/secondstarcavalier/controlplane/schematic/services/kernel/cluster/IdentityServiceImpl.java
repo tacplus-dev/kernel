@@ -20,6 +20,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.Mint;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.servicemanager.Caller;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.errors.ProtoException;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.spec.Spec;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.vservices.userentitlements.Userentitlements;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.clients.vservices.userentitlements.OpaEvalGrpcClient;
@@ -45,6 +46,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
@@ -227,6 +229,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private final KeyRotator keyRotator;
 	private final Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader;
 	private final Supplier<List<Kernel.Delegate>> delegatesReader;
+	private final Supplier<List<Kernel.Grant>> grantsReader;
 	private final Map<String, List<String>> serviceEntitlements;
 	private final ImmutableCertChain signingCa;
 	private final Function<String, X509.X509CertChain> serviceCaReader;
@@ -267,6 +270,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			KeyRotator keyRotator,
 			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
 			Supplier<List<Kernel.Delegate>> delegatesReader,
+			Supplier<List<Kernel.Grant>> grantsReader,
 			Map<String, List<String>> serviceEntitlements,
 			ImmutableCertChain signingCa,
 			Function<String, X509.X509CertChain> serviceCaReader,
@@ -286,6 +290,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		this.keyRotator = keyRotator;
 		this.verifyingKeysReader = verifyingKeysReader;
 		this.delegatesReader = delegatesReader;
+		this.grantsReader = grantsReader != null ? grantsReader : List::of;
 		this.serviceEntitlements = serviceEntitlements != null ? serviceEntitlements : Map.of();
 		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
@@ -697,6 +702,220 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				.setRefreshToken(newToken.getProto())
 				.setAccessToken(accessProto)
 				.build();
+	}
+
+	// ========================================================================
+	// MintDelegatedToken RPC (standing delegation — Grant record mint)
+	// ========================================================================
+
+	@Override
+	public Tokenrequest.MintDelegatedTokenResponse mintDelegatedToken(Caller caller,
+			Tokenrequest.MintDelegatedTokenRequest request) throws ProtoException {
+		try {
+			return doMintDelegatedToken(request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("MintDelegatedToken failed", e);
+			throw new ProtoException(ProtoException.INTERNAL, "delegated token mint failed: " + e.getMessage(), e);
+		}
+	}
+
+	/**
+	 * Standing delegation (Grant) mint: a delegate presents its own S2S bearer
+	 * token plus a Grant id it holds. Kernel verifies the caller's identity,
+	 * confirms it matches the Grant's delegate_name, replays the Grant's
+	 * recorded claims into OPA fresh (the same {@link #resolveEntitlementsViaOpa}
+	 * path {@link #mintUserTokenInternal} uses), intersects the fresh result
+	 * with the Grant's authorized_scope, and mints a single short-lived access
+	 * token: sub = grant.subject, act = grant.delegate_name, azp = kernel (this
+	 * mint is not broker-attested — kernel mints it directly from a stored
+	 * record). No refresh/offline companion is issued; the delegate re-mints
+	 * per use from the same grant_id.
+	 */
+	private Tokenrequest.MintDelegatedTokenResponse doMintDelegatedToken(
+			Tokenrequest.MintDelegatedTokenRequest request) throws StatusException {
+
+		// Authenticate the calling delegate via its own bearer token — same
+		// 5-step pattern as doMintUserToken/doWorkloadMint (raw token -> parse
+		// -> kid -> verify -> resolve SPIFFE-or-bare sub).
+		String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
+		if (rawToken == null || rawToken.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"MintDelegatedToken requires authorization header");
+		}
+
+		TokenWrapper callerToken;
+		try {
+			callerToken = TokenWrapper.parse(rawToken);
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"invalid caller token: " + e.getMessage());
+		}
+
+		String kid = callerToken.getKid();
+		if (kid == null || kid.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
+		}
+		if (!isPlausibleKid(kid)) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"caller token signed with unknown key: " + kid);
+		}
+
+		JwkOuterClass.Jwk matchingKey = null;
+		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+			if (kid.equals(jwk.getKid())) {
+				matchingKey = jwk;
+				break;
+			}
+		}
+		if (matchingKey == null) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"caller token signed with unknown key: " + kid);
+		}
+
+		try {
+			callerToken.verify(ImmutableJwk.from(matchingKey));
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"caller token verification failed: " + e.getMessage());
+		}
+
+		// The caller's own verified identity. A service token's sub may arrive
+		// as a full SPIFFE URI, resolved to the bare delegate name exactly as
+		// findDelegateByName does.
+		String rawCallerSub = callerToken.getSubject();
+		String callerDelegateName = SpiffeIds.isSpiffeUri(rawCallerSub)
+				? SpiffeIds.serviceName(rawCallerSub) : rawCallerSub;
+
+		// Paired negative control: no live Grant record authorizes the
+		// (caller identity, grant_id) pair presented. Three candidate misses —
+		// id doesn't exist, id exists but names a different delegate, id
+		// exists and matches but has expired — collapse to the SAME
+		// status/message shape (non-enumerating, mirroring
+		// findDelegateByName's own PERMISSION_DENIED), except expiry gets a
+		// distinguishable suffix since that is not a confused-identity case.
+		// Run before any OPA call — cheapest-check-first, mirroring
+		// doMintUserToken's ordering.
+		String grantId = request.getGrantId();
+		Kernel.Grant grant = findGrantById(grantId);
+		if (grant == null || !callerDelegateName.equals(grant.getDelegateName())) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no usable grant " + grantId + " for delegate " + callerDelegateName);
+		}
+		long expiresAtMs = grant.getExpiresAtMs();
+		if (expiresAtMs != 0 && expiresAtMs <= System.currentTimeMillis()) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no usable grant " + grantId + " for delegate " + callerDelegateName
+							+ " — grant expired at " + expiresAtMs);
+		}
+
+		// Replay the grant's recorded claims into OPA fresh — the exact same
+		// EvalEntitlement path MintUserToken uses. Fresh OPA gives "cannot
+		// exceed the user's CURRENT authority"; the recorded authorized_scope
+		// (intersected below) gives "the user downscoped it at consent time".
+		Userentitlements.EntitlementEvalResult opaResult =
+				resolveEntitlementsViaOpa(grant.getClaims(), request.getTraceId());
+		Entitlements.TokenEntitlements fresh = expandEntitlements(opaResult);
+		Entitlements.TokenEntitlements scoped = intersectAuthorizedScope(fresh, grant.getAuthorizedScope());
+
+		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+
+		long now = Instant.now().getEpochSecond();
+		long exp = now + defaultTokenExpirySeconds;
+
+		TokenWrapper newToken = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(grant.getSubject())
+				.setAudience(Kernel.getDescriptor().getPackage())
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+
+		// azp is always kernel on a Grant mint (kernel mints this directly, not
+		// on a broker's attestation, per the controller's ruling); the
+		// delegate identity goes on the act claim instead (Piece A). Order
+		// mirrors mintUserTokenInternal's setAzp-before-replay, though the
+		// STANDARD_JWT_CLAIMS skip-list makes the order non-load-bearing
+		// either way.
+		newToken.setAzp(Kernel.getDescriptor().getPackage());
+		newToken.setAct(grant.getDelegateName());
+		newToken.setSubType(SUB_TYPE_USER);
+		newToken.setTokenUse(TOKEN_USE_ACCESS);
+		// Namespace resolution is automatically correct by reusing the same
+		// two calls (resolveEntitlementsViaOpa then namespaceFromOpaOrRoot) in
+		// the same order mintUserTokenInternal does.
+		newToken.setNamespace(namespaceFromOpaOrRoot(opaResult));
+
+		Struct claims = grant.getClaims();
+		if (claims != null) {
+			newToken.setClaimsFromStruct(claims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
+		}
+
+		setFlatServiceEntitlements(newToken, scoped);
+
+		newToken.sign(signingKey);
+
+		logger.info("MintDelegatedToken: grant_id={}, sub={}, act={}, azp=kernel, exp={}",
+				grantId, grant.getSubject(), grant.getDelegateName(), exp);
+
+		return Tokenrequest.MintDelegatedTokenResponse.newBuilder()
+				.setToken(newToken.getProto())
+				.build();
+	}
+
+	/**
+	 * Intersects a fresh OPA entitlement result with a Grant's recorded
+	 * authorized_scope: grants + data_grants narrow by set intersection,
+	 * principal_scope narrows to the lower of the two (absent/UNSPECIFIED on
+	 * either side is treated as SELF_ONLY, the enum's own documented default),
+	 * and azp is deliberately DROPPED — not intersected — since the minted
+	 * token's azp ("kernel") could never have been a possible consent-time azp
+	 * value; an empty azp list means "applies regardless of azp" by the
+	 * field's own contract, the conservative reading already defined for it.
+	 */
+	private static Entitlements.TokenEntitlements intersectAuthorizedScope(
+			Entitlements.TokenEntitlements fresh, Entitlements.TokenEntitlements recorded) {
+		Set<String> grants = new TreeSet<>(Grants.normalize(entitlementGrantTokens(fresh)));
+		grants.retainAll(Grants.normalize(entitlementGrantTokens(recorded)));
+
+		// data_grants have no wildcard catalog entries — Grants.normalize would
+		// silently DROP any token it doesn't recognize — so intersect the flat
+		// lists directly rather than normalizing.
+		Set<String> dataGrants = new TreeSet<>(fresh.getDataGrantsList());
+		dataGrants.retainAll(recorded.getDataGrantsList());
+
+		String principalScope = Spec.PrincipalScope.forNumber(
+				Math.min(principalScopeRank(fresh.getPrincipalScope()),
+						principalScopeRank(recorded.getPrincipalScope())))
+				.name();
+
+		return buildTokenEntitlements(
+				new java.util.ArrayList<>(grants), new java.util.ArrayList<>(dataGrants),
+				List.of(), principalScope);
+	}
+
+	/**
+	 * Parses a principal_scope claim string (an enum VALUE NAME, e.g.
+	 * "PRINCIPAL_SCOPE_ANY") into its ordinal rank. Absent/empty/unrecognized
+	 * values are treated as SELF_ONLY, the enum's own documented default for
+	 * "a token that says nothing about principal scope".
+	 */
+	private static int principalScopeRank(String value) {
+		if (value != null && !value.isEmpty()) {
+			try {
+				Spec.PrincipalScope parsed = Spec.PrincipalScope.valueOf(value);
+				if (parsed.getNumber() > 0) {
+					return parsed.getNumber();
+				}
+			} catch (IllegalArgumentException ignored) {
+				// Unrecognized value — fall through to the SELF_ONLY default.
+			}
+		}
+		return Spec.PrincipalScope.PRINCIPAL_SCOPE_SELF_ONLY.getNumber();
 	}
 
 	/**
@@ -1931,6 +2150,16 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		for (Kernel.Delegate d : delegatesReader.get()) {
 			if (lookupName.equals(d.getName())) {
 				return d;
+			}
+		}
+		return null;
+	}
+
+	/** Looks up a standing delegation Grant by its opaque id. Null if none exists. */
+	private Kernel.Grant findGrantById(String id) {
+		for (Kernel.Grant g : grantsReader.get()) {
+			if (id.equals(g.getId())) {
+				return g;
 			}
 		}
 		return null;

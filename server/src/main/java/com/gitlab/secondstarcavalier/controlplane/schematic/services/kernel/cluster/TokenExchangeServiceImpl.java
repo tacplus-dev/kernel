@@ -37,8 +37,7 @@ final class TokenExchangeServiceImpl {
 		TreeSet<String> scoped = new TreeSet<>();
 		for (String grant : entitlements.getGrantsList()) {
 			for (String token : Grants.normalize(List.of(grant))) {
-				var grantInfo = Grants.lookup(token);
-				if (grantInfo.isPresent() && targetAud.equals(grantInfo.get().pkg)) {
+				if (Grants.authorizesAudience(token, targetAud)) {
 					scoped.add(token);
 				}
 			}

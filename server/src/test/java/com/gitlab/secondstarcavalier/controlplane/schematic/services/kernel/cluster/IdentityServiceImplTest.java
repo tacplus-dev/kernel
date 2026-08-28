@@ -143,6 +143,39 @@ class IdentityServiceImplTest {
 				scoped.getDataGrantsList());
 	}
 
+	/**
+	 * BIG GOAL 3 item 6 Piece C live proof: a DelegationProbe C2S EventBus
+	 * publish route is declared in the "tasks" contract package but physically
+	 * dialed through "eventbus". Policy stamps the contract-scoped wildcard
+	 * (TASKS_ANY / TASKS_WRITE_ANY), so the caller's token normalizes to the
+	 * TASKS_DELEGATION_PROBE_BUS_STATE_SERVICE_PUBLISH_TO_STREAM grant. Before
+	 * this fix, scopeToService compared that grant's package ("tasks") directly
+	 * against the physical dial audience ("eventbus") and dropped it, so a
+	 * kernel-minted eventbus-audience token never carried the grant the
+	 * delegated publish RPC needed — the live e2e failure this test pins.
+	 */
+	@Test
+	void serviceScopedEventBusAudienceTokenKeepsRoutingAliasedContractGrant() {
+		String contractToken = "TASKS_DELEGATION_PROBE_BUS_STATE_SERVICE_PUBLISH_TO_STREAM";
+		assertTrue(Grants.tokens().contains(contractToken),
+				"generated grant catalog is missing " + contractToken
+						+ "; testapp/services/tasks proto must declare DelegationProbeBusStateService.PublishToStream");
+		Grants.Grant contract = Grants.lookup(contractToken).orElseThrow();
+		assertEquals("tasks", contract.pkg);
+		assertTrue(contract.routingAliasPackages.contains("eventbus"),
+				contractToken + " must carry \"eventbus\" as a generated routing-alias package");
+
+		Entitlements.TokenEntitlements scoped = TokenExchangeServiceImpl.scopeToService(
+				Entitlements.TokenEntitlements.newBuilder()
+						.addGrants(contractToken)
+						.build(),
+				"eventbus");
+
+		assertTrue(scoped.getGrantsList().contains(contractToken),
+				"scopeToService(targetAud=eventbus) dropped the routing-aliased tasks-package grant; got "
+						+ scoped.getGrantsList());
+	}
+
 	@Test
 	void serviceScopedTokenKeepsPrincipalScope() {
 		String wildcard = Grants.tokens().stream()

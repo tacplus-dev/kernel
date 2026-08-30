@@ -61,6 +61,7 @@ class MintServiceTokenKubernetesTest {
                 () -> verifyingKeys,
                 () -> delegates,
                 List::of,        // grants
+                null,            // grantsWriter (no grant revocation on these paths)
                 null,            // serviceEntitlements
                 null,            // signingCa (unused on the k8s/credpair mint path)
                 name -> null,    // serviceCaReader

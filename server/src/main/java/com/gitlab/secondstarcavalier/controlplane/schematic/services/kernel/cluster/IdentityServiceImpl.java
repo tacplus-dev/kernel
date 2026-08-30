@@ -237,6 +237,16 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private final Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader;
 	private final Supplier<List<Kernel.Delegate>> delegatesReader;
 	private final Supplier<List<Kernel.Grant>> grantsReader;
+	/**
+	 * Replaces the live standing-delegation record carrying the same
+	 * {@code Grant.id} — the single write path {@code RevokeGrant} uses to mark a
+	 * grant revoked. Paired with {@link #grantsReader} the way
+	 * {@code serviceCaWriter} is paired with {@code serviceCaReader}; null on a
+	 * read-only wiring, in which case RevokeGrant reports UNIMPLEMENTED rather
+	 * than silently reporting success for a write that went nowhere.
+	 */
+	@Nullable
+	private final java.util.function.Consumer<Kernel.Grant> grantsWriter;
 	private final Map<String, List<String>> serviceEntitlements;
 	private final ImmutableCertChain signingCa;
 	private final Function<String, X509.X509CertChain> serviceCaReader;
@@ -278,6 +288,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
 			Supplier<List<Kernel.Delegate>> delegatesReader,
 			Supplier<List<Kernel.Grant>> grantsReader,
+			@Nullable java.util.function.Consumer<Kernel.Grant> grantsWriter,
 			Map<String, List<String>> serviceEntitlements,
 			ImmutableCertChain signingCa,
 			Function<String, X509.X509CertChain> serviceCaReader,
@@ -298,6 +309,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		this.verifyingKeysReader = verifyingKeysReader;
 		this.delegatesReader = delegatesReader;
 		this.grantsReader = grantsReader != null ? grantsReader : List::of;
+		this.grantsWriter = grantsWriter;
 		this.serviceEntitlements = serviceEntitlements != null ? serviceEntitlements : Map.of();
 		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
@@ -815,6 +827,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"no usable grant " + grantId + " for delegate " + callerDelegateName
 							+ " — grant expired at " + expiresAtMs);
+		}
+		// A revoked grant is marked, not deleted (audit trail), so it is still
+		// found above — the record's own revoked_at_ms is what makes it unusable.
+		// Collapses to the same non-enumerating shape as the identity misses.
+		if (grant.getRevokedAtMs() != 0) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no usable grant " + grantId + " for delegate " + callerDelegateName);
 		}
 
 		// Replay the grant's recorded claims into OPA fresh — the exact same
@@ -2186,7 +2205,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 * <p>Deliberately uncached, per the OT revocation-timing ruling: a short-TTL
 	 * positive cache is a later, measured optimization, never the default.
 	 *
-	 * <p>The three misses collapse to one non-enumerating message, mirroring
+	 * <p>The misses — gone, revoked, expired, or no longer naming this delegate —
+	 * collapse to one non-enumerating message, mirroring
 	 * {@code doMintDelegatedToken}'s own paired negative control.
 	 */
 	private void assertGrantStillActive(TokenWrapper token) throws StatusException {
@@ -2198,6 +2218,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		long expiresAtMs = grant != null ? grant.getExpiresAtMs() : 0;
 		if (grant == null
 				|| !token.getAct().equals(grant.getDelegateName())
+				|| grant.getRevokedAtMs() != 0
 				|| (expiresAtMs != 0 && expiresAtMs <= System.currentTimeMillis())) {
 			logger.warn("Rejected exchange of a token whose standing delegation is no longer active: "
 					+ "grant_id={}, sub={}, act={}", grantId, token.getSubject(), token.getAct());
@@ -2722,6 +2743,140 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		persistState.run();
 
 		logger.info("WorkloadRevoke: caller={}, target={}", callerSub, targetSpiffeId);
+	}
+
+	// ========================================================================
+	// RevokeGrant RPC (standing delegation — runtime revocation)
+	// ========================================================================
+
+	@Override
+	public void revokeGrant(Caller caller, Kernel.GrantRevokeRequest request) throws ProtoException {
+		try {
+			doRevokeGrant(request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("RevokeGrant failed", e);
+			throw new ProtoException(ProtoException.INTERNAL, "grant revoke failed: " + e.getMessage(), e);
+		}
+	}
+
+	/**
+	 * Revokes a standing delegation at runtime. Only a party to the grant may
+	 * revoke it: the user it acts for (caller sub == {@code grant.subject}) or the
+	 * delegate holding it (caller identity == {@code grant.delegate_name}). Both
+	 * are withdrawing authority they already hold, so this needs no authorization
+	 * model beyond the caller's own verified identity — the same reasoning that
+	 * limits {@code RevokeWorkload} to the identity's own ancestor.
+	 *
+	 * <p>The record is MARKED ({@code revoked_at_ms}), never deleted, so the
+	 * delegation that existed and the moment it was withdrawn stay auditable.
+	 * The write goes to the live grants store and is then persisted through the
+	 * same {@code persistState} hook {@code RevokeWorkload} uses, so the
+	 * revocation survives a kernel restart.
+	 *
+	 * <p>From that moment {@link #doMintDelegatedToken} refuses to mint from the
+	 * grant and {@link #assertGrantStillActive} denies every exchange of a token
+	 * already minted from it — the already-minted token dies on its next use, not
+	 * at its natural expiry.
+	 *
+	 * <p>Idempotent: re-revoking an already-revoked grant succeeds and leaves the
+	 * original timestamp alone rather than rewriting the audit record.
+	 */
+	private void doRevokeGrant(Kernel.GrantRevokeRequest request) throws StatusException {
+		TokenWrapper callerToken = verifiedCallerToken("RevokeGrant");
+
+		// The caller's own verified identity. A service token's sub may arrive as a
+		// full SPIFFE URI, resolved to the bare delegate name exactly as
+		// doMintDelegatedToken does; a user token carries the IDP subject a Grant
+		// records at consent time verbatim.
+		String rawCallerSub = callerToken.getSubject();
+		String callerDelegateName = SpiffeIds.isSpiffeUri(rawCallerSub)
+				? SpiffeIds.serviceName(rawCallerSub) : rawCallerSub;
+
+		String grantId = request.getGrantId();
+		if (grantId == null || grantId.isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "grant_id is required");
+		}
+
+		// Non-enumerating, same shape as the mint path: "no such id" and "not your
+		// grant" are one message, so revoke cannot be used to probe which ids exist.
+		Kernel.Grant grant = findGrantById(grantId);
+		if (grant == null
+				|| !(rawCallerSub.equals(grant.getSubject())
+						|| callerDelegateName.equals(grant.getDelegateName()))) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no revocable grant " + grantId + " for caller " + rawCallerSub);
+		}
+
+		if (grant.getRevokedAtMs() != 0) {
+			logger.info("RevokeGrant: grant_id={} already revoked at {} — no-op", grantId, grant.getRevokedAtMs());
+			return;
+		}
+
+		if (grantsWriter == null) {
+			// Never report success for a revocation that cannot land.
+			throw new StatusException(Status.UNIMPLEMENTED, "this kernel has no writable grants store");
+		}
+		long revokedAtMs = Instant.now().toEpochMilli();
+		try {
+			grantsWriter.accept(grant.toBuilder().setRevokedAtMs(revokedAtMs).build());
+		} catch (Exception e) {
+			throw new StatusException(Status.INTERNAL,
+					"failed to record revocation for grant " + grantId + ": " + e.getMessage());
+		}
+		persistState.run();
+
+		logger.info("RevokeGrant: grant_id={}, caller={}, subject={}, delegate={}, revoked_at_ms={}",
+				grantId, rawCallerSub, grant.getSubject(), grant.getDelegateName(), revokedAtMs);
+	}
+
+	/**
+	 * Parses and verifies the caller's own bearer token against the cluster's
+	 * verifying keys — the authentication half of the pattern
+	 * {@code doWorkloadRevoke} and {@code doMintDelegatedToken} each spell out
+	 * inline. Only new call sites use it; the existing ones are left as they are.
+	 *
+	 * @param rpcLabel the RPC name, for the missing-header message
+	 */
+	private TokenWrapper verifiedCallerToken(String rpcLabel) throws StatusException {
+		String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
+		if (rawToken == null || rawToken.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED, rpcLabel + " requires authorization header");
+		}
+
+		TokenWrapper callerToken;
+		try {
+			callerToken = TokenWrapper.parse(rawToken);
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED, "invalid caller token: " + e.getMessage());
+		}
+
+		String kid = callerToken.getKid();
+		if (kid == null || kid.isEmpty()) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
+		}
+		if (!isPlausibleKid(kid)) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token signed with unknown key: " + kid);
+		}
+
+		JwkOuterClass.Jwk matchingKey = null;
+		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+			if (kid.equals(jwk.getKid())) {
+				matchingKey = jwk;
+				break;
+			}
+		}
+		if (matchingKey == null) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token signed with unknown key: " + kid);
+		}
+
+		try {
+			callerToken.verify(ImmutableJwk.from(matchingKey));
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED, "caller token verification failed: " + e.getMessage());
+		}
+		return callerToken;
 	}
 
 	/**

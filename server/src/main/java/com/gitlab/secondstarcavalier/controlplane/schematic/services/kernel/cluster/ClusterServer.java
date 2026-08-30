@@ -430,6 +430,7 @@ public class ClusterServer {
 		// their boundary maps). A cold start returns null.
 		Kernel.KernelDiskState snapshot = kernelPersistence.load();
 		rehydrateFromSnapshot(snapshot, identityState, caState, workloadState, kernelConfigMap);
+		restoreGrantRevocations(snapshot, liveGrants);
 		keyRotator.restore(snapshot != null ? snapshot.getSigningKeysList() : List.of());
 
 		// 5. Membership listener for cluster state publishing
@@ -755,6 +756,19 @@ public class ClusterServer {
 					allKeysSupplier,
 					() -> delegates,
 					() -> liveGrants,
+					// RevokeGrant's single write path: replace the record carrying the
+					// same id in place, so the live list a concurrent mint reads is
+					// never briefly missing the grant. A grant is marked revoked, never
+					// removed, so the list length is stable and the audit trail survives.
+					updated -> {
+						for (int i = 0; i < liveGrants.size(); i++) {
+							if (liveGrants.get(i).getId().equals(updated.getId())) {
+								liveGrants.set(i, updated);
+								return;
+							}
+						}
+						throw new IllegalStateException("grant " + updated.getId() + " is no longer in the live store");
+					},
 					com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.SecurityInterceptor.SERVICE_ENTITLEMENTS,
 					signingCa,
 					serviceName -> caState.getServiceCas(serviceName),
@@ -903,6 +917,44 @@ public class ClusterServer {
 	 * tenant/project tree, and workload revocations. Signing keys are restored
 	 * separately into the KeyRotator. A null snapshot (cold start) is a no-op.
 	 */
+	/**
+	 * Re-applies persisted grant revocations onto the boot-seeded live grants.
+	 *
+	 * <p>Config.grants remains the source of truth for WHICH grants exist — the
+	 * catalog is seeded from config at every boot, so a grant added to config
+	 * appears without a snapshot round-trip. Only {@code revoked_at_ms} is
+	 * restored from the snapshot, because that is the one field the runtime
+	 * (RevokeGrant) writes and config cannot know about: without this, a restart
+	 * would silently resurrect every revoked delegation.
+	 *
+	 * <p>Package-private so the restart half of the revocation proof can exercise
+	 * the real boot path rather than a copy of it.
+	 */
+	static void restoreGrantRevocations(
+			Kernel.KernelDiskState snapshot, java.util.List<Kernel.Grant> liveGrants) {
+		if (snapshot == null || snapshot.getGrantsCount() == 0) {
+			return;
+		}
+		java.util.Map<String, Long> revokedById = new java.util.HashMap<>();
+		for (Kernel.Grant g : snapshot.getGrantsList()) {
+			if (g.getRevokedAtMs() != 0) {
+				revokedById.put(g.getId(), g.getRevokedAtMs());
+			}
+		}
+		int restored = 0;
+		for (int i = 0; i < liveGrants.size(); i++) {
+			Kernel.Grant live = liveGrants.get(i);
+			Long revokedAtMs = revokedById.get(live.getId());
+			if (revokedAtMs != null && live.getRevokedAtMs() == 0) {
+				liveGrants.set(i, live.toBuilder().setRevokedAtMs(revokedAtMs).build());
+				restored++;
+			}
+		}
+		if (restored > 0) {
+			logger.info("Restored {} revoked standing delegation(s) from the disk snapshot", restored);
+		}
+	}
+
 	private void rehydrateFromSnapshot(
 			Kernel.KernelDiskState snapshot,
 			com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.IdentityMap identityState,

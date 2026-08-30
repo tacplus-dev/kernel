@@ -27,6 +27,9 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -78,6 +81,7 @@ class MintDelegatedTokenTest {
                 () -> verifyingKeys,
                 () -> delegates,
                 () -> grants,
+                RevokeGrantSupport.writerFor(grants),
                 null,            // serviceEntitlements
                 null,            // signingCa
                 name -> null,    // serviceCaReader
@@ -362,5 +366,161 @@ class MintDelegatedTokenTest {
         assertTrue(entitlementsJson.contains("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"));
         assertFalse(entitlementsJson.contains("KERNEL_TENANT_ADMIN_GET_PROJECT_CONFIG"),
                 "widened fresh-OPA grant must be excluded — the recorded authorized_scope bounds the mint");
+    }
+
+    // ---- RevokeGrant: live revocation -----------------------------------
+
+    /** Replaces the record carrying the same id, exactly as ClusterServer wires it. */
+    private static final class RevokeGrantSupport {
+        static java.util.function.Consumer<Kernel.Grant> writerFor(List<Kernel.Grant> store) {
+            return updated -> {
+                for (int i = 0; i < store.size(); i++) {
+                    if (store.get(i).getId().equals(updated.getId())) {
+                        store.set(i, updated);
+                        return;
+                    }
+                }
+                throw new IllegalStateException("grant " + updated.getId() + " is no longer in the live store");
+            };
+        }
+    }
+
+    /** Calls RevokeGrant as {@code callerDelegateName}, which is how a delegate revokes. */
+    private void revokeAs(IdentityServiceImpl svc, String callerDelegateName, String grantId) throws Exception {
+        io.grpc.Context ctx = io.grpc.Context.current()
+                .withValue(ClusterServer.RAW_AUTH_TOKEN_KEY, mintCallerToken(callerDelegateName));
+        io.grpc.Context previous = ctx.attach();
+        try {
+            svc.revokeGrant(CALLER, Kernel.GrantRevokeRequest.newBuilder().setGrantId(grantId).build());
+        } finally {
+            ctx.detach(previous);
+        }
+    }
+
+    /** A live grant whose expiry is far beyond any token minted from it. */
+    private static Kernel.Grant longLivedGrant() {
+        return grantBuilder().setSubject(IDP_GRANT_SUBJECT)
+                .setAuthorizedScope(scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null))
+                .setExpiresAtMs(Instant.now().toEpochMilli() + 86_400_000L)
+                .build();
+    }
+
+    private static FakeOpaEvalGrpcClient permissiveOpa() {
+        return FakeOpaEvalGrpcClient.returning(scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null));
+    }
+
+    private Kernel.Grant liveGrant(String id) {
+        for (Kernel.Grant g : grants) {
+            if (id.equals(g.getId())) {
+                return g;
+            }
+        }
+        return null;
+    }
+
+    @Test
+    void revokeGrantRpcKillsAnAlreadyMintedToken() throws Exception {
+        grants.add(longLivedGrant());
+        IdentityServiceImpl svc = newService(permissiveOpa());
+
+        TokenOuterClass.Token minted = mintAs(svc, DELEGATE_NAME, GRANT_ID).getToken();
+
+        // Positive control: the token works while the delegation stands.
+        assertNotNull(useFor(svc, minted, "kernel").getAccessToken());
+
+        revokeAs(svc, DELEGATE_NAME, GRANT_ID);
+
+        // The record is MARKED, not deleted — the audit trail is the point.
+        Kernel.Grant after = liveGrant(GRANT_ID);
+        assertNotNull(after, "a revoked grant must remain as an audit record");
+        assertTrue(after.getRevokedAtMs() > 0, "revoke must stamp revoked_at_ms");
+
+        // The SAME token, unchanged and still well inside its own expiry, is dead.
+        assertDeniedByRevokedGrant(() -> useFor(svc, minted, "kernel"));
+    }
+
+    @Test
+    void revokedGrantMintsNoNewTokens() throws Exception {
+        grants.add(longLivedGrant());
+        IdentityServiceImpl svc = newService(permissiveOpa());
+        assertNotNull(mintAs(svc, DELEGATE_NAME, GRANT_ID).getToken());
+
+        revokeAs(svc, DELEGATE_NAME, GRANT_ID);
+
+        assertEquals(ProtoException.PERMISSION_DENIED,
+                codeOf(() -> mintAs(svc, DELEGATE_NAME, GRANT_ID)));
+    }
+
+    @Test
+    void revokeGrantByAStrangerIsDenied() throws Exception {
+        grants.add(longLivedGrant());
+        IdentityServiceImpl svc = newService(permissiveOpa());
+        TokenOuterClass.Token minted = mintAs(svc, DELEGATE_NAME, GRANT_ID).getToken();
+
+        // "billing" is neither the grant's delegate nor its subject.
+        assertEquals(ProtoException.PERMISSION_DENIED,
+                codeOf(() -> revokeAs(svc, "billing", GRANT_ID)));
+
+        assertEquals(0, liveGrant(GRANT_ID).getRevokedAtMs(), "a denied revoke must not mark the grant");
+        assertNotNull(useFor(svc, minted, "kernel").getAccessToken(), "the token must still work");
+    }
+
+    @Test
+    void revokeGrantIsIdempotent() throws Exception {
+        grants.add(longLivedGrant());
+        IdentityServiceImpl svc = newService(permissiveOpa());
+
+        revokeAs(svc, DELEGATE_NAME, GRANT_ID);
+        long first = liveGrant(GRANT_ID).getRevokedAtMs();
+
+        revokeAs(svc, DELEGATE_NAME, GRANT_ID);
+        assertEquals(first, liveGrant(GRANT_ID).getRevokedAtMs(),
+                "re-revoking must not rewrite the original audit timestamp");
+    }
+
+    @Test
+    void revokeGrantOfAnUnknownIdIsDenied() {
+        IdentityServiceImpl svc = newService(FakeOpaEvalGrpcClient.neverCalled());
+        assertEquals(ProtoException.PERMISSION_DENIED,
+                codeOf(() -> revokeAs(svc, DELEGATE_NAME, "no-such-grant")));
+    }
+
+    /**
+     * The restart proof: revoke over the RPC, snapshot the live store the way
+     * {@code persistState} does, then rebuild the boot state exactly as
+     * ClusterServer does — seed the catalog from Config.grants (which knows
+     * nothing of the revocation) and replay the snapshot's revocations over it.
+     * A revocation that did not survive would resurrect the delegation here.
+     */
+    @Test
+    void revocationSurvivesAKernelRestart(@TempDir Path dir) throws Exception {
+        grants.add(longLivedGrant());
+        IdentityServiceImpl before = newService(permissiveOpa());
+        TokenOuterClass.Token minted = mintAs(before, DELEGATE_NAME, GRANT_ID).getToken();
+        assertNotNull(useFor(before, minted, "kernel").getAccessToken());
+
+        revokeAs(before, DELEGATE_NAME, GRANT_ID);
+
+        // What persistState.run() writes.
+        KernelPersistence persistence = new KernelPersistence(
+                dir.toString(), null, null, null, null, null, () -> List.copyOf(grants));
+        persistence.save();
+
+        // --- restart ---
+        Kernel.KernelDiskState snapshot = persistence.load();
+        assertNotNull(snapshot);
+        // Config.grants seeds the catalog fresh at every boot, unrevoked.
+        grants.clear();
+        grants.add(longLivedGrant());
+        assertEquals(0, liveGrant(GRANT_ID).getRevokedAtMs());
+        ClusterServer.restoreGrantRevocations(snapshot, grants);
+
+        assertTrue(liveGrant(GRANT_ID).getRevokedAtMs() > 0,
+                "the revocation must be restored from the disk snapshot");
+
+        IdentityServiceImpl after = newService(permissiveOpa());
+        assertDeniedByRevokedGrant(() -> useFor(after, minted, "kernel"));
+        assertEquals(ProtoException.PERMISSION_DENIED,
+                codeOf(() -> mintAs(after, DELEGATE_NAME, GRANT_ID)));
     }
 }

@@ -109,6 +109,7 @@ class WorkloadRevocationTest {
 				() -> verifyingKeys,
 				List::of,        // delegates
 				List::of,        // grants
+				null,            // grantsWriter (no grant revocation on these paths)
 				null,            // serviceEntitlements
 				null,            // signingCa (no cert minting on these paths)
 				name -> null,    // serviceCaReader

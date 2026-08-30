@@ -559,8 +559,19 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
      * root namespace, holding full entitlements (every service's {@code _RPCS_ANY})
      * and {@code namespaces=["*"]}. The minted token therefore carries
      * {@code namespace=}root, which is at-or-above any tenant/project for the
-     * generated level-or-below check (TenantAdmin). Idempotent: re-running
-     * overwrites the root entry. No-op when the list is empty.
+     * generated level-or-below check (TenantAdmin). No-op when the list is empty.
+     *
+     * <p>Kernel runs this on every start, after the disk snapshot has been
+     * rehydrated, so the seed MERGES into the root entry rather than replacing
+     * it: a bootstrap cred_pair is upserted by id (the bundle stays authoritative
+     * for the ids it declares, so rotating a root key there still takes effect,
+     * and an already-seeded id keeps its original {@code created_at}), while
+     * every other cred_pair and every other field of the root
+     * {@link TenantConfigOuterClass.TenantConfig} is left untouched. A blind
+     * replace here discarded whatever the running cluster held for the root
+     * namespace on each restart — the same defect the create-only ConfigState
+     * seeding fixed for the per-service config roots, which never covered this
+     * path.
      */
     static void seedRootCredPairs(
             ConfigMap configMap,
@@ -571,30 +582,44 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         }
         Entitlements.TokenEntitlements fullEntitlements = buildFullEntitlements();
         Timestamp now = nowTs();
-        Credentials.KernelTenantConfig.Builder kernelCfg = Credentials.KernelTenantConfig.newBuilder();
+        TenantConfigOuterClass.TenantConfig.Builder cfg =
+                configMap.getTenantConfigs(rootNamespace).getConfig().toBuilder();
+        Credentials.KernelTenantConfig.Builder kernelCfg = cfg.getKernelBuilder();
         for (Credentials.CredPair in : rootCredPairs) {
+            int at = indexOfCredPair(kernelCfg.getCredPairsList(), in.getId());
             Credentials.CredPair.Builder cp = Credentials.CredPair.newBuilder()
                     .setId(in.getId())
                     .setTenantName(rootNamespace)
                     .setPublicKey(in.getPublicKey())
                     .setEntitlements(fullEntitlements)
                     .addNamespaces("*")
-                    .setCreatedAt(now);
+                    .setCreatedAt(at < 0 ? now : kernelCfg.getCredPairs(at).getCreatedAt());
             if (!in.getDescription().isEmpty()) {
                 cp.setDescription(in.getDescription());
             }
-            kernelCfg.addCredPairs(cp.build());
+            if (at < 0) {
+                kernelCfg.addCredPairs(cp.build());
+            } else {
+                kernelCfg.setCredPairs(at, cp.build());
+            }
         }
-        TenantConfigOuterClass.TenantConfig cfg = TenantConfigOuterClass.TenantConfig.newBuilder()
-                .setKernel(kernelCfg.build())
-                .build();
         Kernel.TenantConfigEntry entry = Kernel.TenantConfigEntry.newBuilder()
                 .setTenantName(rootNamespace)
-                .setConfig(cfg)
+                .setConfig(cfg.build())
                 .build();
         configMap.putTenantConfigs(rootNamespace, entry);
-        logger.info("Seeded {} root cred_pair(s) into root namespace {}",
-                rootCredPairs.size(), rootNamespace);
+        logger.info("Seeded {} root cred_pair(s) into root namespace {} ({} cred_pair(s) total)",
+                rootCredPairs.size(), rootNamespace, kernelCfg.getCredPairsCount());
+    }
+
+    /** Index of the cred_pair with {@code id} in {@code credPairs}, or -1. */
+    private static int indexOfCredPair(List<Credentials.CredPair> credPairs, String id) {
+        for (int i = 0; i < credPairs.size(); i++) {
+            if (credPairs.get(i).getId().equals(id)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static Timestamp nowTs() {

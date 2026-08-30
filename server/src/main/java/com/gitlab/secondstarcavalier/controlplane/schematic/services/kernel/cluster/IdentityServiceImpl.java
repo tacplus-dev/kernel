@@ -156,6 +156,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static final String CLAIM_AUTHORIZED_PROJECTS = "authorized_projects";
 	private static final String CLAIM_DEFAULT_PROJECT = "default_project";
 
+	// Standing-delegation lineage. A token minted from a Kernel.Grant carries the
+	// grant's id here, and every token cloned from it (AT, ST) keeps the claim, so
+	// each exchange can re-check that the SAME delegation record is still live —
+	// see assertGrantStillActive. Kernel-only (services ignore it); a forged value
+	// can only ever deny an exchange, never widen authority.
+	private static final String CLAIM_GRANT_ID = "gid";
+
 
 	/** Intermediate CA lifetime: 10 years. */
 	private static final long INTERMEDIATE_CA_LIFETIME_SECONDS = 10L * 365 * 24 * 3600;
@@ -856,6 +863,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 
 		setFlatServiceEntitlements(newToken, scoped);
+
+		// Stamp the grant lineage LAST, after the claims replay, so a recorded IDP
+		// claim literally named "gid" cannot displace it. Every later exchange of
+		// this token — and of any token cloned from it — re-checks that this same
+		// grant is still live (assertGrantStillActive), so revoking the grant kills
+		// the derived tokens on their next use instead of at their natural expiry.
+		newToken.setCustomField(CLAIM_GRANT_ID, grantId);
 
 		newToken.sign(signingKey);
 
@@ -1605,6 +1619,10 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// held by a revoked workload stops buying new ones.
 		assertNotRevoked(inputToken.getSubject(), "workload");
 
+		// Same choke point, for standing delegations: a token that derives from a
+		// Grant is only exchangeable while that Grant is still live.
+		assertGrantStillActive(inputToken);
+
 		// Bootstrap tokens are exchanged for real refresh+access pairs (workload bootstrap).
 		if (TOKEN_USE_BOOTSTRAP.equals(tokenUse)) {
 			ImmutableKey bsSigningKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
@@ -2153,6 +2171,39 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * Per-use standing-delegation revocation check. A token minted from a
+	 * {@link Kernel.Grant} carries the grant id on {@code gid}, and every token
+	 * cloned from it keeps the claim, so this fires on OT/AT → AT, AT → ST and
+	 * every renewal alike. The grant is looked up again on each exchange and the
+	 * exchange is denied unless the SAME record is still present, unexpired, and
+	 * still names the delegate the token records on {@code act}. Revoking a grant
+	 * therefore kills already-minted derived tokens within one request rather than
+	 * at their natural expiry. The token's own exp still bounds it on top of this.
+	 *
+	 * <p>Deliberately uncached, per the OT revocation-timing ruling: a short-TTL
+	 * positive cache is a later, measured optimization, never the default.
+	 *
+	 * <p>The three misses collapse to one non-enumerating message, mirroring
+	 * {@code doMintDelegatedToken}'s own paired negative control.
+	 */
+	private void assertGrantStillActive(TokenWrapper token) throws StatusException {
+		String grantId = token.getCustomField(CLAIM_GRANT_ID);
+		if (grantId == null || grantId.isEmpty()) {
+			return; // not a delegation-derived token
+		}
+		Kernel.Grant grant = findGrantById(grantId);
+		long expiresAtMs = grant != null ? grant.getExpiresAtMs() : 0;
+		if (grant == null
+				|| !token.getAct().equals(grant.getDelegateName())
+				|| (expiresAtMs != 0 && expiresAtMs <= System.currentTimeMillis())) {
+			logger.warn("Rejected exchange of a token whose standing delegation is no longer active: "
+					+ "grant_id={}, sub={}, act={}", grantId, token.getSubject(), token.getAct());
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"standing delegation " + grantId + " is no longer active");
+		}
 	}
 
 	/** Looks up a standing delegation Grant by its opaque id. Null if none exists. */

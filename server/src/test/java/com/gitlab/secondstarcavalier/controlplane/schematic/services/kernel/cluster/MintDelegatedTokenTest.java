@@ -31,13 +31,16 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test matrix for the kernel's standing-delegation ({@link Kernel.Grant}) mint
  * path, {@code MintDelegatedToken}: OPA fresh-replay, {@code authorized_scope}
- * intersection, and the paired negative control (design doc item6-piece-b).
+ * intersection, the paired negative control (design doc item6-piece-b), and the
+ * per-use grant revocation check every exchange of a delegation-derived token
+ * runs (BIG GOAL 5 item A / the OT revocation-timing ruling).
  * Runs entirely against a {@link FakeOpaEvalGrpcClient} — no real UncleOPA.
  */
 class MintDelegatedTokenTest {
@@ -47,6 +50,11 @@ class MintDelegatedTokenTest {
     private static final String DELEGATE_NAME = "oauth";
     private static final String GRANT_SUBJECT = "spiffe://" + TRUST_DOMAIN + "/system/users/alice";
     private static final String GRANT_ID = "grant-1";
+    // The revocation tests exchange the minted token, and the U2S exchange path
+    // resolves sub through findDelegateByName — which rejects a SPIFFE *user*
+    // URI outright (pre-existing; see the result note). An IDP-style subject is
+    // the shape a Grant actually records at consent time anyway.
+    private static final String IDP_GRANT_SUBJECT = "alice@example.com";
     private static final Caller CALLER = new Caller("", "test-req");
 
     // ---- Harness -----------------------------------------------------------
@@ -116,6 +124,14 @@ class MintDelegatedTokenTest {
     private static int codeOf(Executable e) {
         ProtoException ex = assertThrows(ProtoException.class, e::run);
         return ex.getCode();
+    }
+
+    /** Asserts the exchange was denied specifically by the grant re-check, not incidentally. */
+    private static void assertDeniedByRevokedGrant(Executable e) {
+        ProtoException ex = assertThrows(ProtoException.class, e::run);
+        assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+        assertTrue(ex.getMessage().contains("standing delegation " + GRANT_ID + " is no longer active"),
+                "expected the per-use grant check to be the denier, got: " + ex.getMessage());
     }
 
     @FunctionalInterface
@@ -248,6 +264,78 @@ class MintDelegatedTokenTest {
 
         assertEquals(ProtoException.PERMISSION_DENIED,
                 codeOf(() -> mintAs(svc, DELEGATE_NAME, "no-such-grant")));
+    }
+
+    // ---- Per-use standing-delegation revocation --------------------------
+
+    /** Exchanges a delegation-derived token for a service token — one "use". */
+    private Tokenrequest.TokenMintResponse useFor(IdentityServiceImpl svc, TokenOuterClass.Token token,
+            String aud) throws Exception {
+        return svc.mintToken(CALLER, Tokenrequest.TokenMintRequest.newBuilder()
+                .setInputToken(token.getBase64())
+                .setAud(aud)
+                .build());
+    }
+
+    @Test
+    void revokingTheGrantKillsAnAlreadyMintedTokenOnItsNextUse() throws Exception {
+        grants.add(grantBuilder().setSubject(IDP_GRANT_SUBJECT)
+                .setAuthorizedScope(scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null))
+                // Well beyond the token's own 1h exp, so nothing below can pass or
+                // fail because the grant or the token merely aged out.
+                .setExpiresAtMs(Instant.now().toEpochMilli() + 86_400_000L)
+                .build());
+        IdentityServiceImpl svc = newService(FakeOpaEvalGrpcClient.returning(
+                scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null)));
+
+        TokenOuterClass.Token minted = mintAs(svc, DELEGATE_NAME, GRANT_ID).getToken();
+        assertEquals(GRANT_ID, TokenWrapper.parse(minted.getBase64()).getCustomField("gid"),
+                "the minted token must record the grant it derives from");
+
+        // Positive control: used while the delegation stands, within its own exp.
+        Tokenrequest.TokenMintResponse before = useFor(svc, minted, "kernel");
+        assertNotNull(before.getAccessToken());
+        assertEquals(GRANT_ID, TokenWrapper.parse(before.getAccessToken().getBase64()).getCustomField("gid"),
+                "the derived service token must keep the lineage so it is re-checked too");
+
+        // The user revokes the standing delegation.
+        grants.removeIf(g -> GRANT_ID.equals(g.getId()));
+
+        // The SAME token, unchanged and still well inside its own expiry, is dead.
+        assertDeniedByRevokedGrant(() -> useFor(svc, minted, "kernel"));
+        // ...and so is the service token already derived from it.
+        assertDeniedByRevokedGrant(() -> useFor(svc, before.getAccessToken(), "kernel"));
+    }
+
+    @Test
+    void grantExpiringMidTokenLifetimeKillsTheDerivedTokenOnNextUse() throws Exception {
+        grants.add(grantBuilder().setSubject(IDP_GRANT_SUBJECT)
+                .setAuthorizedScope(scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null))
+                .setExpiresAtMs(Instant.now().toEpochMilli() + 86_400_000L)
+                .build());
+        IdentityServiceImpl svc = newService(FakeOpaEvalGrpcClient.returning(
+                scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null)));
+
+        TokenOuterClass.Token minted = mintAs(svc, DELEGATE_NAME, GRANT_ID).getToken();
+        assertNotNull(useFor(svc, minted, "kernel").getAccessToken());
+
+        // The grant reaches its own expiry while the minted token is still valid.
+        Kernel.Grant live = grants.get(0);
+        grants.set(0, live.toBuilder().setExpiresAtMs(Instant.now().toEpochMilli() - 1).build());
+
+        assertDeniedByRevokedGrant(() -> useFor(svc, minted, "kernel"));
+    }
+
+    @Test
+    void tokenWithNoGrantLineageIsUnaffected() throws Exception {
+        // A grant exists but this token does not derive from one: the check is a
+        // no-op for every non-delegated token on the same exchange path.
+        grants.add(grantBuilder().setAuthorizedScope(scope(List.of(), null)).build());
+        IdentityServiceImpl svc = newService(FakeOpaEvalGrpcClient.neverCalled());
+
+        TokenWrapper plain = TokenWrapper.parse(mintCallerToken(DELEGATE_NAME));
+        assertNull(plain.getCustomField("gid"));
+        assertNotNull(useFor(svc, plain.getProto(), "kernel").getAccessToken());
     }
 
     @Test

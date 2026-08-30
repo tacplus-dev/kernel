@@ -15,6 +15,7 @@ import java.util.stream.Stream;
 public class ProtoDescriptorParser {
 
     private final Path protoDir;
+    private final RegistryAuthExemptions authExemptions;
     private final Map<String, FileDescriptor> descriptors = new LinkedHashMap<>();
 
     // Regex patterns
@@ -36,23 +37,17 @@ public class ProtoDescriptorParser {
     // RPC with options block: rpc Name(In) returns (Out) { ... }
     private static final Pattern RPC_BLOCK_PATTERN = Pattern.compile(
             "^\\s*rpc\\s+(\\w+)\\s*\\(([^)]+)\\)\\s+returns\\s+\\((stream\\s+)?([^)]+)\\)\\s*\\{", Pattern.MULTILINE);
-    // Method-level option inside RPC block
-    private static final Pattern METHOD_OPTION_PATTERN = Pattern.compile(
-            "^\\s*option\\s+\\(spec\\.(\\w+)\\)\\s*=\\s*(\\{[^}]*\\})\\s*;", Pattern.MULTILINE);
     // Pattern for parsing structured annotation values like {target: "foo", mode: BAR}
     private static final Pattern STRUCT_FIELD_PATTERN = Pattern.compile(
             "(\\w+)\\s*:\\s*(\"[^\"]*\"|\\w+)");
-    // The repeated flags list on spec.rpc: flags: [RPC_FLAG_A, RPC_FLAG_B]
-    private static final Pattern RPC_FLAGS_PATTERN = Pattern.compile("flags\\s*:\\s*\\[([^\\]]*)\\]");
-    // spec.rpc flags that carry the exemption the retired method_s2s/method_c2s
-    // auth_disabled: true used to express: PUBLIC_NO_AUTH is unauthenticated outright,
-    // SELF_AUTHENTICATES authenticates the caller from the request body inside the
-    // handler. Both must skip the generated caller interceptor.
-    private static final Set<String> NO_AUTH_RPC_FLAGS =
-            Set.of("RPC_FLAG_PUBLIC_NO_AUTH", "RPC_FLAG_SELF_AUTHENTICATES");
 
-    public ProtoDescriptorParser(Path protoDir) {
+    public ProtoDescriptorParser(Path protoDir) throws IOException {
+        this(protoDir, RegistryAuthExemptions.loadForProtoDir(protoDir));
+    }
+
+    public ProtoDescriptorParser(Path protoDir, RegistryAuthExemptions authExemptions) {
         this.protoDir = protoDir;
+        this.authExemptions = authExemptions;
     }
 
     /**
@@ -216,6 +211,7 @@ public class ProtoDescriptorParser {
                 rpc.setInputType(rpcMatcher.group(2).trim());
                 rpc.setServerStreaming(rpcMatcher.group(3) != null);
                 rpc.setOutputType(rpcMatcher.group(4).trim());
+                rpc.setDisableAuth(authExemptions.isAuthDisabled(fd.getPackageName(), svcName, rpc.getName()));
                 svc.getRpcs().add(rpc);
             }
 
@@ -228,36 +224,11 @@ public class ProtoDescriptorParser {
                 rpc.setServerStreaming(rpcBlockMatcher.group(3) != null);
                 rpc.setOutputType(rpcBlockMatcher.group(4).trim());
 
-                // Parse method-level options from the block
-                int blockOpen = rpcBlockMatcher.end() - 1;
-                int blockClose = findMatchingBrace(svcBody, blockOpen);
-                if (blockClose > blockOpen) {
-                    String rpcBlock = svcBody.substring(blockOpen + 1, blockClose);
-                    Matcher methodOptMatcher = METHOD_OPTION_PATTERN.matcher(rpcBlock);
-                    while (methodOptMatcher.find()) {
-                        String optName = methodOptMatcher.group(1);
-                        String structBody = methodOptMatcher.group(2);
-                        if ("method_s2s".equals(optName) || "method_c2s".equals(optName)) {
-                            Matcher fieldMatcher = STRUCT_FIELD_PATTERN.matcher(structBody);
-                            while (fieldMatcher.find()) {
-                                if ("auth_disabled".equals(fieldMatcher.group(1)) && "true".equals(fieldMatcher.group(2))) {
-                                    rpc.setDisableAuth(true);
-                                }
-                            }
-                        } else if ("rpc".equals(optName)) {
-                            // spec.rpc replaced method_s2s/method_c2s; the per-RPC auth
-                            // exemption now rides on the flags list, not auth_disabled.
-                            Matcher flagsMatcher = RPC_FLAGS_PATTERN.matcher(structBody);
-                            if (flagsMatcher.find()) {
-                                for (String flag : flagsMatcher.group(1).split(",")) {
-                                    if (NO_AUTH_RPC_FLAGS.contains(flag.trim())) {
-                                        rpc.setDisableAuth(true);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                // The per-RPC auth exemption is read from registry.json, not re-derived
+                // from the method options here: tacplus already normalizes every
+                // annotation spelling into one auth_disabled boolean, and a second
+                // derivation only drifts from it when the spelling changes.
+                rpc.setDisableAuth(authExemptions.isAuthDisabled(fd.getPackageName(), svcName, rpc.getName()));
 
                 svc.getRpcs().add(rpc);
             }

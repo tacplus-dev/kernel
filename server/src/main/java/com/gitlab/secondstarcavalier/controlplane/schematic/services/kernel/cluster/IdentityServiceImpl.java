@@ -2183,7 +2183,22 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private Kernel.Delegate findDelegateByName(String name) {
 		// When sub is a SPIFFE URI (spiffe://<prefix>/<delegate_name>), extract
 		// the bare delegate name for lookup via SpiffeIds.
-		String lookupName = SpiffeIds.isSpiffeUri(name) ? SpiffeIds.serviceName(name) : name;
+		String lookupName;
+		if (SpiffeIds.isSpiffeUri(name)) {
+			try {
+				lookupName = SpiffeIds.serviceName(name);
+			} catch (IllegalArgumentException e) {
+				// A SPIFFE URI that names something other than a service/workload
+				// — a user subject, spiffe://<td>/system/users/<n>, is the one a
+				// Grant records — is simply not a delegate. That is a lookup miss,
+				// which every caller already handles (PERMISSION_DENIED where a
+				// delegate is required; the U2S path on token exchange), not an
+				// INTERNAL crash.
+				return null;
+			}
+		} else {
+			lookupName = name;
+		}
 		for (Kernel.Delegate d : delegatesReader.get()) {
 			if (lookupName.equals(d.getName())) {
 				return d;

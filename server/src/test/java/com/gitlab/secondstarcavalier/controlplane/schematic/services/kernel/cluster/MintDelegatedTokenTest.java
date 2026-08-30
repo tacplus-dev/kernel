@@ -53,10 +53,10 @@ class MintDelegatedTokenTest {
     private static final String DELEGATE_NAME = "oauth";
     private static final String GRANT_SUBJECT = "spiffe://" + TRUST_DOMAIN + "/system/users/alice";
     private static final String GRANT_ID = "grant-1";
-    // The revocation tests exchange the minted token, and the U2S exchange path
-    // resolves sub through findDelegateByName — which rejects a SPIFFE *user*
-    // URI outright (pre-existing; see the result note). An IDP-style subject is
-    // the shape a Grant actually records at consent time anyway.
+    // An IDP-style subject is the shape a Grant actually records at consent time;
+    // the revocation tests use it so they exercise revocation, not subject
+    // parsing. The SPIFFE-user shape is exercised separately by
+    // spiffeUserSubjectTokenIsExchangeable.
     private static final String IDP_GRANT_SUBJECT = "alice@example.com";
     private static final Caller CALLER = new Caller("", "test-req");
 
@@ -340,6 +340,29 @@ class MintDelegatedTokenTest {
         TokenWrapper plain = TokenWrapper.parse(mintCallerToken(DELEGATE_NAME));
         assertNull(plain.getCustomField("gid"));
         assertNotNull(useFor(svc, plain.getProto(), "kernel").getAccessToken());
+    }
+
+    @Test
+    void spiffeUserSubjectTokenIsExchangeable() throws Exception {
+        // A Grant whose subject is a SPIFFE *user* URI rather than an IDP-style
+        // one. The subject is copied verbatim onto the minted token's sub, and
+        // the exchange path resolves that sub through findDelegateByName: a user
+        // is not a delegate, so the lookup must simply miss (U2S, exactly as an
+        // IDP-style subject does) rather than blow up on a service-shaped parse.
+        grants.add(grantBuilder().setSubject(GRANT_SUBJECT)
+                .setAuthorizedScope(scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null))
+                .setExpiresAtMs(Instant.now().toEpochMilli() + 86_400_000L)
+                .build());
+        IdentityServiceImpl svc = newService(FakeOpaEvalGrpcClient.returning(
+                scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null)));
+
+        TokenOuterClass.Token minted = mintAs(svc, DELEGATE_NAME, GRANT_ID).getToken();
+        assertEquals(GRANT_SUBJECT, TokenWrapper.parse(minted.getBase64()).getSubject());
+
+        Tokenrequest.TokenMintResponse exchanged = useFor(svc, minted, "kernel");
+        assertNotNull(exchanged.getAccessToken());
+        assertEquals(GRANT_SUBJECT,
+                TokenWrapper.parse(exchanged.getAccessToken().getBase64()).getSubject());
     }
 
     @Test

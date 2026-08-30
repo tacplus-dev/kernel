@@ -160,8 +160,8 @@ S2S Bootstrap:
   refresh(aud:kernel) → kernel.TokenMint(aud:X) → service(aud:X)
 
 C2S Bootstrap:
-  IdP OAuth token → oauth.validate → oauth.delegationMint(S2S bearer) → kernel.TokenMint
-    → refresh(aud:kernel, sub_type:user, azp:oauth) + access(aud:kernel)
+  IdP OAuth token → oauth.validate → kernel.MintUserToken(S2S bearer, claims)
+    → OPA EvalEntitlement → refresh(aud:kernel, sub_type:user, azp:oauth) + access(aud:kernel)
 
 C2S Token Exchange:
   access(aud:kernel) → kernel.TokenExchange(aud:X) → service(aud:X, sub_type:user)

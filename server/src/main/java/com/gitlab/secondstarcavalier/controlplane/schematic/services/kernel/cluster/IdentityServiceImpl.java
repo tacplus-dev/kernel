@@ -1288,13 +1288,15 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	private Tokenrequest.TokenMintResponse doTokenMint(Tokenrequest.TokenMintRequest request) throws StatusException {
+		// MintToken is the EXCHANGE RPC (RT->AT->ST): it requires a kernel-signed
+		// input_token. The former delegation arm — empty input_token plus a
+		// caller-supplied subject and claims — is gone: it let any registered
+		// delegate mint a user token for an arbitrary subject with none of
+		// MintUserToken's restrictions (oauth/saml brokers only, OPA entitlement
+		// resolution). On-behalf-of minting is MintUserToken only.
 		if (request.getInputToken().isEmpty()) {
-			// Delegation path: caller authenticates via header, mints on behalf.
-			if (request.getSubject().isEmpty()) {
-				throw new StatusException(Status.INVALID_ARGUMENT,
-						"input_token or subject is required");
-			}
-			return delegationMint(request);
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"input_token is required; MintToken is the exchange path — mint a user token via MintUserToken");
 		}
 
 		TokenWrapper inputToken;
@@ -1331,169 +1333,6 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// cluster trust root and only exchanges its own credentials. External IdP
 		// tokens must be exchanged via MintUserToken by an authorized broker.
 		throw new StatusException(Status.UNAUTHENTICATED, "input_token is not a recognized kernel-signed token; service bootstrap is via the kubernetes_token credential and external IdP tokens must be exchanged via MintUserToken by an authorized broker");
-	}
-
-	/**
-	 * Delegation path: a trusted broker (e.g. oauth) authenticates via its
-	 * service token in the header and requests a token for a user it has already
-	 * verified. Kernel trusts the broker's attestation.
-	 */
-	private Tokenrequest.TokenMintResponse delegationMint(Tokenrequest.TokenMintRequest request)
-			throws StatusException {
-
-		// Extract raw bearer token from the caller's auth header.
-		String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
-		if (rawToken == null || rawToken.isEmpty()) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"delegation requires authorization header");
-		}
-
-		// Parse and verify the caller's service token against cluster keys.
-		TokenWrapper callerToken;
-		try {
-			callerToken = TokenWrapper.parse(rawToken);
-		} catch (Exception e) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"invalid caller token: " + e.getMessage());
-		}
-
-		String kid = callerToken.getKid();
-		if (kid == null || kid.isEmpty()) {
-			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
-		}
-		// Phase 0.1: reject implausible (malformed/oversized) kids before scanning the
-		// verifying-key set, mirroring the UNAUTHENTICATED-unknown-key miss below.
-		// Validation only, no retry.
-		if (!isPlausibleKid(kid)) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"caller token signed with unknown key: " + kid);
-		}
-
-		JwkOuterClass.Jwk matchingKey = null;
-		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
-			if (kid.equals(jwk.getKid())) {
-				matchingKey = jwk;
-				break;
-			}
-		}
-		if (matchingKey == null) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"caller token signed with unknown key: " + kid);
-		}
-
-		try {
-			callerToken.verify(ImmutableJwk.from(matchingKey));
-		} catch (Exception e) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"caller token verification failed: " + e.getMessage());
-		}
-
-		// The caller's sub must be a known delegate name.
-		String callerSub = callerToken.getSubject();
-		Kernel.Delegate delegate = findDelegateByName(callerSub);
-		if (delegate == null) {
-			throw new StatusException(Status.PERMISSION_DENIED,
-					"caller " + callerSub + " is not a registered delegate");
-		}
-
-		// Validate delegate is authorized for the target audience (if specified).
-		if (!request.getAud().isEmpty()) {
-			boolean authorized = false;
-			for (var svcName : delegate.getAuthorizedServicesList()) {
-				String enumName = svcName.name();
-				if (enumName.equals("SERVICE_NAME_ANY")) {
-					authorized = true;
-					break;
-				}
-				String svc = enumName.replace("SERVICE_NAME_", "").toLowerCase();
-				if (svc.equals(request.getAud())) {
-					authorized = true;
-					break;
-				}
-			}
-			if (!authorized) {
-				throw new StatusException(Status.PERMISSION_DENIED,
-						"delegate " + callerSub + " not authorized for service " + request.getAud());
-			}
-		}
-
-		// Mint the token with the delegated subject and azp = caller's delegate name.
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
-		if (signingKey == null) {
-			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
-		}
-
-		long now = Instant.now().getEpochSecond();
-		long maxExp = now + maxTokenLifetimeSeconds;
-		long exp;
-		if (request.getExp() > 0) {
-			exp = request.getExp();
-			if (exp <= now) {
-				throw new StatusException(Status.INVALID_ARGUMENT,
-						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
-			}
-			if (exp > maxExp) {
-				throw new StatusException(Status.INVALID_ARGUMENT,
-						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
-			}
-		} else {
-			exp = now + defaultTokenExpirySeconds;
-		}
-
-		boolean isRefresh = request.getTokenPurpose() ==
-				com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.token.TokenOuterClass.TokenPurpose.TOKEN_PURPOSE_REFRESH;
-
-		TokenWrapper newToken = TokenWrapper.create()
-				.setIssuer(tokenIssuer)
-				.setSubject(request.getSubject())
-				.setAudience(request.getAud().isEmpty() ? Kernel.getDescriptor().getPackage() : request.getAud())
-				.setIssuedAt(now)
-				.setExpiration(exp)
-				.setJTI(UUID.randomUUID().toString());
-
-		// azp = the delegate name (not SPIFFE URI) — must match TokenEntitlements.azp entries.
-		newToken.setAzp(delegate.getName());
-
-		// Token type claims: token_use identifies the token's role in the hierarchy,
-		// sub_type identifies what the subject represents (user vs service).
-		// Delegation is always a broker minting on behalf of a user.
-		newToken.setTokenUse(isRefresh ? TOKEN_USE_REFRESH : TOKEN_USE_ACCESS);
-		newToken.setSubType(SUB_TYPE_USER);
-		// User tokens live at the cluster root and can level-or-below to any tenant.
-		newToken.setNamespace(SpiffeIds.namespaceRoot());
-		if (isRefresh) {
-			newToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
-		}
-
-		// Forward custom claims from the request (e.g., IDP claims like email, name).
-		// Well-known JWT claims from external IdPs get origin_ prefix to avoid collision.
-		if (request.hasClaims()) {
-			newToken.setClaimsFromStruct(request.getClaims(), STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
-		}
-
-		// Inject delegate's static custom claims.
-		for (Map.Entry<String, String> entry : delegate.getCustomClaimsMap().entrySet()) {
-			if (!STANDARD_JWT_CLAIMS.contains(entry.getKey())) {
-				newToken.setCustomField(entry.getKey(), entry.getValue());
-			}
-		}
-
-		newToken.sign(signingKey);
-
-		logger.info("Minted delegated token: sub={}, aud={}, azp={}, exp={}, isRefresh={}",
-				request.getSubject(), newToken.getAudience(), callerSub, exp, isRefresh);
-
-		if (isRefresh) {
-			// Also mint an access token (clone of refresh without typ).
-			TokenOuterClass.Token accessProto = mintAccessFromRefresh(newToken, signingKey, now, exp);
-			return Tokenrequest.TokenMintResponse.newBuilder()
-					.setRefreshToken(newToken.getProto())
-					.setAccessToken(accessProto)
-					.build();
-		}
-		return Tokenrequest.TokenMintResponse.newBuilder()
-				.setAccessToken(newToken.getProto())
-				.build();
 	}
 
 	private Tokenrequest.TokenMintResponse mintRefreshToken(

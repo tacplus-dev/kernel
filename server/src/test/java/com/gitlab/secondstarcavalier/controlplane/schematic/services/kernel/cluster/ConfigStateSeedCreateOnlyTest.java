@@ -3,7 +3,7 @@ package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.clu
 
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.authz.InMemoryManager;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.generated.services_config.ServicesConfig;
-import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.echo.EchoOuterClass;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.gateway.Gateway;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.opa.Opa;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.opalib.Opalib;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.SecurityAuthenticator;
@@ -42,12 +42,12 @@ class ConfigStateSeedCreateOnlyTest {
 					.setCreated(1_740_000_000L))
 			.build();
 
-	private static final EchoOuterClass.Config BUNDLE_ECHO_CONFIG =
-			EchoOuterClass.Config.newBuilder().setGreeting("bundle-hello").build();
+	private static final Gateway.Config BUNDLE_GATEWAY_CONFIG =
+			Gateway.Config.newBuilder().addExternalHostnames("bundle.schematic.test").build();
 
 	private static final ServicesConfig.Services BUNDLE = ServicesConfig.Services.newBuilder()
 			.setOpaConfig(BUNDLE_OPA_CONFIG)
-			.setEchoConfig(BUNDLE_ECHO_CONFIG)
+			.setGatewayConfig(BUNDLE_GATEWAY_CONFIG)
 			.build();
 
 	private BackendServers servers;
@@ -70,7 +70,7 @@ class ConfigStateSeedCreateOnlyTest {
 		assertEquals(2, servers.installServices(BUNDLE));
 
 		assertEquals(BUNDLE_OPA_CONFIG, servers.getOpaConfigStateMap().getConfig());
-		assertEquals(BUNDLE_ECHO_CONFIG, servers.getEchoConfigStateMap().getConfig());
+		assertEquals(BUNDLE_GATEWAY_CONFIG, servers.getGatewayConfigStateMap().getConfig());
 	}
 
 	/** Restart: the second install must not revert a populated root. */
@@ -97,6 +97,6 @@ class ConfigStateSeedCreateOnlyTest {
 		assertEquals(1, servers.installServices(BUNDLE));
 
 		assertEquals(LIVE_OPA_CONFIG, servers.getOpaConfigStateMap().getConfig());
-		assertEquals(BUNDLE_ECHO_CONFIG, servers.getEchoConfigStateMap().getConfig());
+		assertEquals(BUNDLE_GATEWAY_CONFIG, servers.getGatewayConfigStateMap().getConfig());
 	}
 }

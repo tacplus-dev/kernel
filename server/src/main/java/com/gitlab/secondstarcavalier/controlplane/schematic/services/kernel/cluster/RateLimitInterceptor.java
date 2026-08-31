@@ -2,6 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster;
 
 // StateServer is in this package
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.SecurityAuthenticator;
 import io.grpc.ForwardingServerCall;
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.Grpc;
@@ -40,7 +41,9 @@ import org.slf4j.LoggerFactory;
  * <li><b>EXEMPT</b> — write RPCs (Set, Put, Remove, etc.) and streaming RPCs:
  * never limited
  * <li><b>HAS_STREAMING</b> — unary reads with a Watch/Subscribe counterpart:
- * limited at {@code pollingRate}
+ * limited at {@code pollingRate}, or at {@code unaryRate} when the caller
+ * authenticated with a service/workload identity (an internal service has no
+ * keyed read for a state map, so the pollable read is its only option)
  * <li><b>NO_STREAMING</b> — unary reads without a streaming counterpart:
  * limited at {@code unaryRate}
  * </ul>
@@ -135,14 +138,22 @@ public class RateLimitInterceptor implements ServerInterceptor {
 			return trackActiveCall(call, headers, next, isStreaming);
 		}
 
-		double rate = (cat == Category.HAS_STREAMING) ? pollingRate : unaryRate;
+		// An internal service reading one row out of a kernel state map has no
+		// keyed alternative — tacplus generates only GetAll*/Put*/Delete* for a
+		// state map — so it must call the pollable read. Hold those calls to the
+		// bounded unaryRate instead of the anti-polling pollingRate. End-user /
+		// CLI callers leave the service path empty and stay on pollingRate.
+		boolean serviceStateRead = cat == Category.HAS_STREAMING && callerIsService();
+		double rate = (cat == Category.HAS_STREAMING && !serviceStateRead) ? pollingRate : unaryRate;
 		if (rate <= 0) {
 			return trackActiveCall(call, headers, next, isStreaming);
 		}
 
 		var remote = call.getAttributes().get(Grpc.TRANSPORT_ATTR_REMOTE_ADDR);
 		String peer = remote != null ? remote.toString() : "unknown";
-		String bucketKey = peer + "|" + fullMethodName;
+		// Separate buckets per rate class so one peer speaking with both a service
+		// and a user token cannot lend either rate to the other.
+		String bucketKey = peer + "|" + fullMethodName + (serviceStateRead ? "|service" : "");
 
 		TokenBucket bucket = buckets.computeIfAbsent(bucketKey, k -> new TokenBucket(rate));
 
@@ -174,6 +185,18 @@ public class RateLimitInterceptor implements ServerInterceptor {
 		}
 
 		return trackActiveCall(call, headers, next, isStreaming);
+	}
+
+	/**
+	 * True when the caller of the current RPC authenticated with a service or
+	 * workload identity rather than a user/CLI token. The value is the verified
+	 * caller service path published by the generated SecurityAuthenticator's
+	 * caller interceptor, which runs immediately outside this one; that
+	 * interceptor leaves it empty for tokens carrying no service identity.
+	 */
+	private static boolean callerIsService() {
+		String servicePath = SecurityAuthenticator.CALLER_SERVICE_PATH_KEY.get();
+		return servicePath != null && !servicePath.isEmpty();
 	}
 
 	/**

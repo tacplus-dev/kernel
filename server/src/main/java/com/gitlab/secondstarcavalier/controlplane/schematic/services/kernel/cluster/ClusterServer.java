@@ -50,6 +50,9 @@ import io.grpc.protobuf.services.HealthStatusManager;
 import io.grpc.stub.ServerCalls;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.servicemanager.Auth;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.Mint;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.fencedlock.RatisFencedLock;
+import org.apache.ratis.protocol.RaftGroup;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.FencedLock;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.TenantAdmin;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -184,6 +187,7 @@ public class ClusterServer {
 	private final KeyRotator keyRotator;
 	private final KernelPersistence kernelPersistence;
 	private final ImmutableCertChain signingCa;
+	private final RatisFencedLock fencedLock;
 
 	/**
 	 * @param config      the kernel configuration
@@ -633,6 +637,7 @@ public class ClusterServer {
 			Mint.registerMethodAuth(kernelAuthorizer);
 			com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker.registerMethodAuth(kernelAuthorizer);
 			TenantAdmin.registerMethodAuth(kernelAuthorizer);
+			FencedLock.registerMethodAuth(kernelAuthorizer);
 
 			// Seed ServiceConfigState with the trust domain and location path so all
 			// services build identities under the same self-describing SPIFFE root.
@@ -864,10 +869,68 @@ public class ClusterServer {
 			var tenantAdminWrapper = new TenantAdmin(tenantAdminImpl, kernelAuthorizer);
 			serverBuilder.addService(tenantAdminWrapper);
 			logger.info("TenantAdminService registered on gRPC server");
+
+			// FencedLock — kernel is the ONE service that embeds Ratis; every other
+			// service calls this s2s surface instead of running its own Raft group.
+			// Peers are the configured cluster members on ratis_listener's port, so
+			// lock membership tracks cluster membership rather than a second topology.
+			int ratisPort = cfg.getRatisListener().getPort();
+			var ratisGroup = RaftGroup.valueOf(RatisFencedLock.GROUP_ID, ratisPeers(members, ratisPort));
+			var ratisStorage = new java.io.File(cfg.getPersistenceDir(), "fencedlock");
+			try {
+				this.fencedLock = RatisFencedLock.start(
+						selfRatisPeerId(members, ratisPort), ratisGroup, ratisStorage);
+			} catch (java.io.IOException e) {
+				throw new IllegalStateException("failed to start the FencedLock Ratis peer", e);
+			}
+			var fencedLockWrapper = new FencedLock(new FencedLockServiceImpl(fencedLock), kernelAuthorizer);
+			serverBuilder.addService(fencedLockWrapper);
+			logger.info("FencedLockService registered on gRPC server (ratisPort={}, peers={})",
+					ratisPort, ratisGroup.getPeers().size());
 		}
 
 		this.grpcServer = serverBuilder.build();
 		logger.info("Kernel node configured (grpcPort={})", grpcPort);
+	}
+
+	/**
+	 * ratisPeers maps the configured cluster members onto Raft peers on the
+	 * FencedLock port. The peer id IS the "host:port" string, so every kernel
+	 * instance derives the same ids from the same config without a second
+	 * identity to keep in sync.
+	 */
+	private static List<org.apache.ratis.protocol.RaftPeer> ratisPeers(List<com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.host.HostOuterClass.Host> members, int port) {
+		List<org.apache.ratis.protocol.RaftPeer> peers = new ArrayList<>(members.size());
+		for (var member : members) {
+			String host = Objects.requireNonNull(member.getHost(), "member.host");
+			peers.add(RatisFencedLock.peer(host + ":" + port, host, port));
+		}
+		return peers;
+	}
+
+	/**
+	 * selfRatisPeerId picks which of the configured members this process is, by
+	 * resolving each member's host and asking whether the address is one of this
+	 * machine's own. Hazelcast identifies itself from the same member list the
+	 * same way; deriving it rather than configuring it keeps a node from being
+	 * told it is a peer it is not.
+	 */
+	private static org.apache.ratis.protocol.RaftPeerId selfRatisPeerId(List<com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.host.HostOuterClass.Host> members, int port) {
+		for (var member : members) {
+			String host = Objects.requireNonNull(member.getHost(), "member.host");
+			try {
+				var address = java.net.InetAddress.getByName(host);
+				if (address.isAnyLocalAddress() || address.isLoopbackAddress()
+						|| java.net.NetworkInterface.getByInetAddress(address) != null) {
+					return org.apache.ratis.protocol.RaftPeerId.valueOf(host + ":" + port);
+				}
+			} catch (java.io.IOException e) {
+				logger.debug("member {} is not a local address: {}", host, e.getMessage());
+			}
+		}
+		throw new IllegalStateException(
+				"none of the configured members resolves to a local address; "
+						+ "this node cannot tell which FencedLock Raft peer it is");
 	}
 
 	private void installTrustedCas(List<X509.X509Cert> configCas) {
@@ -1050,6 +1113,11 @@ public class ClusterServer {
 		jwkViewServer.close();
 		backendServers.services().close();
 		persistence.close();
+		try {
+			fencedLock.close();
+		} catch (java.io.IOException e) {
+			logger.warn("FencedLock Ratis peer did not shut down cleanly: {}", e.getMessage());
+		}
 		hazelcast.shutdown();
 		logger.info("Node {} shut down", grpcPort);
 	}

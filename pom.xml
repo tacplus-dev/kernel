@@ -25,6 +25,7 @@
 		<junit.version>6.0.2</junit.version>
 		<maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
 		<hazelcast.version>5.5.0</hazelcast.version>
+		<ratis.version>3.2.1</ratis.version>
 		<spotless-maven-plugin.version>3.2.1</spotless-maven-plugin.version>
 		<shade-plugin.version>3.6.1</shade-plugin.version>
 		<exec-plugin.version>3.5.0</exec-plugin.version>
@@ -117,6 +118,28 @@
 				<groupId>com.hazelcast</groupId>
 				<artifactId>hazelcast</artifactId>
 				<version>${hazelcast.version}</version>
+			</dependency>
+			<!-- Apache Ratis — kernel is the ONE service that embeds Raft, for
+			     the FencedLock primitive every other service calls over s2s. -->
+			<dependency>
+				<groupId>org.apache.ratis</groupId>
+				<artifactId>ratis-server</artifactId>
+				<version>${ratis.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.ratis</groupId>
+				<artifactId>ratis-client</artifactId>
+				<version>${ratis.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.ratis</groupId>
+				<artifactId>ratis-grpc</artifactId>
+				<version>${ratis.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.ratis</groupId>
+				<artifactId>ratis-metrics-default</artifactId>
+				<version>${ratis.version}</version>
 			</dependency>
 			<dependency>
 				<groupId>org.slf4j</groupId>

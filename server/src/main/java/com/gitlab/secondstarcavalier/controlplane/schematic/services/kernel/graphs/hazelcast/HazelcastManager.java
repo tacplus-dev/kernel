@@ -56,16 +56,6 @@ public class HazelcastManager implements Manager {
 	}
 
 	@Override
-	public <K, V> IMap<K, V> getAtomicMap(String name) {
-		return getAtomicMap(name, false);
-	}
-
-	@Override
-	public <K, V> IMap<K, V> getAtomicMap(String name, boolean persistent) {
-		return getConvergentMap(name, persistent);
-	}
-
-	@Override
 	public <K, V> IMap<K, V> getReplicatedMap(String name) {
 		return new HazelcastReplicatedMap<>(hazelcast.getReplicatedMap(Objects.requireNonNull(name, "name")));
 	}

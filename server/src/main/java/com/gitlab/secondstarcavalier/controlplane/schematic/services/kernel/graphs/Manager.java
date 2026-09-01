@@ -9,8 +9,6 @@ package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.gra
 public interface Manager {
 	<K, V> IMap<K, V> getConvergentMap(String name);
 	<K, V> IMap<K, V> getConvergentMap(String name, boolean persistent);
-	<K, V> IMap<K, V> getAtomicMap(String name);
-	<K, V> IMap<K, V> getAtomicMap(String name, boolean persistent);
 	<K, V> IMap<K, V> getReplicatedMap(String name);
 	<K, V> IMap<K, V> getVolatileMap(String name);
 	<K, V> MultiMap<K, V> getMultiMap(String name);

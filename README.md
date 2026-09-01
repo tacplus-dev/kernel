@@ -240,19 +240,13 @@ Kernel persists all boundary data marked with `(spec.persistence) = true`:
 - **Full dumps** — Periodic snapshots with header (timestamp, entry count,
   node_id). Format configurable (default: binary protobuf).
 
-## Consistency Models
+## Consistency Model
 
-**CONSISTENCY_CONVERGENT** (default for most boundaries):
+All boundaries are **CONSISTENCY_CONVERGENT**:
 - Lockless, last-writer-wins, async replication
 - Suitable for metrics, diagnostics, observability, and state that tolerates
   brief staleness
 - TTL-based eviction for automatic cleanup
-
-**CONSISTENCY_ATOMIC** (for critical state):
-- Requires FencedLock (CP subsystem must be enabled)
-- Counter-based optimistic locking
-- Synchronous backups
-- Higher latency, lower throughput
 
 ## JWK Verifying Keys View
 

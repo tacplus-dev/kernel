@@ -48,22 +48,16 @@ public class BackendMapGenerator {
             fields.append("    private final ITopic<").append(qt).append("> ").append(b.getFieldCamel()).append("Topic;\n");
         }
 
-        // Check if manager field is needed (atomic singletons use manager.getLock() at runtime)
-        boolean needsManager = info.getSingletons().stream().anyMatch(SharedBoundary::isAtomic);
-
         // Build constructor
         StringBuilder ctor = new StringBuilder();
         ctor.append("\n    public ").append(className).append("(Manager manager) {\n");
-        if (needsManager) {
-            ctor.append("        this.manager = manager;\n");
-        }
         for (SharedBoundary b : info.getSingletons()) {
-            String mapGetter = b.isAtomic() ? "getAtomicMap" : b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
+            String mapGetter = b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
             ctor.append("        this.").append(b.getFieldCamel()).append("Map = manager.").append(mapGetter)
               .append("(CLASS_NAME + \":").append(b.getMapName()).append("\", ").append(b.isPersistent()).append(");\n");
         }
         for (SharedBoundary b : info.getCollections()) {
-            String mapGetter = b.isAtomic() ? "getAtomicMap" : b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
+            String mapGetter = b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
             ctor.append("        this.").append(b.getFieldCamel()).append("Map = manager.").append(mapGetter)
               .append("(CLASS_NAME + \":").append(b.getMapName()).append("\", ").append(b.isPersistent()).append(");\n");
         }
@@ -106,14 +100,9 @@ public class BackendMapGenerator {
             methods.append("\n    // ==================== Singleton Boundaries ====================\n");
             for (SharedBoundary b : info.getSingletons()) {
                 Map<String, String> vars = boundaryVars(b, outerClassName, svc, ctx);
-                String consType = b.isAtomic() ? "ATOMIC" : "CONVERGENT";
-                methods.append("\n    // --- ").append(b.getTypeName()).append(" (").append(consType).append(" singleton) ---\n");
+                methods.append("\n    // --- ").append(b.getTypeName()).append(" (singleton) ---\n");
                 methods.append(TemplateEngine.renderFragment("statemap_singleton_get.java.template", vars));
-                if (b.isAtomic()) {
-                    methods.append(TemplateEngine.renderFragment("statemap_singleton_put_atomic.java.template", vars));
-                } else {
-                    methods.append(TemplateEngine.renderFragment("statemap_singleton_put_convergent.java.template", vars));
-                }
+                methods.append(TemplateEngine.renderFragment("statemap_singleton_put_convergent.java.template", vars));
             }
         }
 
@@ -125,8 +114,6 @@ public class BackendMapGenerator {
             if (b.getEpochExpirationGetter() != null) {
                 // TTL-aware put: compute TTL from epoch expiration field
                 methods.append(generateEpochPut(b, vars, outerClassName));
-            } else if (b.isAtomic()) {
-                methods.append(TemplateEngine.renderFragment("statemap_collection_put_atomic.java.template", vars));
             } else {
                 methods.append(TemplateEngine.renderFragment("statemap_collection_put_convergent.java.template", vars));
             }
@@ -166,16 +153,11 @@ public class BackendMapGenerator {
         StringBuilder extraImports = new StringBuilder();
         boolean hasQueues = !info.getQueues().isEmpty() || !info.getPriorityQueues().isEmpty();
         boolean hasTopics = !info.getTopics().isEmpty();
-        boolean hasAtomic = info.getSingletons().stream().anyMatch(SharedBoundary::isAtomic)
-                || info.getCollections().stream().anyMatch(SharedBoundary::isAtomic);
         if (hasQueues) {
             extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".IQueue;\n");
         }
         if (hasTopics) {
             extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".ITopic;\n");
-        }
-        if (hasAtomic) {
-            extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".Lock;\n");
         }
         if (!info.getSingletons().isEmpty()) {
             extraImports.append("import ").append(ctx.getInterfacesPackage()).append(".Singleton;\n");
@@ -194,7 +176,6 @@ public class BackendMapGenerator {
         mainVars.put("BACKEND_NAME", info.getBackendName());
         mainVars.put("PROTO_FILE", svc.getProtoFile());
         mainVars.put("CLASS_NAME", className);
-        mainVars.put("MANAGER_FIELD", needsManager ? "    private final Manager manager;\n" : "");
         mainVars.put("FIELDS", fields.toString());
         mainVars.put("CONSTRUCTOR", ctor.toString());
         mainVars.put("PROTO_METHOD", proto.toString());
@@ -216,17 +197,8 @@ public class BackendMapGenerator {
         String fieldCamel = b.getFieldCamel();
         String getter = b.getEpochExpirationGetter();
 
-        if (b.isAtomic()) {
-            sb.append("\n    public void put").append(fieldPascal).append("(String key, ").append(qualifiedType)
-              .append(" value, Lock lock) throws ProtoException {\n");
-            sb.append("        if (!lock.isLockedByCurrentThread()) {\n");
-            sb.append("            throw new ProtoException(\n");
-            sb.append("                    ProtoException.FAILED_PRECONDITION, \"Must hold lock to update atomic state: ").append(fieldPascal).append("\");\n");
-            sb.append("        }\n");
-        } else {
-            sb.append("\n    public void put").append(fieldPascal).append("(String key, ").append(qualifiedType)
-              .append(" value) throws ProtoException {\n");
-        }
+        sb.append("\n    public void put").append(fieldPascal).append("(String key, ").append(qualifiedType)
+          .append(" value) throws ProtoException {\n");
         sb.append("        ").append(helpersRef).append(".validate").append(typeName).append("(value);\n");
         sb.append("        long epochExp = value.").append(getter).append("();\n");
         sb.append("        if (epochExp > 0) {\n");

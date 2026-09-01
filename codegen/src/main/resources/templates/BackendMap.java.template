@@ -12,9 +12,8 @@ import {{TYPES_PACKAGE}}.*;
 /**
  * BackendMap provides typed distributed map accessors for {{BACKEND_NAME}}Service.
  *
- * <p>Each boundary (field with a consistency annotation in the backend root message)
- * gets its own {@link IMap}. ATOMIC boundaries require a {@link Lock} for writes.
- * CONVERGENT boundaries allow lock-free writes.
+ * <p>Each boundary in the backend root message gets its own {@link IMap}.
+ * All boundaries are convergent and allow lock-free writes.
  *
  * <p>All put methods call {@code Helpers.validate<Type>()} before storing to ensure
  * proto validation annotations are enforced at the storage boundary.
@@ -27,7 +26,7 @@ import {{TYPES_PACKAGE}}.*;
 public class {{CLASS_NAME}} {
     private static final String CLASS_NAME = {{CLASS_NAME}}.class.getName();
 
-{{MANAGER_FIELD}}{{FIELDS}}
+{{FIELDS}}
 {{CONSTRUCTOR}}
 {{PROTO_METHOD}}
 {{METHODS}}

@@ -116,7 +116,6 @@ public class BoundaryAnalyzer {
 			if (enumVal == null || enumVal.isEmpty()) {
 				enumVal = "CONSISTENCY_CONVERGENT";
 			}
-			boolean isAtomic = "CONSISTENCY_ATOMIC".equals(enumVal);
 			boolean isReplicated = "CONSISTENCY_REPLICATED".equals(enumVal);
 			String typeName = StringUtils.extractSimpleTypeName(field.getType());
 
@@ -141,7 +140,6 @@ public class BoundaryAnalyzer {
 			b.setFieldCamel(StringUtils.toLowerCamelCase(field.getName()));
 			b.setTypeName(typeName);
 			b.setMapName(mapName);
-			b.setAtomic(isAtomic);
 			b.setReplicated(isReplicated);
 			b.setRepeated(field.isRepeated());
 			b.setPrivateField(isPrivate);

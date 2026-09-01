@@ -6,7 +6,6 @@ public class SharedBoundary {
     private String fieldCamel;     // camelCase: "roster"
     private String typeName;       // PascalCase message type: "TeamRoster"
     private String mapName;        // distributed map name: "baseball_roster"
-    private boolean atomic;
     private boolean repeated;
     private String keyFieldName;   // for collections: "player_id"
     private String keyFieldPascal; // for collections: "PlayerId"
@@ -38,9 +37,6 @@ public class SharedBoundary {
 
     public String getMapName() { return mapName; }
     public void setMapName(String mapName) { this.mapName = mapName; }
-
-    public boolean isAtomic() { return atomic; }
-    public void setAtomic(boolean atomic) { this.atomic = atomic; }
 
     public boolean isRepeated() { return repeated; }
     public void setRepeated(boolean repeated) { this.repeated = repeated; }

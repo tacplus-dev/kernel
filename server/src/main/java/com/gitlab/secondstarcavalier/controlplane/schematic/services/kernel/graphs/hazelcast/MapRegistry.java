@@ -17,9 +17,8 @@ import org.slf4j.LoggerFactory;
  * the protobuf parser for their value type, and the consistency model.
  *
  * <p>
- * Populated at startup when {@code Manager.getConvergentMap()} /
- * {@code Manager.getAtomicMap()} is called. The parser is initially null
- * and detected lazily on the first write via
+ * Populated at startup when {@code Manager.getConvergentMap()} is called.
+ * The parser is initially null and detected lazily on the first write via
  * {@link #setParserIfAbsent(String, Parser)}.
  */
 public class MapRegistry {

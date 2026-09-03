@@ -128,7 +128,8 @@ class WorkloadLocalityTest {
 				workloadMap,
 				null,            // persistState (no disk snapshot in-test)
 				null,            // kubernetesTokenVerifier
-				null);           // kubernetesTokenAudience
+				null,            // kubernetesTokenAudience
+				null);           // opaConfigWriter
 
 		authorizer = new Authorizer(new LocalJwkSource(() -> verifyingKeys));
 		Mint.registerMethodAuth(authorizer);

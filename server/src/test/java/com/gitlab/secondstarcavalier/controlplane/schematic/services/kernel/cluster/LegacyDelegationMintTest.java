@@ -90,7 +90,8 @@ class LegacyDelegationMintTest {
                 new WorkloadMap(new InMemoryManager()),
                 null,            // persistState
                 null,            // kubernetesTokenVerifier
-                KERNEL_AUDIENCE);
+                KERNEL_AUDIENCE,
+                null);           // opaConfigWriter
     }
 
     private void registerDelegate() {

@@ -74,7 +74,8 @@ class MintServiceTokenKubernetesTest {
                 new WorkloadMap(new InMemoryManager()),
                 null,            // persistState
                 verifier,
-                KERNEL_AUDIENCE);
+                KERNEL_AUDIENCE,
+                null);           // opaConfigWriter
     }
 
     private void addDelegateWithSa(String namespace, String sa) {

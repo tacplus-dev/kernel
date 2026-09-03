@@ -94,7 +94,8 @@ class MintDelegatedTokenTest {
                 new WorkloadMap(new InMemoryManager()),
                 null,            // persistState
                 null,            // kubernetesTokenVerifier
-                KERNEL_AUDIENCE);
+                KERNEL_AUDIENCE,
+                null);           // opaConfigWriter
     }
 
     /** Mints and signs a caller S2S token for {@code delegateName}, the kernel's own key. */

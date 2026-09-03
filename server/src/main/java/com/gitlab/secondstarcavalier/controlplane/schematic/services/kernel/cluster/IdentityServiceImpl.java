@@ -26,6 +26,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.clients.vservices.userentitlements.OpaEvalGrpcClient;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.vservices.proxypolicy.Proxypolicy;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.common.credentials.Credentials;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.opa.Opa;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import io.grpc.Status;
@@ -279,6 +280,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 * triggers a snapshot.
 	 */
 	private final Runnable persistState;
+	@Nullable
+	private final java.util.function.Consumer<Opa.Config> opaConfigWriter;
 
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
@@ -301,7 +304,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			WorkloadMap workloadMap,
 			Runnable persistState,
 			@Nullable KubernetesTokenVerifier kubernetesTokenVerifier,
-			@Nullable String kubernetesTokenAudience) {
+			@Nullable String kubernetesTokenAudience,
+			@Nullable java.util.function.Consumer<Opa.Config> opaConfigWriter) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
 		this.offlineTokenLifetimeSeconds = offlineTokenLifetimeSeconds > 0 ? offlineTokenLifetimeSeconds : DEFAULT_OFFLINE_TOKEN_LIFETIME_SECONDS;
@@ -327,6 +331,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		this.kubernetesTokenVerifier =
 				kubernetesTokenVerifier != null ? kubernetesTokenVerifier : new UnwiredKubernetesTokenVerifier();
 		this.kubernetesTokenAudience = kubernetesTokenAudience != null ? kubernetesTokenAudience : "";
+		this.opaConfigWriter = opaConfigWriter;
 	}
 
 	// ========================================================================
@@ -2683,6 +2688,37 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		logger.info("RevokeGrant: grant_id={}, caller={}, subject={}, delegate={}, revoked_at_ms={}",
 				grantId, rawCallerSub, grant.getSubject(), grant.getDelegateName(), revokedAtMs);
+	}
+
+	// ========================================================================
+	// UpdateOpaConfig RPC (operator-triggered live config push, opa only)
+	// ========================================================================
+
+	/**
+	 * Unconditionally overwrites opa's live config-state root with the given
+	 * config, bypassing {@link ClusterServer}'s normal create-only seeding
+	 * (a populated root is otherwise never overwritten by
+	 * {@code installConfigHolder}, so a rolling restart can't revert a
+	 * live-edited config back to the bundle default). This is the one
+	 * triggered path around that create-only rule: an authorized operator can
+	 * push a changed opa config into an already-running, already-seeded
+	 * cluster on demand. auth_services: ["operator"] on the RPC restricts
+	 * callers to the operator service; no further caller check is needed here.
+	 */
+	@Override
+	public void updateOpaConfig(Caller caller, Kernel.UpdateOpaConfigRequest request) throws ProtoException {
+		try {
+			if (opaConfigWriter == null) {
+				throw new StatusException(Status.UNIMPLEMENTED, "this kernel has no writable opa config state");
+			}
+			opaConfigWriter.accept(request.getConfig().getOpaConfig());
+			logger.info("UpdateOpaConfig: opa config-state root overwritten");
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("UpdateOpaConfig failed", e);
+			throw new ProtoException(ProtoException.INTERNAL, "push opa config failed: " + e.getMessage(), e);
+		}
 	}
 
 	/**

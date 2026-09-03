@@ -799,7 +799,17 @@ public class ClusterServer {
 					workloadState,
 					this::persistKernelState,
 					kubernetesTokenVerifier,
-					kubernetesTokenAudience);
+					kubernetesTokenAudience,
+					// UpdateOpaConfig's single write path: an unconditional put into opa's
+					// config-state root, bypassing installConfigHolder's create-only
+					// seeding so an authorized operator can push a live config change.
+					opaConfig -> {
+						try {
+							backendServers.services().getOpaConfigStateMap().putConfig(opaConfig);
+						} catch (Exception e) {
+							throw new RuntimeException("putConfig failed", e);
+						}
+					});
 
 			Mint mintWrapper = new Mint(identityService, kernelAuthorizer) {
 				@Override

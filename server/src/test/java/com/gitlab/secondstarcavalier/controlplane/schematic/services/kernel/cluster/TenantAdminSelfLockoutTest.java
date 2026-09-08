@@ -52,7 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class TenantAdminSelfLockoutTest {
 
-	private static final String TENANT_NS = "/acme";
+	private static final String TENANT_NS = "/tenants/acme";
 	private static final String CALLER_CRED_PAIR = "cp-admin";
 	private static final String OTHER_CRED_PAIR = "cp-other";
 	private static final Metadata.Key<String> AUTHORIZATION =

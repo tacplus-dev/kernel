@@ -27,7 +27,9 @@ import org.slf4j.LoggerFactory;
  * RPCs over the uniform namespace tree (ROOT "/" + tenants + projects).
  *
  * <p>Tenants/projects live in the kernel {@link ConfigMap} keyed by their full
- * namespace path (e.g. {@code "/acme"}, {@code "/acme/sub"}, {@code "/acme/prod"}).
+ * namespace path. Tenants are canonically rooted at {@code /tenants}
+ * (e.g. {@code "/tenants/acme"}, {@code "/tenants/acme/sub"},
+ * {@code "/tenants/acme/prod"}).
  * The flat-map-keyed-by-full-path representation IS the tree: a parent's
  * immediate children are exactly the keys with {@code parentNs + "/"} as prefix
  * and no further {@code '/'}.
@@ -43,6 +45,9 @@ import org.slf4j.LoggerFactory;
  */
 public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     private static final Logger logger = LoggerFactory.getLogger(TenantAdminServiceImpl.class);
+
+    /** Canonical root of the tenant subtree; every tenant namespace lives under it. */
+    private static final String TENANTS_PREFIX = "/tenants/";
 
     private final ConfigMap configMap;
     private final Supplier<String> trustDomainReader;
@@ -71,9 +76,9 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     public Kernel.Tenant createTenant(Caller caller, Kernel.CreateTenantRequest request)
             throws ProtoException {
         String ns = require(request.getTenantNamespace(), "tenant_namespace");
-        if (!ns.startsWith("/")) {
+        if (!ns.startsWith(TENANTS_PREFIX)) {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT,
-                    "tenant_namespace must be an absolute path (leading '/')");
+                    "tenant_namespace must be under \"" + TENANTS_PREFIX + "\"");
         }
         if (!configMap.getTenants(ns).getName().isEmpty()) {
             throw new ProtoException(ProtoException.ALREADY_EXISTS, "tenant already exists at " + ns);

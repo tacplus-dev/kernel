@@ -1241,7 +1241,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	/**
 	 * Resolves the namespace claim for a user token from the OPA result. OPA maps the
 	 * caller's IdP (issuer/claims) to the tenant subtree they belong to, as a
-	 * leading-slash absolute path (e.g. "/local/dev/drpepper"). Falls back to the
+	 * leading-slash absolute path (e.g. "/tenants/drpepper"). Falls back to the
 	 * cluster-root namespace when the policy returns none.
 	 */
 	private String namespaceFromOpaOrRoot(Userentitlements.EntitlementEvalResult result) {
@@ -2174,7 +2174,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		logger.info("X509Mint[{}] verified token in {}ms", traceId, elapsedMillis(startNanos));
 
 		// Kernel-minted service tokens encode the canonical SPIFFE URI in the
-		// `sub` claim (e.g. "spiffe://local/dev/oauth"). That URI IS the
+		// `sub` claim (e.g. "spiffe://local.dev/system/services/oauth"). That URI IS the
 		// workload identity for this cluster and propagates unchanged through
 		// the cert: token sub → URI SAN. No reconstruction.
 		//

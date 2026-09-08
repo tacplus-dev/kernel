@@ -5,6 +5,7 @@ package {{PACKAGE}};
 {{CROSS_IMPORTS}}import {{INTERFACES_PACKAGE}}.IMap;
 {{EXTRA_IMPORTS}}import {{INTERFACES_PACKAGE}}.Manager;
 import {{ERRORS_PACKAGE}}.ProtoException;
+import {{AUTHENTICATOR_PACKAGE}}.NamespaceScope;
 import {{AUTHENTICATOR_PACKAGE}}.SecurityAuthenticator;
 {{SECURITY_INTERCEPTOR_IMPORT}}{{PEER_CONTEXT_IMPORT}}import io.grpc.Status;
 import io.grpc.stub.ServerCallStreamObserver;
@@ -88,13 +89,24 @@ public class {{CLASS_NAME}}
         }
     }
 
-    /** Holds a watcher's stream observer and the last message sent to it. */
+    /**
+     * Holds a watcher's stream observer, the last message sent to it, and the
+     * namespace scope captured when it subscribed — the poller runs on the
+     * scheduler thread with no gRPC Context, so the scope cannot be re-read there.
+     */
     private static class WatcherEntry<T> {
         final StreamObserver<T> observer;
+        final NamespaceScope scope;
         final AtomicReference<T> lastSent = new AtomicReference<>();
 
+        /** For boundaries that are not key-scoped (leader records). */
         WatcherEntry(StreamObserver<T> observer) {
+            this(observer, NamespaceScope.root());
+        }
+
+        WatcherEntry(StreamObserver<T> observer, NamespaceScope scope) {
             this.observer = observer;
+            this.scope = scope;
         }
     }
 {{TOPIC_ENVELOPE}}

@@ -5,7 +5,8 @@
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
             {{HELPERS_REF}}.validate{{TYPE_NAME}}(request);
-            {{QUALIFIED_TYPE}} old = {{FIELD_CAMEL}}Map.put(Singleton.SINGLETON_KEY, request);
+            {{QUALIFIED_TYPE}} old = {{FIELD_CAMEL}}Map.put(
+                NamespaceScope.current().scope(Singleton.SINGLETON_KEY), request);
             responseObserver.onNext(old == null ? {{QUALIFIED_TYPE}}.getDefaultInstance() : old);
             responseObserver.onCompleted();
         } catch (ProtoException e) {

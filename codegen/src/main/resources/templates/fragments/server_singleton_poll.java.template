@@ -1,9 +1,15 @@
 
     private void pollSingleton{{FIELD_PASCAL}}() {
         try {
-            {{QUALIFIED_TYPE}} current = {{FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
-            if (current == null) return;
+            // Each watcher sees the singleton at its own scoped key; watchers
+            // sharing a scope share the read.
+            java.util.Map<NamespaceScope, {{QUALIFIED_TYPE}}> values = new java.util.HashMap<>();
             for (WatcherEntry<{{QUALIFIED_TYPE}}> entry : {{FIELD_CAMEL}}Watchers) {
+                {{QUALIFIED_TYPE}} current = values.computeIfAbsent(entry.scope,
+                    s -> {{FIELD_CAMEL}}Map.get(s.scope(Singleton.SINGLETON_KEY)));
+                if (current == null) {
+                    continue;
+                }
                 {{QUALIFIED_TYPE}} lastSent = entry.lastSent.get();
                 if (lastSent == null || !lastSent.equals(current)) {
                     try {

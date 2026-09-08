@@ -323,20 +323,13 @@ public class BackendServiceServerGenerator {
 				viewRpcs.append("            StreamObserver<").append(responseName)
 						.append("> responseObserver) {\n");
 				viewRpcs.append("        logger.debug(\"rpc method=Watch").append(v.getFieldPascal()).append("\");\n");
-				// Build initial snapshot from all source maps
-				viewRpcs.append("        ").append(responseName)
-						.append(".Builder resp = ").append(responseName).append(".newBuilder();\n");
-				for (String srcCamel : v.getSourceFieldCamels()) {
-					viewRpcs.append("        for (java.util.Map.Entry<String, ")
-							.append(ctx.getOuterClassName(svc)).append(".").append(v.getTypeName())
-							.append("> e : ").append(srcCamel).append("Map.entrySet()) {\n");
-					viewRpcs.append("            resp.putEntries(e.getKey(), e.getValue());\n");
-					viewRpcs.append("        }\n");
-				}
-				viewRpcs.append("        ").append(responseName).append(" initial = resp.build();\n");
+				// Captured here: the poller runs on the scheduler thread, off the Context.
+				viewRpcs.append("        NamespaceScope scope = NamespaceScope.current();\n");
+				viewRpcs.append("        ").append(responseName).append(" initial = build")
+						.append(v.getFieldPascal()).append("Snapshot(scope);\n");
 				viewRpcs.append("        responseObserver.onNext(initial);\n\n");
 				viewRpcs.append("        WatcherEntry<").append(responseName)
-						.append("> entry = new WatcherEntry<>(responseObserver);\n");
+						.append("> entry = new WatcherEntry<>(responseObserver, scope);\n");
 				viewRpcs.append("        entry.lastSent.set(initial);\n");
 				viewRpcs.append("        ").append(v.getFieldCamel()).append("Watchers.add(entry);\n\n");
 				viewRpcs.append("        if (responseObserver instanceof ServerCallStreamObserver) {\n");
@@ -371,20 +364,32 @@ public class BackendServiceServerGenerator {
 		for (SharedView v : views) {
 			String responseName = outerClassName + "." + v.getFieldPascal() + "EntriesResponse";
 			pollAllCalls.append("            pollView").append(v.getFieldPascal()).append("();\n");
-			pollMethods.append("\n    private void pollView").append(v.getFieldPascal()).append("() {\n");
-			pollMethods.append("        try {\n");
-			pollMethods.append("            ").append(responseName)
+			// The scope-filtered snapshot builder, shared by WatchX and pollViewX.
+			pollMethods.append("\n    private ").append(responseName).append(" build")
+					.append(v.getFieldPascal()).append("Snapshot(NamespaceScope scope) {\n");
+			pollMethods.append("        ").append(responseName)
 					.append(".Builder resp = ").append(responseName).append(".newBuilder();\n");
 			for (String srcCamel : v.getSourceFieldCamels()) {
-				pollMethods.append("            for (java.util.Map.Entry<String, ")
+				pollMethods.append("        for (java.util.Map.Entry<String, ")
 						.append(outerClassName).append(".").append(v.getTypeName())
 						.append("> e : ").append(srcCamel).append("Map.entrySet()) {\n");
-				pollMethods.append("                resp.putEntries(e.getKey(), e.getValue());\n");
+				pollMethods.append("            if (scope.owns(e.getKey())) {\n");
+				pollMethods.append("                resp.putEntries(scope.unscope(e.getKey()), e.getValue());\n");
 				pollMethods.append("            }\n");
+				pollMethods.append("        }\n");
 			}
-			pollMethods.append("            ").append(responseName).append(" current = resp.build();\n");
+			pollMethods.append("        return resp.build();\n");
+			pollMethods.append("    }\n");
+
+			pollMethods.append("\n    private void pollView").append(v.getFieldPascal()).append("() {\n");
+			pollMethods.append("        try {\n");
+			pollMethods.append("            java.util.Map<NamespaceScope, ").append(responseName)
+					.append("> snapshots = new java.util.HashMap<>();\n");
 			pollMethods.append("            for (WatcherEntry<").append(responseName)
 					.append("> entry : ").append(v.getFieldCamel()).append("Watchers) {\n");
+			pollMethods.append("                ").append(responseName)
+					.append(" current = snapshots.computeIfAbsent(entry.scope, this::build")
+					.append(v.getFieldPascal()).append("Snapshot);\n");
 			pollMethods.append("                ").append(responseName)
 					.append(" lastSent = entry.lastSent.get();\n");
 			pollMethods.append("                if (lastSent == null || !lastSent.equals(current)) {\n");
@@ -543,8 +548,8 @@ public class BackendServiceServerGenerator {
 		vars.put("HELPERS_REF", ctx.getHelpersRef(svc, b));
 		long ttlSeconds = b.getEvictionTtlSeconds();
 		vars.put("TTL_SET_CALL", ttlSeconds > 0
-				? b.getFieldCamel() + "Map.set(compositeKey, authoritative, " + ttlSeconds + "L, TimeUnit.SECONDS);"
-				: b.getFieldCamel() + "Map.set(compositeKey, authoritative);");
+				? b.getFieldCamel() + "Map.set(storedKey, authoritative, " + ttlSeconds + "L, TimeUnit.SECONDS);"
+				: b.getFieldCamel() + "Map.set(storedKey, authoritative);");
 		vars.put("OUTER_CLASS", outerClassName);
 		vars.put("SERVICE_PREFIX", servicePrefix);
 		vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.sys.trace.Trace.TraceRequest");

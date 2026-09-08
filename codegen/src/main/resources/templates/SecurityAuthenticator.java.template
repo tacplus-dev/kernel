@@ -3,6 +3,7 @@
 package {{PACKAGE}};
 
 import {{ERRORS_PACKAGE}}.ProtoException;
+import {{SPIFFE_PACKAGE}}.Spiffe;
 import {{TOKEN_PACKAGE}}.TokenWrapper;
 import {{JWK_LIB_PACKAGE}}.ImmutableJwk;
 import {{JWK_TYPES_PACKAGE}}.JwkOuterClass;
@@ -115,6 +116,21 @@ public class SecurityAuthenticator {
      * Empty for tokens that carry no service identity (user/CLI tokens).
      */
     public static final Context.Key<String> CALLER_SERVICE_PATH_KEY = Context.key("caller-service-path");
+
+    /**
+     * Context key for the caller's authorization NAMESPACE, derived from the same
+     * token subject {@link #CALLER_SERVICE_PATH_KEY} is derived from, so the two
+     * can never disagree: {@code /system} (or {@code /system/<location...>}) for a
+     * shared platform service, {@code /tenants/<tenant>} for a tenant-owned
+     * instance. A bare (non-SPIFFE) subject names a {@code /system} service — the
+     * same reading {@code IdentityServiceImpl.findDelegateBySubject} gives it.
+     *
+     * <p>Empty for tokens that carry no service identity (user/CLI tokens), which
+     * {@link #checkAccess} already denies on every policed graph.
+     *
+     * <p>This is what {@code NamespaceScope} chroots kernel state keys on.
+     */
+    public static final Context.Key<String> CALLER_NAMESPACE_KEY = Context.key("caller-namespace");
 
     /**
      * Graph key passed by servers that have no computed state-root policy: the
@@ -327,7 +343,8 @@ public class SecurityAuthenticator {
                 }
                 io.grpc.Context ctx = io.grpc.Context.current()
                     .withValue(CALLER_SERVICE_KEY, caller.serviceName)
-                    .withValue(CALLER_SERVICE_PATH_KEY, caller.servicePath);
+                    .withValue(CALLER_SERVICE_PATH_KEY, caller.servicePath)
+                    .withValue(CALLER_NAMESPACE_KEY, caller.namespace);
                 if (caller.instanceId != null && !caller.instanceId.isEmpty()) {
                     ctx = ctx.withValue(CALLER_INSTANCE_ID_KEY, caller.instanceId);
                 }
@@ -398,10 +415,12 @@ public class SecurityAuthenticator {
         // workload tokens have one; user/CLI tokens leave it empty, and checkAccess
         // denies them on every policed graph.
         String servicePath = "";
+        String namespace = "";
         String subType = tw.getSubType();
         if ("service".equals(subType) || "workload".equals(subType)) {
             try {
                 servicePath = tw.servicePath();
+                namespace = callerNamespace(tw);
             } catch (RuntimeException e) {
                 throw new ProtoException(ProtoException.UNAUTHENTICATED,
                         "token subject is not a valid service identity: " + e.getMessage());
@@ -410,13 +429,31 @@ public class SecurityAuthenticator {
 
         // Cache the result
         long exp = tw.getExpiration();
-        CachedCaller result = new CachedCaller(serviceName, servicePath, instanceId, exp);
+        CachedCaller result = new CachedCaller(serviceName, servicePath, namespace, instanceId, exp);
         if (exp > 0) {
             // exp is an absolute epoch-second; the cache stores an absolute epoch-milli expiry.
             tokenCache.put(rawToken, result, exp * 1000L);
         }
 
         return result;
+    }
+
+    /**
+     * The caller's authorization namespace, from the same subject
+     * {@link TokenWrapper#servicePath()} reads. {@code Spiffe.namespaceFromSpiffe}
+     * is the one classifier for this — {@code /system[/location...]} for a shared
+     * service, {@code /tenants/<tenant>} for a tenant-owned instance — and a bare
+     * (non-SPIFFE) subject, the broker/CLI form, names a {@code /system} service.
+     */
+    private static String callerNamespace(TokenWrapper tw) {
+        String sub = tw.getSubject();
+        if (sub == null || sub.isEmpty()) {
+            sub = tw.getServiceName();
+        }
+        if (sub == null || sub.isEmpty() || !sub.contains("://")) {
+            return "/" + Spiffe.SYSTEM_SEGMENT;
+        }
+        return Spiffe.namespaceFromSpiffe(sub);
     }
 
     /**
@@ -529,12 +566,15 @@ public class SecurityAuthenticator {
     private static final class CachedCaller {
         final String serviceName;
         final String servicePath;
+        final String namespace;
         final String instanceId;
         final long expiresAt;
 
-        CachedCaller(String serviceName, String servicePath, String instanceId, long expiresAt) {
+        CachedCaller(String serviceName, String servicePath, String namespace, String instanceId,
+                long expiresAt) {
             this.serviceName = serviceName;
             this.servicePath = servicePath;
+            this.namespace = namespace;
             this.instanceId = instanceId;
             this.expiresAt = expiresAt;
         }

@@ -4,7 +4,16 @@
             StreamObserver<{{OUTER_CLASS}}.MapEmpty> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
-            {{FIELD_CAMEL}}Map.clear();
+            NamespaceScope scope = NamespaceScope.current();
+            if (scope.isRoot()) {
+                {{FIELD_CAMEL}}Map.clear();
+            } else {
+                for (String key : new java.util.ArrayList<>({{FIELD_CAMEL}}Map.keySet())) {
+                    if (scope.owns(key)) {
+                        {{FIELD_CAMEL}}Map.delete(key);
+                    }
+                }
+            }
             responseObserver.onNext({{OUTER_CLASS}}.MapEmpty.getDefaultInstance());
             responseObserver.onCompleted();
         } catch (ProtoException e) {

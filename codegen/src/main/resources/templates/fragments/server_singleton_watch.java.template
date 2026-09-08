@@ -8,8 +8,10 @@
             responseObserver.onError(toGrpcError(e));
             return;
         }
+        // Captured here: the poller runs on the scheduler thread, off the Context.
+        NamespaceScope scope = NamespaceScope.current();
         try {
-            {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+            {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(scope.scope(Singleton.SINGLETON_KEY));
             if (value != null) {
                 responseObserver.onNext(value);
             }
@@ -17,7 +19,7 @@
             logger.warn("Failed to send initial {{FIELD_PASCAL}} value", e);
         }
 
-        WatcherEntry<{{QUALIFIED_TYPE}}> entry = new WatcherEntry<>(responseObserver);
+        WatcherEntry<{{QUALIFIED_TYPE}}> entry = new WatcherEntry<>(responseObserver, scope);
         {{FIELD_CAMEL}}Watchers.add(entry);
 
         if (responseObserver instanceof ServerCallStreamObserver) {

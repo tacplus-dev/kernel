@@ -7,7 +7,7 @@ import java.nio.file.*;
 import java.util.*;
 
 /**
- * Generates SecurityAuthenticator.java and SecurityInterceptor.java.
+ * Generates SecurityAuthenticator.java, NamespaceScope.java and SecurityInterceptor.java.
  *
  * <p>SecurityAuthenticator provides caller identity extraction for generated
  * BackendServiceServer classes.
@@ -34,6 +34,7 @@ public class SecurityAuthenticatorGenerator {
         vars.put("PACKAGE", pkg);
         vars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());
         vars.put("TOKEN_PACKAGE", ctx.getTokenPackage());
+        vars.put("SPIFFE_PACKAGE", ctx.getSpiffePackage());
         vars.put("JWK_LIB_PACKAGE", ctx.getJwkLibPackage());
         vars.put("JWK_TYPES_PACKAGE", ctx.getJwkTypesPackage());
         vars.put("NO_AUTH_SERVICES", buildNoAuthSet(noAuthEntries, false));
@@ -46,6 +47,15 @@ public class SecurityAuthenticatorGenerator {
         Path dir = ctx.getOutputDir().resolve("src/main/java/" + pkg.replace('.', '/'));
         Files.createDirectories(dir);
         Files.writeString(dir.resolve("SecurityAuthenticator.java"), content);
+
+        // NamespaceScope reads SecurityAuthenticator.CALLER_NAMESPACE_KEY and is
+        // emitted alongside it, once per build, in the same package.
+        Map<String, String> scopeVars = new LinkedHashMap<>();
+        scopeVars.put("HEADER", GeneratorContext.header("namespace_scope"));
+        scopeVars.put("PACKAGE", pkg);
+        scopeVars.put("SPIFFE_PACKAGE", ctx.getSpiffePackage());
+        Files.writeString(dir.resolve("NamespaceScope.java"),
+                TemplateEngine.render("NamespaceScope.java.template", scopeVars));
 
         // Generate SecurityInterceptor if security policies are available
         if (!ctx.getSecurityPolicies().isEmpty()) {

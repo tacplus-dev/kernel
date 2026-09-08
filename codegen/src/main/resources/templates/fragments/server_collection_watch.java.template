@@ -8,12 +8,10 @@
             responseObserver.onError(toGrpcError(e));
             return;
         }
+        // Captured here: the poller runs on the scheduler thread, off the Context.
+        NamespaceScope scope = NamespaceScope.current();
         try {
-            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.newBuilder();
-            for (java.util.Map.Entry<String, {{QUALIFIED_TYPE}}> e : {{FIELD_CAMEL}}Map.entrySet()) {
-                resp.putEntries(e.getKey(), e.getValue());
-            }
-            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse snapshot = resp.build();
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse snapshot = build{{FIELD_PASCAL}}Snapshot(scope);
             if (snapshot.getEntriesCount() > 0) {
                 responseObserver.onNext(snapshot);
             }
@@ -21,7 +19,7 @@
             logger.warn("Failed to send initial {{FIELD_PASCAL}} collection snapshot", e);
         }
 
-        WatcherEntry<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> entry = new WatcherEntry<>(responseObserver);
+        WatcherEntry<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> entry = new WatcherEntry<>(responseObserver, scope);
         {{FIELD_CAMEL}}Watchers.add(entry);
 
         if (responseObserver instanceof ServerCallStreamObserver) {

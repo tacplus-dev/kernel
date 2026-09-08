@@ -106,6 +106,10 @@ public class GeneratorContext {
 		return deriveLibsBase() + ".token";
 	}
 
+	public String getSpiffePackage() {
+		return deriveLibsBase() + ".spiffe";
+	}
+
 	public String getJwkLibPackage() {
 		return deriveLibsBase() + ".jwk";
 	}

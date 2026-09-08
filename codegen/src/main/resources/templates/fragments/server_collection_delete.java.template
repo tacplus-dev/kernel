@@ -4,7 +4,7 @@
             StreamObserver<{{OUTER_CLASS}}.MapEmpty> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
-            {{FIELD_CAMEL}}Map.delete(request.getKey());
+            {{FIELD_CAMEL}}Map.delete(NamespaceScope.current().scope(request.getKey()));
             responseObserver.onNext({{OUTER_CLASS}}.MapEmpty.getDefaultInstance());
             responseObserver.onCompleted();
         } catch (ProtoException e) {

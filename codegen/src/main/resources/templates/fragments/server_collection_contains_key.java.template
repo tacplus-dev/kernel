@@ -4,11 +4,12 @@
             StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
-            boolean exists = {{FIELD_CAMEL}}Map.containsKey(request.getKey());
+            String key = NamespaceScope.current().scope(request.getKey());
+            boolean exists = {{FIELD_CAMEL}}Map.containsKey(key);
             {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.newBuilder();
             resp.setFound(exists);
             if (exists) {
-                {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(request.getKey());
+                {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(key);
                 if (value != null) {
                     resp.setValue(value);
                 }

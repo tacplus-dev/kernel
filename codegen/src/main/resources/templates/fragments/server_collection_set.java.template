@@ -5,7 +5,7 @@
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.WRITE);
             {{HELPERS_REF}}.validate{{TYPE_NAME}}(request.getValue());
-            {{FIELD_CAMEL}}Map.set(request.getKey(), request.getValue());
+            {{FIELD_CAMEL}}Map.set(NamespaceScope.current().scope(request.getKey()), request.getValue());
             responseObserver.onNext({{OUTER_CLASS}}.MapEmpty.getDefaultInstance());
             responseObserver.onCompleted();
         } catch (ProtoException e) {

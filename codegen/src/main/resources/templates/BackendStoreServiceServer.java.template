@@ -5,13 +5,13 @@ package {{PACKAGE}};
 import {{INTERFACES_PACKAGE}}.IMap;
 import {{INTERFACES_PACKAGE}}.Manager;
 import {{ERRORS_PACKAGE}}.ProtoException;
+import {{AUTHENTICATOR_PACKAGE}}.NamespaceScope;
 import {{AUTHENTICATOR_PACKAGE}}.SecurityAuthenticator;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 
 import {{TYPES_PACKAGE}}.*;
 
-import java.util.ArrayList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,7 +60,7 @@ public class {{CLASS_NAME}}
                         .asRuntimeException());
                 return;
             }
-            storeMap.put(key, request);
+            storeMap.put(NamespaceScope.current().scope(key), request);
             responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
             responseObserver.onCompleted();
         } catch (ProtoException e) {
@@ -80,7 +80,7 @@ public class {{CLASS_NAME}}
         try {
             checkAccess("{{VALUE_TYPE}}", SecurityAuthenticator.OperationType.READ);
             String key = request.get{{KEY_FIELD_PASCAL}}();
-            {{QUALIFIED_VALUE_TYPE}} value = storeMap.get(key);
+            {{QUALIFIED_VALUE_TYPE}} value = storeMap.get(NamespaceScope.current().scope(key));
             if (value == null) {
                 responseObserver.onError(Status.NOT_FOUND
                         .withDescription("{{VALUE_TYPE}} not found for key: " + key)
@@ -106,7 +106,7 @@ public class {{CLASS_NAME}}
         try {
             checkAccess("{{VALUE_TYPE}}", SecurityAuthenticator.OperationType.WRITE);
             String key = request.get{{KEY_FIELD_PASCAL}}();
-            storeMap.remove(key);
+            storeMap.remove(NamespaceScope.current().scope(key));
             responseObserver.onNext(com.google.protobuf.Empty.getDefaultInstance());
             responseObserver.onCompleted();
         } catch (ProtoException e) {
@@ -125,10 +125,17 @@ public class {{CLASS_NAME}}
         logger.debug("rpc method=List{{VALUE_TYPE}}");
         try {
             checkAccess("{{VALUE_TYPE}}", SecurityAuthenticator.OperationType.READ);
-            {{OUTER_CLASS}}.{{VALUE_TYPE}}StoreListResponse response =
-                    {{OUTER_CLASS}}.{{VALUE_TYPE}}StoreListResponse.newBuilder()
-                            .addAllItems(new ArrayList<>(storeMap.values()))
-                            .build();
+            NamespaceScope scope = NamespaceScope.current();
+            {{OUTER_CLASS}}.{{VALUE_TYPE}}StoreListResponse.Builder builder =
+                    {{OUTER_CLASS}}.{{VALUE_TYPE}}StoreListResponse.newBuilder();
+            // Filter on the stored (scoped) key; the item itself is returned as
+            // written — {{KEY_FIELD_NAME}} is a payload field, never rewritten.
+            for (java.util.Map.Entry<String, {{QUALIFIED_VALUE_TYPE}}> e : storeMap.entrySet()) {
+                if (scope.owns(e.getKey())) {
+                    builder.addItems(e.getValue());
+                }
+            }
+            {{OUTER_CLASS}}.{{VALUE_TYPE}}StoreListResponse response = builder.build();
             responseObserver.onNext(response);
             responseObserver.onCompleted();
         } catch (ProtoException e) {

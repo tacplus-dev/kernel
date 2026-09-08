@@ -4,11 +4,7 @@
             StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
-            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.newBuilder();
-            for (java.util.Map.Entry<String, {{QUALIFIED_TYPE}}> e : {{FIELD_CAMEL}}Map.entrySet()) {
-                resp.putEntries(e.getKey(), e.getValue());
-            }
-            responseObserver.onNext(resp.build());
+            responseObserver.onNext(build{{FIELD_PASCAL}}Snapshot(NamespaceScope.current()));
             responseObserver.onCompleted();
         } catch (ProtoException e) {
             responseObserver.onError(toGrpcError(e));

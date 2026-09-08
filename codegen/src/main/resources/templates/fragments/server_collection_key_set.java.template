@@ -4,8 +4,13 @@
             StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysResponse> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+            NamespaceScope scope = NamespaceScope.current();
             {{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysResponse.newBuilder();
-            resp.addAllKeys({{FIELD_CAMEL}}Map.keySet());
+            for (String key : {{FIELD_CAMEL}}Map.keySet()) {
+                if (scope.owns(key)) {
+                    resp.addKeys(scope.unscope(key));
+                }
+            }
             responseObserver.onNext(resp.build());
             responseObserver.onCompleted();
         } catch (ProtoException e) {

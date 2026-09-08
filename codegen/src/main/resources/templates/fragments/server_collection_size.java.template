@@ -4,8 +4,20 @@
             StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}SizeResponse> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
+            NamespaceScope scope = NamespaceScope.current();
+            int size;
+            if (scope.isRoot()) {
+                size = {{FIELD_CAMEL}}Map.size();
+            } else {
+                size = 0;
+                for (String key : {{FIELD_CAMEL}}Map.keySet()) {
+                    if (scope.owns(key)) {
+                        size++;
+                    }
+                }
+            }
             responseObserver.onNext({{OUTER_CLASS}}.{{FIELD_PASCAL}}SizeResponse.newBuilder()
-                .setSize({{FIELD_CAMEL}}Map.size()).build());
+                .setSize(size).build());
             responseObserver.onCompleted();
         } catch (ProtoException e) {
             responseObserver.onError(toGrpcError(e));

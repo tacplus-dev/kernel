@@ -37,6 +37,9 @@
                 .build();
 
             {{HELPERS_REF}}.validate{{TYPE_NAME}}(authoritative);
+            // Only the map key is scoped. The payload keeps the bare composite id,
+            // which is what consumers of this record match on.
+            String storedKey = NamespaceScope.current().scope(compositeKey);
             {{TTL_SET_CALL}}
             responseObserver.onNext({{OUTER_CLASS}}.MapEmpty.getDefaultInstance());
             responseObserver.onCompleted();

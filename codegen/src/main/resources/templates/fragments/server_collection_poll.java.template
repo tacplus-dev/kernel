@@ -1,12 +1,30 @@
 
+    /**
+     * The {{FIELD_PASCAL}} snapshot one scope may see: its own entries only, with
+     * the scope prefix stripped off the keys. Payloads are returned untouched.
+     * A root (/system) scope owns every key and strips nothing, so this is the
+     * whole map exactly as it was before namespace scoping existed.
+     */
+    private {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse build{{FIELD_PASCAL}}Snapshot(NamespaceScope scope) {
+        {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.newBuilder();
+        for (java.util.Map.Entry<String, {{QUALIFIED_TYPE}}> e : {{FIELD_CAMEL}}Map.entrySet()) {
+            if (scope.owns(e.getKey())) {
+                resp.putEntries(scope.unscope(e.getKey()), e.getValue());
+            }
+        }
+        return resp.build();
+    }
+
     private void pollCollection{{FIELD_PASCAL}}() {
         try {
-            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.newBuilder();
-            for (java.util.Map.Entry<String, {{QUALIFIED_TYPE}}> e : {{FIELD_CAMEL}}Map.entrySet()) {
-                resp.putEntries(e.getKey(), e.getValue());
-            }
-            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse current = resp.build();
+            // The poller runs off the gRPC Context, so each watcher's scope is the
+            // one captured when it subscribed; watchers sharing a scope share a
+            // snapshot.
+            java.util.Map<NamespaceScope, {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> snapshots =
+                new java.util.HashMap<>();
             for (WatcherEntry<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> entry : {{FIELD_CAMEL}}Watchers) {
+                {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse current =
+                    snapshots.computeIfAbsent(entry.scope, this::build{{FIELD_PASCAL}}Snapshot);
                 {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse lastSent = entry.lastSent.get();
                 if (lastSent == null || !lastSent.equals(current)) {
                     try {

@@ -38,6 +38,14 @@ class MintServiceTokenKubernetesTest {
     private static final String K8S_NAMESPACE = "schematic";
     private static final String K8S_SA = "oauth-sa";
     private static final String DELEGATE_NAME = "oauth";
+    // A tenant-owned service: one delegate per tenant, all carrying the same
+    // name (the service path auth_services grants match on), told apart only by
+    // tenant_namespace.
+    private static final String TENANT_DELEGATE_NAME = "docmanager";
+    private static final String ACME_NS = "/tenants/acme";
+    private static final String BETA_NS = "/tenants/beta";
+    private static final String ACME_SA = "docmanager-acme";
+    private static final String BETA_SA = "docmanager-beta";
     private static final Caller CALLER = new Caller("", "test-req");
 
     // ---- Harness -----------------------------------------------------------
@@ -79,10 +87,16 @@ class MintServiceTokenKubernetesTest {
     }
 
     private void addDelegateWithSa(String namespace, String sa) {
+        addDelegate(DELEGATE_NAME, "", namespace, sa);
+    }
+
+    /** A delegate rooted at {@code tenantNamespace} ("" = the shared /system root). */
+    private void addDelegate(String delegateName, String tenantNamespace, String k8sNamespace, String sa) {
         delegates.add(Kernel.Delegate.newBuilder()
-                .setName(DELEGATE_NAME)
+                .setName(delegateName)
+                .setTenantNamespace(tenantNamespace)
                 .addKubernetesServiceAccounts(Kernel.KubernetesServiceAccountMatcher.newBuilder()
-                        .setKubernetesNamespace(namespace)
+                        .setKubernetesNamespace(k8sNamespace)
                         .setKubernetesServiceAccount(sa)
                         .build())
                 .build());
@@ -90,6 +104,20 @@ class MintServiceTokenKubernetesTest {
 
     private String delegateSpiffe(String delegateName) {
         return Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", delegateName);
+    }
+
+    /** {@code spiffe://<td>/tenants/<tenant>/services/<svc>}. */
+    private String tenantDelegateSpiffe(String tenantNamespace, String delegateName) {
+        return Spiffe.namespaceSpiffeId(TRUST_DOMAIN, tenantNamespace)
+                + "/" + Spiffe.SERVICES_SEGMENT + "/" + delegateName;
+    }
+
+    /** Mints a service access token for whichever delegate claims {@code sa}. */
+    private TokenWrapper mintAccessForSa(String sa) throws Exception {
+        IdentityServiceImpl svc = newService(FakeKubernetesTokenVerifier.returning(
+                FakeKubernetesTokenVerifier.identity(K8S_NAMESPACE, sa, List.of(KERNEL_AUDIENCE))));
+        Tokenrequest.TokenMintResponse resp = svc.mintServiceToken(CALLER, k8sReq(fakeJwt()));
+        return TokenWrapper.parse(resp.getAccessToken().getBase64());
     }
 
     /** Mints a refresh (continuity) token bound to {@code subject} with the given instance_id. */
@@ -103,6 +131,9 @@ class MintServiceTokenKubernetesTest {
                 .setIssuedAt(now)
                 .setExpiration(now + 3600)
                 .setJTI(UUID.randomUUID().toString());
+        // Service mints derive the namespace claim from the SPIFFE subject, so a
+        // continuity token for a tenant-owned instance carries /tenants/<t>.
+        t.setNamespace(Spiffe.namespaceFromSpiffe(subject));
         t.setTokenUse(com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.token.Helpers
                 .tokenUseToString(TokenOuterClass.TokenUse.TOKEN_USE_REFRESH));
         t.setCustomField("instance_id", instanceId);
@@ -342,6 +373,95 @@ class MintServiceTokenKubernetesTest {
         assertEquals(ProtoException.UNAUTHENTICATED,
                 codeOf(() -> svc.mintServiceToken(CALLER, inputTokenReq(fakeJwt()))));
         assertFalse(spy.wasInvoked(), "input_token must not touch the k8s verifier");
+    }
+
+    @Test
+    void mintsBothTheSystemAndTheTenantSubjectShape() throws Exception {
+        // Same kernel, same K8s namespace: a shared platform service and a
+        // tenant-owned instance, distinguished only by the delegate's
+        // tenant_namespace.
+        addDelegateWithSa(K8S_NAMESPACE, K8S_SA);
+        addDelegate(TENANT_DELEGATE_NAME, ACME_NS, K8S_NAMESPACE, ACME_SA);
+
+        TokenWrapper shared = mintAccessForSa(K8S_SA);
+        assertEquals("spiffe://" + TRUST_DOMAIN + "/system/services/" + DELEGATE_NAME,
+                shared.getSubject());
+        Spiffe.ParsedSpiffeId sharedId = Spiffe.parseSpiffeId(shared.getSubject());
+        assertEquals(Spiffe.SubjectKind.SERVICE, sharedId.subjectKind);
+        assertEquals("/system", sharedId.namespace);
+        assertEquals(DELEGATE_NAME, sharedId.subjectPath);
+        assertEquals("/system", shared.getNamespace());
+
+        TokenWrapper tenant = mintAccessForSa(ACME_SA);
+        assertEquals("spiffe://" + TRUST_DOMAIN + "/tenants/acme/services/" + TENANT_DELEGATE_NAME,
+                tenant.getSubject());
+        Spiffe.ParsedSpiffeId tenantId = Spiffe.parseSpiffeId(tenant.getSubject());
+        assertEquals(Spiffe.SubjectKind.SERVICE, tenantId.subjectKind);
+        assertEquals(ACME_NS, tenantId.namespace);
+        // The service path is the bare service name for both shapes, so
+        // auth_services patterns match a tenant instance exactly as they match
+        // the shared one.
+        assertEquals(TENANT_DELEGATE_NAME, tenantId.subjectPath);
+        // servicePath() is what the generated Authorizer matches auth_services
+        // patterns against, and it is the same string for both shapes.
+        assertEquals(DELEGATE_NAME, shared.servicePath());
+        assertEquals(TENANT_DELEGATE_NAME, tenant.servicePath());
+        assertEquals(ACME_NS, tenant.getNamespace());
+    }
+
+    @Test
+    void twoDelegatesSharingANameUnderDifferentTenantsDoNotCollide() throws Exception {
+        addDelegate(TENANT_DELEGATE_NAME, ACME_NS, K8S_NAMESPACE, ACME_SA);
+        addDelegate(TENANT_DELEGATE_NAME, BETA_NS, K8S_NAMESPACE, BETA_SA);
+
+        TokenWrapper acme = mintAccessForSa(ACME_SA);
+        TokenWrapper beta = mintAccessForSa(BETA_SA);
+
+        assertEquals(tenantDelegateSpiffe(ACME_NS, TENANT_DELEGATE_NAME), acme.getSubject());
+        assertEquals(tenantDelegateSpiffe(BETA_NS, TENANT_DELEGATE_NAME), beta.getSubject());
+        assertEquals(ACME_NS, acme.getNamespace());
+        assertEquals(BETA_NS, beta.getNamespace());
+        assertFalse(acme.getSubject().equals(beta.getSubject()));
+    }
+
+    @Test
+    void continuityTokenFromAnotherTenantsInstanceIsRejected() {
+        // The continuity cross-check binds to the RESOLVED delegate's canonical
+        // subject, which now carries the tenant — so beta's refresh token cannot
+        // carry an instance_id into acme's instance even though both delegates
+        // are named docmanager.
+        addDelegate(TENANT_DELEGATE_NAME, ACME_NS, K8S_NAMESPACE, ACME_SA);
+        addDelegate(TENANT_DELEGATE_NAME, BETA_NS, K8S_NAMESPACE, BETA_SA);
+        IdentityServiceImpl svc = newService(FakeKubernetesTokenVerifier.returning(
+                FakeKubernetesTokenVerifier.identity(K8S_NAMESPACE, ACME_SA, List.of(KERNEL_AUDIENCE))));
+
+        String continuity = mintContinuityToken(
+                tenantDelegateSpiffe(BETA_NS, TENANT_DELEGATE_NAME), "instance-beta");
+
+        assertEquals(ProtoException.INVALID_ARGUMENT,
+                codeOf(() -> svc.mintServiceToken(CALLER,
+                        Tokenrequest.MintServiceTokenRequest.newBuilder()
+                                .setKubernetesToken(fakeJwt())
+                                .setContinuityToken(continuity)
+                                .build())));
+    }
+
+    @Test
+    void continuityTokenFromTheSameTenantsInstancePreservesInstanceId() throws Exception {
+        addDelegate(TENANT_DELEGATE_NAME, ACME_NS, K8S_NAMESPACE, ACME_SA);
+        IdentityServiceImpl svc = newService(FakeKubernetesTokenVerifier.returning(
+                FakeKubernetesTokenVerifier.identity(K8S_NAMESPACE, ACME_SA, List.of(KERNEL_AUDIENCE))));
+
+        String continuity = mintContinuityToken(
+                tenantDelegateSpiffe(ACME_NS, TENANT_DELEGATE_NAME), "instance-acme");
+
+        Tokenrequest.TokenMintResponse resp = svc.mintServiceToken(CALLER,
+                Tokenrequest.MintServiceTokenRequest.newBuilder()
+                        .setKubernetesToken(fakeJwt())
+                        .setContinuityToken(continuity)
+                        .build());
+
+        assertEquals("instance-acme", TokenWrapper.parse(resp.getAccessToken().getBase64()).getInstanceId());
     }
 
     // ---- helpers -----------------------------------------------------------

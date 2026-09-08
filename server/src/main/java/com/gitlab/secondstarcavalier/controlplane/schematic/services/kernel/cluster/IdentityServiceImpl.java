@@ -471,7 +471,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 
 		String delegateName = matchedDelegate.getName();
-		String spiffeId = SpiffeIds.build(trustDomainReader.get(), delegateName);
+		// The subject's root comes from the delegate's tenant_namespace: /system
+		// for a shared platform service, /tenants/<tenant> for a tenant-owned
+		// instance. The service path segment is the delegate name either way.
+		String spiffeId = SpiffeIds.build(
+				trustDomainReader.get(), matchedDelegate.getTenantNamespace(), delegateName);
 
 		// Capture pod extras for audit (advisory for the service-token path).
 		if (!identity.podExtras().isEmpty()) {
@@ -619,15 +623,17 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		// Caller must be a known delegate.
 		String callerSub = callerToken.getSubject();
-		Kernel.Delegate delegate = findDelegateByName(callerSub);
+		Kernel.Delegate delegate = findDelegateBySubject(callerSub);
 		if (delegate == null) {
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"caller " + callerSub + " is not a registered delegate");
 		}
 
-		// Resolve and mint via shared internal method.
+		// Resolve and mint via shared internal method. The caller's own verified
+		// subject is threaded through rather than the bare delegate name, which
+		// no longer identifies one delegate on its own.
 		return mintUserTokenInternal(request.getSubject(), request.getClaims(),
-				request.getExp(), request.getTraceId(), delegate.getName(),
+				request.getExp(), request.getTraceId(), callerSub,
 				request.getOfflineAccess());
 	}
 
@@ -637,14 +643,14 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 */
 	Tokenrequest.TokenMintResponse mintUserTokenInternal(
 			String subject, com.google.protobuf.Struct claims,
-			long requestedExp, String traceId, String delegateName,
+			long requestedExp, String traceId, String delegateSubject,
 			boolean offlineAccess)
 			throws StatusException {
 
-		Kernel.Delegate delegate = findDelegateByName(delegateName);
+		Kernel.Delegate delegate = findDelegateBySubject(delegateSubject);
 		if (delegate == null) {
 			throw new StatusException(Status.INTERNAL,
-					"delegate not found: " + delegateName);
+					"delegate not found: " + delegateSubject);
 		}
 
 		// Resolve entitlements via UncleOPA.
@@ -805,25 +811,30 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 					"caller token verification failed: " + e.getMessage());
 		}
 
-		// The caller's own verified identity. A service token's sub may arrive
-		// as a full SPIFFE URI, resolved to the bare delegate name exactly as
-		// findDelegateByName does.
+		// The caller's own verified identity, as the (name, namespace) pair that
+		// keys a delegate. A service token's sub may arrive as a full SPIFFE URI,
+		// resolved exactly as findDelegateBySubject does; a bare sub can only be
+		// a /system delegate.
 		String rawCallerSub = callerToken.getSubject();
-		String callerDelegateName = SpiffeIds.isSpiffeUri(rawCallerSub)
+		boolean callerIsSpiffe = SpiffeIds.isSpiffeUri(rawCallerSub);
+		String callerDelegateName = callerIsSpiffe
 				? SpiffeIds.serviceName(rawCallerSub) : rawCallerSub;
+		String callerDelegateNamespace = callerIsSpiffe
+				? SpiffeIds.namespaceFromSpiffe(rawCallerSub) : SpiffeIds.SYSTEM_NAMESPACE;
 
 		// Paired negative control: no live Grant record authorizes the
 		// (caller identity, grant_id) pair presented. Three candidate misses —
 		// id doesn't exist, id exists but names a different delegate, id
 		// exists and matches but has expired — collapse to the SAME
 		// status/message shape (non-enumerating, mirroring
-		// findDelegateByName's own PERMISSION_DENIED), except expiry gets a
+		// findDelegateBySubject's own PERMISSION_DENIED), except expiry gets a
 		// distinguishable suffix since that is not a confused-identity case.
 		// Run before any OPA call — cheapest-check-first, mirroring
 		// doMintUserToken's ordering.
 		String grantId = request.getGrantId();
 		Kernel.Grant grant = findGrantById(grantId);
-		if (grant == null || !callerDelegateName.equals(grant.getDelegateName())) {
+		if (grant == null
+				|| !grantNamesDelegate(grant, callerDelegateName, callerDelegateNamespace)) {
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"no usable grant " + grantId + " for delegate " + callerDelegateName);
 		}
@@ -1565,7 +1576,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		String subject = inputToken.getSubject();
 
-		Kernel.Delegate delegate = findDelegateByName(subject);
+		Kernel.Delegate delegate = findDelegateBySubject(subject);
 		boolean isS2S = delegate != null;
 
 		// A child workload proves on refresh that it can still reach its parent, by
@@ -2024,13 +2035,33 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		return instanceId;
 	}
 
-	private Kernel.Delegate findDelegateByName(String name) {
-		// When sub is a SPIFFE URI (spiffe://<prefix>/<delegate_name>), extract
-		// the bare delegate name for lookup via SpiffeIds.
-		String lookupName;
-		if (SpiffeIds.isSpiffeUri(name)) {
+	/**
+	 * The authorization namespace a delegate's minted identity is rooted at.
+	 * An empty {@code tenant_namespace} — every shared platform service — is
+	 * the {@code /system} root.
+	 */
+	private static String delegateNamespace(Kernel.Delegate delegate) {
+		String ns = delegate.getTenantNamespace();
+		return ns.isEmpty() ? SpiffeIds.SYSTEM_NAMESPACE : ns;
+	}
+
+	/**
+	 * Resolves the Delegate a token subject names, keyed by (name, namespace).
+	 * The name alone is not a key: a tenant-owned service has one delegate per
+	 * tenant, all named for the same service path, so N delegates named
+	 * {@code docmanager} coexist and only the namespace tells them apart.
+	 *
+	 * <p>A SPIFFE-URI subject carries both halves. A bare name — the broker/CLI
+	 * form — can only ever name a {@code /system} delegate, since nothing in it
+	 * could address a tenant.
+	 */
+	private Kernel.Delegate findDelegateBySubject(String subject) {
+		String name;
+		String namespace;
+		if (SpiffeIds.isSpiffeUri(subject)) {
 			try {
-				lookupName = SpiffeIds.serviceName(name);
+				name = SpiffeIds.serviceName(subject);
+				namespace = SpiffeIds.namespaceFromSpiffe(subject);
 			} catch (IllegalArgumentException e) {
 				// A SPIFFE URI that names something other than a service/workload
 				// — a user subject, spiffe://<td>/system/users/<n>, is the one a
@@ -2041,14 +2072,27 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				return null;
 			}
 		} else {
-			lookupName = name;
+			name = subject;
+			namespace = SpiffeIds.SYSTEM_NAMESPACE;
 		}
 		for (Kernel.Delegate d : delegatesReader.get()) {
-			if (lookupName.equals(d.getName())) {
+			if (name.equals(d.getName()) && namespace.equals(delegateNamespace(d))) {
 				return d;
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * True when the grant names exactly this delegate. Delegate names repeat
+	 * across tenants, so the grant's ({@code delegate_name},
+	 * {@code delegate_namespace}) pair — an empty namespace meaning
+	 * {@code /system} — is what has to match, not the name alone.
+	 */
+	private static boolean grantNamesDelegate(Kernel.Grant grant, String name, String namespace) {
+		String grantNamespace = grant.getDelegateNamespace().isEmpty()
+				? SpiffeIds.SYSTEM_NAMESPACE : grant.getDelegateNamespace();
+		return name.equals(grant.getDelegateName()) && namespace.equals(grantNamespace);
 	}
 
 	/**
@@ -2075,6 +2119,10 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		Kernel.Grant grant = findGrantById(grantId);
 		long expiresAtMs = grant != null ? grant.getExpiresAtMs() : 0;
+		// act carries the bare delegate name, not the (name, namespace) pair. It
+		// need not: the token can only exist because doMintDelegatedToken already
+		// matched the full pair, so this is a liveness re-check on a grant whose
+		// holder is already established, not an identity check.
 		if (grant == null
 				|| !token.getAct().equals(grant.getDelegateName())
 				|| grant.getRevokedAtMs() != 0
@@ -2623,7 +2671,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	/**
 	 * Revokes a standing delegation at runtime. Only a party to the grant may
 	 * revoke it: the user it acts for (caller sub == {@code grant.subject}) or the
-	 * delegate holding it (caller identity == {@code grant.delegate_name}). Both
+	 * delegate holding it (caller identity == the grant's
+	 * {@code (delegate_name, delegate_namespace)} pair). Both
 	 * are withdrawing authority they already hold, so this needs no authorization
 	 * model beyond the caller's own verified identity — the same reasoning that
 	 * limits {@code RevokeWorkload} to the identity's own ancestor.
@@ -2645,13 +2694,16 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private void doRevokeGrant(Kernel.GrantRevokeRequest request) throws StatusException {
 		TokenWrapper callerToken = verifiedCallerToken("RevokeGrant");
 
-		// The caller's own verified identity. A service token's sub may arrive as a
-		// full SPIFFE URI, resolved to the bare delegate name exactly as
-		// doMintDelegatedToken does; a user token carries the IDP subject a Grant
-		// records at consent time verbatim.
+		// The caller's own verified identity, as the (name, namespace) pair that
+		// keys a delegate. A service token's sub may arrive as a full SPIFFE URI,
+		// resolved exactly as doMintDelegatedToken does; a user token carries the
+		// IDP subject a Grant records at consent time verbatim.
 		String rawCallerSub = callerToken.getSubject();
-		String callerDelegateName = SpiffeIds.isSpiffeUri(rawCallerSub)
+		boolean callerIsSpiffe = SpiffeIds.isSpiffeUri(rawCallerSub);
+		String callerDelegateName = callerIsSpiffe
 				? SpiffeIds.serviceName(rawCallerSub) : rawCallerSub;
+		String callerDelegateNamespace = callerIsSpiffe
+				? SpiffeIds.namespaceFromSpiffe(rawCallerSub) : SpiffeIds.SYSTEM_NAMESPACE;
 
 		String grantId = request.getGrantId();
 		if (grantId == null || grantId.isEmpty()) {
@@ -2663,7 +2715,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		Kernel.Grant grant = findGrantById(grantId);
 		if (grant == null
 				|| !(rawCallerSub.equals(grant.getSubject())
-						|| callerDelegateName.equals(grant.getDelegateName()))) {
+						|| grantNamesDelegate(grant, callerDelegateName, callerDelegateNamespace))) {
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"no revocable grant " + grantId + " for caller " + rawCallerSub);
 		}

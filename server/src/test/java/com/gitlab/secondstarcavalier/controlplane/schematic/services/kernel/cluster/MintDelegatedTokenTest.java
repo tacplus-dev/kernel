@@ -51,6 +51,10 @@ class MintDelegatedTokenTest {
     private static final String TRUST_DOMAIN = "test.schematic.io";
     private static final String KERNEL_AUDIENCE = "schematic-kernel";
     private static final String DELEGATE_NAME = "oauth";
+    // A tenant-owned service: N delegates share this name, one per tenant.
+    private static final String TENANT_DELEGATE_NAME = "docmanager";
+    private static final String ACME_NS = "/tenants/acme";
+    private static final String BETA_NS = "/tenants/beta";
     private static final String GRANT_SUBJECT = "spiffe://" + TRUST_DOMAIN + "/system/users/alice";
     private static final String GRANT_ID = "grant-1";
     // An IDP-style subject is the shape a Grant actually records at consent time;
@@ -98,25 +102,46 @@ class MintDelegatedTokenTest {
                 null);           // opaConfigWriter
     }
 
-    /** Mints and signs a caller S2S token for {@code delegateName}, the kernel's own key. */
+    /** Mints and signs a caller S2S token for the /system delegate {@code delegateName}. */
     private String mintCallerToken(String delegateName) {
+        return mintCallerTokenIn("", delegateName);
+    }
+
+    /**
+     * Mints and signs a caller S2S token for the delegate {@code delegateName}
+     * rooted at {@code tenantNamespace} ("" = the shared /system root), signed
+     * with the kernel's own key.
+     */
+    private String mintCallerTokenIn(String tenantNamespace, String delegateName) {
         ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
         long now = Instant.now().getEpochSecond();
+        String subject = tenantNamespace.isEmpty()
+                ? Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", delegateName)
+                : Spiffe.namespaceSpiffeId(TRUST_DOMAIN, tenantNamespace)
+                        + "/" + Spiffe.SERVICES_SEGMENT + "/" + delegateName;
         TokenWrapper t = TokenWrapper.create()
                 .setIssuer("https://kernel.test/oidc")
-                .setSubject(Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", delegateName))
+                .setSubject(subject)
                 .setAudience("kernel")
                 .setIssuedAt(now)
                 .setExpiration(now + 3600)
                 .setJTI(UUID.randomUUID().toString());
+        // A service token's namespace claim is derived from its SPIFFE subject.
+        t.setNamespace(Spiffe.namespaceFromSpiffe(subject));
         t.sign(signingKey);
         return t.getBase64();
     }
 
     private Tokenrequest.MintDelegatedTokenResponse mintAs(IdentityServiceImpl svc, String callerDelegateName,
             String grantId) throws Exception {
+        return mintAsTenant(svc, "", callerDelegateName, grantId);
+    }
+
+    private Tokenrequest.MintDelegatedTokenResponse mintAsTenant(IdentityServiceImpl svc, String tenantNamespace,
+            String callerDelegateName, String grantId) throws Exception {
         io.grpc.Context ctx = io.grpc.Context.current()
-                .withValue(ClusterServer.RAW_AUTH_TOKEN_KEY, mintCallerToken(callerDelegateName));
+                .withValue(ClusterServer.RAW_AUTH_TOKEN_KEY,
+                        mintCallerTokenIn(tenantNamespace, callerDelegateName));
         io.grpc.Context previous = ctx.attach();
         try {
             return svc.mintDelegatedToken(CALLER,
@@ -240,6 +265,60 @@ class MintDelegatedTokenTest {
     }
 
     @Test
+    void grantHeldByOneTenantsInstanceIsUnusableByAnothers() throws Exception {
+        // Both delegates are named "docmanager" — only the namespace tells them
+        // apart, so the grant must key on (delegate_name, delegate_namespace).
+        grants.add(grantBuilder()
+                .setDelegateName(TENANT_DELEGATE_NAME)
+                .setDelegateNamespace(ACME_NS)
+                .setAuthorizedScope(scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null))
+                .build());
+        IdentityServiceImpl svc = newService(permissiveOpa());
+
+        assertEquals(ProtoException.PERMISSION_DENIED,
+                codeOf(() -> mintAsTenant(svc, BETA_NS, TENANT_DELEGATE_NAME, GRANT_ID)));
+
+        // Positive control: the tenant the grant actually names still mints.
+        assertNotNull(mintAsTenant(svc, ACME_NS, TENANT_DELEGATE_NAME, GRANT_ID).getToken());
+    }
+
+    @Test
+    void grantOfASystemDelegateIsUnusableByASameNamedTenantInstance() throws Exception {
+        // A grant written before tenant-owned services existed carries no
+        // delegate_namespace, which means the /system delegate of that name.
+        grants.add(grantBuilder()
+                .setDelegateName(TENANT_DELEGATE_NAME)
+                .setAuthorizedScope(scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null))
+                .build());
+        IdentityServiceImpl svc = newService(permissiveOpa());
+
+        assertEquals(ProtoException.PERMISSION_DENIED,
+                codeOf(() -> mintAsTenant(svc, ACME_NS, TENANT_DELEGATE_NAME, GRANT_ID)));
+
+        assertNotNull(mintAs(svc, TENANT_DELEGATE_NAME, GRANT_ID).getToken());
+    }
+
+    @Test
+    void revokeGrantByAnotherTenantsSameNamedInstanceIsDenied() throws Exception {
+        grants.add(grantBuilder()
+                .setDelegateName(TENANT_DELEGATE_NAME)
+                .setDelegateNamespace(ACME_NS)
+                .setSubject(IDP_GRANT_SUBJECT)
+                .setAuthorizedScope(scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"), null))
+                .setExpiresAtMs(Instant.now().toEpochMilli() + 86_400_000L)
+                .build());
+        IdentityServiceImpl svc = newService(permissiveOpa());
+
+        assertEquals(ProtoException.PERMISSION_DENIED,
+                codeOf(() -> revokeAsTenant(svc, BETA_NS, TENANT_DELEGATE_NAME, GRANT_ID)));
+        assertEquals(0, liveGrant(GRANT_ID).getRevokedAtMs(), "a denied revoke must not mark the grant");
+
+        // Positive control: the tenant that holds the grant can revoke it.
+        revokeAsTenant(svc, ACME_NS, TENANT_DELEGATE_NAME, GRANT_ID);
+        assertTrue(liveGrant(GRANT_ID).getRevokedAtMs() > 0);
+    }
+
+    @Test
     void wrongDelegate_rejected_opaNeverInvoked() {
         grants.add(grantBuilder().setAuthorizedScope(scope(List.of(), null)).build());
         FakeOpaEvalGrpcClient opa = FakeOpaEvalGrpcClient.neverCalled();
@@ -347,7 +426,7 @@ class MintDelegatedTokenTest {
     void spiffeUserSubjectTokenIsExchangeable() throws Exception {
         // A Grant whose subject is a SPIFFE *user* URI rather than an IDP-style
         // one. The subject is copied verbatim onto the minted token's sub, and
-        // the exchange path resolves that sub through findDelegateByName: a user
+        // the exchange path resolves that sub through findDelegateBySubject: a user
         // is not a delegate, so the lookup must simply miss (U2S, exactly as an
         // IDP-style subject does) rather than blow up on a service-shaped parse.
         grants.add(grantBuilder().setSubject(GRANT_SUBJECT)
@@ -411,8 +490,14 @@ class MintDelegatedTokenTest {
 
     /** Calls RevokeGrant as {@code callerDelegateName}, which is how a delegate revokes. */
     private void revokeAs(IdentityServiceImpl svc, String callerDelegateName, String grantId) throws Exception {
+        revokeAsTenant(svc, "", callerDelegateName, grantId);
+    }
+
+    private void revokeAsTenant(IdentityServiceImpl svc, String tenantNamespace, String callerDelegateName,
+            String grantId) throws Exception {
         io.grpc.Context ctx = io.grpc.Context.current()
-                .withValue(ClusterServer.RAW_AUTH_TOKEN_KEY, mintCallerToken(callerDelegateName));
+                .withValue(ClusterServer.RAW_AUTH_TOKEN_KEY,
+                        mintCallerTokenIn(tenantNamespace, callerDelegateName));
         io.grpc.Context previous = ctx.attach();
         try {
             svc.revokeGrant(CALLER, Kernel.GrantRevokeRequest.newBuilder().setGrantId(grantId).build());

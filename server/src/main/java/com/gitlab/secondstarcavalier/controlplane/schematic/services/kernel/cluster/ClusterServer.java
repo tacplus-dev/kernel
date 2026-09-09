@@ -53,6 +53,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.fencedlock.RatisFencedLock;
 import org.apache.ratis.protocol.RaftGroup;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.FencedLock;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.PersonalIdentity;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.TenantAdmin;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -879,6 +880,28 @@ public class ClusterServer {
 			var tenantAdminWrapper = new TenantAdmin(tenantAdminImpl, kernelAuthorizer);
 			serverBuilder.addService(tenantAdminWrapper);
 			logger.info("TenantAdminService registered on gRPC server");
+
+			// A personal principal's own view of itself. auth_any_user: the
+			// wrapper verifies the token and nothing else, and the handler scopes
+			// the read to the caller's own PrincipalState row by resolving the
+			// principal from the verified token subject.
+			//
+			// The authenticate func is token-only (authenticateWithToken), NOT the
+			// generated ServiceManager's authenticateAtOrBelowWithToken: the
+			// wrapper passes the fixed target "/" for an auth_any_user RPC with no
+			// target_namespace_field, and the at-or-below rule against "/" admits
+			// only a root-namespace caller — which would refuse every
+			// /people/<pid> caller this RPC exists for. See the item's decision doc.
+			var personalIdentityImpl = new PersonalIdentityServiceImpl(
+					backendServers.services().getPrincipalMap());
+			var personalIdentityWrapper = new PersonalIdentity(personalIdentityImpl, kernelAuthorizer);
+			personalIdentityWrapper.setAuthenticateFunc((PersonalIdentity.Authenticator) targetNamespace ->
+					com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer
+							.identityClaims(kernelAuthorizer.authenticateWithToken(
+									com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer.AUTH_HEADER_CTX_KEY
+											.get())));
+			serverBuilder.addService(personalIdentityWrapper);
+			logger.info("PersonalIdentityService registered on gRPC server");
 
 			// FencedLock — kernel is the ONE service that embeds Ratis; every other
 			// service calls this s2s surface instead of running its own Raft group.

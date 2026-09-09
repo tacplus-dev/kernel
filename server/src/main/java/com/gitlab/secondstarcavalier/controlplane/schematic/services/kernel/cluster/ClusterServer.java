@@ -353,6 +353,7 @@ public class ClusterServer {
 		final var caState = backendServers.services().getCaMap();
 		final var workloadState = backendServers.services().getWorkloadMap();
 		final var kernelConfigMap = backendServers.services().getConfigMap();
+		final var principalState = backendServers.services().getPrincipalMap();
 
 		// KeyRotator: kernel's dual-key (EdDSA + ES256) signing authority. The
 		// publisher/remover/reader operate on the IdentityState verifying_keys
@@ -427,7 +428,15 @@ public class ClusterServer {
 				// Standing delegation grants have a real live store now (liveGrants,
 				// above), seeded from Config.grants at boot — the snapshot round-trip
 				// this supplier feeds is genuinely populated as of item 6, piece B.
-				() -> java.util.List.copyOf(liveGrants));
+				() -> java.util.List.copyOf(liveGrants),
+				() -> {
+					try {
+						return principalState.proto().getPersonalPrincipalsList();
+					} catch (Exception e) {
+						logger.warn("Failed to read personal principals for snapshot: {}", e.getMessage());
+						return List.of();
+					}
+				});
 
 		// Load the persisted snapshot and rehydrate Hazelcast-backed state before
 		// the rotator starts (signing_keys are restored into the rotator; the
@@ -435,6 +444,7 @@ public class ClusterServer {
 		// their boundary maps). A cold start returns null.
 		Kernel.KernelDiskState snapshot = kernelPersistence.load();
 		rehydrateFromSnapshot(snapshot, identityState, caState, workloadState, kernelConfigMap);
+		restorePersonalPrincipals(snapshot, principalState);
 		restoreGrantRevocations(snapshot, liveGrants);
 		keyRotator.restore(snapshot != null ? snapshot.getSigningKeysList() : List.of());
 
@@ -1052,6 +1062,39 @@ public class ClusterServer {
 		}
 		if (restored > 0) {
 			logger.info("Restored {} revoked standing delegation(s) from the disk snapshot", restored);
+		}
+	}
+
+	/**
+	 * Restores the registered personal principals from the disk snapshot into the
+	 * live {@code PrincipalState} boundary.
+	 *
+	 * <p>Unlike grants (seeded from Config.grants at every boot), a personal
+	 * principal exists only because someone registered at runtime — the snapshot
+	 * is its ONLY source, so the whole row is restored, not just a mutated field.
+	 * Rows are written through the generated {@code putPersonalPrincipals}
+	 * accessor, so the same validation the write path enforces applies here.
+	 *
+	 * <p>Package-private and static so the restart half of the durability proof can
+	 * exercise the real boot path rather than a copy of it (same reason as
+	 * {@link #restoreGrantRevocations}).
+	 */
+	static void restorePersonalPrincipals(
+			Kernel.KernelDiskState snapshot,
+			com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap principalState) {
+		if (snapshot == null || snapshot.getPersonalPrincipalsCount() == 0) {
+			return;
+		}
+		try {
+			for (Kernel.PersonalPrincipal p : snapshot.getPersonalPrincipalsList()) {
+				principalState.putPersonalPrincipals(
+						Objects.requireNonNull(p.getPrincipalId(), "principal.principal_id"), p);
+			}
+			logger.info("Restored {} personal principal(s) from the disk snapshot",
+					snapshot.getPersonalPrincipalsCount());
+		} catch (Exception e) {
+			logger.warn("Failed to restore personal principals from the disk snapshot (continuing): {}",
+					e.getMessage(), e);
 		}
 	}
 

@@ -46,7 +46,7 @@ class KernelPersistenceGrantTest {
 		Kernel.Grant expected = grant();
 
 		KernelPersistence p = new KernelPersistence(
-				dir.toString(), null, null, null, null, null, () -> List.of(expected));
+				dir.toString(), null, null, null, null, null, () -> List.of(expected), null);
 		p.save();
 
 		Kernel.KernelDiskState loaded = p.load();
@@ -57,13 +57,13 @@ class KernelPersistenceGrantTest {
 
 	@Test
 	void coldStartHasNoGrants(@TempDir Path dir) {
-		assertNull(new KernelPersistence(dir.toString(), null, null, null, null, null, List::of).load());
+		assertNull(new KernelPersistence(dir.toString(), null, null, null, null, null, List::of, null).load());
 	}
 
 	@Test
 	void snapshotWithoutGrantsStillLoads(@TempDir Path dir) {
 		KernelPersistence p = new KernelPersistence(
-				dir.toString(), null, null, null, null, null, List::of);
+				dir.toString(), null, null, null, null, null, List::of, null);
 		p.save();
 
 		Kernel.KernelDiskState loaded = p.load();

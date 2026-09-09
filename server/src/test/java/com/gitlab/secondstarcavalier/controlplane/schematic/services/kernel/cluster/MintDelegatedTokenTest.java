@@ -612,7 +612,7 @@ class MintDelegatedTokenTest {
 
         // What persistState.run() writes.
         KernelPersistence persistence = new KernelPersistence(
-                dir.toString(), null, null, null, null, null, () -> List.copyOf(grants));
+                dir.toString(), null, null, null, null, null, () -> List.copyOf(grants), null);
         persistence.save();
 
         // --- restart ---

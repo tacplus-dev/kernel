@@ -1684,6 +1684,36 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// Grant is only exchangeable while that Grant is still live.
 		assertGrantStillActive(inputToken);
 
+		// Personal-principal arm. Placed here — after verification, before the
+		// bootstrap/offline/access routing below — because a personal token can
+		// arrive as an RT, an OT or an AT and the tenant exchange is the same
+		// mint for all three; and because tenant_namespace has to be refused on
+		// a service token whatever its token_use is.
+		if (isPersonalPrincipalToken(inputToken)) {
+			if (!request.getTenantNamespace().isEmpty()) {
+				return mintTenantTokenForPersonalPrincipal(request, inputToken);
+			}
+			// No tenant named. A personal token may still be refreshed into a
+			// personal AT (design-session §2.2 step 1's parenthetical) — that
+			// keeps /people/<pid> and falls through to the normal exchange below.
+			// It may NOT reach a service without naming the tenant it is acting
+			// in: a service token stamped /people/<pid> would arrive at a tenant
+			// service as an identity that is at-or-below no tenant at all.
+			if (!request.getAud().isEmpty() || !request.getServiceAudsList().isEmpty()) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"tenant_namespace is required to mint a service token from a personal-principal token");
+			}
+		} else if (!request.getTenantNamespace().isEmpty()) {
+			// DECISIONS.md item 2: a service's tenant comes from its SPIFFE
+			// subject and from nothing else. tenant_namespace is a selector among
+			// a PERSON'S memberships; honouring it here — or even ignoring it
+			// silently — would be the tenant escape the whole field is designed
+			// not to be.
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"tenant_namespace is only meaningful on a personal-principal token; "
+							+ "a service's tenant comes from its SPIFFE subject");
+		}
+
 		// Bootstrap tokens are exchanged for real refresh+access pairs (workload bootstrap).
 		if (TOKEN_USE_BOOTSTRAP.equals(tokenUse)) {
 			ImmutableKey bsSigningKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
@@ -1932,6 +1962,205 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		return Tokenrequest.TokenMintResponse.newBuilder()
 				.setAccessToken(newToken.getProto())
 				.build();
+	}
+
+	/**
+	 * Whether a verified kernel-signed token is a personal principal's own token:
+	 * {@code sub_type=user} AND a namespace under {@code /people/}. Both halves
+	 * are required — {@code sub_type} alone is every IdP user, and the namespace
+	 * alone would let a claim shape decide the arm.
+	 *
+	 * <p>The namespace claim is the right source here, not the subject: it is
+	 * stamped by kernel on a mint kernel itself authorized (the device arm), and
+	 * it is also what changes on the tenant token this arm produces — a
+	 * {@code /tenants/<t>} token minted below keeps the person's {@code sub} and
+	 * so would still look "personal" if this read the subject, which would let a
+	 * tenant token be re-exchanged into a different tenant.
+	 */
+	private static boolean isPersonalPrincipalToken(TokenWrapper token) {
+		return SUB_TYPE_USER.equals(token.getSubType())
+				&& token.getNamespace().startsWith(PEOPLE_PREFIX);
+	}
+
+	/**
+	 * The personal-principal arm of {@code MintToken} (design-session §2.2): one
+	 * person, N per-tenant tokens. The presented personal token names a tenant;
+	 * kernel authorizes that against the person's own {@code TenantMembership}
+	 * records and mints an access token — plus one service token per requested
+	 * audience — stamped with the tenant's namespace.
+	 *
+	 * <p>No refresh or offline token comes back. The personal RT/OT the device
+	 * holds stays the only long-lived credential; a tenant token is re-minted
+	 * from it, so a revoked membership stops working at the next exchange rather
+	 * than at a tenant refresh token's natural expiry.
+	 */
+	private Tokenrequest.TokenMintResponse mintTenantTokenForPersonalPrincipal(
+			Tokenrequest.TokenMintRequest request, TokenWrapper inputToken) throws StatusException {
+
+		// Step 1: a tenant must be named, and it may not be the authorization-tree
+		// root. "/" is at-or-below every namespace in the fleet (Spiffe.isAtOrBelow),
+		// so a personal token exchanged for one would satisfy every tenant-targeted
+		// level-or-below check there is.
+		String tenantNamespace = request.getTenantNamespace();
+		if (SpiffeIds.namespaceRoot().equals(tenantNamespace)) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"tenant_namespace must name a tenant, not the authorization-tree root");
+		}
+		// service_auds is the batch mechanism this exchange uses (§2.1); a single
+		// aud has no meaning here and dropping it silently would hand back an
+		// access token where the caller asked for a service token. Same refusal
+		// the offline-token arm gives for the same reason.
+		if (!request.getAud().isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"a personal-principal tenant exchange requests services via service_auds, not aud");
+		}
+
+		// Step 2: the principal comes out of the presented token's sub, never out
+		// of a request field — the same construction PersonalIdentity.GetMyIdentity
+		// gets by taking no arguments at all.
+		String principalId = personalPrincipalIdFromSubject(inputToken.getSubject());
+		Kernel.PersonalPrincipal principal = principalMap.getPersonalPrincipals(principalId);
+
+		// Step 3: a live membership of the named tenant, or nothing. Every miss —
+		// no such row, the row under the key is not this principal, the person is
+		// disabled, no membership of this tenant, revoked, expired — collapses to
+		// ONE PERMISSION_DENIED with ONE message, the same non-enumerating shape
+		// doMintDelegatedToken's missing-grant refusal uses. Distinguishing them
+		// would turn the mint into an oracle for which tenants a person belongs to.
+		Kernel.TenantMembership membership = null;
+		if (principal.getPrincipalId().equals(principalId) && principal.getDisabledAtMs() == 0) {
+			long nowMs = System.currentTimeMillis();
+			for (Kernel.TenantMembership candidate : principal.getMembershipsList()) {
+				if (tenantNamespace.equals(candidate.getTenantNamespace())
+						&& candidate.getRevokedAtMs() == 0
+						&& (candidate.getExpiresAtMs() == 0 || candidate.getExpiresAtMs() > nowMs)) {
+					membership = candidate;
+					break;
+				}
+			}
+		}
+		if (membership == null) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no usable membership of " + tenantNamespace + " for this principal");
+		}
+
+		// Step 4: narrow by designation. The tenant's customer-facing service list
+		// comes from per-tenant login configuration (§6 item 4), which does not
+		// exist yet — so for a customer membership the list is EMPTY and the
+		// intersection is empty. Design-session §4 states the interim behaviour
+		// rather than leaving it to chance: a customer membership with no
+		// configured customer service mints NO service tokens (an empty
+		// service_tokens list, not an error). Fail closed, and visibly inert
+		// rather than silently permissive — the access token is still issued, so
+		// the person is inside the tenant; they just cannot reach a service until
+		// item 4 lands.
+		boolean customerNarrowed = membership.getCustomer();
+
+		// Step 5: entitlements come from OPA, through the same pair every other
+		// mint uses. The claims are SYNTHESIZED from the membership, not relayed
+		// from the request — the caller is a person's runtime, and letting it hand
+		// OPA a claim set would put its own entitlements under its own control.
+		Struct claims = Struct.newBuilder()
+				.putFields("principal_id", Value.newBuilder().setStringValue(principalId).build())
+				.putFields("tenant_namespace", Value.newBuilder().setStringValue(tenantNamespace).build())
+				.putFields("proof_kind", Value.newBuilder().setStringValue(membership.getProofKind().name()).build())
+				.putFields("customer", Value.newBuilder().setBoolValue(membership.getCustomer()).build())
+				.build();
+		Userentitlements.EntitlementEvalResult opaResult =
+				resolveEntitlementsViaOpa(claims, request.getTraceId());
+		Entitlements.TokenEntitlements expanded = expandEntitlements(opaResult);
+
+		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+
+		long now = Instant.now().getEpochSecond();
+		long maxExp = now + maxTokenLifetimeSeconds;
+		long exp;
+		if (request.getExp() == 0) {
+			exp = now + defaultTokenExpirySeconds;
+		} else {
+			exp = request.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > maxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
+			}
+		}
+
+		// Step 7: sub and azp are preserved from the presented token — the tenant
+		// sees WHICH PERSON is acting, and (spec.store_principal) rows written in
+		// the tenant attribute to that person.
+		TokenWrapper newToken = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(inputToken.getSubject())
+				.setAudience(Kernel.getDescriptor().getPackage())
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+		newToken.setAzp(inputToken.getAzp());
+		newToken.setSubType(SUB_TYPE_USER);
+		newToken.setTokenUse(TOKEN_USE_ACCESS);
+		// Step 6: kernel stamps the namespace from the authorization it just
+		// performed. namespaceFromOpaOrRoot is deliberately NOT called — it fails
+		// OPEN to "/", and OPA sees no IdP claims on this path at all, so it would
+		// be the default rather than the exception (design-session §0.2).
+		newToken.setNamespace(membership.getTenantNamespace());
+		newToken.setClaimsFromStruct(claims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
+		setFlatServiceEntitlements(newToken, expanded);
+		newToken.sign(signingKey);
+
+		logger.info("MintToken (personal principal): principal={}, tenant={}, exp={}",
+				principalId, tenantNamespace, exp);
+
+		Tokenrequest.TokenMintResponse.Builder resp = Tokenrequest.TokenMintResponse.newBuilder()
+				.setAccessToken(newToken.getProto());
+		// service_auds is the existing batch mechanism, used unchanged: each
+		// service token is minted through the normal access->service exchange from
+		// the tenant AT just issued, so the chain stays personal -> tenant AT -> ST
+		// and the ST inherits the tenant namespace rather than being stamped again.
+		if (!customerNarrowed && !request.getServiceAudsList().isEmpty()) {
+			TokenWrapper accessWrapper = TokenWrapper.from(newToken.getProto());
+			for (String svcAud : request.getServiceAudsList()) {
+				if (svcAud.isEmpty()) {
+					throw new StatusException(Status.INVALID_ARGUMENT,
+							"service_auds entries must be non-empty");
+				}
+				Tokenrequest.TokenMintRequest svcReq = Tokenrequest.TokenMintRequest.newBuilder()
+						.setAud(svcAud)
+						.setExp(request.getExp())
+						.build();
+				resp.addServiceTokens(exchangeKernelToken(svcReq, accessWrapper).getAccessToken());
+			}
+		}
+		return resp.build();
+	}
+
+	/**
+	 * The personal principal id inside a person's SPIFFE subject
+	 * ({@code spiffe://<td>/people/<pid>/users/<pid>}). Mirrors
+	 * {@code PersonalIdentityServiceImpl.callerPrincipalId} — same grammar, same
+	 * refusal — because both answer the same question from the same field.
+	 */
+	private static String personalPrincipalIdFromSubject(String subject) throws StatusException {
+		String namespace;
+		try {
+			namespace = SpiffeIds.namespaceFromSpiffe(subject);
+		} catch (IllegalArgumentException e) {
+			throw new StatusException(Status.PERMISSION_DENIED, "caller is not a personal principal");
+		}
+		if (!namespace.startsWith(PEOPLE_PREFIX)) {
+			throw new StatusException(Status.PERMISSION_DENIED, "caller is not a personal principal");
+		}
+		String principalId = namespace.substring(PEOPLE_PREFIX.length());
+		if (principalId.isEmpty() || principalId.contains("/")) {
+			throw new StatusException(Status.PERMISSION_DENIED, "caller is not a personal principal");
+		}
+		return principalId;
 	}
 
 	/**

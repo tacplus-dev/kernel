@@ -701,8 +701,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		}
 		newToken.setSubType(SUB_TYPE_USER);
 		// Namespace: OPA maps the caller's IdP (issuer/claims) to the tenant subtree
-		// they belong to. Fall back to the cluster root when the policy returns none.
-		newToken.setNamespace(namespaceFromOpaOrRoot(opaResult));
+		// they belong to. A policy that cannot name one refuses the mint.
+		newToken.setNamespace(requireNamespaceFromOpa(opaResult));
 
 		if (claims != null) {
 			newToken.setClaimsFromStruct(claims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
@@ -887,9 +887,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setAct(grant.getDelegateName());
 		newToken.setSubType(SUB_TYPE_USER);
 		newToken.setTokenUse(TOKEN_USE_ACCESS);
-		// Namespace resolution is automatically correct by reusing the same
-		// two calls (resolveEntitlementsViaOpa then namespaceFromOpaOrRoot) in
-		// the same order mintUserTokenInternal does.
+		// Namespace still falls back to the cluster root here, unlike the user
+		// mint path: a Grant records the delegate's namespace, not the
+		// consenting user's, so this cannot fail closed without a proto change.
 		newToken.setNamespace(namespaceFromOpaOrRoot(opaResult));
 
 		Struct claims = grant.getClaims();
@@ -1250,10 +1250,40 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	/**
-	 * Resolves the namespace claim for a user token from the OPA result. OPA maps the
-	 * caller's IdP (issuer/claims) to the tenant subtree they belong to, as a
-	 * leading-slash absolute path (e.g. "/tenants/drpepper"). Falls back to the
-	 * cluster-root namespace when the policy returns none.
+	 * Resolves the namespace claim for a user token from the OPA result, or
+	 * refuses the mint. OPA maps the caller's IdP (issuer/claims) to the tenant
+	 * subtree they belong to, as a leading-slash absolute path (e.g.
+	 * "/tenants/drpepper").
+	 *
+	 * <p>There is deliberately NO fallback to the cluster root here. The
+	 * operator-generated policy emitted no namespace at all until the matching
+	 * generator change (operator {@code pkg/bootstrap/opa.go}, tenants/namespace.rego),
+	 * so every IdP user in every bootstrapped cluster was being minted at "/" —
+	 * fleet-wide root — by that fallback. A policy that cannot name the caller's
+	 * tenant has not authorized a login; it is refused.
+	 */
+	private String requireNamespaceFromOpa(Userentitlements.EntitlementEvalResult result)
+			throws StatusException {
+		String ns = result.getNamespace();
+		if (ns == null || ns.isEmpty()) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"entitlements policy returned no namespace for this caller — "
+							+ "no tenant is bound to their IdP, so no token can be minted");
+		}
+		return ns;
+	}
+
+	/**
+	 * Resolves the namespace claim for a token minted from a {@link Kernel.Grant}
+	 * from the OPA result, falling back to the cluster-root namespace when the
+	 * policy returns none.
+	 *
+	 * <p>Only {@link #doMintDelegatedToken} still uses this. The user-mint path
+	 * fails closed instead ({@link #requireNamespaceFromOpa}); this path cannot
+	 * be switched to a stamped namespace without a proto change, because a Grant
+	 * records the delegate's namespace but not the consenting user's. See the
+	 * open question in
+	 * looper/schematic/workers/tenant-owned-services/decision-goalB-interim-opa-namespace-failclosed.md.
 	 */
 	private String namespaceFromOpaOrRoot(Userentitlements.EntitlementEvalResult result) {
 		String ns = result.getNamespace();

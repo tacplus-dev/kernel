@@ -7,6 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import com.gitlab.secondstarcavalier.controlplane.codegen.StringUtils;
+import com.gitlab.secondstarcavalier.controlplane.codegen.model.AccessPolicy;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.BackendStoreInfo;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.FileDescriptor;
 
@@ -37,6 +38,7 @@ public class BackendStoreServerGenerator {
         vars.put("OUTER_CLASS", outerClassName);
         vars.put("CLASS_NAME", className);
         vars.put("GRPC_BASE", grpcBase);
+        vars.put("GRAPH_KEY", graphKey(store, ctx));
         vars.put("VALUE_TYPE", store.getValueTypeName());
         vars.put("QUALIFIED_VALUE_TYPE", qualifiedValueType);
         vars.put("KEY_FIELD_NAME", store.getKeyFieldName());
@@ -49,6 +51,26 @@ public class BackendStoreServerGenerator {
         Path dir = ctx.getOutputDir().resolve("src/main/java/" + pkg.replace('.', '/'));
         Files.createDirectories(dir);
         Files.writeString(dir.resolve(className + ".java"), content);
+    }
+
+    /**
+     * The security-policy key for a store: "&lt;proto package&gt;.&lt;value
+     * type&gt;", the same (package, name) pair tacplus writes into
+     * codegen-config.json. Unlike a state root, a store with no computed policy
+     * is a hard error: a store server generated with no policy authorizes nothing
+     * on put/get/delete/list, and that must not be reachable by omission.
+     */
+    private static String graphKey(BackendStoreInfo store, GeneratorContext ctx) {
+        for (AccessPolicy policy : ctx.getSecurityPolicies()) {
+            if (store.getPackageName().equals(policy.pkg())
+                    && store.getValueTypeName().equals(policy.name())) {
+                return policy.graphKey();
+            }
+        }
+        throw new IllegalStateException("[tacplus-backend] no security policy for store \""
+                + store.getPackageName() + "." + store.getValueTypeName()
+                + "\" — refusing to generate an unauthorized store server."
+                + " Expected a securityPolicies entry in codegen-config.json.");
     }
 
     static String getFullPackage(BackendStoreInfo store, GeneratorContext ctx) {

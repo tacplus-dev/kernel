@@ -30,10 +30,12 @@ public class {{CLASS_NAME}}
     private static final Logger logger = LoggerFactory.getLogger({{CLASS_NAME}}.class);
     private static final String CLASS_NAME = "{{STORE_MAP_NAME}}";
     /**
-     * Stores are not (spec.service_state) roots, so ComputeSecurityPolicies emits
-     * no policy for them and there is nothing for checkAccess to enforce.
+     * The security-policy key for this store. ComputeSecurityPolicies emits a
+     * policy for every (spec.service_store) message, not just (spec.service_state)
+     * roots, and it is shipped in SecurityAuthenticator's GRAPH_POLICIES map —
+     * so checkAccess has a real policy to enforce on every store RPC.
      */
-    private static final String GRAPH = SecurityAuthenticator.NO_POLICY_GRAPH;
+    private static final String GRAPH = "{{GRAPH_KEY}}";
 
     private final SecurityAuthenticator authenticator;
     private final IMap<String, {{QUALIFIED_VALUE_TYPE}}> storeMap;

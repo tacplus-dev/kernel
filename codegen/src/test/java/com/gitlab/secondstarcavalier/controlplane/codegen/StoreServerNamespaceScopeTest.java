@@ -36,6 +36,7 @@ class StoreServerNamespaceScopeTest {
 		vars.put("OUTER_CLASS", "Widgets");
 		vars.put("CLASS_NAME", "WidgetStoreServiceServer");
 		vars.put("GRPC_BASE", "WidgetStoreServiceGrpc.WidgetStoreServiceImplBase");
+		vars.put("GRAPH_KEY", "test.Widget");
 		vars.put("VALUE_TYPE", "Widget");
 		vars.put("QUALIFIED_VALUE_TYPE", "Widgets.Widget");
 		vars.put("KEY_FIELD_NAME", "widget_id");

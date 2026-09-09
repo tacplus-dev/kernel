@@ -62,7 +62,10 @@ class UserMintNamespaceFailClosedTest {
 				() -> verifyingKeys,
 				null);
 		keyRotator.start();
-		delegates.add(Kernel.Delegate.newBuilder().setName(DELEGATE_NAME).build());
+		delegates.add(Kernel.Delegate.newBuilder()
+				.setName(DELEGATE_NAME)
+				.addAuthBrokerKinds(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
+				.build());
 		return new IdentityServiceImpl(
 				3600, 86_400, 86_400,
 				keyRotator,
@@ -110,6 +113,7 @@ class UserMintNamespaceFailClosedTest {
 		try {
 			return svc.mintUserToken(CALLER, Tokenrequest.MintUserTokenRequest.newBuilder()
 					.setSubject(USER_SUBJECT)
+					.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
 					.setClaims(Struct.newBuilder()
 							.putFields("origin_iss", Value.newBuilder()
 									.setStringValue("https://idp.example.com").build())

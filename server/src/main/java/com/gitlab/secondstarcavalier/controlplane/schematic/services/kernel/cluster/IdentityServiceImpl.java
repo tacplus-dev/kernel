@@ -629,6 +629,32 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 					"caller " + callerSub + " is not a registered delegate");
 		}
 
+		// The caller must additionally be trusted to broker THIS class of user
+		// authentication proof. This replaces the former hardcoded
+		// auth_services: ["oauth", "saml"] allowlist on the RPC: who may attest
+		// a human login is now per-delegate config. Fail-closed — an empty
+		// auth_broker_kinds (the default, and every delegate that has not been
+		// migrated) is not an auth broker and is refused here.
+		Tokenrequest.AuthBrokerKind brokerKind = request.getBrokerKind();
+		if (!delegate.getAuthBrokerKindsList().contains(brokerKind)) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"delegate " + delegate.getName() + " is not authorized to broker "
+							+ brokerKind.name() + " user authentication");
+		}
+		switch (brokerKind) {
+			case AUTH_BROKER_KIND_IDP:
+				// The broker validated the IdP assertion itself; kernel trusts the
+				// attestation and carries the broker in azp. Today's path.
+				break;
+			default:
+				// DEVICE / EMAIL_LINK / PERSONAL_LINK each require kernel to verify
+				// request.proof_token itself, which is not implemented. UNSPECIFIED
+				// is the zero value and names no proof at all. Refuse rather than
+				// mint on an unverified proof.
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"broker kind " + brokerKind.name() + " is not supported by MintUserToken");
+		}
+
 		// Resolve and mint via shared internal method. The caller's own verified
 		// subject is threaded through rather than the bare delegate name, which
 		// no longer identifies one delegate on its own.

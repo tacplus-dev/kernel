@@ -43,10 +43,13 @@ public final class NamespaceScope {
      * all: it owns nothing and can name nothing. Reachable for any token class
      * that is neither a service/workload (namespace from the subject) nor a user
      * (namespace from the claim) — a {@code pipeline} token, say — which
-     * {@code checkAccess} already denies on every policed graph but which reaches
-     * an unpoliced ({@code NO_POLICY_GRAPH}) store server. It must not be ROOT,
-     * and it cannot be a prefix either: the empty namespace's prefix would be
-     * "/", which is a prefix of every tenant's storage key.
+     * {@code checkAccess} denies on every policed graph, the generated store
+     * servers now included: they carry their computed policy graph key, and a
+     * caller with no service identity fails that check outright. The view
+     * servers are the last callers passing {@code NO_POLICY_GRAPH}, so this
+     * scope is what holds there. It must not be ROOT, and it cannot be a prefix
+     * either: the empty namespace's prefix would be "/", which is a prefix of
+     * every tenant's storage key.
      */
     private static final NamespaceScope NONE = new NamespaceScope(null);
 

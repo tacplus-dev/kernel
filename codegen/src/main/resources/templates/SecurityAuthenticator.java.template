@@ -140,11 +140,12 @@ public class SecurityAuthenticator {
 
     /**
      * Graph key passed by servers that have no computed state-root policy: the
-     * view servers (public JWKS projections, already exempt from authentication)
-     * and the store servers. ComputeSecurityPolicies emits policies for
-     * {@code (spec.service_state)} roots only, so those servers carry no policy
-     * to enforce and this value tells checkAccess so explicitly rather than by
-     * a silent map miss.
+     * view servers (public JWKS projections, already exempt from
+     * authentication). Those servers carry no policy to enforce, and this value
+     * tells checkAccess so explicitly rather than by a silent map miss. The
+     * store servers no longer pass it — BackendStoreServerGenerator resolves
+     * each store's computed policy graph key and fails generation if none
+     * exists.
      */
     public static final String NO_POLICY_GRAPH = "*";
 
@@ -436,7 +437,9 @@ public class SecurityAuthenticator {
             // claim is the only source. It is safe to read because kernel stamps it
             // from an authorization kernel itself performed at mint time; it is
             // never copied from anything the client sent. Without it the caller
-            // would reach an unpoliced (NO_POLICY_GRAPH) store server unconfined.
+            // falls to NamespaceScope.NONE and can name no key at all; the store
+            // servers that once ran unpoliced now carry their computed policy
+            // graph and deny a caller with no service identity outright.
             // servicePath stays empty: this grants no authorization, only a scope.
             try {
                 namespace = tw.namespacePath();

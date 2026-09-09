@@ -28,6 +28,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.common.credentials.Credentials;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.opa.Opa;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.ConfigMap;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import io.grpc.Status;
 
@@ -178,6 +179,21 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static final long EXTERNAL_TOKEN_MAX_TTL_SECONDS = 300;
 
 	/**
+	 * The registry's own ceiling — {@code PrincipalState.personal_principals}
+	 * carries {@code (spec.assert_max_size) = 65536}. It is repeated here because
+	 * {@code PrincipalMap.putPersonalPrincipals} validates the ROW it is handed
+	 * and nothing validates the collection on the way in: the cap is only checked
+	 * by {@code Helpers.validateKernelDiskState}, inside {@code KernelPersistence.save()},
+	 * which logs and swallows. Over the cap without this check, registration would
+	 * appear to succeed and every subsequent snapshot — signing keys, CAs, tenants,
+	 * grants and all — would be silently lost. Refuse the registration instead.
+	 */
+	private static final int MAX_PERSONAL_PRINCIPALS = 65536;
+
+	/** Canonical root of the personal-principal subtree ({@code /people/<pid>}). */
+	private static final String PEOPLE_PREFIX = "/" + Spiffe.PEOPLE_SEGMENT + "/";
+
+	/**
 	 * Schematic-internal claim key names (all JwtPayloadType names) that must not be
 	 * copied verbatim from the user token into the external token. Standard JWT
 	 * fields (iss, sub, aud, exp, iat, jti) are also excluded since they are set
@@ -280,6 +296,14 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 * triggers a snapshot.
 	 */
 	private final Runnable persistState;
+	/**
+	 * PrincipalState boundary access — the personal-principal registry that
+	 * {@code CreatePersonalPrincipal} writes and the {@code AUTH_BROKER_KIND_DEVICE}
+	 * mint reads. Required, never null, for the same reason as {@link #workloadMap}:
+	 * a kernel that cannot read the registry would refuse every device login as an
+	 * unknown credential, which is indistinguishable from a real refusal.
+	 */
+	private final PrincipalMap principalMap;
 	@Nullable
 	private final java.util.function.Consumer<Opa.Config> opaConfigWriter;
 
@@ -302,6 +326,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			@Nullable com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.clients.vservices.proxypolicy.OpaEvalGrpcClient proxyPolicyOpaClient,
 			ConfigMap configMap,
 			WorkloadMap workloadMap,
+			PrincipalMap principalMap,
 			Runnable persistState,
 			@Nullable KubernetesTokenVerifier kubernetesTokenVerifier,
 			@Nullable String kubernetesTokenAudience,
@@ -325,6 +350,8 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		this.configMap = configMap;
 		this.workloadMap = java.util.Objects.requireNonNull(workloadMap,
 				"workloadMap is required — workload revocation must be recorded and enforced");
+		this.principalMap = java.util.Objects.requireNonNull(principalMap,
+				"principalMap is required — the personal-principal registry backs device login");
 		this.persistState = persistState != null ? persistState : () -> { };
 		// Default to the fail-closed UNIMPLEMENTED verifier so an un-wired kernel
 		// never silently accepts a kubernetes_token.
@@ -646,8 +673,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				// The broker validated the IdP assertion itself; kernel trusts the
 				// attestation and carries the broker in azp. Today's path.
 				break;
+			case AUTH_BROKER_KIND_DEVICE:
+				// Kernel verifies the device proof ITSELF against the principal's own
+				// credential list, so nothing here rests on the broker's word: the
+				// broker routed the call, it did not attest the identity.
+				return mintDevicePersonalToken(request, callerSub);
 			default:
-				// DEVICE / EMAIL_LINK / PERSONAL_LINK each require kernel to verify
+				// EMAIL_LINK / PERSONAL_LINK each require kernel to verify
 				// request.proof_token itself, which is not implemented. UNSPECIFIED
 				// is the zero value and names no proof at all. Refuse rather than
 				// mint on an unverified proof.
@@ -660,7 +692,98 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// no longer identifies one delegate on its own.
 		return mintUserTokenInternal(request.getSubject(), request.getClaims(),
 				request.getExp(), request.getTraceId(), callerSub,
-				request.getOfflineAccess());
+				request.getOfflineAccess(), null);
+	}
+
+	/**
+	 * The {@code AUTH_BROKER_KIND_DEVICE} arm: possession of a personal
+	 * principal's device key, verified by kernel, mints that principal's own
+	 * {@code /people/<pid>} token and nothing else.
+	 *
+	 * <p>Everything identifying comes out of the proof, not out of the request.
+	 * {@code request.subject} is an IdP-path field and is deliberately ignored
+	 * here — a broker naming principal B while relaying a proof signed by
+	 * principal A's key mints for A, because A's kid resolves to A's row and the
+	 * signature is checked against the key stored ON that row. There is no field
+	 * an attacker can point at somebody else, which is the same property
+	 * {@code GetMyIdentity} gets by taking no arguments at all.
+	 *
+	 * <p>The claims are synthesized, not relayed, for the same reason: the broker
+	 * attests nothing on this path, so letting it hand OPA a claim set would put
+	 * the entitlements of a kernel-verified identity back under the broker's
+	 * control.
+	 */
+	private Tokenrequest.TokenMintResponse mintDevicePersonalToken(
+			Tokenrequest.MintUserTokenRequest request, String callerSub) throws StatusException {
+		Kernel.PersonalPrincipal principal = verifyDeviceProof(request.getProofToken());
+		String principalId = principal.getPrincipalId();
+		String namespace = PEOPLE_PREFIX + principalId;
+		Struct claims = Struct.newBuilder()
+				.putFields("principal_id", Value.newBuilder().setStringValue(principalId).build())
+				.build();
+		return mintUserTokenInternal(
+				Spiffe.userSpiffeId(trustDomainReader.get(), namespace, principalId),
+				claims, request.getExp(), request.getTraceId(), callerSub,
+				request.getOfflineAccess(), namespace);
+	}
+
+	/**
+	 * The four steps {@code MintClientToken} already runs for a cred_pair, against
+	 * {@code PersonalPrincipal.credentials} instead of
+	 * {@code KernelTenantConfig.cred_pairs}: parse the proof, read its {@code kid},
+	 * find the credential the kid names, verify the signature against that
+	 * credential's stored public key.
+	 *
+	 * <p>The {@code kid} is the only pre-verification handle there is, and it is
+	 * the right one: a second device holding the same platform-synced key knows
+	 * the key and nothing else — not the principal id — and §5.4 requires it to
+	 * present the same principal with no sign-in.
+	 *
+	 * <p>Every failure — malformed proof, missing or unknown kid, revoked
+	 * credential, disabled principal, bad signature — is one PERMISSION_DENIED
+	 * with one message. Distinguishing them would turn this into an oracle for
+	 * which credentials exist, and the mint path does not enumerate anywhere else
+	 * either (see {@code doMintDelegatedToken}'s missing-grant refusal).
+	 */
+	private Kernel.PersonalPrincipal verifyDeviceProof(String proofToken) throws StatusException {
+		TokenWrapper proof;
+		try {
+			proof = TokenWrapper.parse(proofToken);
+		} catch (Exception e) {
+			throw deviceProofRefused();
+		}
+		String credentialId = proof.getKid();
+		if (credentialId == null || credentialId.isEmpty()) {
+			throw deviceProofRefused();
+		}
+		Kernel.PrincipalState registry;
+		try {
+			registry = principalMap.proto();
+		} catch (ProtoException e) {
+			throw new StatusException(Status.INTERNAL, "principal registry unavailable");
+		}
+		for (Kernel.PersonalPrincipal principal : registry.getPersonalPrincipalsList()) {
+			if (principal.getDisabledAtMs() != 0) {
+				continue;
+			}
+			for (Kernel.PersonalCredential credential : principal.getCredentialsList()) {
+				if (!credentialId.equals(credential.getCredentialId())
+						|| credential.getRevokedAtMs() != 0) {
+					continue;
+				}
+				try {
+					proof.verify(ImmutableJwk.from(credential.getPublicKey()));
+				} catch (Exception e) {
+					throw deviceProofRefused();
+				}
+				return principal;
+			}
+		}
+		throw deviceProofRefused();
+	}
+
+	private static StatusException deviceProofRefused() {
+		return new StatusException(Status.PERMISSION_DENIED, "device proof verification failed");
 	}
 
 	/**
@@ -670,7 +793,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	Tokenrequest.TokenMintResponse mintUserTokenInternal(
 			String subject, com.google.protobuf.Struct claims,
 			long requestedExp, String traceId, String delegateSubject,
-			boolean offlineAccess)
+			boolean offlineAccess, @Nullable String stampedNamespace)
 			throws StatusException {
 
 		Kernel.Delegate delegate = findDelegateBySubject(delegateSubject);
@@ -728,7 +851,15 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setSubType(SUB_TYPE_USER);
 		// Namespace: OPA maps the caller's IdP (issuer/claims) to the tenant subtree
 		// they belong to. A policy that cannot name one refuses the mint.
-		newToken.setNamespace(requireNamespaceFromOpa(opaResult));
+		//
+		// A stampedNamespace short-circuits that entirely, and must: it is set only
+		// where kernel authorized the identity itself (the device arm's
+		// /people/<pid>), and there OPA sees no IdP claims at all, so asking it for
+		// a namespace would be asking it to guess. OPA still supplies the
+		// entitlements below — it remains the sole entitlement authority — it just
+		// does not get to name the subtree kernel already resolved.
+		newToken.setNamespace(
+				stampedNamespace != null ? stampedNamespace : requireNamespaceFromOpa(opaResult));
 
 		if (claims != null) {
 			newToken.setClaimsFromStruct(claims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
@@ -3276,6 +3407,106 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		TokenOuterClass.Token proto = token.getProto();
 		return Tokenrequest.TokenMintResponse.newBuilder()
 				.setAccessToken(proto)
+				.build();
+	}
+
+	// ========================================================================
+	// CreatePersonalPrincipal RPC (device-first registration; no session yet)
+	// ========================================================================
+
+	/**
+	 * First-launch registration. The request is self-attesting: it carries a JWT
+	 * signed by the key being registered and the public half of that same key, and
+	 * kernel verifies the one against the other. That is the whole of the
+	 * authentication, and it is deliberate — anyone may create a personal
+	 * principal (device-first, no signup), so the only thing worth proving is that
+	 * the caller actually holds the private half of the key it is asking kernel to
+	 * trust from here on.
+	 *
+	 * <p>This is the bootstrap case {@code MintClientToken} does not have: there is
+	 * no stored credential to look the key up by, so the key comes out of the
+	 * request. Once the row exists, every later proof is checked against the STORED
+	 * key ({@link #verifyDeviceProof}) and the request's copy is never consulted
+	 * again.
+	 *
+	 * <p>No token is issued. The device's next call is MintUserToken with
+	 * AUTH_BROKER_KIND_DEVICE, which is where {@code Delegate.auth_broker_kinds}
+	 * gates who may broker a human login; minting here would route around that gate
+	 * from an RPC that has no authenticated caller at all.
+	 */
+	@Override
+	public Kernel.CreatePersonalPrincipalResponse createPersonalPrincipal(Caller caller,
+			Kernel.CreatePersonalPrincipalRequest request) throws ProtoException {
+		TokenWrapper proof;
+		try {
+			proof = TokenWrapper.parse(request.getProofToken());
+		} catch (Exception e) {
+			throw new ProtoException(ProtoException.INVALID_ARGUMENT,
+					"invalid proof_token: " + e.getMessage());
+		}
+		String credentialId = proof.getKid();
+		if (credentialId == null || credentialId.isEmpty()) {
+			throw new ProtoException(ProtoException.INVALID_ARGUMENT,
+					"proof_token missing kid (credential_id)");
+		}
+		// Verify against the key carried in THIS request. A proof that does not
+		// verify registers nothing — otherwise the row would record a public key
+		// whose holder never demonstrated possession.
+		try {
+			proof.verify(ImmutableJwk.from(request.getPublicKey()));
+		} catch (Exception e) {
+			throw new ProtoException(ProtoException.UNAUTHENTICATED,
+					"proof_token verification failed: " + e.getMessage());
+		}
+
+		Kernel.PrincipalState registry = principalMap.proto();
+		if (registry.getPersonalPrincipalsCount() >= MAX_PERSONAL_PRINCIPALS) {
+			throw new ProtoException(ProtoException.RESOURCE_EXHAUSTED,
+					"personal principal registry is full");
+		}
+		// One key, one person. Without this, a second registration of the same
+		// platform-synced key would create a second principal, and the credential
+		// id — the only handle the device mint has — would name two rows. Which one
+		// verifyDeviceProof found would then depend on map iteration order, and the
+		// person would silently become two people, which is exactly what §5.4's
+		// "a synced key presented from a phone and from an iPad is ONE credential
+		// presented twice" forbids.
+		//
+		// This is a correctness guard, not abuse control (§11 QUESTION 3 is open
+		// and deliberately untouched here). It does make the RPC an existence
+		// oracle for credential ids; accepted, because a credential id is opaque
+		// and useless without the private half, and narrowing it further is the
+		// broader abuse-prevention design this item does not do.
+		for (Kernel.PersonalPrincipal existing : registry.getPersonalPrincipalsList()) {
+			for (Kernel.PersonalCredential credential : existing.getCredentialsList()) {
+				if (credentialId.equals(credential.getCredentialId())) {
+					throw new ProtoException(ProtoException.ALREADY_EXISTS,
+							"credential is already registered");
+				}
+			}
+		}
+
+		String principalId = UUID.randomUUID().toString();
+		long nowMs = System.currentTimeMillis();
+		Kernel.PersonalPrincipal principal = Kernel.PersonalPrincipal.newBuilder()
+				.setPrincipalId(principalId)
+				.addCredentials(Kernel.PersonalCredential.newBuilder()
+						.setCredentialId(credentialId)
+						.setPublicKey(request.getPublicKey())
+						.setLabel(request.getLabel())
+						.setPlatformSynced(request.getPlatformSynced())
+						.setCreatedAtMs(nowMs))
+				.setCreatedAtMs(nowMs)
+				.build();
+		principalMap.putPersonalPrincipals(principalId, principal);
+		// The registry's durability is the disk snapshot, and nothing else on this
+		// path triggers one — the same reason RevokeWorkload fires it.
+		persistState.run();
+
+		logger.info("Registered personal principal: principal_id={} credential={} platform_synced={}",
+				principalId, credentialId, request.getPlatformSynced());
+		return Kernel.CreatePersonalPrincipalResponse.newBuilder()
+				.setPrincipalId(principalId)
 				.build();
 	}
 

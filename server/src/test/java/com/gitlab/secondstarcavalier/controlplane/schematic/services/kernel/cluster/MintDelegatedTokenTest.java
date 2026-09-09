@@ -13,6 +13,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.token.TokenOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.vservices.userentitlements.Userentitlements;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.authz.InMemoryManager;
 import com.google.protobuf.Struct;
@@ -96,6 +97,7 @@ class MintDelegatedTokenTest {
                 null,            // proxyPolicyOpaClient
                 null,            // configMap
                 new WorkloadMap(new InMemoryManager()),
+                new PrincipalMap(new InMemoryManager()),
                 null,            // persistState
                 null,            // kubernetesTokenVerifier
                 KERNEL_AUDIENCE,

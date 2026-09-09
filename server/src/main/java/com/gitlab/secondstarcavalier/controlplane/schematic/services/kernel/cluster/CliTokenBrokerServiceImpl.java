@@ -96,7 +96,7 @@ public class CliTokenBrokerServiceImpl implements
 				Tokenrequest.TokenMintResponse mintResponse = identityService.mintUserTokenInternal(
 						complete.getSubject(),
 						complete.hasClaims() ? complete.getClaims() : null,
-						0, "", "oauth", offlineAccess);
+						0, "", "oauth", offlineAccess, null);
 				return mintResponse.getRefreshToken().getBase64();
 			} catch (IdentityServiceImpl.StatusException e) {
 				logger.error("CliTokenBroker: mint failed for nonce {}", nonce.substring(0, 8), e);

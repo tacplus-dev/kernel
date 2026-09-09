@@ -14,6 +14,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.vservices.userentitlements.OpaEvalGrpc;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.vservices.userentitlements.Userentitlements;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import io.grpc.Context;
 import io.grpc.Contexts;
@@ -120,6 +121,7 @@ class WorkloadRevocationTest {
 				null,            // proxyPolicyOpaClient
 				null,            // configMap
 				workloadMap,
+				new PrincipalMap(new InMemoryManager()),
 				null,            // persistState (no disk snapshot in-test)
 				null,            // kubernetesTokenVerifier
 				null,            // kubernetesTokenAudience

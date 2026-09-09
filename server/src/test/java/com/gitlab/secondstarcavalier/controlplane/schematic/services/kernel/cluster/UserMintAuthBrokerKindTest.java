@@ -13,6 +13,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.jwk.JwkOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.vservices.userentitlements.Userentitlements;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
@@ -96,6 +97,7 @@ class UserMintAuthBrokerKindTest {
 				null,            // proxyPolicyOpaClient
 				null,            // configMap
 				new WorkloadMap(new InMemoryManager()),
+				new PrincipalMap(new InMemoryManager()),
 				null,            // persistState
 				null,            // kubernetesTokenVerifier
 				KERNEL_AUDIENCE,
@@ -199,18 +201,23 @@ class UserMintAuthBrokerKindTest {
 	}
 
 	/**
-	 * The second check, isolated. This delegate DOES list DEVICE, so the
-	 * containment check passes and only the switch can refuse it. DEVICE
-	 * requires kernel to verify request.proof_token itself, which is Goal B item
-	 * 1 and is not written — minting here would issue a user token on a proof
-	 * nobody checked.
+	 * The second check, isolated. This delegate DOES list EMAIL_LINK, so the
+	 * containment check passes and only the switch can refuse it. EMAIL_LINK
+	 * requires kernel to verify request.proof_token itself, which is a later Goal
+	 * B item and is not written — minting here would issue a user token on a
+	 * proof nobody checked.
+	 *
+	 * <p>This case was DEVICE until device-proof verification landed; DEVICE now
+	 * has a real verification arm ({@code DevicePrincipalMintTest}), so the only
+	 * kinds that still exercise the unimplemented arm are EMAIL_LINK and
+	 * PERSONAL_LINK.
 	 */
 	@Test
 	void kindWithNoVerificationIsRefusedEvenWhenDeclared() {
-		IdentityServiceImpl svc = newService(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE);
+		IdentityServiceImpl svc = newService(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_EMAIL_LINK);
 
 		ProtoException ex = assertThrows(ProtoException.class,
-				() -> mintUser(svc, Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE));
+				() -> mintUser(svc, Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_EMAIL_LINK));
 
 		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
 		assertTrue(ex.getMessage().contains("not supported"),

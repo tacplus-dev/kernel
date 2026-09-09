@@ -808,6 +808,7 @@ public class ClusterServer {
 					proxyPolicyOpa,
 					kernelConfigMap,
 					workloadState,
+					principalState,
 					this::persistKernelState,
 					kubernetesTokenVerifier,
 					kubernetesTokenAudience,

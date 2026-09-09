@@ -49,6 +49,7 @@ class SelfAuthenticatingRpcSkipTest {
 		"kernel.Mint/MintServiceToken",
 		"kernel.Mint/MintClientToken",
 		"kernel.Mint/MintX509Cert",
+		"kernel.Mint/CreatePersonalPrincipal",
 	};
 
 	/** kernel.Mint RPCs carrying no exemption flag — the interceptor must still enforce. */

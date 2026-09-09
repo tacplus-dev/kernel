@@ -10,6 +10,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.opalib.Opalib;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.SecurityAuthenticator;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.BackendServers;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -110,6 +111,7 @@ class UpdateOpaConfigTest {
 				null,            // proxyPolicyOpaClient
 				null,            // configMap
 				new WorkloadMap(new InMemoryManager()),
+				new PrincipalMap(new InMemoryManager()),
 				null,            // persistState
 				null,            // kubernetesTokenVerifier
 				null,            // kubernetesTokenAudience

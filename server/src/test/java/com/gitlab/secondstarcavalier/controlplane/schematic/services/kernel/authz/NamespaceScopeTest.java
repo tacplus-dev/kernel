@@ -10,6 +10,7 @@ import java.util.concurrent.Callable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -31,7 +32,7 @@ class NamespaceScopeTest {
 
 	@Test
 	void systemCallersGetTheIdentityRewrite() throws Exception {
-		for (String ns : new String[] {"/system", "/system/us-east", "/", ""}) {
+		for (String ns : new String[] {"/system", "/system/us-east", "/"}) {
 			NamespaceScope scope = as(ns, NamespaceScope::current);
 			assertTrue(scope.isRoot(), ns + " must be the root scope");
 			for (String key : new String[] {"", "k", "/tenants/acme/k", "a/b/c"}) {
@@ -44,9 +45,48 @@ class NamespaceScopeTest {
 
 	@Test
 	void aCallerWithNoNamespaceAtAllIsTheRootScope() {
-		// No Context value installed — user/CLI tokens, and any path that runs off
-		// a gRPC call. checkAccess already denies those on every policed graph.
+		// No Context value installed. The caller interceptor always installs the
+		// key, so this is not a caller at all: it is kernel's own machinery running
+		// off a gRPC call, which is unconfined.
 		assertTrue(NamespaceScope.current().isRoot());
+	}
+
+	/**
+	 * Goal B item 4. An EMPTY namespace — as opposed to an absent one — is an
+	 * authenticated caller whose token class carries no namespace. It is the case
+	 * that used to fall through to ROOT, and it must own nothing at all.
+	 *
+	 * <p>It is deliberately not "the chroot under the empty namespace" either: that
+	 * prefix would be "/", which is a prefix of every tenant's storage key.
+	 */
+	@Test
+	void anEmptyNamespaceOwnsNothing() throws Exception {
+		NamespaceScope none = as("", NamespaceScope::current);
+
+		assertFalse(none.isRoot());
+		for (String key : new String[] {"", "k", "/", "/tenants/acme/k", "a/b/c"}) {
+			assertFalse(none.owns(key), "must own no stored key, including \"" + key + "\"");
+		}
+		assertThrows(IllegalStateException.class, () -> none.scope("k"));
+		assertThrows(IllegalStateException.class, () -> none.unscope("k"));
+	}
+
+	/**
+	 * Goal B item 4 inverted the default: root is now a closed list ("/" and
+	 * "/system…"), so a namespace root nobody has taught this class about — the
+	 * "/people/<pid>" a personal principal will carry — is confined, not unconfined.
+	 */
+	@Test
+	void anUnrecognizedNamespaceRootIsConfinedNotRoot() throws Exception {
+		NamespaceScope people = as("/people/p-42", NamespaceScope::current);
+
+		assertFalse(people.isRoot(), "an unknown namespace root must never be the identity rewrite");
+		assertEquals("/people/p-42/k", people.scope("k"));
+		assertFalse(people.owns("/tenants/acme/k"));
+		assertFalse(people.owns("k"));
+
+		// "/systemically" is not "/system": only the exact segment is root.
+		assertFalse(as("/systemically", NamespaceScope::current).isRoot());
 	}
 
 	@Test

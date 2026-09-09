@@ -124,4 +124,35 @@ abstract class StateChrootTestBase {
 		t.sign(signingKey);
 		return t.getBase64();
 	}
+
+	/**
+	 * Mints a valid, kernel-signed non-service token: a {@code user} token as
+	 * {@code IdentityServiceImpl.doMintUserToken} mints one, or any other
+	 * {@code sub_type} the enum carries ({@code pipeline}). {@code namespace} is
+	 * the claim {@code namespaceFromOpaOrRoot} stamps — the tenant OPA mapped the
+	 * caller's IdP to, or "/" when the policy returned none. None of these tokens
+	 * carries a service path, by construction.
+	 *
+	 * <p>There is deliberately no way to mint one with NO namespace claim:
+	 * {@code TokenWrapper.sign} refuses to sign a token without one.
+	 */
+	String principalTokenFor(String subType, String subject, String namespace) {
+		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
+		long now = Instant.now().getEpochSecond();
+		TokenWrapper t = TokenWrapper.create()
+				.setIssuer("https://kernel.test/oidc")
+				.setSubject(subject)
+				.setAudience("kernel")
+				.setIssuedAt(now)
+				.setExpiration(now + 3600)
+				.setJTI(UUID.randomUUID().toString());
+		t.setSubType(subType);
+		// principal and token_use as IdentityServiceImpl's refresh->access exchange
+		// stamps them: that access token is the one that actually calls kernel APIs.
+		t.setPrincipal(subject);
+		t.setTokenUse("access");
+		t.setNamespace(namespace);
+		t.sign(signingKey);
+		return t.getBase64();
+	}
 }

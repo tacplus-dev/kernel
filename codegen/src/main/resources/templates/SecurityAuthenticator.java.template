@@ -118,15 +118,21 @@ public class SecurityAuthenticator {
     public static final Context.Key<String> CALLER_SERVICE_PATH_KEY = Context.key("caller-service-path");
 
     /**
-     * Context key for the caller's authorization NAMESPACE, derived from the same
-     * token subject {@link #CALLER_SERVICE_PATH_KEY} is derived from, so the two
-     * can never disagree: {@code /system} (or {@code /system/<location...>}) for a
-     * shared platform service, {@code /tenants/<tenant>} for a tenant-owned
-     * instance. A bare (non-SPIFFE) subject names a {@code /system} service — the
-     * same reading {@code IdentityServiceImpl.findDelegateBySubject} gives it.
+     * Context key for the caller's authorization NAMESPACE. For a service or
+     * workload token it is derived from the same token subject
+     * {@link #CALLER_SERVICE_PATH_KEY} is derived from, so the two can never
+     * disagree: {@code /system} (or {@code /system/<location...>}) for a shared
+     * platform service, {@code /tenants/<tenant>} for a tenant-owned instance. A
+     * bare (non-SPIFFE) subject names a {@code /system} service — the same reading
+     * {@code IdentityServiceImpl.findDelegateBySubject} gives it.
      *
-     * <p>Empty for tokens that carry no service identity (user/CLI tokens), which
-     * {@link #checkAccess} already denies on every policed graph.
+     * <p>A user token's subject carries no namespace, so its namespace is the
+     * kernel-stamped {@code namespace} claim instead. It still has no service
+     * identity, so {@link #checkAccess} still denies it on every policed graph;
+     * the namespace exists to confine it on the unpoliced ones.
+     *
+     * <p>Empty for every other token class. That is not "unconfined": an empty
+     * namespace owns no key at all — see {@code NamespaceScope}.
      *
      * <p>This is what {@code NamespaceScope} chroots kernel state keys on.
      */
@@ -424,6 +430,19 @@ public class SecurityAuthenticator {
             } catch (RuntimeException e) {
                 throw new ProtoException(ProtoException.UNAUTHENTICATED,
                         "token subject is not a valid service identity: " + e.getMessage());
+            }
+        } else if ("user".equals(subType) && !tw.getNamespace().isEmpty()) {
+            // A user token's subject carries no namespace, so the kernel-stamped
+            // claim is the only source. It is safe to read because kernel stamps it
+            // from an authorization kernel itself performed at mint time; it is
+            // never copied from anything the client sent. Without it the caller
+            // would reach an unpoliced (NO_POLICY_GRAPH) store server unconfined.
+            // servicePath stays empty: this grants no authorization, only a scope.
+            try {
+                namespace = tw.namespacePath();
+            } catch (RuntimeException e) {
+                throw new ProtoException(ProtoException.UNAUTHENTICATED,
+                        "token namespace claim is not a valid namespace: " + e.getMessage());
             }
         }
 

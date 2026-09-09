@@ -17,6 +17,11 @@ import {{SPIFFE_PACKAGE}}.Spiffe;
  * prefix, so {@link #scope}, {@link #unscope} and {@link #owns} are the identity
  * and old behaviour is unchanged by construction, not by argument.
  *
+ * <p>The classification is <b>confined by default</b>: only {@code /} and
+ * {@code /system[/…]} are unconfined. Every other namespace — a tenant root, and
+ * any root segment added later — chroots, so a namespace this class has never
+ * heard of can never be handed the identity rewrite by omission.
+ *
  * <p><b>Only the map key is rewritten.</b> Payloads are never touched. A record
  * that also carries its key as a field ({@code (spec.indexed)} keys,
  * {@code instance_keyed} composite ids) must come back exactly as the caller
@@ -27,13 +32,28 @@ import {{SPIFFE_PACKAGE}}.Spiffe;
  */
 public final class NamespaceScope {
 
-    /** Namespace prefix that marks a tenant-owned caller. */
-    private static final String TENANTS_PREFIX = "/" + Spiffe.TENANTS_SEGMENT + "/";
+    /** The one namespace root that is unconfined, and the parent of every location under it. */
+    private static final String SYSTEM_NAMESPACE = "/" + Spiffe.SYSTEM_SEGMENT;
 
     /** The unscoped scope: what every {@code /system} caller gets. */
     private static final NamespaceScope ROOT = new NamespaceScope("");
 
-    /** "" for a root caller, otherwise "&lt;namespace&gt;/" — e.g. "/tenants/acme/". */
+    /**
+     * The scope of an authenticated caller whose token carries no namespace at
+     * all: it owns nothing and can name nothing. Reachable for any token class
+     * that is neither a service/workload (namespace from the subject) nor a user
+     * (namespace from the claim) — a {@code pipeline} token, say — which
+     * {@code checkAccess} already denies on every policed graph but which reaches
+     * an unpoliced ({@code NO_POLICY_GRAPH}) store server. It must not be ROOT,
+     * and it cannot be a prefix either: the empty namespace's prefix would be
+     * "/", which is a prefix of every tenant's storage key.
+     */
+    private static final NamespaceScope NONE = new NamespaceScope(null);
+
+    /**
+     * "" for a root caller, "&lt;namespace&gt;/" for a confined one — e.g.
+     * "/tenants/acme/" — and null for a caller with no namespace at all.
+     */
     private final String prefix;
 
     private NamespaceScope(String prefix) {
@@ -47,13 +67,25 @@ public final class NamespaceScope {
 
     /**
      * The current gRPC call's scope, read from
-     * {@link SecurityAuthenticator#CALLER_NAMESPACE_KEY}. Anything that is not a
-     * tenant namespace is the root scope: {@code /system}, a location-bearing
-     * {@code /system/<location>}, and a caller with no namespace at all.
+     * {@link SecurityAuthenticator#CALLER_NAMESPACE_KEY}. The root scope is
+     * {@code /} and {@code /system}, including a location-bearing
+     * {@code /system/<location>}; every other namespace is confined under itself;
+     * an authenticated caller with an empty namespace owns nothing.
+     *
+     * <p>An <i>absent</i> key — as opposed to an empty one — is not a caller at
+     * all: the caller interceptor always installs this key, so it is unset only
+     * off a gRPC call, on kernel's own machinery, which is unconfined.
      */
     public static NamespaceScope current() {
         String namespace = SecurityAuthenticator.CALLER_NAMESPACE_KEY.get();
-        if (namespace == null || !namespace.startsWith(TENANTS_PREFIX)) {
+        if (namespace == null) {
+            return ROOT;
+        }
+        if (namespace.isEmpty()) {
+            return NONE;
+        }
+        if (namespace.equals("/") || namespace.equals(SYSTEM_NAMESPACE)
+                || namespace.startsWith(SYSTEM_NAMESPACE + "/")) {
             return ROOT;
         }
         return new NamespaceScope(namespace + "/");
@@ -61,33 +93,42 @@ public final class NamespaceScope {
 
     /** Whether this scope rewrites nothing. */
     public boolean isRoot() {
-        return prefix.isEmpty();
+        return prefix != null && prefix.isEmpty();
     }
 
     /** Ingress: the stored key for a key the caller named. */
     public String scope(String key) {
+        requireNamespace();
         return prefix.isEmpty() ? key : prefix + key;
     }
 
     /** Whether a stored key belongs to this scope. */
     public boolean owns(String storedKey) {
-        return prefix.isEmpty() || storedKey.startsWith(prefix);
+        return prefix != null && (prefix.isEmpty() || storedKey.startsWith(prefix));
     }
 
     /** Egress: the caller-visible key for a stored key this scope {@link #owns}. */
     public String unscope(String storedKey) {
+        requireNamespace();
         return prefix.isEmpty() ? storedKey : storedKey.substring(prefix.length());
+    }
+
+    private void requireNamespace() {
+        if (prefix == null) {
+            throw new IllegalStateException("caller token carries no namespace: no key is in scope");
+        }
     }
 
     /** Scopes are compared by prefix so watchers can be grouped by the snapshot they see. */
     @Override
     public boolean equals(Object o) {
-        return o instanceof NamespaceScope && prefix.equals(((NamespaceScope) o).prefix);
+        return o instanceof NamespaceScope
+                && java.util.Objects.equals(prefix, ((NamespaceScope) o).prefix);
     }
 
     @Override
     public int hashCode() {
-        return prefix.hashCode();
+        return java.util.Objects.hashCode(prefix);
     }
 
     @Override

@@ -95,15 +95,17 @@ class StateServiceTokenScopeTest {
 	private String kernelToken(String audience, String tokenUse) {
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		long now = Instant.now().getEpochSecond();
+		String subject = Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", "kernel");
 		TokenWrapper t = TokenWrapper.create()
 				.setIssuer("https://kernel.test/oidc")
-				.setSubject(Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", "kernel"))
+				.setSubject(subject)
 				.setAudience(audience)
 				.setIssuedAt(now)
 				.setExpiration(now + 3600)
 				.setJTI(UUID.randomUUID().toString());
 		t.setSubType("service");
 		t.setServiceName("kernel");
+		t.setNamespace(Spiffe.namespaceFromSpiffe(subject));
 		if (tokenUse != null) {
 			t.setTokenUse(tokenUse);
 		}

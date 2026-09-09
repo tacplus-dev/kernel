@@ -203,6 +203,7 @@ class WorkloadRevocationTest {
 		t.setSubType("service");
 		t.setTokenUse("service");
 		t.setServiceName(PARENT_SERVICE);
+		t.setNamespace(Spiffe.namespaceFromSpiffe(parentSpiffe));
 		t.sign(signingKey);
 		return t.getBase64();
 	}

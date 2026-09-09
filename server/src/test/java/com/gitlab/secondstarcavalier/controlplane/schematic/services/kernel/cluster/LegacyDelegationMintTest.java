@@ -104,13 +104,15 @@ class LegacyDelegationMintTest {
     private String mintCallerToken(String delegateName) {
         ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
         long now = Instant.now().getEpochSecond();
+        String subject = Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", delegateName);
         TokenWrapper t = TokenWrapper.create()
                 .setIssuer("https://kernel.test/oidc")
-                .setSubject(Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", delegateName))
+                .setSubject(subject)
                 .setAudience("kernel")
                 .setIssuedAt(now)
                 .setExpiration(now + 3600)
                 .setJTI(UUID.randomUUID().toString());
+        t.setNamespace(Spiffe.namespaceFromSpiffe(subject));
         t.sign(signingKey);
         return t.getBase64();
     }

@@ -57,6 +57,7 @@ class LegacyDelegationMintTest {
     private static final String KERNEL_AUDIENCE = "schematic-kernel";
     private static final String DELEGATE_NAME = "oauth";
     private static final String VICTIM_SUBJECT = "victim@example.com";
+    private static final String ACME_NS = "/tenants/acme";
     private static final Caller CALLER = new Caller("", "test-req");
 
     private final List<JwkOuterClass.Jwk> verifyingKeys = new CopyOnWriteArrayList<>();
@@ -97,7 +98,10 @@ class LegacyDelegationMintTest {
     }
 
     private void registerDelegate() {
-        delegates.add(Kernel.Delegate.newBuilder().setName(DELEGATE_NAME).build());
+        delegates.add(Kernel.Delegate.newBuilder()
+                .setName(DELEGATE_NAME)
+                .addAuthBrokerKinds(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
+                .build());
     }
 
     /** Mints and signs a caller S2S token for {@code delegateName} with the kernel's own key. */
@@ -202,6 +206,7 @@ class LegacyDelegationMintTest {
         Tokenrequest.TokenMintResponse resp = asDelegate(() -> svc.mintUserToken(CALLER,
                 Tokenrequest.MintUserTokenRequest.newBuilder()
                         .setSubject(VICTIM_SUBJECT)
+                        .setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
                         .setClaims(attackerClaims())
                         .build()));
 
@@ -224,6 +229,7 @@ class LegacyDelegationMintTest {
         Tokenrequest.TokenMintResponse minted = asDelegate(() -> svc.mintUserToken(CALLER,
                 Tokenrequest.MintUserTokenRequest.newBuilder()
                         .setSubject(VICTIM_SUBJECT)
+                        .setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
                         .setClaims(attackerClaims())
                         .build()));
         String refreshToken = minted.getRefreshToken().getBase64();
@@ -271,7 +277,11 @@ class LegacyDelegationMintTest {
         public Userentitlements.EntitlementEvalResult evalEntitlement(
                 Userentitlements.EntitlementEvalInput request) {
             invoked = true;
+            // A namespace is not optional: the mint refuses when the policy names
+            // no tenant. Which tenant it is does not matter to anything asserted
+            // here — same fixture shape as MintDelegatedTokenTest's fake.
             return Userentitlements.EntitlementEvalResult.newBuilder()
+                    .setNamespace(ACME_NS)
                     .setTokenEntitlements(toReturn)
                     .build();
         }

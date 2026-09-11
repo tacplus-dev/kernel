@@ -129,9 +129,9 @@ abstract class StateChrootTestBase {
 	 * Mints a valid, kernel-signed non-service token: a {@code user} token as
 	 * {@code IdentityServiceImpl.doMintUserToken} mints one, or any other
 	 * {@code sub_type} the enum carries ({@code pipeline}). {@code namespace} is
-	 * the claim {@code namespaceFromOpaOrRoot} stamps — the tenant OPA mapped the
-	 * caller's IdP to, or "/" when the policy returned none. None of these tokens
-	 * carries a service path, by construction.
+	 * the claim {@code requireNamespaceFromOpa} stamps — the tenant OPA mapped the
+	 * caller's IdP to. None of these tokens carries a service path, by
+	 * construction.
 	 *
 	 * <p>There is deliberately no way to mint one with NO namespace claim:
 	 * {@code TokenWrapper.sign} refuses to sign a token without one.

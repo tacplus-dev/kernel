@@ -164,10 +164,10 @@ class UserTokenNamespaceChrootTest extends StateChrootTestBase {
 	}
 
 	/**
-	 * A user token stamped with the cluster root — what
-	 * {@code IdentityServiceImpl.namespaceFromOpaOrRoot} stamps when OPA maps the
-	 * caller to no tenant, i.e. every CLI user today — is unconfined, and a
-	 * {@code /system} one likewise. This half must not move.
+	 * A user token stamped with the cluster root — which kernel no longer mints
+	 * from an OPA eval at all, since {@code requireNamespaceFromOpa} refuses
+	 * rather than falling back to "/" — is unconfined, and a {@code /system} one
+	 * likewise. This half must not move.
 	 */
 	@Test
 	void rootAndSystemUserTokensAreUnconfined() {

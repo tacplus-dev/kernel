@@ -223,7 +223,12 @@ class MintDelegatedTokenTest {
         @Override
         public Userentitlements.EntitlementEvalResult evalEntitlement(Userentitlements.EntitlementEvalInput request) {
             invoked = true;
+            // A namespace is not optional: doMintDelegatedToken refuses the mint
+            // when the policy names no tenant (requireNamespaceFromOpa). Which
+            // tenant it is does not matter to anything asserted here — that
+            // refusal has its own suite, DelegatedMintNamespaceFailClosedTest.
             return Userentitlements.EntitlementEvalResult.newBuilder()
+                    .setNamespace(ACME_NS)
                     .setTokenEntitlements(toReturn)
                     .build();
         }

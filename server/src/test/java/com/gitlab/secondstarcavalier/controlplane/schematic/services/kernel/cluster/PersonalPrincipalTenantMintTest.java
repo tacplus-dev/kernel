@@ -49,8 +49,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>The fake OPA below answers {@link #OPA_NAMESPACE} — a third tenant, named by
  * neither the request nor any membership — for every evaluation. Each namespace
  * assertion is therefore also an assertion that kernel stamps the membership's
- * namespace itself and never asks OPA for it (§0.2: {@code namespaceFromOpaOrRoot}
- * fails OPEN to {@code /}, and OPA sees no IdP claims at all on this path).
+ * namespace itself and never asks OPA for it (§0.2: OPA sees no IdP claims at
+ * all on this path, so {@code requireNamespaceFromOpa} could only ever refuse).
  */
 class PersonalPrincipalTenantMintTest {
 

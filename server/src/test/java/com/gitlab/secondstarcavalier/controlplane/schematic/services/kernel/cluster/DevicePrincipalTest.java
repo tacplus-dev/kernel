@@ -56,8 +56,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>The fake OPA below deliberately answers {@code /tenants/acme} for every
  * evaluation. Every namespace assertion here is therefore also an assertion that
  * the device arm does NOT take its namespace from OPA — if it ever falls back to
- * {@code requireNamespaceFromOpa} (or, worse, the {@code namespaceFromOpaOrRoot}
- * shape), the minted token comes back naming a tenant and these tests say so.
+ * {@code requireNamespaceFromOpa}, the minted token comes back naming a tenant
+ * and these tests say so.
  */
 class DevicePrincipalTest {
 

@@ -1044,10 +1044,10 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setAct(grant.getDelegateName());
 		newToken.setSubType(SUB_TYPE_USER);
 		newToken.setTokenUse(TOKEN_USE_ACCESS);
-		// Namespace still falls back to the cluster root here, unlike the user
-		// mint path: a Grant records the delegate's namespace, not the
-		// consenting user's, so this cannot fail closed without a proto change.
-		newToken.setNamespace(namespaceFromOpaOrRoot(opaResult));
+		// Namespace: the fresh OPA replay of the grant's recorded claims maps the
+		// consenting user's IdP to their tenant subtree, exactly as on the user
+		// mint path. A policy that cannot name one refuses the mint.
+		newToken.setNamespace(requireNamespaceFromOpa(opaResult));
 
 		Struct claims = grant.getClaims();
 		if (claims != null) {
@@ -1412,12 +1412,16 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 * subtree they belong to, as a leading-slash absolute path (e.g.
 	 * "/tenants/drpepper").
 	 *
-	 * <p>There is deliberately NO fallback to the cluster root here. The
+	 * <p>There is deliberately NO fallback to the cluster root anywhere. The
 	 * operator-generated policy emitted no namespace at all until the matching
 	 * generator change (operator {@code pkg/bootstrap/opa.go}, tenants/namespace.rego),
 	 * so every IdP user in every bootstrapped cluster was being minted at "/" —
-	 * fleet-wide root — by that fallback. A policy that cannot name the caller's
-	 * tenant has not authorized a login; it is refused.
+	 * fleet-wide root — by the fallback this replaced. A policy that cannot name
+	 * the caller's tenant has not authorized a login; it is refused.
+	 *
+	 * <p>{@link #doMintDelegatedToken} uses this too: its fresh OPA replay of the
+	 * grant's recorded claims resolves the consenting user's namespace the same
+	 * way, so the same silence refuses the same way.
 	 */
 	private String requireNamespaceFromOpa(Userentitlements.EntitlementEvalResult result)
 			throws StatusException {
@@ -1428,26 +1432,6 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 							+ "no tenant is bound to their IdP, so no token can be minted");
 		}
 		return ns;
-	}
-
-	/**
-	 * Resolves the namespace claim for a token minted from a {@link Kernel.Grant}
-	 * from the OPA result, falling back to the cluster-root namespace when the
-	 * policy returns none.
-	 *
-	 * <p>Only {@link #doMintDelegatedToken} still uses this. The user-mint path
-	 * fails closed instead ({@link #requireNamespaceFromOpa}); this path cannot
-	 * be switched to a stamped namespace without a proto change, because a Grant
-	 * records the delegate's namespace but not the consenting user's. See the
-	 * open question in
-	 * looper/schematic/workers/tenant-owned-services/decision-goalB-interim-opa-namespace-failclosed.md.
-	 */
-	private String namespaceFromOpaOrRoot(Userentitlements.EntitlementEvalResult result) {
-		String ns = result.getNamespace();
-		if (ns != null && !ns.isEmpty()) {
-			return ns;
-		}
-		return SpiffeIds.namespaceRoot();
 	}
 
 	/**
@@ -2106,9 +2090,9 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		newToken.setSubType(SUB_TYPE_USER);
 		newToken.setTokenUse(TOKEN_USE_ACCESS);
 		// Step 6: kernel stamps the namespace from the authorization it just
-		// performed. namespaceFromOpaOrRoot is deliberately NOT called — it fails
-		// OPEN to "/", and OPA sees no IdP claims on this path at all, so it would
-		// be the default rather than the exception (design-session §0.2).
+		// performed. OPA is deliberately NOT consulted for it — OPA sees no IdP
+		// claims on this path at all, so it could only ever refuse
+		// (design-session §0.2).
 		newToken.setNamespace(membership.getTenantNamespace());
 		newToken.setClaimsFromStruct(claims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
 		setFlatServiceEntitlements(newToken, expanded);

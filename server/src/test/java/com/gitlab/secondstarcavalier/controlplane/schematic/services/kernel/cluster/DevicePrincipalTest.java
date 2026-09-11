@@ -65,6 +65,9 @@ class DevicePrincipalTest {
 	private static final String KERNEL_AUDIENCE = "schematic-kernel";
 	private static final String ISSUER = "https://kernel.test/oidc";
 	private static final String DELEGATE_NAME = "device-broker";
+	private static final String IDP_DELEGATE_NAME = "oauth";
+	private static final String PLAIN_DELEGATE_NAME = "docmanager";
+	private static final String STRANGER_NAME = "not-a-delegate";
 	private static final String OPA_NAMESPACE = "/tenants/acme";
 	private static final Caller CALLER = new Caller("", "test-req");
 	private static final Base64.Encoder B64 = Base64.getUrlEncoder().withoutPadding();
@@ -87,6 +90,17 @@ class DevicePrincipalTest {
 		delegates.add(Kernel.Delegate.newBuilder()
 				.setName(DELEGATE_NAME)
 				.addAuthBrokerKinds(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE)
+				.build());
+		// A real, authenticated S2S delegate that brokers IdP logins only — oauth's
+		// shape. Registration must refuse it: being a delegate is not the check.
+		delegates.add(Kernel.Delegate.newBuilder()
+				.setName(IDP_DELEGATE_NAME)
+				.addAuthBrokerKinds(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
+				.build());
+		// A delegate with no auth_broker_kinds at all — the default, and every
+		// delegate that has not been migrated. Fail-closed means refused.
+		delegates.add(Kernel.Delegate.newBuilder()
+				.setName(PLAIN_DELEGATE_NAME)
 				.build());
 		principalMap = new PrincipalMap(new InMemoryManager());
 		svc = new IdentityServiceImpl(
@@ -170,12 +184,20 @@ class DevicePrincipalTest {
 		DeviceKey claimed = DeviceKey.generate("cred-a");
 		DeviceKey actual = DeviceKey.generate("cred-a");
 
-		ProtoException ex = assertThrows(ProtoException.class,
-				() -> svc.createPersonalPrincipal(CALLER,
-						Kernel.CreatePersonalPrincipalRequest.newBuilder()
-								.setProofToken(actual.proof())
-								.setPublicKey(claimed.publicJwk)
-								.build()));
+		io.grpc.Context ctx = io.grpc.Context.current()
+				.withValue(ClusterServer.RAW_AUTH_TOKEN_KEY, delegateToken(DELEGATE_NAME));
+		io.grpc.Context previous = ctx.attach();
+		ProtoException ex;
+		try {
+			ex = assertThrows(ProtoException.class,
+					() -> svc.createPersonalPrincipal(CALLER,
+							Kernel.CreatePersonalPrincipalRequest.newBuilder()
+									.setProofToken(actual.proof())
+									.setPublicKey(claimed.publicJwk)
+									.build()));
+		} finally {
+			ctx.detach(previous);
+		}
 
 		assertEquals(ProtoException.UNAUTHENTICATED, ex.getCode());
 		assertEquals(0, principalMap.proto().getPersonalPrincipalsCount());
@@ -198,6 +220,99 @@ class DevicePrincipalTest {
 		assertEquals(ProtoException.ALREADY_EXISTS, ex.getCode());
 		assertEquals(1, principalMap.proto().getPersonalPrincipalsCount());
 		assertEquals(first, principalMap.proto().getPersonalPrincipals(0).getPrincipalId());
+	}
+
+	// ------------------------------------------------------------------
+	// Registration is broker-only (the closed kernel route)
+	// ------------------------------------------------------------------
+
+	/**
+	 * No bearer token at all — what a client reaching kernel directly would have,
+	 * now that the RPC's NoAuth gateway proxy route is gone. Refused before the
+	 * request body is looked at, and nothing is written.
+	 *
+	 * <p>The proof in this request is perfectly valid, which is the point: the
+	 * body proof was never the caller check, and a caller with no S2S identity
+	 * fails closed rather than falling through to it.
+	 */
+	@Test
+	void registrationWithNoCallerTokenIsRefusedAndWritesNothing() throws Exception {
+		DeviceKey key = DeviceKey.generate("cred-direct");
+
+		ProtoException ex = assertThrows(ProtoException.class,
+				() -> svc.createPersonalPrincipal(CALLER,
+						Kernel.CreatePersonalPrincipalRequest.newBuilder()
+								.setProofToken(key.proof())
+								.setPublicKey(key.publicJwk)
+								.build()));
+
+		assertEquals(ProtoException.UNAUTHENTICATED, ex.getCode());
+		assertEquals(0, principalMap.proto().getPersonalPrincipalsCount());
+	}
+
+	/**
+	 * An authenticated S2S caller that is a real delegate but brokers IdP logins
+	 * only — oauth. Being a delegate is not the check; carrying
+	 * AUTH_BROKER_KIND_DEVICE is.
+	 */
+	@Test
+	void registrationByADelegateWithoutTheDeviceBrokerKindIsRefused() throws Exception {
+		DeviceKey key = DeviceKey.generate("cred-via-oauth");
+
+		ProtoException ex = assertThrows(ProtoException.class,
+				() -> registerAs(IDP_DELEGATE_NAME, key, "iPhone", true));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+		assertEquals(0, principalMap.proto().getPersonalPrincipalsCount());
+	}
+
+	/**
+	 * Fail-closed on the default. A delegate with no auth_broker_kinds at all —
+	 * which is every delegate that has not been migrated — brokers nothing.
+	 */
+	@Test
+	void registrationByADelegateWithNoAuthBrokerKindsIsRefused() throws Exception {
+		DeviceKey key = DeviceKey.generate("cred-via-plain");
+
+		ProtoException ex = assertThrows(ProtoException.class,
+				() -> registerAs(PLAIN_DELEGATE_NAME, key, "iPhone", true));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+		assertEquals(0, principalMap.proto().getPersonalPrincipalsCount());
+	}
+
+	/**
+	 * A cluster-signed S2S token that names no delegate at all. The signature
+	 * verifies, so this separates "authenticated" from "authorized": passing the
+	 * token check is not passing the delegate check.
+	 */
+	@Test
+	void registrationByAnAuthenticatedNonDelegateIsRefused() throws Exception {
+		DeviceKey key = DeviceKey.generate("cred-via-stranger");
+
+		ProtoException ex = assertThrows(ProtoException.class,
+				() -> registerAs(STRANGER_NAME, key, "iPhone", true));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+		assertEquals(0, principalMap.proto().getPersonalPrincipalsCount());
+	}
+
+	/**
+	 * The accepted caller: a delegate carrying AUTH_BROKER_KIND_DEVICE — the
+	 * personalauth broker's configured shape. Asserted as its own test rather
+	 * than left implicit in the registration tests above, so that a change which
+	 * denies every caller cannot pass by making all the refusals true.
+	 */
+	@Test
+	void registrationByADeviceBrokerDelegateSucceeds() throws Exception {
+		DeviceKey key = DeviceKey.generate("cred-via-personalauth");
+
+		String principalId = registerAs(DELEGATE_NAME, key, "iPhone", true);
+
+		assertNotNull(principalId);
+		assertEquals(1, principalMap.proto().getPersonalPrincipalsCount());
+		assertEquals("cred-via-personalauth",
+				principalMap.getPersonalPrincipals(principalId).getCredentials(0).getCredentialId());
 	}
 
 	// ------------------------------------------------------------------
@@ -299,13 +414,27 @@ class DevicePrincipalTest {
 	// Fixture
 	// ------------------------------------------------------------------
 
+	/** Registration as the DEVICE broker — the only caller kernel accepts. */
 	private String register(DeviceKey key, String label, boolean platformSynced) throws Exception {
-		return svc.createPersonalPrincipal(CALLER, Kernel.CreatePersonalPrincipalRequest.newBuilder()
-				.setProofToken(key.proof())
-				.setPublicKey(key.publicJwk)
-				.setLabel(label)
-				.setPlatformSynced(platformSynced)
-				.build()).getPrincipalId();
+		return registerAs(DELEGATE_NAME, key, label, platformSynced);
+	}
+
+	/** Registration authenticated as the named delegate's S2S token. */
+	private String registerAs(String delegateName, DeviceKey key, String label, boolean platformSynced)
+			throws Exception {
+		io.grpc.Context ctx = io.grpc.Context.current()
+				.withValue(ClusterServer.RAW_AUTH_TOKEN_KEY, delegateToken(delegateName));
+		io.grpc.Context previous = ctx.attach();
+		try {
+			return svc.createPersonalPrincipal(CALLER, Kernel.CreatePersonalPrincipalRequest.newBuilder()
+					.setProofToken(key.proof())
+					.setPublicKey(key.publicJwk)
+					.setLabel(label)
+					.setPlatformSynced(platformSynced)
+					.build()).getPrincipalId();
+		} finally {
+			ctx.detach(previous);
+		}
 	}
 
 	private void setRevokedAt(String principalId, long revokedAtMs) throws Exception {
@@ -334,9 +463,14 @@ class DevicePrincipalTest {
 
 	/** The broker's own S2S token, which is what authenticates a MintUserToken call. */
 	private String delegateToken() {
+		return delegateToken(DELEGATE_NAME);
+	}
+
+	/** A cluster-signed S2S token naming the given service — a delegate or not. */
+	private String delegateToken(String serviceName) {
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		long now = Instant.now().getEpochSecond();
-		String subject = Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", DELEGATE_NAME);
+		String subject = Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", serviceName);
 		TokenWrapper t = TokenWrapper.create()
 				.setIssuer(ISSUER)
 				.setSubject(subject)

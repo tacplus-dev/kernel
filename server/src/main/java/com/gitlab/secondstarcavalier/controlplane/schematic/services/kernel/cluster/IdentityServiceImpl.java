@@ -602,72 +602,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private Tokenrequest.TokenMintResponse doMintUserToken(Tokenrequest.MintUserTokenRequest request)
 			throws StatusException {
 
-		// Authenticate the calling broker via its bearer token.
-		String rawToken = ClusterServer.RAW_AUTH_TOKEN_KEY.get();
-		if (rawToken == null || rawToken.isEmpty()) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"MintUserToken requires authorization header");
-		}
-
-		TokenWrapper callerToken;
-		try {
-			callerToken = TokenWrapper.parse(rawToken);
-		} catch (Exception e) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"invalid caller token: " + e.getMessage());
-		}
-
-		String kid = callerToken.getKid();
-		if (kid == null || kid.isEmpty()) {
-			throw new StatusException(Status.UNAUTHENTICATED, "caller token missing kid");
-		}
-		// Phase 0.1: reject implausible (malformed/oversized) kids before scanning the
-		// verifying-key set. Same UNAUTHENTICATED-unknown-key contract as the miss below;
-		// validation only, no retry.
-		if (!isPlausibleKid(kid)) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"caller token signed with unknown key: " + kid);
-		}
-
-		JwkOuterClass.Jwk matchingKey = null;
-		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
-			if (kid.equals(jwk.getKid())) {
-				matchingKey = jwk;
-				break;
-			}
-		}
-		if (matchingKey == null) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"caller token signed with unknown key: " + kid);
-		}
-
-		try {
-			callerToken.verify(ImmutableJwk.from(matchingKey));
-		} catch (Exception e) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"caller token verification failed: " + e.getMessage());
-		}
-
-		// Caller must be a known delegate.
-		String callerSub = callerToken.getSubject();
-		Kernel.Delegate delegate = findDelegateBySubject(callerSub);
-		if (delegate == null) {
-			throw new StatusException(Status.PERMISSION_DENIED,
-					"caller " + callerSub + " is not a registered delegate");
-		}
-
-		// The caller must additionally be trusted to broker THIS class of user
-		// authentication proof. This replaces the former hardcoded
-		// auth_services: ["oauth", "saml"] allowlist on the RPC: who may attest
-		// a human login is now per-delegate config. Fail-closed — an empty
-		// auth_broker_kinds (the default, and every delegate that has not been
-		// migrated) is not an auth broker and is refused here.
+		// Authenticate the calling broker via its bearer token, and require it to be
+		// a delegate trusted to broker THIS class of user authentication proof.
+		String callerSub = verifiedCallerToken("MintUserToken").getSubject();
 		Tokenrequest.AuthBrokerKind brokerKind = request.getBrokerKind();
-		if (!delegate.getAuthBrokerKindsList().contains(brokerKind)) {
-			throw new StatusException(Status.PERMISSION_DENIED,
-					"delegate " + delegate.getName() + " is not authorized to broker "
-							+ brokerKind.name() + " user authentication");
-		}
+		requireBrokerDelegate(callerSub, brokerKind);
 		switch (brokerKind) {
 			case AUTH_BROKER_KIND_IDP:
 				// The broker validated the IdP assertion itself; kernel trusts the
@@ -3222,6 +3161,34 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	}
 
 	/**
+	 * Requires the verified caller to be a registered delegate that is trusted to
+	 * broker this class of user authentication proof. Who may attest a human login
+	 * is per-delegate config ({@code Delegate.auth_broker_kinds}), not a
+	 * compile-time {@code auth_services} allowlist on the RPC — the RPCs that use
+	 * this are declared {@code auth_services: ["*"]} and do the real check here.
+	 *
+	 * <p>Fail-closed: an empty {@code auth_broker_kinds} — the default, and every
+	 * delegate that has not been migrated — is not an auth broker and is refused.
+	 *
+	 * @param callerSub     the subject of an already-verified caller token
+	 * @param requiredKind  the broker kind the calling RPC requires
+	 */
+	private Kernel.Delegate requireBrokerDelegate(String callerSub, Tokenrequest.AuthBrokerKind requiredKind)
+			throws StatusException {
+		Kernel.Delegate delegate = findDelegateBySubject(callerSub);
+		if (delegate == null) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"caller " + callerSub + " is not a registered delegate");
+		}
+		if (!delegate.getAuthBrokerKindsList().contains(requiredKind)) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"delegate " + delegate.getName() + " is not authorized to broker "
+							+ requiredKind.name() + " user authentication");
+		}
+		return delegate;
+	}
+
+	/**
 	 * Fails closed if a child workload's refresh does not carry the locality token its
 	 * parent registered in {@code WorkloadState.localities}, per the proto contract on
 	 * {@code WorkloadLocality}: the parent rotates a token, registers it under its own
@@ -3644,12 +3611,32 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 *
 	 * <p>No token is issued. The device's next call is MintUserToken with
 	 * AUTH_BROKER_KIND_DEVICE, which is where {@code Delegate.auth_broker_kinds}
-	 * gates who may broker a human login; minting here would route around that gate
-	 * from an RPC that has no authenticated caller at all.
+	 * gates who may broker a human login; minting here would route around that gate.
+	 *
+	 * <p>The body proof is not the whole story any more. Registration is no longer
+	 * reachable from outside the cluster — the RPC dropped
+	 * {@code RPC_FLAG_SELF_AUTHENTICATES}, so tacplus emits no NoAuth gateway proxy
+	 * route for it — and the CALLER must additionally be an authenticated delegate
+	 * carrying {@code AUTH_BROKER_KIND_DEVICE}, i.e. the personalauth broker. Two
+	 * independent facts are required and neither replaces the other: the broker is
+	 * a device broker, and whoever is registering holds the private half. Without
+	 * the caller check a client could skip the broker and register against kernel
+	 * directly, and azp provenance and rate limiting would land on a path nobody
+	 * has to use.
 	 */
 	@Override
 	public Kernel.CreatePersonalPrincipalResponse createPersonalPrincipal(Caller caller,
 			Kernel.CreatePersonalPrincipalRequest request) throws ProtoException {
+		// Authenticate the calling broker. `caller` is not consulted: every RPC in
+		// this file re-parses RAW_AUTH_TOKEN_KEY itself, and a second way to
+		// identify a caller is a second thing to keep correct.
+		try {
+			requireBrokerDelegate(verifiedCallerToken("CreatePersonalPrincipal").getSubject(),
+					Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		}
+
 		TokenWrapper proof;
 		try {
 			proof = TokenWrapper.parse(request.getProofToken());

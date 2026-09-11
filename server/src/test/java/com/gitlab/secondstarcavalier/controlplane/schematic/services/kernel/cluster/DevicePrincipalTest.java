@@ -343,6 +343,24 @@ class DevicePrincipalTest {
 	}
 
 	/**
+	 * The provenance half of the device arm: the minted token records WHICH
+	 * broker brokered the login, so a device login stays distinguishable from an
+	 * IdP login for the life of the token. That value is the calling Delegate's
+	 * bare NAME — not a SPIFFE id, not the issuer — because that is what the
+	 * mint stamps, and personalauth.proto documents it in exactly that shape.
+	 */
+	@Test
+	void theMintedTokenRecordsTheBrokeringDelegateAsAzp() throws Exception {
+		DeviceKey key = DeviceKey.generate("cred-azp");
+		register(key, "iPhone", true);
+
+		Tokenrequest.TokenMintResponse resp = mintWithDeviceProof(key, "");
+
+		TokenWrapper refresh = TokenWrapper.parse(resp.getRefreshToken().getBase64());
+		assertEquals(DELEGATE_NAME, refresh.getAzp());
+	}
+
+	/**
 	 * A revoked credential must not verify. The mutation half is in the same
 	 * test on purpose: the identical call succeeds once the revocation mark is
 	 * cleared, so the refusal is the revocation check and not some unrelated

@@ -189,6 +189,11 @@ public class ClusterServer {
 	private final KernelPersistence kernelPersistence;
 	private final ImmutableCertChain signingCa;
 	private final RatisFencedLock fencedLock;
+	/**
+	 * The kernel Authorizer's key source, assigned during construction (below the
+	 * KeyRotator) and refreshed by {@link #onSigningKeysChanged}.
+	 */
+	private LocalJwkSource kernelJwkSource;
 
 	/**
 	 * @param config      the kernel configuration
@@ -363,7 +368,7 @@ public class ClusterServer {
 						return List.of();
 					}
 				},
-				this::persistKernelState);
+				this::onSigningKeysChanged);
 
 		// Standing delegation grants (item 6, piece B): a live in-memory store
 		// seeded from Config.grants at boot, mirroring how delegates (below) are
@@ -395,7 +400,7 @@ public class ClusterServer {
 				},
 				() -> {
 					try {
-						return kernelConfigMap.proto();
+						return snapshotConfigState(kernelConfigMap);
 					} catch (Exception e) {
 						logger.warn("Failed to read ConfigState for snapshot: {}", e.getMessage());
 						return Kernel.ConfigState.getDefaultInstance();
@@ -432,40 +437,10 @@ public class ClusterServer {
 		restoreGrantRevocations(snapshot, liveGrants);
 		keyRotator.restore(snapshot != null ? snapshot.getSigningKeysList() : List.of());
 
-		// 5. Membership listener for cluster state publishing
-		hazelcast.getCluster().addMembershipListener(new MembershipListener() {
-			@Override
-			public void memberAdded(MembershipEvent e) {
-				int totalSize = hazelcast.getCluster().getMembers().size();
-				logger.info(
-						"[node:{}] Member joined: {} — cluster size={}",
-						grpcPort,
-						e.getMember().getAddress(),
-						totalSize);
-				// Re-publish this node's signing keys into the now-merged IMap so
-				// all nodes in the cluster can validate tokens this node issues.
-				if (keyRotator != null) {
-					keyRotator.republishCurrentKeys();
-				}
-				clusterPublisher.onMembershipChange();
-			}
-
-			@Override
-			public void memberRemoved(MembershipEvent e) {
-				int totalSize = hazelcast.getCluster().getMembers().size();
-				logger.warn(
-						"[node:{}] Member left: {} — cluster size={}",
-						grpcPort,
-						e.getMember().getAddress(),
-						totalSize);
-				clusterPublisher.onMembershipChange();
-			}
-		});
-
 		// Cluster is always SERVING once construction completes.
 		healthManager.setStatus("", ServingStatus.SERVING);
 
-		// 6. Build gRPC server
+		// 5. Build gRPC server
 		StateServer backendServer = new StateServer();
 
 		Hazelcast.RateLimitConfig rateLimit = cfg.getRateLimit();
@@ -576,6 +551,41 @@ public class ClusterServer {
 						.build(),
 				registryReader);
 
+		// 6. Membership listener for cluster state publishing. Registered only
+		// once clusterPublisher above is assigned: a join or leave landing before
+		// that runs on a Hazelcast event thread, so the NPE it used to throw never
+		// reached the constructor and the node came up looking healthy with the
+		// publisher never told about the event. Startup is exactly when membership
+		// events are most likely — this node is joining.
+		hazelcast.getCluster().addMembershipListener(new MembershipListener() {
+			@Override
+			public void memberAdded(MembershipEvent e) {
+				int totalSize = hazelcast.getCluster().getMembers().size();
+				logger.info(
+						"[node:{}] Member joined: {} — cluster size={}",
+						grpcPort,
+						e.getMember().getAddress(),
+						totalSize);
+				// Re-publish this node's signing keys into the now-merged IMap so
+				// all nodes in the cluster can validate tokens this node issues.
+				if (keyRotator != null) {
+					keyRotator.republishCurrentKeys();
+				}
+				clusterPublisher.onMembershipChange();
+			}
+
+			@Override
+			public void memberRemoved(MembershipEvent e) {
+				int totalSize = hazelcast.getCluster().getMembers().size();
+				logger.warn(
+						"[node:{}] Member left: {} — cluster size={}",
+						grpcPort,
+						e.getMember().getAddress(),
+						totalSize);
+				clusterPublisher.onMembershipChange();
+			}
+		});
+
 		// Register all gRPC services
 		String clusterStateSvcName = "kernel.ClusterStateService";
 		for (ServerServiceDefinition svc : backendServers.services().getGrpcServices()) {
@@ -627,8 +637,9 @@ public class ClusterServer {
 			// RemoteJwkSource consumers use. SPIFFE IDs are self-describing, so the
 			// Authorizer derives caller scope from token subjects instead of a
 			// configured prefix.
+			this.kernelJwkSource = new LocalJwkSource(allKeysSupplier);
 			var kernelAuthorizer = new com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer(
-					new LocalJwkSource(allKeysSupplier));
+					this.kernelJwkSource);
 			Mint.registerMethodAuth(kernelAuthorizer);
 			com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.CliTokenBroker.registerMethodAuth(kernelAuthorizer);
 			TenantAdmin.registerMethodAuth(kernelAuthorizer);
@@ -1049,6 +1060,28 @@ public class ClusterServer {
 				+ "(create-only; populated roots left unchanged)", installed);
 	}
 
+	/**
+	 * The KeyRotator's key-change hook: persists a fresh disk snapshot and pushes
+	 * the new key set to the kernel's own Authorizer at once.
+	 *
+	 * <p>Without the second half the Authorizer stayed up to LocalJwkSource's
+	 * refresh interval behind a rotation and rejected tokens signed with the key
+	 * this node had just published as "unknown signing key", so an RPC to
+	 * TenantAdmin or FencedLock right after a rotation failed UNAUTHENTICATED —
+	 * a status the caller cannot usefully retry.
+	 *
+	 * <p>Safe to call from any thread. The rotator only invokes it from
+	 * {@code start()} onward, which is {@link #start()}, i.e. after construction;
+	 * the guard mirrors {@link #persistKernelState}'s.
+	 */
+	private void onSigningKeysChanged() {
+		persistKernelState();
+		LocalJwkSource source = kernelJwkSource;
+		if (source != null) {
+			source.refreshNow();
+		}
+	}
+
 	/** Persists the kernel disk snapshot; safe to call from any thread. */
 	private void persistKernelState() {
 		if (kernelPersistence != null) {
@@ -1113,6 +1146,11 @@ public class ClusterServer {
 	 * <p>Package-private and static so the restart half of the durability proof can
 	 * exercise the real boot path rather than a copy of it (same reason as
 	 * {@link #restoreGrantRevocations}).
+	 *
+	 * <p>Fails closed, like {@link KernelPersistence#load()}: a row that cannot be
+	 * applied aborts the restore and the node refuses to boot. Continuing would
+	 * bring the kernel up with an arbitrary prefix of the registered people —
+	 * someone who registered is simply gone, and silently.
 	 */
 	static void restorePersonalPrincipals(
 			Kernel.KernelDiskState snapshot,
@@ -1128,12 +1166,69 @@ public class ClusterServer {
 			logger.info("Restored {} personal principal(s) from the disk snapshot",
 					snapshot.getPersonalPrincipalsCount());
 		} catch (Exception e) {
-			logger.warn("Failed to restore personal principals from the disk snapshot (continuing): {}",
-					e.getMessage(), e);
+			logger.error("Failed to restore personal principals from the disk snapshot — refusing "
+					+ "to start with a partial restore: {}", e.getMessage(), e);
+			throw new IllegalStateException(
+					"kernel refuses to start: personal principals could not be restored from the "
+							+ "disk snapshot", e);
 		}
 	}
 
-	private void rehydrateFromSnapshot(
+	/**
+	 * Collects every full tenant namespace a {@code ConfigState} implies.
+	 *
+	 * <p>{@code tenant_configs} is keyed by the full tenant path and kept in
+	 * lockstep with {@code tenants}; each {@code project_configs} key is
+	 * "/tenant/project", so its parent is a tenant path too. This is the only
+	 * place the full paths survive: {@code ConfigMap.proto()} projects each
+	 * boundary to its values and drops the map keys.
+	 */
+	static java.util.Set<String> tenantNamespaces(
+			List<Kernel.TenantConfigEntry> tenantConfigs, List<Kernel.ProjectConfigEntry> projectConfigs) {
+		java.util.Set<String> keys = new java.util.LinkedHashSet<>();
+		for (Kernel.TenantConfigEntry e : tenantConfigs) {
+			keys.add(e.getTenantName());
+		}
+		for (Kernel.ProjectConfigEntry e : projectConfigs) {
+			String pk = e.getProjectNamespace();
+			int slash = pk.lastIndexOf('/');
+			if (slash > 0) {
+				keys.add(pk.substring(0, slash));
+			}
+		}
+		return keys;
+	}
+
+	/**
+	 * Builds the {@code ConfigState} written to the disk snapshot, stamping each
+	 * tenant record with its FULL namespace in {@code Tenant.name}.
+	 *
+	 * <p>The live boundary stores a tenant under its full path but with only the
+	 * leaf in {@code Tenant.name} (see {@code TenantAdminServiceImpl}), and
+	 * {@code ConfigMap.proto()} keeps the values and throws the keys away — so a
+	 * plain {@code proto()} snapshot cannot tell {@code /tenants/acme/prod} from
+	 * {@code /tenants/beta/prod}. Restoring one then handed both namespaces
+	 * whichever record happened to win, so after a restart a tenant could carry
+	 * another tenant's status and entitlements ceiling. Each record is looked up
+	 * by its own key here, so the snapshot is unambiguous;
+	 * {@link #rehydrateFromSnapshot} puts the leaf back when it restores.
+	 */
+	static Kernel.ConfigState snapshotConfigState(
+			com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.ConfigMap configMap)
+			throws Exception {
+		Kernel.ConfigState live = configMap.proto();
+		Kernel.ConfigState.Builder b = live.toBuilder().clearTenants();
+		for (String namespace : tenantNamespaces(live.getTenantConfigsList(), live.getProjectConfigsList())) {
+			Kernel.Tenant t = configMap.getTenants(namespace);
+			if (t.getName().isEmpty()) {
+				continue;
+			}
+			b.addTenants(t.toBuilder().setName(namespace).build());
+		}
+		return b.build();
+	}
+
+	static void rehydrateFromSnapshot(
 			Kernel.KernelDiskState snapshot,
 			com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.IdentityMap identityState,
 			com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.CaMap caState,
@@ -1168,40 +1263,44 @@ public class ClusterServer {
 						snapshot.getServiceCasCount());
 			}
 			// tenants/tenant_configs/project_configs are keyed by full namespace.
-			// Tenant.name is the leaf only; the snapshot mirrors ConfigState where
-			// the map key is the full path, so the full path is recovered below
-			// from the parallel tenant_configs (kept in lockstep) and project keys.
 			for (Kernel.TenantConfigEntry e : snapshot.getTenantConfigsList()) {
 				configMap.putTenantConfigs(e.getTenantName(), e);
 			}
 			for (Kernel.ProjectConfigEntry e : snapshot.getProjectConfigsList()) {
 				configMap.putProjectConfigs(e.getProjectNamespace(), e);
 			}
-			// Restore tenant records keyed by full namespace. The full path is the
-			// project's parent for each "/tenant/project" project key, or the
-			// tenant_config key (both keyed by full path).
-			java.util.Set<String> tenantKeys = new java.util.LinkedHashSet<>();
-			for (Kernel.TenantConfigEntry e : snapshot.getTenantConfigsList()) {
-				tenantKeys.add(e.getTenantName());
-			}
-			for (Kernel.ProjectConfigEntry e : snapshot.getProjectConfigsList()) {
-				String pk = e.getProjectNamespace();
-				int slash = pk.lastIndexOf('/');
-				if (slash > 0) {
-					tenantKeys.add(pk.substring(0, slash));
-				}
-			}
-			// Map full-path keys to the matching Tenant record by leaf name.
+			// snapshotConfigState stamps Tenant.name with the full namespace, so
+			// each record maps to exactly one key. The live boundary holds the
+			// leaf in Tenant.name, so the leaf goes back on the way in — the
+			// restored row is field-identical to what TenantAdmin wrote.
+			java.util.Map<String, Kernel.Tenant> byNamespace = new java.util.HashMap<>();
 			java.util.Map<String, Kernel.Tenant> byLeaf = new java.util.HashMap<>();
 			for (Kernel.Tenant t : snapshot.getTenantsList()) {
-				byLeaf.put(t.getName(), t);
+				if (t.getName().indexOf('/') >= 0) {
+					byNamespace.put(t.getName(), t);
+				} else {
+					byLeaf.put(t.getName(), t);
+				}
 			}
-			for (String key : tenantKeys) {
-				int slash = key.lastIndexOf('/');
-				String leaf = slash < 0 ? key : key.substring(slash + 1);
-				Kernel.Tenant t = byLeaf.get(leaf);
+			if (!byLeaf.isEmpty()) {
+				// Snapshot written before Tenant.name carried the full namespace.
+				// Leaf matching is ambiguous across same-named tenants under
+				// different parents, which is the bug this format replaced.
+				logger.warn("Snapshot carries {} tenant record(s) keyed by leaf name only "
+						+ "(pre-namespace snapshot) — falling back to leaf matching, which cannot "
+						+ "distinguish same-named tenants under different parents", byLeaf.size());
+			}
+			for (String key : tenantNamespaces(
+					snapshot.getTenantConfigsList(), snapshot.getProjectConfigsList())) {
+				Kernel.Tenant t = byNamespace.get(key);
+				if (t == null) {
+					int slash = key.lastIndexOf('/');
+					t = byLeaf.get(slash < 0 ? key : key.substring(slash + 1));
+				}
 				if (t != null) {
-					configMap.putTenants(key, t);
+					int slash = key.lastIndexOf('/');
+					String leaf = slash < 0 ? key : key.substring(slash + 1);
+					configMap.putTenants(key, t.toBuilder().setName(leaf).build());
 				}
 			}
 			for (Kernel.WorkloadRevocation rev : snapshot.getWorkloadRevocationsList()) {
@@ -1209,7 +1308,16 @@ public class ClusterServer {
 			}
 			logger.info("Rehydrated kernel state from disk snapshot");
 		} catch (Exception e) {
-			logger.warn("Failed to fully rehydrate kernel snapshot (continuing): {}", e.getMessage(), e);
+			// Fail closed, at the severity KernelPersistence.load() already uses
+			// for an unreadable snapshot. One bad tenant, CA or revocation row
+			// used to abort the rest of the loop and let the node come up with an
+			// arbitrary prefix of the snapshot applied — revocations restored but
+			// tenants not, or the reverse — which is exactly the silent-partial-
+			// state the load hardening closed, one layer up.
+			logger.error("Failed to rehydrate kernel snapshot — refusing to start with a partial "
+					+ "restore: {}", e.getMessage(), e);
+			throw new IllegalStateException(
+					"kernel refuses to start: disk snapshot could not be fully rehydrated", e);
 		}
 	}
 

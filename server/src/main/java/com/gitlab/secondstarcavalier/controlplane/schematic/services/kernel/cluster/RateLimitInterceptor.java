@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
@@ -219,7 +220,14 @@ public class RateLimitInterceptor implements ServerInterceptor {
 
 	/**
 	 * Wraps the call with active RPC/stream tracking.
-	 * Increments counters on call start, decrements on close.
+	 * Increments counters on call start, decrements once the call ends.
+	 *
+	 * <p>gRPC does not guarantee {@code close()} runs: a client cancellation or a
+	 * transport drop ends the call through the listener's {@code onCancel()}
+	 * instead. Both endings share one {@code ended} flag so the counters are
+	 * decremented exactly once whichever one fires — otherwise every cancelled
+	 * call leaked a count and {@link #getActiveRpcs()} / {@link #getActiveStreams()},
+	 * which feed health and metrics, drifted upward forever.
 	 */
 	private <ReqT, RespT> ServerCall.Listener<ReqT> trackActiveCall(
 			ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next, boolean isStreaming) {
@@ -229,19 +237,21 @@ public class RateLimitInterceptor implements ServerInterceptor {
 			activeStreams.incrementAndGet();
 		}
 
+		AtomicBoolean ended = new AtomicBoolean();
+		Runnable endOnce = () -> {
+			if (ended.compareAndSet(false, true)) {
+				activeRpcs.decrementAndGet();
+				if (isStreaming) {
+					activeStreams.decrementAndGet();
+				}
+			}
+		};
+
 		// Wrap the call to detect when it closes
 		ServerCall<ReqT, RespT> wrappedCall = new ForwardingServerCall.SimpleForwardingServerCall<>(call) {
-			private volatile boolean closed;
-
 			@Override
 			public void close(Status status, Metadata trailers) {
-				if (!closed) {
-					closed = true;
-					activeRpcs.decrementAndGet();
-					if (isStreaming) {
-						activeStreams.decrementAndGet();
-					}
-				}
+				endOnce.run();
 				super.close(status, trailers);
 			}
 		};
@@ -252,6 +262,7 @@ public class RateLimitInterceptor implements ServerInterceptor {
 		return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(listener) {
 			@Override
 			public void onCancel() {
+				endOnce.run();
 				super.onCancel();
 			}
 		};

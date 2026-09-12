@@ -86,13 +86,14 @@ public class BackendServiceImpl extends ClusterServiceGrpc.ClusterServiceImplBas
             peer = "unknown";
         }
 
-        stateServer.addLogObserver(peer, responseObserver);
+        // The token identifies THIS stream; unregistering by peer address would
+        // let a late cancel drop a newer stream from the same pod.
+        final String token = stateServer.addLogObserver(peer, responseObserver);
 
         // Register cancellation handler to clean up when client disconnects
-        final String peerKey = peer;
         if (responseObserver instanceof ServerCallStreamObserver) {
             ((ServerCallStreamObserver<LogMessage>) responseObserver).setOnCancelHandler(() -> {
-                stateServer.removeLogObserver(peerKey);
+                stateServer.removeLogObserver(token);
             });
         }
     }

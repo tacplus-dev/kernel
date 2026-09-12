@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.Serializable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
@@ -26,6 +27,7 @@ public class CliTokenBrokerServiceImpl implements
 
 	private static final Logger logger = LoggerFactory.getLogger(CliTokenBrokerServiceImpl.class);
 	private static final long NONCE_TTL_SECONDS = 300;
+	private static final long NONCE_REGISTRATION_WAIT_MILLIS = 5000;
 	private static final int MAX_BUFFERED_DELIVERIES = 1024;
 	private static final String DELIVERY_PREFIX = "delivery:";
 	private static final String CONSUMED_PREFIX = "consumed:";
@@ -37,6 +39,10 @@ public class CliTokenBrokerServiceImpl implements
 
 	// Local: nonce → instance_id (so we know which local stream to deliver to)
 	private final ConcurrentHashMap<String, String> localNonceOwners = new ConcurrentHashMap<>();
+
+	// Local: nonce → CompleteNonce parked until its registration replicates here
+	private final ConcurrentHashMap<String, CompletableFuture<NonceEntry>> pendingCompletions =
+			new ConcurrentHashMap<>();
 
 	// Distributed: nonce → NonceEntry (instance_id + timestamp)
 	private final IMap<String, NonceEntry> nonceMap;
@@ -114,7 +120,12 @@ public class CliTokenBrokerServiceImpl implements
 		nonceMap.addEntryListener(
 				(com.hazelcast.map.listener.EntryAddedListener<String, NonceEntry>) event -> {
 					String key = event.getKey();
-					if (!key.startsWith(DELIVERY_PREFIX)) return;
+					if (!key.startsWith(DELIVERY_PREFIX)) {
+						// A nonce registration landing here may be what a parked
+						// CompleteNonce is waiting for.
+						if (!key.startsWith(CONSUMED_PREFIX)) resumePendingCompletion(key);
+						return;
+					}
 					String nonce = key.substring(DELIVERY_PREFIX.length());
 
 					// Is the stream for this nonce on this node?
@@ -137,6 +148,16 @@ public class CliTokenBrokerServiceImpl implements
 								nonce.substring(0, 8), localInstanceId);
 					}
 				}, true);
+	}
+
+	// Hands a nonce's registration to the CompleteNonce parked on it, if any.
+	// Claiming the entry with remove() keeps the "first completer wins" semantics
+	// the synchronous path has.
+	private void resumePendingCompletion(String nonce) {
+		CompletableFuture<NonceEntry> pending = pendingCompletions.get(nonce);
+		if (pending == null) return;
+		NonceEntry registered = nonceMap.remove(nonce);
+		if (registered != null) pending.complete(registered);
 	}
 
 	@Override
@@ -206,16 +227,32 @@ public class CliTokenBrokerServiceImpl implements
 					return;
 				}
 
-				// Retry — IMap replication may lag slightly across nodes
-				NonceEntry entry = null;
-				for (int attempt = 0; attempt < 10; attempt++) {
-					entry = nonceMap.remove(nonce);
-					if (entry != null) break;
-					try { Thread.sleep(500); } catch (InterruptedException e) {
-						Thread.currentThread().interrupt(); return;
-					}
+				NonceEntry entry = nonceMap.remove(nonce);
+				if (entry != null) {
+					completeWithRegistration(complete, nonce, entry);
+					return;
 				}
 
+				// IMap replication may lag across nodes, so this nonce's registration
+				// may not be visible here yet. Park the completion and let the entry
+				// listener resume it the moment the registration lands; if it never
+				// does, orTimeout resumes it with no registration (the buffering path).
+				// Either way the gRPC handling thread is released immediately.
+				CompletableFuture<NonceEntry> registration = new CompletableFuture<>();
+				pendingCompletions.put(nonce, registration);
+				registration
+						.orTimeout(NONCE_REGISTRATION_WAIT_MILLIS, TimeUnit.MILLISECONDS)
+						.whenComplete((registered, failure) -> {
+							pendingCompletions.remove(nonce, registration);
+							completeWithRegistration(complete, nonce, registered);
+						});
+				// The registration may have landed between the remove() above and the
+				// park, in which case the listener already missed it.
+				resumePendingCompletion(nonce);
+			}
+
+			private void completeWithRegistration(
+					Kernel.CliTokenBrokerCompleteNonce complete, String nonce, NonceEntry entry) {
 				if (entry == null) {
 					if (nonceMap.containsKey(DELIVERY_PREFIX + nonce)) {
 						logger.warn("CliTokenBroker: CompleteNonce ignored for already-buffered nonce {}",

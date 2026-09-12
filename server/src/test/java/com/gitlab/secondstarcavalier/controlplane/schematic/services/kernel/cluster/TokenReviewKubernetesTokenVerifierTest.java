@@ -2,6 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -14,6 +15,8 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -21,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class TokenReviewKubernetesTokenVerifierTest {
 
@@ -182,6 +186,31 @@ class TokenReviewKubernetesTokenVerifierTest {
                 assertTrue(ex.getMessage().contains("token file vanished"));
             }
         }
+    }
+
+    @Test
+    void inClusterHttpClientFailsClosedWhenCaFileMissing(@TempDir Path dir) {
+        // Without the in-cluster CA the client must not silently fall back to the JVM default
+        // trust store: that would let any publicly-trusted cert impersonate the API server.
+        Path missing = dir.resolve("ca.crt");
+
+        IOException ex = assertThrows(
+                IOException.class,
+                () -> TokenReviewKubernetesTokenVerifier.inClusterHttpClient(missing));
+
+        assertTrue(ex.getMessage().contains("Kubernetes in-cluster CA file"), ex.getMessage());
+        assertTrue(ex.getMessage().contains(missing.toString()), ex.getMessage());
+    }
+
+    @Test
+    void inClusterHttpClientFailsClosedWhenCaFileEmpty(@TempDir Path dir) throws Exception {
+        Path empty = Files.createFile(dir.resolve("ca.crt"));
+
+        IOException ex = assertThrows(
+                IOException.class,
+                () -> TokenReviewKubernetesTokenVerifier.inClusterHttpClient(empty));
+
+        assertTrue(ex.getMessage().contains("Kubernetes in-cluster CA file"), ex.getMessage());
     }
 
     private static TokenReviewKubernetesTokenVerifier newVerifier(URI uri) {

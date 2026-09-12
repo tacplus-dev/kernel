@@ -104,7 +104,8 @@ public final class TokenReviewKubernetesTokenVerifier implements KubernetesToken
         // Read once at startup to fail-fast on misconfiguration (missing/empty token file),
         // but do not cache the value: verify() re-reads the file per call to follow rotation.
         Files.readString(tokenPath, StandardCharsets.UTF_8);
-        HttpClient client = inClusterHttpClient();
+        HttpClient client = inClusterHttpClient(
+                Path.of(getenvDefault("KERNEL_KUBE_CA_FILE", DEFAULT_CA_FILE)));
         return new TokenReviewKubernetesTokenVerifier(
                 apiServerUri, () -> readReviewerToken(tokenPath), client, DEFAULT_TIMEOUT);
     }
@@ -254,14 +255,22 @@ public final class TokenReviewKubernetesTokenVerifier implements KubernetesToken
         return URI.create("https://" + host + ":" + port);
     }
 
-    private static HttpClient inClusterHttpClient() throws IOException, GeneralSecurityException {
-        HttpClient.Builder builder = HttpClient.newBuilder().connectTimeout(DEFAULT_TIMEOUT);
-        String caFile = getenvDefault("KERNEL_KUBE_CA_FILE", DEFAULT_CA_FILE);
-        Path caPath = Path.of(caFile);
-        if (Files.exists(caPath) && Files.size(caPath) > 0) {
-            builder.sslContext(sslContextForCA(caPath));
+    /**
+     * Builds the TokenReview HTTP client pinned to the in-cluster Kubernetes CA.
+     *
+     * <p>Fails closed when the CA file is missing, unreadable or empty: falling back to the JVM
+     * default trust store would let any certificate chaining to a public CA impersonate the API
+     * server and forge TokenReview responses.
+     */
+    static HttpClient inClusterHttpClient(Path caPath) throws IOException, GeneralSecurityException {
+        if (!Files.isReadable(caPath) || Files.size(caPath) == 0) {
+            throw new IOException(
+                    "Kubernetes in-cluster CA file is missing, unreadable or empty: " + caPath);
         }
-        return builder.build();
+        return HttpClient.newBuilder()
+                .connectTimeout(DEFAULT_TIMEOUT)
+                .sslContext(sslContextForCA(caPath))
+                .build();
     }
 
     private static SSLContext sslContextForCA(Path caPath)

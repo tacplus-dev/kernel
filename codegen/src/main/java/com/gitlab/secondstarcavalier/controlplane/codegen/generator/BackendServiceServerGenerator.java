@@ -520,9 +520,16 @@ public class BackendServiceServerGenerator {
 	/**
 	 * The security-policy key for a state root: "&lt;proto package&gt;.&lt;state
 	 * root&gt;", matching the (package, name) pair tacplus writes into
-	 * codegen-config.json. A root with no computed policy (ComputeSecurityPolicies
-	 * skips state roots declared in infra protos) gets the explicit no-policy
-	 * marker rather than a key that would deny every caller at run time.
+	 * codegen-config.json. Like a store, a state root with no policy is a hard
+	 * error: falling back to {@code SecurityAuthenticator.NO_POLICY_GRAPH} makes
+	 * checkAccess return on its no-policy short circuit, so every state RPC on
+	 * that root authorizes nothing. That marker is for generated read-only View
+	 * servers, which pass it deliberately — never for a write-capable state
+	 * service that merely failed a policy lookup.
+	 *
+	 * <p>ComputeSecurityPolicies skips state roots declared in infra protos, so
+	 * those policies are supplied by {@code InfraStatePolicies} rather than by
+	 * codegen-config.json.
 	 */
 	private static String graphKey(BackendServiceInfo svc, GeneratorContext ctx) {
 		String key = svc.getPackageName() + "." + svc.getStateName();
@@ -531,9 +538,10 @@ public class BackendServiceServerGenerator {
 				return key;
 			}
 		}
-		System.out.println("[tacplus-backend] WARNING: no security policy for state root \"" + key
-				+ "\" — its state RPCs are generated unauthorized");
-		return "*";
+		throw new IllegalStateException("[tacplus-backend] no security policy for state root \"" + key
+				+ "\" — refusing to generate an unauthorized state service server."
+				+ " Expected a securityPolicies entry in codegen-config.json"
+				+ " (or an InfraStatePolicies entry, for a state root in an infra proto).");
 	}
 
 	private static Map<String, String> boundaryVars(SharedBoundary b, String outerClassName,

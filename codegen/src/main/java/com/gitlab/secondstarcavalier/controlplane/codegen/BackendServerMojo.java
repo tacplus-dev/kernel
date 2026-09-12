@@ -142,6 +142,11 @@ public class BackendServerMojo extends AbstractMojo {
 			}
 		}
 
+		// State roots declared in tacplus's own infra protos never get a computed
+		// policy (ComputeSecurityPolicies skips infra protos), so supply theirs
+		// here rather than generating a server that authorizes nothing.
+		securityPolicies = InfraStatePolicies.merge(securityPolicies);
+
 		if (javaPackageBase == null || typesPackageBase == null || interfacesPackage == null) {
 			throw new MojoExecutionException(
 					"Missing required configuration: javaPackageBase, typesPackageBase, and interfacesPackage "

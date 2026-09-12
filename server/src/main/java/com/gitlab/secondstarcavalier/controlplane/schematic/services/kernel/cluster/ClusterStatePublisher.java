@@ -169,12 +169,17 @@ public class ClusterStatePublisher {
 
 	// ---- Cluster Health (singleton) ----
 
-	private void publishClusterHealth() {
+	void publishClusterHealth() {
 		var cluster = hazelcast.getCluster();
 		var partitionService = hazelcast.getPartitionService();
 		int totalSize = cluster.getMembers().size();
 		// Core count tracks non-lite members for health reporting.
 		long coreCount = cluster.getMembers().stream().filter(m -> !m.isLiteMember()).count();
+		// Quorum needs a majority of the cluster's configured member count, not of the
+		// members this node can currently reach. With no configured members the node is
+		// a standalone deployment and is its own majority.
+		int configuredMembers = config.getMembersCount();
+		long required = configuredMembers > 0 ? configuredMembers / 2 + 1 : 1;
 
 		clusterStateMap.putClusterHealth(Hazelcast.AdminClusterHealth.newBuilder()
 				.setClusterSafe(partitionService.isClusterSafe())
@@ -182,7 +187,7 @@ public class ClusterStatePublisher {
 				.setClusterState(cluster.getClusterState().name())
 				.setRunning(hazelcast.getLifecycleService().isRunning())
 				.setClusterSize(totalSize)
-				.setHasQuorum(coreCount >= coreCount / 2 + 1)
+				.setHasQuorum(coreCount >= required)
 				.build());
 	}
 

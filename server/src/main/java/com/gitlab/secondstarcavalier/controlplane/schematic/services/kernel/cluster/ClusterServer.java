@@ -1109,7 +1109,18 @@ public class ClusterServer {
 			return;
 		}
 		try {
+			long nowEpoch = java.time.Instant.now().getEpochSecond();
 			for (JwkOuterClass.Jwk jwk : snapshot.getVerifyingKeysList()) {
+				// A key whose exp has already passed is dropped rather than
+				// republished. putVerifyingKeys turns exp into a TTL of
+				// exp - now, and a TTL of zero or less means "never expire" to
+				// the state store — so restoring a stale snapshot would turn
+				// exactly the keys that should be gone into permanent ones.
+				if (jwk.getExp() > 0 && jwk.getExp() <= nowEpoch) {
+					logger.info("Dropping expired verifying key from snapshot: kid={}, exp={}",
+							jwk.getKid(), jwk.getExp());
+					continue;
+				}
 				identityState.putVerifyingKeys(Objects.requireNonNull(jwk.getKid(), "jwk.kid"), jwk);
 			}
 			for (X509.X509Cert cert : snapshot.getCaCertsList()) {

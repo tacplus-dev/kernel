@@ -48,10 +48,52 @@ import org.slf4j.LoggerFactory;
  * signed by a rotated key stay verifiable until they expire. After any key
  * change the rotator invokes {@code onKeysChanged} so the kernel writes a fresh
  * disk snapshot — persistence is the snapshot, NOT a per-key file.
+ *
+ * <p><b>Every published JWK carries an {@code exp}.</b> {@code verifying_keys}
+ * is an {@code epoch_expiration} boundary: the generated state map turns a
+ * non-zero {@code Jwk.exp} into a TTL and evicts the entry itself. A key
+ * published without one is immortal, and the set is shared by the whole
+ * cluster — so a key abandoned by a node that restarted (a cold start mints a
+ * fresh pair and never looks at the old one again) would otherwise stay in the
+ * set forever, with only the retention sweep inside {@link #rotate} to remove
+ * it and only after a full rotation interval has elapsed. Setting {@code exp}
+ * makes expiry the state store's job and independent of this node's schedule.
+ *
+ * <p>{@link #sweepVerifyingKeys} is the backstop for the two cases the TTL
+ * cannot cover: keys persisted before {@code exp} was set (no TTL at all), and
+ * a set that has outgrown what kernel can persist or publish. It runs on start
+ * as well as on rotation.
  */
 public class KeyRotator {
 
     private static final Logger logger = LoggerFactory.getLogger(KeyRotator.class);
+
+    /**
+     * Hard bound on the shared {@code verifying_keys} set.
+     *
+     * <p>The design worst case is larger than this: kernel keeps ONE active
+     * signing key per algorithm PER REPLICA (the private keys live in each
+     * node's own disk snapshot and are never shared), and a rotated public key
+     * is retained for {@code keyRetentionSeconds} so tokens it signed stay
+     * verifiable. With the shipped defaults that is
+     *
+     *   replicas(3) × algorithms(2) × (retention 2592000s / rotation 86400s + 1)
+     *     = 3 × 2 × 31 = 186 keys
+     *
+     * but the set is published as a {@code jwk.Jwks}, whose {@code keys} field
+     * is capped at 128 by {@code sys/jwk.proto} — a shared, do-not-modify
+     * proto. 128 is therefore the ceiling kernel actually has, and the two
+     * kernel-owned caps ({@code Identity.verifying_keys} and
+     * {@code KernelDiskState.verifying_keys}) are set to match it.
+     *
+     * <p>Because 186 > 128 the count bound can bind before the TTL does. When
+     * it does the OLDEST keys go first: they are the ones whose tokens are
+     * closest to expiry. Bringing the two apart is a config change, not a code
+     * one — shorten {@code max_token_lifetime_seconds} or lengthen
+     * {@code key_rotation_interval_seconds} until
+     * replicas × 2 × (retention/rotation + 1) ≤ 128.
+     */
+    static final int MAX_VERIFYING_KEYS = 128;
 
     /** Signing algorithms kernel maintains. */
     public enum SigAlg {
@@ -155,6 +197,12 @@ public class KeyRotator {
                 }
             }
             ensureJwksPublished();
+            // Sweep on start, not only on rotation: rotation is a day away by
+            // default, and a node that just cold-started has abandoned its
+            // previous keys into the shared set. Keys published before exp was
+            // set carry no TTL and would otherwise sit there until a rotation
+            // happened to run.
+            sweepVerifyingKeys();
             if (changed) {
                 onKeysChanged.run();
             }
@@ -270,24 +318,72 @@ public class KeyRotator {
             generateKey(a);
         }
 
-        // Remove keys older than the retention period (≥ max token lifetime).
-        // Tokens signed with a rotated key must remain verifiable until they expire.
-        long cutoff = Instant.now().getEpochSecond() - keyRetentionSeconds;
-        for (JwkOuterClass.Jwk jwk : keyReader.get()) {
-            boolean isActive = false;
-            for (SigAlg a : SigAlg.values()) {
-                if (jwk.getKid().equals(active.get(a).kid)) {
-                    isActive = true;
-                    break;
-                }
-            }
-            if (!isActive && jwk.getCreated() > 0 && jwk.getCreated() < cutoff) {
-                logger.info("Removing expired signing key: kid={}, created={}", jwk.getKid(), jwk.getCreated());
-                keyRemover.accept(jwk.getKid());
-            }
-        }
+        sweepVerifyingKeys();
 
         onKeysChanged.run();
+    }
+
+    /**
+     * Evicts keys the cluster no longer needs from the shared verifying set.
+     *
+     * <p>Two rules, in order. First by AGE: a key past
+     * {@code keyRetentionSeconds} since creation can no longer be carrying a
+     * live token, because retention is ≥ the maximum token lifetime kernel will
+     * mint. Then by COUNT: if the set is still over {@link #MAX_VERIFYING_KEYS}
+     * — more than kernel can persist or publish — the oldest survivors go until
+     * it fits, since those are the keys whose tokens expire soonest.
+     *
+     * <p>This node's own active keys are never evicted, by either rule: it is
+     * still signing with them. Another node's active key is not distinguishable
+     * from here, but cannot be reached by the age rule either — that node
+     * rotates it long before retention elapses.
+     */
+    private void sweepVerifyingKeys() {
+        long cutoff = Instant.now().getEpochSecond() - keyRetentionSeconds;
+
+        // Candidates for eviction, newest last. This node's own active keys are
+        // excluded outright and are not candidates under either rule.
+        List<JwkOuterClass.Jwk> candidates = new ArrayList<>();
+        int live = 0;
+        for (JwkOuterClass.Jwk jwk : keyReader.get()) {
+            if (isLocallyActive(jwk.getKid())) {
+                live++;
+                continue;
+            }
+            if (jwk.getCreated() > 0 && jwk.getCreated() < cutoff) {
+                logger.info("Removing expired signing key: kid={}, created={}", jwk.getKid(), jwk.getCreated());
+                keyRemover.accept(jwk.getKid());
+                continue;
+            }
+            candidates.add(jwk);
+            live++;
+        }
+
+        int excess = Math.min(live - MAX_VERIFYING_KEYS, candidates.size());
+        if (excess <= 0) {
+            return;
+        }
+        // Oldest first; a key with no created stamp sorts oldest of all.
+        candidates.sort(java.util.Comparator.comparingLong(
+                jwk -> jwk.getCreated() > 0 ? jwk.getCreated() : Long.MIN_VALUE));
+        logger.warn("verifying_keys holds {} keys, over the bound of {}; evicting the {} oldest "
+                        + "un-expired keys. Tokens signed by them stop verifying early — see "
+                        + "KeyRotator.MAX_VERIFYING_KEYS for the rotation/retention arithmetic.",
+                live, MAX_VERIFYING_KEYS, excess);
+        for (int i = 0; i < excess; i++) {
+            JwkOuterClass.Jwk jwk = candidates.get(i);
+            logger.warn("Evicting over-bound signing key: kid={}, created={}", jwk.getKid(), jwk.getCreated());
+            keyRemover.accept(jwk.getKid());
+        }
+    }
+
+    private boolean isLocallyActive(String kid) {
+        for (SigAlg a : SigAlg.values()) {
+            if (kid.equals(active.get(a).kid)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Generates a fresh key pair for the given algorithm and publishes its JWK. */
@@ -302,7 +398,14 @@ public class KeyRotator {
                 .setKty(alg.kty)
                 .setCrv(alg.crv)
                 .setUse(JwkOuterClass.JwkUseType.JWK_USE_TYPE_SIG)
-                .setCreated(now);
+                .setCreated(now)
+                // exp is what bounds the shared verifying set. verifying_keys is
+                // an epoch_expiration boundary, so the state store evicts this
+                // entry on its own at exp — no sweep, no schedule, and it still
+                // happens for a key this node abandons by restarting. Same
+                // horizon the age sweep uses: retention is ≥ the longest token
+                // kernel will mint with this key.
+                .setExp(now + keyRetentionSeconds);
 
         if (alg == SigAlg.ED25519) {
             KeyPairGenerator kpg = KeyPairGenerator.getInstance("Ed25519");

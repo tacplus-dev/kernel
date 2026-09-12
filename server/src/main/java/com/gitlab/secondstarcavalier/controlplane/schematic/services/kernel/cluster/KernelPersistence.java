@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Second Star Cavalier, LLC.
 package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster;
 
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.diskstore.DiskStoreException;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.diskstore.Snapshot;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.diskstore.stores.DiskStores;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.jwk.JwkOuterClass;
@@ -29,6 +30,12 @@ import org.slf4j.LoggerFactory;
  * restart — via the {@link KeyRotator} {@code onKeysChanged} hook and after each
  * mutating TenantAdmin write. {@code save()} is {@code synchronized} so the two
  * call sites never corrupt the snapshot by racing.
+ *
+ * <p>Neither method swallows a failure. A write that does not land throws, so
+ * the mutating RPC that triggered it fails instead of acking a revocation or a
+ * registration that only exists in memory; a snapshot that exists but cannot be
+ * read throws, so the kernel refuses to boot instead of coming up as a cold
+ * start with every revocation and grant silently dropped.
  */
 public final class KernelPersistence {
 
@@ -80,46 +87,62 @@ public final class KernelPersistence {
 
     /**
      * Loads the persisted kernel snapshot, or {@code null} if none exists yet
-     * (first boot). Never throws — a load failure is logged and treated as
-     * "no snapshot" so a corrupt/absent file cannot block kernel boot (state
-     * converges from peers / config).
+     * (first boot).
+     *
+     * <p>Only a genuinely absent snapshot is a cold start: {@code
+     * DiskStores.loadKernelDiskState} returns {@code null} when neither the
+     * active file nor its {@code .bak.1} archive exists, and throws for
+     * everything else (unreadable, truncated, unparseable, failing validation).
+     * A present-but-unusable snapshot is an unrecoverable startup condition and
+     * propagates, so the kernel refuses to boot rather than rehydrating nothing
+     * and un-revoking every workload revocation and standing grant it held.
+     *
+     * @throws DiskStoreException if a snapshot exists but cannot be read
      */
     public Kernel.KernelDiskState load() {
+        Kernel.KernelDiskState state;
         try {
-            Kernel.KernelDiskState state = DiskStores.loadKernelDiskState(base, NS);
-            if (state == null) {
-                logger.info("No kernel disk snapshot at {} — cold start", base);
-                return null;
-            }
-            logger.info(
-                    "Loaded kernel disk snapshot from {}: signing_keys={}, verifying_keys={}, "
-                            + "ca_certs={}, service_cas={}, tenants={}, tenant_configs={}, "
-                            + "project_configs={}, revocations={}, grants={}, "
-                            + "personal_principals={}",
-                    base,
-                    state.getSigningKeysCount(),
-                    state.getVerifyingKeysCount(),
-                    state.getCaCertsCount(),
-                    state.getServiceCasCount(),
-                    state.getTenantsCount(),
-                    state.getTenantConfigsCount(),
-                    state.getProjectConfigsCount(),
-                    state.getWorkloadRevocationsCount(),
-                    state.getGrantsCount(),
-                    state.getPersonalPrincipalsCount());
-            return state;
-        } catch (Exception e) {
-            logger.warn("Failed to load kernel disk snapshot from {} (treating as cold start): {}",
-                    base, e.getMessage(), e);
+            state = DiskStores.loadKernelDiskState(base, NS);
+        } catch (RuntimeException e) {
+            logger.error("Kernel disk snapshot at {} exists but could not be read — refusing to "
+                    + "start as a cold start: {}", base, e.getMessage(), e);
+            throw e;
+        }
+        if (state == null) {
+            logger.info("No kernel disk snapshot at {} — cold start", base);
             return null;
         }
+        logger.info(
+                "Loaded kernel disk snapshot from {}: signing_keys={}, verifying_keys={}, "
+                        + "ca_certs={}, service_cas={}, tenants={}, tenant_configs={}, "
+                        + "project_configs={}, revocations={}, grants={}, "
+                        + "personal_principals={}",
+                base,
+                state.getSigningKeysCount(),
+                state.getVerifyingKeysCount(),
+                state.getCaCertsCount(),
+                state.getServiceCasCount(),
+                state.getTenantsCount(),
+                state.getTenantConfigsCount(),
+                state.getProjectConfigsCount(),
+                state.getWorkloadRevocationsCount(),
+                state.getGrantsCount(),
+                state.getPersonalPrincipalsCount());
+        return state;
     }
 
     /**
      * Builds the current {@code KernelDiskState} from live state and writes it
      * atomically. Synchronized so the KeyRotator hook and TenantAdmin writes do
-     * not race. Never throws — persistence failures are logged; the in-memory /
-     * Hazelcast state remains the source of truth until the next successful save.
+     * not race.
+     *
+     * <p>Throws on any failure to build or write the snapshot. Callers invoke
+     * this on the mutating-RPC path (RevokeWorkload, RevokeGrant,
+     * CreatePersonalPrincipal, TenantAdmin writes), where the exception becomes
+     * a non-OK status: a caller must never be told its write is durable when
+     * the snapshot it depends on did not land.
+     *
+     * @throws DiskStoreException if the snapshot could not be built or written
      */
     public synchronized void save() {
         try {
@@ -154,8 +177,9 @@ public final class KernelPersistence {
 
             DiskStores.saveKernelDiskState(base, NS, b.build(), Snapshot.Opts.defaults());
             logger.debug("Persisted kernel disk snapshot to {}", base);
-        } catch (Exception e) {
-            logger.warn("Failed to persist kernel disk snapshot to {}: {}", base, e.getMessage(), e);
+        } catch (RuntimeException e) {
+            logger.error("Failed to persist kernel disk snapshot to {}: {}", base, e.getMessage(), e);
+            throw e;
         }
     }
 }

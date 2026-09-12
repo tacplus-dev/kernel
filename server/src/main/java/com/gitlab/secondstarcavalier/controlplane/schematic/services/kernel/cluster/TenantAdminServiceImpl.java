@@ -14,6 +14,10 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -50,6 +54,24 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     /** Canonical root of the tenant subtree; every tenant namespace lives under it. */
     private static final String TENANTS_ROOT = "/tenants";
     private static final String TENANTS_PREFIX = TENANTS_ROOT + "/";
+
+    /**
+     * Page size applied when the caller asks for none. A caller that omits
+     * {@code page.limit} sends 0, which is the ordinary "just give me the default
+     * page" wiring — it must not read back as "give me nothing, but here is the
+     * real total", which is a page the caller cannot act on and cannot resume
+     * from.
+     *
+     * <p>These two match the generated wrapper's own
+     * {@code CollectionRuntime.effectivePageSize(page_size, 100, 10000)}, which
+     * defaults and clamps every limit that arrives over gRPC. They are the same
+     * rule applied where the paging actually happens, so a handler reached any
+     * other way (in-process, tests) pages the same as one reached over the wire.
+     */
+    private static final int DEFAULT_PAGE_LIMIT = 100;
+
+    /** Ceiling on a page limit; matches the generated wrapper's ceiling. */
+    private static final int MAX_PAGE_LIMIT = 10000;
 
     private final ConfigMap configMap;
     private final Supplier<String> trustDomainReader;
@@ -298,6 +320,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (!request.hasConfig()) {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT, "config is required");
         }
+        requireActiveParentTenant(ns);
         Kernel.ProjectConfigEntry entry = Kernel.ProjectConfigEntry.newBuilder()
                 .setProjectNamespace(ns)
                 .setConfig(request.getConfig())
@@ -386,6 +409,34 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         return parent.getConstraints().getEntitlementsCeiling();
     }
 
+    /**
+     * Requires the tenant that owns {@code projectNs} to exist and be ACTIVE.
+     *
+     * <p>The tenant path got this check at {@code 636378e}; the project path
+     * never did, so a project config row could be written under a namespace with
+     * no tenant record at all. That orphan is returned by ListProjects (which
+     * filters on {@link #isImmediateChild}, not on tenant existence) and survives
+     * DeleteTenant, which refuses on nested tenants but says nothing about
+     * nested projects. A SUSPENDED tenant is refused for the same reason a
+     * missing one is: neither is a tenant new config should be attached to.
+     */
+    private void requireActiveParentTenant(String projectNs) throws ProtoException {
+        int slash = projectNs.lastIndexOf('/');
+        if (slash <= 0) {
+            throw new ProtoException(ProtoException.INVALID_ARGUMENT,
+                    "project_namespace must be a project under a tenant namespace");
+        }
+        String tenantNs = projectNs.substring(0, slash);
+        Kernel.Tenant tenant = configMap.getTenants(tenantNs);
+        if (tenant.getName().isEmpty()) {
+            throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + tenantNs);
+        }
+        if (tenant.getStatus() != Kernel.TenantStatus.TENANT_STATUS_ACTIVE) {
+            throw new ProtoException(ProtoException.NOT_FOUND,
+                    "tenant at " + tenantNs + " is not active");
+        }
+    }
+
     /** Returns true if {@code key} is an immediate child of {@code parentNs}. */
     private static boolean isImmediateChild(String key, String parentNs) {
         String prefix = parentNs.endsWith("/") ? parentNs : parentNs + "/";
@@ -451,10 +502,8 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
             List<T> orderedItems, CollectionRuntime.PageParams page, java.util.function.Function<T, String> keyFn)
             throws ProtoException {
         String after = pageCursorKey(page);
-        long limit = page == null ? 0 : page.limit;
-        if (limit <= 0) {
-            return new CollectionRuntime.Page<>(java.util.Collections.emptyList(), null, orderedItems.size());
-        }
+        long requested = page == null ? 0 : page.limit;
+        long limit = requested <= 0 ? DEFAULT_PAGE_LIMIT : Math.min(requested, MAX_PAGE_LIMIT);
 
         List<T> items = new ArrayList<>();
         CollectionRuntime.Cursor nextAfter = null;
@@ -575,8 +624,11 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
      * {@code cred-pair:<id>} and whose tree position is the {@code namespace}
      * claim; and the SPIFFE-URI form {@code
      * spiffe://<prefix>/<tenant>/users/cred-pair:<id>}, which carries the tree
-     * position in its path. We parse the verified JSON payload for
-     * {@code namespace}/{@code sub}.
+     * position in its path. We read {@code namespace}/{@code sub} off the
+     * verified JSON payload, parsed properly: this guard decides whether a
+     * lockout is refused, so a claim VALUE that itself carries JSON (the shape
+     * {@code buildClaimsStruct} in {@code IdentityServiceImpl} produces) must not
+     * be able to pass itself off as the top-level subject.
      */
     private String callerCredPairId(Caller caller, String tenantNs) {
         if (caller == null) {
@@ -586,13 +638,24 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (payload == null || payload.isEmpty()) {
             return null;
         }
-        String sub = jsonStringField(payload, "sub");
+        JsonObject claims;
+        try {
+            JsonElement parsed = JsonParser.parseString(payload);
+            if (!parsed.isJsonObject()) {
+                return null;
+            }
+            claims = parsed.getAsJsonObject();
+        } catch (JsonParseException e) {
+            logger.warn("SetTenantConfig self-lockout guard: token payload is not parseable JSON");
+            return null;
+        }
+        String sub = stringClaim(claims, "sub");
         if (sub == null) {
             return null;
         }
         String callerNs = sub.startsWith("spiffe://")
                 ? SpiffeIds.namespaceFromSpiffe(sub)
-                : jsonStringField(payload, "namespace");
+                : stringClaim(claims, "namespace");
         if (callerNs == null) {
             return null;
         }
@@ -618,26 +681,13 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         return id.isEmpty() ? null : id;
     }
 
-    /** Minimal extractor for a top-level JSON string field from a token payload. */
-    private static String jsonStringField(String json, String field) {
-        String needle = "\"" + field + "\"";
-        int k = json.indexOf(needle);
-        if (k < 0) {
+    /** Top-level string claim, or null when absent or not a JSON string. */
+    private static String stringClaim(JsonObject claims, String name) {
+        JsonElement value = claims.get(name);
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) {
             return null;
         }
-        int colon = json.indexOf(':', k + needle.length());
-        if (colon < 0) {
-            return null;
-        }
-        int q1 = json.indexOf('"', colon + 1);
-        if (q1 < 0) {
-            return null;
-        }
-        int q2 = json.indexOf('"', q1 + 1);
-        if (q2 < 0) {
-            return null;
-        }
-        return json.substring(q1 + 1, q2);
+        return value.getAsString();
     }
 
     /**

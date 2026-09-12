@@ -248,4 +248,37 @@ class RatisFencedLockTest {
 						+ other.getFencingToken() + ")");
 		assertTrue(afterRestart.getFencingToken() > held.getFencingToken());
 	}
+
+	/**
+	 * A state machine that never snapshots gives Ratis no purge point, so the log
+	 * grows for the life of the cluster and every restart replays it from index 0.
+	 * This asserts the snapshot is really written and really read back: the file
+	 * exists on disk after the peers stop, and the holds it recorded are in force
+	 * again after they start.
+	 */
+	@Test
+	void holdsSurviveARestartThroughTheSnapshotOnDisk() throws Exception {
+		Kernel.FencedLockAcquireResponse held = acquire("workspace/snapshotted", "holder-1");
+		assertTrue(held.getGranted());
+
+		stopPeers();
+
+		List<Path> snapshots = snapshotFiles();
+		assertFalse(snapshots.isEmpty(),
+				"no snapshot was written under " + storageRoot + ": the log has no purge point");
+
+		startPeers();
+
+		assertFalse(acquire("workspace/snapshotted", "holder-2").getGranted(),
+				"a hold recorded in the snapshot must still be in force after the restart");
+		assertTrue(release("workspace/snapshotted", "holder-1", held.getFencingToken()).getOk(),
+				"the snapshot must restore the holder identity and the token it was granted");
+	}
+
+	/** Every Ratis state-machine snapshot file below the test's storage root. */
+	private List<Path> snapshotFiles() throws Exception {
+		try (java.util.stream.Stream<Path> walk = java.nio.file.Files.walk(storageRoot)) {
+			return walk.filter(p -> p.getFileName().toString().startsWith("snapshot.")).toList();
+		}
+	}
 }

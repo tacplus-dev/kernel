@@ -55,6 +55,13 @@ public final class RatisFencedLock implements AutoCloseable {
 	private static final int RETRY_ATTEMPTS = 20;
 	private static final long RETRY_SLEEP_MS = 250;
 
+	/**
+	 * Log entries between automatic snapshots. Low, because the state being
+	 * snapshotted is one small map: the cost of taking one is negligible next to
+	 * replaying every lock operation the cluster has ever performed at startup.
+	 */
+	private static final long SNAPSHOT_TRIGGER_ENTRIES = 1000;
+
 	private final RaftServer server;
 	private final RaftClient client;
 
@@ -86,6 +93,16 @@ public final class RatisFencedLock implements AutoCloseable {
 		RaftConfigKeys.Rpc.setType(properties, SupportedRpcType.GRPC);
 		RaftServerConfigKeys.setStorageDir(properties, List.of(storageDir));
 		GrpcConfigKeys.Server.setPort(properties, NetUtils.createSocketAddr(self.getAddress()).getPort());
+
+		// Snapshot on a schedule and purge the log behind it. Ratis will not purge
+		// a log it has no snapshot for, so leaving these at their defaults means
+		// the segment log grows for the life of the cluster and every restart
+		// replays it from index 0 — startup time rising with total lock traffic on
+		// the service that gates cluster leadership. FencedLockStateMachine
+		// implements the snapshot these keys trigger.
+		RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, true);
+		RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties, SNAPSHOT_TRIGGER_ENTRIES);
+		RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true);
 
 		// RECOVER when this peer already has a log, FORMAT only on first start.
 		// Ratis defaults to FORMAT and refuses to start over an existing

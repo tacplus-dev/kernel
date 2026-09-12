@@ -2,6 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster;
 
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.authz.InMemoryManager;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.collection.CollectionRuntime;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.errors.ProtoException;
@@ -240,6 +241,106 @@ class TenantAdminServiceImplTest {
 				.setTenantNamespace(ACME)
 				.build());
 		assertTrue(configMap.getTenants(ACME).getName().isEmpty());
+	}
+
+	/**
+	 * A project config row must have a live tenant above it. Without this check a
+	 * SetProjectConfig under a namespace with no tenant record creates an orphan:
+	 * ListProjects returns it (it filters on immediate-child shape, not on tenant
+	 * existence) and DeleteTenant, which refuses on nested tenants, says nothing
+	 * about nested projects.
+	 */
+	@Test
+	void setProjectConfigRefusesAProjectWithNoTenantAboveIt() {
+		ProtoException e = assertThrows(ProtoException.class,
+				() -> impl.updateProjectConfig(null, Kernel.SetProjectConfigRequest.newBuilder()
+						.setProjectNamespace("/tenants/ghost/prod")
+						.setConfig(Kernel.ProjectConfig.getDefaultInstance())
+						.build()));
+
+		assertEquals(ProtoException.NOT_FOUND, e.getCode(), e.getMessage());
+		assertTrue(e.getMessage().contains("/tenants/ghost"),
+				"error should name the missing tenant, got: " + e.getMessage());
+		assertTrue(configMap.getProjectConfigs("/tenants/ghost/prod").getProjectNamespace().isEmpty(),
+				"the orphan project row must not have been written");
+	}
+
+	/** A suspended tenant is no more a home for new project config than a missing one. */
+	@Test
+	void setProjectConfigRefusesAProjectUnderASuspendedTenant() throws Exception {
+		configMap.putTenants(ACME, configMap.getTenants(ACME).toBuilder()
+				.setStatus(Kernel.TenantStatus.TENANT_STATUS_SUSPENDED)
+				.build());
+
+		ProtoException e = assertThrows(ProtoException.class,
+				() -> impl.updateProjectConfig(null, Kernel.SetProjectConfigRequest.newBuilder()
+						.setProjectNamespace(ACME + "/prod")
+						.setConfig(Kernel.ProjectConfig.getDefaultInstance())
+						.build()));
+
+		assertEquals(ProtoException.NOT_FOUND, e.getCode(), e.getMessage());
+	}
+
+	/** Negative control: an active tenant still takes project config normally. */
+	@Test
+	void setProjectConfigWritesUnderALiveTenant() throws Exception {
+		impl.updateProjectConfig(null, Kernel.SetProjectConfigRequest.newBuilder()
+				.setProjectNamespace(ACME + "/prod")
+				.setConfig(Kernel.ProjectConfig.getDefaultInstance())
+				.build());
+
+		assertEquals(ACME + "/prod",
+				configMap.getProjectConfigs(ACME + "/prod").getProjectNamespace());
+	}
+
+	/**
+	 * A zero limit is what a caller sends when it omits page_size — the ordinary
+	 * "give me the default page" wiring. Returning an empty item list alongside
+	 * the real total hands back a page nobody can act on and no cursor to resume
+	 * from.
+	 */
+	@Test
+	void listProjectsWithNoLimitReturnsTheDefaultPageRatherThanNothing() throws Exception {
+		impl.updateProjectConfig(null, Kernel.SetProjectConfigRequest.newBuilder()
+				.setProjectNamespace(ACME + "/prod")
+				.setConfig(Kernel.ProjectConfig.getDefaultInstance())
+				.build());
+		impl.updateProjectConfig(null, Kernel.SetProjectConfigRequest.newBuilder()
+				.setProjectNamespace(ACME + "/staging")
+				.setConfig(Kernel.ProjectConfig.getDefaultInstance())
+				.build());
+
+		CollectionRuntime.Page<Kernel.ProjectNamespace> page = impl.listProjects(
+				null,
+				Kernel.ListProjectsRequest.newBuilder().setTenantNamespace(ACME).build(),
+				new CollectionRuntime.PageParams(0, null));
+
+		assertEquals(2, page.total);
+		assertEquals(2, page.items.size(), "a zero limit must page, not return nothing");
+		assertEquals(ACME + "/prod", page.items.get(0).getProjectNamespace());
+		assertEquals(ACME + "/staging", page.items.get(1).getProjectNamespace());
+	}
+
+	/** And an explicit limit still bounds the page and hands back a cursor. */
+	@Test
+	void listProjectsHonoursAnExplicitLimit() throws Exception {
+		impl.updateProjectConfig(null, Kernel.SetProjectConfigRequest.newBuilder()
+				.setProjectNamespace(ACME + "/prod")
+				.setConfig(Kernel.ProjectConfig.getDefaultInstance())
+				.build());
+		impl.updateProjectConfig(null, Kernel.SetProjectConfigRequest.newBuilder()
+				.setProjectNamespace(ACME + "/staging")
+				.setConfig(Kernel.ProjectConfig.getDefaultInstance())
+				.build());
+
+		CollectionRuntime.Page<Kernel.ProjectNamespace> page = impl.listProjects(
+				null,
+				Kernel.ListProjectsRequest.newBuilder().setTenantNamespace(ACME).build(),
+				new CollectionRuntime.PageParams(1, null));
+
+		assertEquals(1, page.items.size());
+		assertEquals(2, page.total);
+		assertEquals(List.of(ACME + "/prod"), page.nextAfter.keys);
 	}
 
 	private static Kernel.Constraints fullCeiling(

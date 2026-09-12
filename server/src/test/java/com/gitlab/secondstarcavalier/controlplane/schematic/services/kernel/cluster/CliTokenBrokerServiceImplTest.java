@@ -72,7 +72,7 @@ class CliTokenBrokerServiceImplTest {
 	}
 
 	@Test
-	void completeBeforeRegisterBuffersAndReplaysOnce() {
+	void completeBeforeRegisterParksTheRequestAndMintsOnceOnRegistration() {
 		CapturingObserver responses = new CapturingObserver();
 		AtomicInteger mintCount = new AtomicInteger();
 		StreamObserver<Kernel.CliTokenBrokerRequest> requests = broker(responses, mintCount);
@@ -80,11 +80,13 @@ class CliTokenBrokerServiceImplTest {
 		responses.clear();
 
 		requests.onNext(completeNonce(NONCE_B, "user-b"));
-		awaitBufferedDelivery(NONCE_B);
-		assertEquals(1, mintCount.get());
+		awaitParkedCompletion(NONCE_B);
+		assertEquals(0, mintCount.get(),
+				"nothing may be minted before a registration states offline_access");
 		assertTrue(responses.tokenDeliveries().isEmpty());
 
 		requests.onNext(registerNonce(NONCE_B));
+		assertEquals(1, mintCount.get());
 		assertTokenDeliveries(responses, "refresh-user-b");
 
 		responses.clear();
@@ -94,17 +96,66 @@ class CliTokenBrokerServiceImplTest {
 		assertTrue(responses.tokenDeliveries().isEmpty());
 	}
 
+	/**
+	 * offline_access is stated by the RegisterNonce and is baked into the token at
+	 * mint time. A completion that arrives first must therefore wait for it: a
+	 * token minted early is a non-offline token the user can never upgrade, and
+	 * the CLI session it belongs to expires early with no error anywhere.
+	 */
 	@Test
-	void expiredBufferedDeliveryIsDiscarded() {
+	void offlineAccessRegisteredAfterACompletionStillMintsAnOfflineToken() {
+		CapturingObserver responses = new CapturingObserver();
+		AtomicInteger mintCount = new AtomicInteger();
+		List<Boolean> offlineAccessValues = new ArrayList<>();
+		StreamObserver<Kernel.CliTokenBrokerRequest> requests = broker(responses, mintCount, offlineAccessValues);
+		requests.onNext(register("oauth-a"));
+		responses.clear();
+
+		requests.onNext(completeNonce(NONCE_B, "user-b"));
+		awaitParkedCompletion(NONCE_B);
+
+		requests.onNext(registerNonce(NONCE_B, true));
+
+		assertEquals(1, mintCount.get());
+		assertEquals(List.of(true), offlineAccessValues,
+				"the token was minted without the offline access the registration asked for");
+		assertTokenDeliveries(responses, "refresh-user-b");
+	}
+
+	/**
+	 * The nonce is client-supplied and every log site truncates it to 8
+	 * characters. A short one must be refused, not throw: several of those sites
+	 * are on the gRPC handling thread and one is inside a mint-failure catch,
+	 * where the throw would kill the broker stream for every login on this node.
+	 */
+	@Test
+	void aShortNonceIsRejectedRatherThanThrowing() {
 		CapturingObserver responses = new CapturingObserver();
 		AtomicInteger mintCount = new AtomicInteger();
 		StreamObserver<Kernel.CliTokenBrokerRequest> requests = broker(responses, mintCount);
 		requests.onNext(register("oauth-a"));
 		responses.clear();
 
-		requests.onNext(completeNonce(NONCE_C, "user-c"));
-		awaitBufferedDelivery(NONCE_C);
-		assertEquals(1, mintCount.get());
+		requests.onNext(registerNonce("abc"));
+		requests.onNext(completeNonce("abc", "user-a"));
+
+		assertFalse(nonceMap().containsKey("abc"), "a below-minimum nonce must not be registered");
+		assertEquals(0, mintCount.get(), "a below-minimum nonce must not mint");
+		assertTrue(responses.tokenDeliveries().isEmpty());
+
+		// The stream is still usable: a well-formed login after the short one works.
+		requests.onNext(registerNonce(NONCE_A));
+		requests.onNext(completeNonce(NONCE_A, "user-a"));
+		assertTokenDeliveries(responses, "refresh-user-a");
+	}
+
+	@Test
+	void expiredBufferedDeliveryIsDiscarded() {
+		CapturingObserver responses = new CapturingObserver();
+		StreamObserver<Kernel.CliTokenBrokerRequest> requests = broker(responses, new AtomicInteger());
+		requests.onNext(register("oauth-a"));
+		responses.clear();
+
 		long expiredCreatedAt = (System.currentTimeMillis() / 1000) - 301;
 		hazelcast.<String, CliTokenBrokerServiceImpl.NonceEntry>getMap("cli-token-broker")
 				.put("delivery:" + NONCE_C,
@@ -197,9 +248,9 @@ class CliTokenBrokerServiceImplTest {
 		return hazelcast.getMap("cli-token-broker");
 	}
 
-	private void awaitBufferedDelivery(String nonce) {
-		awaitCondition(() -> nonceMap().containsKey("delivery:" + nonce),
-				"token was never buffered for nonce " + nonce.substring(0, 8));
+	private void awaitParkedCompletion(String nonce) {
+		awaitCondition(() -> nonceMap().containsKey("pending:" + nonce),
+				"completion was never parked for nonce " + nonce.substring(0, 8));
 	}
 
 	private static void awaitCondition(java.util.function.BooleanSupplier condition, String message) {

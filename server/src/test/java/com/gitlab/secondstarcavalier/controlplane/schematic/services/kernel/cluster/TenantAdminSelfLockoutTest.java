@@ -138,6 +138,34 @@ class TenantAdminSelfLockoutTest {
 	}
 
 	/**
+	 * The guard reads the caller's subject out of the verified payload. A claim
+	 * VALUE that is itself a JSON object containing a {@code "sub"} key must not
+	 * be able to pass itself off as the top-level one — and with keys serialized
+	 * in sorted order, a claim like {@code origin_profile} lands before
+	 * {@code sub} in the payload, which is exactly what a scan for the first
+	 * {@code "sub"} finds. Against the unfixed extractor the guard reads
+	 * cp-other, sees it retained, and lets cp-admin lock itself out.
+	 */
+	@Test
+	void aNestedSubInsideAClaimValueCannotSpoofTheGuard() {
+		Metadata headers = new Metadata();
+		headers.put(AUTHORIZATION, "Bearer " + credPairToken(CALLER_CRED_PAIR, TENANT_NS,
+				"{\"sub\":\"cred-pair:" + OTHER_CRED_PAIR + "\"}"));
+
+		StatusRuntimeException e = assertThrows(StatusRuntimeException.class,
+				() -> TenantAdminGrpc.newBlockingStub(channel)
+						.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
+						.updateTenantConfig(dropCallerRequest()));
+
+		assertEquals(Status.Code.INVALID_ARGUMENT, e.getStatus().getCode(),
+				"description was: " + e.getStatus().getDescription());
+		assertTrue(e.getStatus().getDescription().contains(CALLER_CRED_PAIR),
+				"the guard must still name the real subject, got: " + e.getStatus().getDescription());
+		assertTrue(storedCredPairIds().contains(CALLER_CRED_PAIR),
+				"rejected write must not have been applied, stored ids: " + storedCredPairIds());
+	}
+
+	/**
 	 * The Caller is the authenticated caller, not just any caller: an admin
 	 * acting from ABOVE the tenant (root namespace, cred_pair not in this
 	 * tenant) is exempt from the guard and may drop cp-admin.
@@ -172,6 +200,14 @@ class TenantAdminSelfLockoutTest {
 	 * service_entitlements.
 	 */
 	private String credPairToken(String credPairId, String namespace) {
+		return credPairToken(credPairId, namespace, null);
+	}
+
+	/**
+	 * @param nestedClaimJson when non-null, a claim whose value is a JSON OBJECT,
+	 *                        keyed so it sorts ahead of {@code sub} in the payload
+	 */
+	private String credPairToken(String credPairId, String namespace, String nestedClaimJson) {
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		long now = Instant.now().getEpochSecond();
 		TokenWrapper t = TokenWrapper.create()
@@ -182,6 +218,9 @@ class TenantAdminSelfLockoutTest {
 				.setExpiration(now + 3600)
 				.setJTI(UUID.randomUUID().toString());
 		t.setNamespace(namespace);
+		if (nestedClaimJson != null) {
+			t.setCustomField("origin_profile", nestedClaimJson);
+		}
 		t.setServiceEntitlements(tenantAdminEntitlements());
 		t.sign(signingKey);
 		return t.getBase64();

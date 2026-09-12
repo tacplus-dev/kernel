@@ -54,13 +54,13 @@ public class SecurityAuthenticator {
 
     /**
      * Services that authenticate themselves and so skip the caller interceptor
-     * entirely. Simple service names, matched against the service-name component
-     * of the full method name for exact equality.
+     * entirely. Fully qualified {@code pkg.ServiceName} names, matched against the
+     * service-name component of the full method name for exact equality.
      */
     private static final Set<String> NO_AUTH_SERVICES = Set.of({{NO_AUTH_SERVICES}});
 
     /**
-     * Individual {@code ServiceName/RpcName} paths that skip the caller interceptor,
+     * Individual {@code pkg.ServiceName/RpcName} paths that skip the caller interceptor,
      * for RPCs annotated auth_disabled inside an otherwise authenticated service.
      */
     private static final Set<String> NO_AUTH_METHODS = Set.of({{NO_AUTH_METHODS}});
@@ -282,22 +282,22 @@ public class SecurityAuthenticator {
      * Whether {@code fullMethodName} — a full {@code package.Service/Rpc} name — is
      * exempt from the caller interceptor.
      *
-     * <p>The skip list is matched against the method's service-name component compared
-     * for exact equality, never as a substring of the full name: a service or RPC whose
-     * name merely contains a skip-list entry (say {@code ClusterServiceV2}, or an RPC
-     * called {@code GetClusterServiceStats}) must not inherit its exemption.
+     * <p>The skip list is matched against the full method name compared for exact
+     * equality, never as a substring of it: a service or RPC whose name merely
+     * contains a skip-list entry (say {@code ClusterServiceV2}, or an RPC called
+     * {@code GetClusterServiceStats}) must not inherit its exemption. The proto
+     * package is part of that comparison, so an {@code auth_disabled} RPC in one
+     * package never exempts an identically-named RPC in another.
      */
     private static boolean isNoAuthMethod(String fullMethodName) {
         int slash = fullMethodName.indexOf('/');
         if (slash < 0) {
             return false;
         }
-        String service = fullMethodName.substring(0, slash);
-        String simpleService = service.substring(service.lastIndexOf('.') + 1);
-        if (NO_AUTH_SERVICES.contains(simpleService)) {
+        if (NO_AUTH_SERVICES.contains(fullMethodName.substring(0, slash))) {
             return true;
         }
-        return NO_AUTH_METHODS.contains(simpleService + "/" + fullMethodName.substring(slash + 1));
+        return NO_AUTH_METHODS.contains(fullMethodName);
     }
 
     /**

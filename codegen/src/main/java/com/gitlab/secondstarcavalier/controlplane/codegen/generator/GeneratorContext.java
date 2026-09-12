@@ -286,31 +286,46 @@ public class GeneratorContext {
 
 	/**
 	 * Returns entries for the no-auth skip condition in the security interceptor.
-	 * Each entry is either a service name (for unannotated services that handle
-	 * their own auth) or a "ServiceName/RpcName" path (for individual RPCs with
-	 * method-level auth_disabled).
+	 * Each entry is either a fully qualified service name "pkg.ServiceName" (for
+	 * unannotated services that handle their own auth) or a "pkg.ServiceName/RpcName"
+	 * path (for individual RPCs with method-level auth_disabled).
+	 *
+	 * <p>The entries are qualified with the declaring proto's package because this
+	 * walks every proto in the build, not only those of the service being generated:
+	 * an unqualified entry would exempt an identically-named service or RPC in every
+	 * other package. {@code isNoAuthMethod} matches these against the full gRPC method
+	 * name, so the package is part of the comparison on both sides.
 	 */
 	public List<String> getNoAuthServiceNames() {
 		List<String> names = new ArrayList<>();
 		for (FileDescriptor fd : parser.getAllFiles().values()) {
 			for (ServiceDescriptor svc : fd.getServices()) {
+				String qualified = qualify(fd.getPackageName(), svc.getName());
 				if (!svc.hasAuthAnnotation()) {
 					// Unannotated services handle their own auth entirely
-					names.add(svc.getName());
+					names.add(qualified);
 				} else if (svc.isDisableAuth()) {
 					// Service-level auth_disabled (legacy service_grpc)
-					names.add(svc.getName());
+					names.add(qualified);
 				} else {
 					// Check per-RPC auth_disabled
 					for (var rpc : svc.getRpcs()) {
 						if (rpc.isDisableAuth()) {
-							names.add(svc.getName() + "/" + rpc.getName());
+							names.add(qualified + "/" + rpc.getName());
 						}
 					}
 				}
 			}
 		}
 		return names;
+	}
+
+	/** "pkg.Service", or the bare service name for a proto that declares no package. */
+	private static String qualify(String packageName, String serviceName) {
+		if (packageName == null || packageName.isEmpty()) {
+			return serviceName;
+		}
+		return packageName + "." + serviceName;
 	}
 
 	public List<AccessPolicy> getSecurityPolicies() {

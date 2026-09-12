@@ -3,6 +3,7 @@ package com.gitlab.secondstarcavalier.controlplane.codegen;
 import com.gitlab.secondstarcavalier.controlplane.codegen.model.*;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.*;
 import java.util.*;
 import java.util.regex.*;
@@ -96,7 +97,11 @@ public class ProtoDescriptorParser {
 
             descriptors.put(relPath, fd);
         } catch (IOException e) {
-            // Skip files that can't be read
+            // Fail the build rather than generate against a partial model: a proto
+            // that silently vanishes here takes its services, its auth_disabled
+            // exemptions and its security policies with it, and the gap only shows
+            // up at runtime as a missing server or a policy that never applied.
+            throw new UncheckedIOException("failed to read proto file " + path, e);
         }
     }
 

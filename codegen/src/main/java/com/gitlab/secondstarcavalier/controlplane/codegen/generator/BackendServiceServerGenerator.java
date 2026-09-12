@@ -323,6 +323,17 @@ public class BackendServiceServerGenerator {
 				viewRpcs.append("            StreamObserver<").append(responseName)
 						.append("> responseObserver) {\n");
 				viewRpcs.append("        logger.debug(\"rpc method=Watch").append(v.getFieldPascal()).append("\");\n");
+				// A view is a read-only merge of source collections in this same state
+				// root, so it is authorized exactly like a collection watch is: against
+				// this server's GRAPH policy, READ. Emitting nothing here would leave the
+				// view the one unpoliced read path on an otherwise policed server.
+				viewRpcs.append("        try {\n");
+				viewRpcs.append("            checkAccess(\"").append(v.getFieldName())
+						.append("\", SecurityAuthenticator.OperationType.READ);\n");
+				viewRpcs.append("        } catch (ProtoException e) {\n");
+				viewRpcs.append("            responseObserver.onError(toGrpcError(e));\n");
+				viewRpcs.append("            return;\n");
+				viewRpcs.append("        }\n");
 				// Captured here: the poller runs on the scheduler thread, off the Context.
 				viewRpcs.append("        NamespaceScope scope = NamespaceScope.current();\n");
 				viewRpcs.append("        ").append(responseName).append(" initial = build")

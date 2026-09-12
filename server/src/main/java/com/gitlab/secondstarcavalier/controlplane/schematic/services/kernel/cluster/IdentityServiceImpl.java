@@ -1715,6 +1715,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
 			}
 		}
+		// An exchange may shrink a lifetime, never extend one: the token minted here
+		// cannot outlive the credential presented for it, or a caller could renew its
+		// way past what the original credential had left. Same cap MintExternalToken
+		// applies against the user token it derives from. verify() above has already
+		// established the input token carries a live exp.
+		exp = Math.min(exp, inputToken.getExpiration());
 		String subject = inputToken.getSubject();
 
 		Kernel.Delegate delegate = findDelegateBySubject(subject);
@@ -3652,11 +3658,20 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			throw new ProtoException(ProtoException.UNAVAILABLE, "no active signing key");
 		}
 
+		// The C2S token is a short-lived access token, so it takes the same
+		// max-token-lifetime ceiling (not the offline one) every other
+		// short-lived mint path in this class applies, with the same
+		// INVALID_ARGUMENT on breach.
+		long maxExp = now + maxTokenLifetimeSeconds;
 		long exp;
 		if (request.getExp() > 0) {
 			exp = request.getExp();
 			if (exp <= now) {
 				throw new ProtoException(ProtoException.INVALID_ARGUMENT, "exp must be in the future");
+			}
+			if (exp > maxExp) {
+				throw new ProtoException(ProtoException.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
 			}
 		} else {
 			exp = now + DEFAULT_TOKEN_TTL_SECONDS;

@@ -848,6 +848,11 @@ public class ClusterServer {
 			ServerServiceDefinition mintServiceDefinition =
 					ensureMintX509CertBinding(mintWrapper.bindService(), identityService);
 			serverBuilder.addService(mintServiceDefinition);
+			// The rate limiter was built before this service existed, so its
+			// classification map has no entry for the Mint methods — and an
+			// unclassified method is exempt. Register them now so credential
+			// issuance is bounded per caller.
+			rateLimiter.registerServices(List.of(mintServiceDefinition));
 			logger.info("MintService registered on gRPC server ({} delegates, methods={})",
 					delegates.size(), methodNames(mintServiceDefinition));
 
@@ -871,7 +876,8 @@ public class ClusterServer {
 						}
 					},
 					() -> spiffeTrustDomain,
-					allKeysSupplier);
+					allKeysSupplier,
+					workloadState);
 			serverBuilder.addService(tlsCertService);
 			logger.info("TlsCertService registered (ManageCert auto-TLS, cert lifetime={}s)",
 					cfg.getTlsCertLifetimeSeconds() > 0 ? cfg.getTlsCertLifetimeSeconds() : 86400);

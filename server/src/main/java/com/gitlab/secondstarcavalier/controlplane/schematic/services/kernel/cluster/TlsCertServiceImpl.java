@@ -9,6 +9,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.x509.X509;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.tlscert.Tlscert;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.tlscert.TlsCertServiceGrpc;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import java.security.KeyPair;
@@ -57,6 +58,13 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	private final BiConsumer<String, X509.X509CertChain> serviceCaWriter;
 	private final Supplier<String> trustDomainReader;
 	private final Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader;
+	/**
+	 * WorkloadState boundary access, read on every cert issuance so a revoked
+	 * workload stops getting certs — the same {@code revocations} collection
+	 * every kernel-signed token exchange consults. Required, never null: a
+	 * kernel that cannot see revocations must refuse to issue, not issue blind.
+	 */
+	private final WorkloadMap workloadMap;
 	private final ScheduledExecutorService scheduler;
 
 	/**
@@ -66,6 +74,7 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	 * @param serviceCaWriter      writes per-service intermediate CA to Ca state
 	 * @param trustDomainReader    SPIFFE trust domain
 	 * @param verifyingKeysReader  active kernel JWKs for validating caller tokens
+	 * @param workloadMap          WorkloadState access carrying workload revocations
 	 */
 	public TlsCertServiceImpl(
 			long certLifetimeSeconds,
@@ -73,13 +82,16 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			Function<String, X509.X509CertChain> serviceCaReader,
 			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
 			Supplier<String> trustDomainReader,
-			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader) {
+			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
+			WorkloadMap workloadMap) {
 		this.certLifetimeSeconds = certLifetimeSeconds;
 		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
 		this.serviceCaWriter = serviceCaWriter;
 		this.trustDomainReader = trustDomainReader;
 		this.verifyingKeysReader = verifyingKeysReader;
+		this.workloadMap = java.util.Objects.requireNonNull(workloadMap,
+				"workloadMap is required — workload revocation must be enforced on cert issuance");
 		this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
 			Thread t = new Thread(r, "tls-cert-renewal");
 			t.setDaemon(true);
@@ -251,6 +263,18 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 				responseObserver.onError(Status.FAILED_PRECONDITION
 						.withDescription("init required before csr")
 						.asRuntimeException());
+				return;
+			}
+
+			// Same revocation gate every kernel-signed token exchange goes through,
+			// applied per CSR rather than per stream: the stream is long-lived and
+			// renews at half-life, so a revocation that lands mid-stream has to stop
+			// the next renewal. Without this a revoked workload keeps a valid mesh
+			// identity for as long as it holds the stream open.
+			try {
+				IdentityServiceImpl.assertNotRevoked(workloadMap, spiffeId, "workload");
+			} catch (IdentityServiceImpl.StatusException e) {
+				responseObserver.onError(e.toGrpcStatus().asRuntimeException());
 				return;
 			}
 

@@ -1602,7 +1602,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// the single choke point for every kernel-signed exchange — bootstrap
 		// -> refresh, refresh -> access, access -> service — so an existing token
 		// held by a revoked workload stops buying new ones.
-		assertNotRevoked(inputToken.getSubject(), "workload");
+		assertNotRevoked(workloadMap, inputToken.getSubject(), "workload");
 
 		// Same choke point, for standing delegations: a token that derives from a
 		// Grant is only exchangeable while that Grant is still live.
@@ -2908,7 +2908,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		// A revoked identity cannot be re-minted under the same SPIFFE ID, and the
 		// ancestor walk covers the caller too: a revoked parent can mint nothing.
-		assertNotRevoked(childSub, "workload");
+		assertNotRevoked(workloadMap, childSub, "workload");
 
 		// Mint bootstrap token (short-lived).
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
@@ -3345,10 +3345,17 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 * here. The walk stops at the trust-domain authority, so a revocation can
 	 * never be recorded at a level that would deny the whole cluster.
 	 *
+	 * <p>Static and {@code workloadMap}-parameterized because this is the one
+	 * revocation gate for every kernel-issued credential, not just tokens:
+	 * {@link TlsCertServiceImpl} calls it on the ManageCert issuance path so a
+	 * revoked workload cannot keep renewing its mTLS cert either.
+	 *
+	 * @param workloadMap WorkloadState boundary access holding the revocations
 	 * @param spiffeId the identity a token is being minted or exchanged for
 	 * @param what     call-site noun for the error message, e.g. "workload"
 	 */
-	private void assertNotRevoked(String spiffeId, String what) throws StatusException {
+	static void assertNotRevoked(WorkloadMap workloadMap, String spiffeId, String what)
+			throws StatusException {
 		if (!SpiffeIds.isSpiffeUri(spiffeId)) return;
 		int authorityEnd = spiffeId.indexOf('/', SPIFFE_PREFIX.length());
 		if (authorityEnd < 0) return; // bare trust domain — no workload path to revoke

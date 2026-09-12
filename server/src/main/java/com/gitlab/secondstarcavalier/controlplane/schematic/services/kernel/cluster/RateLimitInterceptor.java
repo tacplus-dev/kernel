@@ -15,7 +15,6 @@ import io.grpc.ServerMethodDefinition;
 import io.grpc.ServerServiceDefinition;
 import io.grpc.Status;
 import java.util.EnumMap;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -35,11 +34,15 @@ import org.slf4j.LoggerFactory;
  * gRPC interceptor that detects and rate-limits polling of unary read RPCs.
  *
  * <p>
- * Methods are auto-classified into three categories by introspecting registered
+ * Methods are auto-classified into four categories by introspecting registered
  * services:
  * <ul>
- * <li><b>EXEMPT</b> — write RPCs (Set, Put, Remove, etc.) and streaming RPCs:
- * never limited
+ * <li><b>EXEMPT</b> — state-map write RPCs (Set, Put, Remove, etc.) and
+ * streaming RPCs: never limited
+ * <li><b>CREDENTIAL</b> — credential-issuing RPCs (Mint*): limited at
+ * {@code unaryRate}. These are writes, so the verb table would otherwise
+ * exempt them, but they are exactly the endpoints an attacker hammers to
+ * brute-force a cred_pair or bulk-mint tokens, so they are bounded per caller.
  * <li><b>HAS_STREAMING</b> — unary reads with a Watch/Subscribe counterpart:
  * limited at {@code pollingRate}, or at {@code unaryRate} when the caller
  * authenticated with a service/workload identity (an internal service has no
@@ -58,6 +61,7 @@ public class RateLimitInterceptor implements ServerInterceptor {
 
 	enum Category {
 		EXEMPT,
+		CREDENTIAL,
 		HAS_STREAMING,
 		NO_STREAMING
 	}
@@ -68,9 +72,13 @@ public class RateLimitInterceptor implements ServerInterceptor {
 	// Sorted longest-first so "GetAll" matches before "Get"
 	private static final List<String> READ_PREFIXES = List.of("ContainsKey", "GetAll", "KeySet", "Peek", "Size", "Get");
 
+	// Credential-issuing verb. Checked before WRITE_PREFIXES so a minting RPC
+	// cannot be swept into the write exemption.
+	private static final String CREDENTIAL_PREFIX = "Mint";
+
 	private final double pollingRate;
 	private final double unaryRate;
-	private final Map<String, Category> methodCategories;
+	private final ConcurrentHashMap<String, Category> methodCategories;
 	private final ConcurrentHashMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
 	private final ConcurrentHashMap<String, Boolean> warnedKeys = new ConcurrentHashMap<>();
 	private final ScheduledExecutorService cleaner;
@@ -113,10 +121,12 @@ public class RateLimitInterceptor implements ServerInterceptor {
 			methodCategories.values().forEach(c -> counts.merge(c, 1, (old, incr) -> old + incr));
 			logger.info(
 					"RateLimitInterceptor initialized: pollingRate={}/s, unaryRate={}/s, "
-							+ "methods: {} exempt, {} with streaming alt, {} without streaming alt",
+							+ "methods: {} exempt, {} credential-issuing, {} with streaming alt, "
+							+ "{} without streaming alt",
 					pollingRate,
 					unaryRate,
 					counts.get(Category.EXEMPT),
+					counts.get(Category.CREDENTIAL),
 					counts.get(Category.HAS_STREAMING),
 					counts.get(Category.NO_STREAMING));
 		}
@@ -162,7 +172,10 @@ public class RateLimitInterceptor implements ServerInterceptor {
 			String warnKey = bucketKey;
 			if (warnedKeys.putIfAbsent(warnKey, Boolean.TRUE) == null) {
 				String warnMsg;
-				if (cat == Category.HAS_STREAMING) {
+				if (cat == Category.CREDENTIAL) {
+					warnMsg = "Exceeded the credential-issuance rate limit on " + fullMethodName;
+					logger.warn("Peer {} exceeded the credential-issuance rate limit on {}", peer, fullMethodName);
+				} else if (cat == Category.HAS_STREAMING) {
 					warnMsg = "Polling " + fullMethodName + " — use the streaming Watch/Subscribe alternative";
 					logger.warn("Peer {} is polling {} — streaming alternative available", peer, fullMethodName);
 				} else {
@@ -174,9 +187,14 @@ public class RateLimitInterceptor implements ServerInterceptor {
 				}
 			}
 
-			String msg = (cat == Category.HAS_STREAMING)
-					? "Rate limit exceeded — use the streaming Watch/Subscribe alternative instead of polling"
-					: "Rate limit exceeded — this boundary should implement a streaming alternative";
+			String msg;
+			if (cat == Category.CREDENTIAL) {
+				msg = "Rate limit exceeded — credential issuance is bounded per caller";
+			} else if (cat == Category.HAS_STREAMING) {
+				msg = "Rate limit exceeded — use the streaming Watch/Subscribe alternative instead of polling";
+			} else {
+				msg = "Rate limit exceeded — this boundary should implement a streaming alternative";
+			}
 
 			call.close(Status.RESOURCE_EXHAUSTED.withDescription(msg), new Metadata());
 			// Return a no-op listener since the call is already closed
@@ -283,8 +301,8 @@ public class RateLimitInterceptor implements ServerInterceptor {
 	/**
 	 * Classify all methods from the registered services into categories.
 	 */
-	private static Map<String, Category> classifyMethods(List<ServerServiceDefinition> services) {
-		Map<String, Category> result = new HashMap<>();
+	private static ConcurrentHashMap<String, Category> classifyMethods(List<ServerServiceDefinition> services) {
+		ConcurrentHashMap<String, Category> result = new ConcurrentHashMap<>();
 		Set<String> streamingBoundaries = new HashSet<>();
 
 		for (ServerServiceDefinition def : services) {
@@ -324,6 +342,14 @@ public class RateLimitInterceptor implements ServerInterceptor {
 					continue;
 				}
 
+				// Credential issuance is a write, but an unbounded one is a
+				// brute-force / bulk-minting surface, so it is limited rather
+				// than swept into the write exemption below.
+				if (bareName.startsWith(CREDENTIAL_PREFIX)) {
+					result.put(fullName, Category.CREDENTIAL);
+					continue;
+				}
+
 				// Check if it's a write verb
 				if (isWriteVerb(bareName)) {
 					result.put(fullName, Category.EXEMPT);
@@ -347,6 +373,17 @@ public class RateLimitInterceptor implements ServerInterceptor {
 		}
 
 		return result;
+	}
+
+	/**
+	 * Classify and register services built after this interceptor. The gRPC
+	 * builder needs the interceptor before the kernel's identity control plane
+	 * exists, so those services are not in the constructor's list — and a
+	 * method with no category is exempt, which would leave the whole Mint
+	 * surface unlimited.
+	 */
+	public void registerServices(List<ServerServiceDefinition> services) {
+		methodCategories.putAll(classifyMethods(services));
 	}
 
 	/**

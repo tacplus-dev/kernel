@@ -347,7 +347,7 @@ public class ClusterServer {
 		installConfigHolder(cfg);
 
 		// ClusterState SetLogLevel handler
-		this.clusterSetLogLevelHandler = new ClusterSetLogLevelHandler();
+		this.clusterSetLogLevelHandler = new ClusterSetLogLevelHandler(backendServers.getAuthenticator());
 
 		final var identityState = backendServers.services().getIdentityMap();
 		final var caState = backendServers.services().getCaMap();

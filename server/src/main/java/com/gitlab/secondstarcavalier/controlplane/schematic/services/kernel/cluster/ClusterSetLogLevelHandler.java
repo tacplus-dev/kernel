@@ -5,6 +5,8 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.ClusterStateServiceGrpc;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.errors.ProtoException;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.SecurityAuthenticator;
 import com.google.protobuf.Empty;
 import io.grpc.ServerMethodDefinition;
 import io.grpc.ServerServiceDefinition;
@@ -23,12 +25,32 @@ import org.slf4j.LoggerFactory;
  * a {@code (spec.command)} — its business logic must be hand-written. This
  * handler wraps the generated service definition to replace the stub with a
  * working implementation that dynamically changes logger levels via Logback.
+ *
+ * <p>
+ * Authorization is the same check the generated {@code ClusterStateServiceServer}
+ * applies to every other boundary of this state root: {@link
+ * SecurityAuthenticator#checkAccess} against the {@code kernel.Cluster} policy.
+ * {@code set_log_level} declares no {@code (spec.boundary_callers)}, so the
+ * graph's read-write set — {@code service:kernel} alone — is the authorized
+ * caller set for this WRITE.
  */
 public class ClusterSetLogLevelHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(ClusterSetLogLevelHandler.class);
 
     private static final Set<String> VALID_LEVELS = Set.of("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "OFF");
+
+    /** Policy key for this state root: "<proto package>.<state root>". */
+    private static final String GRAPH = "kernel.Cluster";
+
+    /** Boundary field name of the command this handler implements. */
+    private static final String BOUNDARY = "set_log_level";
+
+    private final SecurityAuthenticator authenticator;
+
+    public ClusterSetLogLevelHandler(SecurityAuthenticator authenticator) {
+        this.authenticator = authenticator;
+    }
 
     /**
      * Wraps a ClusterStateBackendService {@link ServerServiceDefinition} to
@@ -55,6 +77,8 @@ public class ClusterSetLogLevelHandler {
 
     private void handleSetLogLevel(Kernel.AdminSetLogLevelRequest request, StreamObserver<Empty> responseObserver) {
         try {
+            authenticator.checkAccess(GRAPH, BOUNDARY, SecurityAuthenticator.OperationType.WRITE);
+
             String level = request.getLevel().toUpperCase();
             if (!VALID_LEVELS.contains(level)) {
                 responseObserver.onError(Status.INVALID_ARGUMENT
@@ -79,6 +103,11 @@ public class ClusterSetLogLevelHandler {
 
             responseObserver.onNext(Empty.getDefaultInstance());
             responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(io.grpc.Status.fromCodeValue(e.getCode())
+                    .withDescription(e.getMessage())
+                    .withCause(e)
+                    .asRuntimeException());
         } catch (Exception e) {
             logger.error("SetLogLevel failed: {}", e.getMessage());
             responseObserver.onError(Status.INTERNAL

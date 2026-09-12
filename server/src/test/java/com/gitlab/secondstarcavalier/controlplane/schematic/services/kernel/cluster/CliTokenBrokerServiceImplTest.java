@@ -159,6 +159,40 @@ class CliTokenBrokerServiceImplTest {
 				"delivery took " + elapsedMillis + "ms after the registration arrived");
 	}
 
+	@Test
+	void duplicateNonceRegistrationFromAnotherInstanceIsRejected() {
+		AtomicInteger mintCount = new AtomicInteger();
+		CliTokenBrokerServiceImpl service = service(mintCount, new ArrayList<>());
+
+		// The legitimate CLI's nonce is registered by the oauth instance its
+		// session landed on. The nonce is visible in the browser login URL, so an
+		// attacker can re-register it — here from a second oauth instance, which
+		// oauth's own per-instance pending map cannot see.
+		CapturingObserver firstResponses = new CapturingObserver();
+		CapturingObserver secondResponses = new CapturingObserver();
+		StreamObserver<Kernel.CliTokenBrokerRequest> first = service.brokerStream(null, firstResponses);
+		StreamObserver<Kernel.CliTokenBrokerRequest> second = service.brokerStream(null, secondResponses);
+		first.onNext(register("oauth-a"));
+		second.onNext(register("oauth-b"));
+		firstResponses.clear();
+		secondResponses.clear();
+
+		first.onNext(registerNonce(NONCE_A));
+		second.onNext(registerNonce(NONCE_A));
+
+		assertEquals("oauth-a", nonceMap().get(NONCE_A).instanceId,
+				"the second RegisterNonce replaced the first registrant");
+
+		// Browser auth completes. Any oauth instance may send CompleteNonce, so
+		// the hijacker's stream carrying it must still not redirect the delivery.
+		second.onNext(completeNonce(NONCE_A, "user-a"));
+
+		assertEquals(1, mintCount.get());
+		assertTokenDeliveries(firstResponses, "refresh-user-a");
+		assertTrue(secondResponses.tokenDeliveries().isEmpty(),
+				"token was delivered to the hijacking instance");
+	}
+
 	private com.hazelcast.map.IMap<String, CliTokenBrokerServiceImpl.NonceEntry> nonceMap() {
 		return hazelcast.getMap("cli-token-broker");
 	}
@@ -189,13 +223,16 @@ class CliTokenBrokerServiceImplTest {
 
 	private StreamObserver<Kernel.CliTokenBrokerRequest> broker(
 			CapturingObserver responses, AtomicInteger mintCount, List<Boolean> offlineAccessValues) {
+		return service(mintCount, offlineAccessValues).brokerStream(null, responses);
+	}
+
+	private CliTokenBrokerServiceImpl service(AtomicInteger mintCount, List<Boolean> offlineAccessValues) {
 		hazelcast = Hazelcast.newHazelcastInstance(hazelcastConfig());
-		CliTokenBrokerServiceImpl service = new CliTokenBrokerServiceImpl((complete, nonce, offlineAccess) -> {
+		return new CliTokenBrokerServiceImpl((complete, nonce, offlineAccess) -> {
 			mintCount.incrementAndGet();
 			offlineAccessValues.add(offlineAccess);
 			return "refresh-" + complete.getSubject();
 		}, hazelcast);
-		return service.brokerStream(null, responses);
 	}
 
 	private static Config hazelcastConfig() {

@@ -16,6 +16,7 @@ import java.security.KeyPairGenerator;
 import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -279,21 +280,8 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			long now = Instant.now().getEpochSecond();
 			long exp = now + certLifetimeSeconds;
 
-			// Cert identity: URI SAN carries the canonical SPIFFE ID (used for
-			// SPIFFE-based peer verification). DNS SANs cover hostname-based
-			// verification for callers connecting by k8s short name or pod
-			// hostname. The X509CertRequest message has no dedicated CN/subject
-			// field — issuer carries the bare service name for human-readability,
-			// the signer fills in subject DN from request/key metadata.
-			X509.X509CertRequest certRequest = X509.X509CertRequest.newBuilder()
-					.setKey(csr.getPublicKey())
-					.setExp(exp)
-					.setIssuer(serviceName)
-					.addUriSans(spiffeId)
-					.addDnsNames(serviceName)
-					.addDnsNames("*." + serviceName)
-					.addDnsNames(instanceId)
-					.build();
+			X509.X509CertRequest certRequest = kernelCertRequest(
+					csr.getPublicKey(), spiffeId, serviceName, instanceId, exp);
 
 			// Sign with the intermediate CA.
 			X509.X509Cert leafCert = intermediateCa.sign(certRequest);
@@ -338,6 +326,64 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 				renewalTask = null;
 			}
 		}
+	}
+
+	/**
+	 * Builds the X509CertRequest kernel actually signs for a ManageCert stream.
+	 *
+	 * <p>Cert identity: the URI SAN carries the canonical SPIFFE ID kernel
+	 * verified from the caller's own token (used for SPIFFE-based peer
+	 * verification). DNS SANs cover hostname-based verification for callers
+	 * connecting by k8s short name or pod hostname. The X509CertRequest message
+	 * has no dedicated CN/subject field — issuer carries the bare service name
+	 * for human-readability, the signer fills in subject DN from request/key
+	 * metadata.
+	 *
+	 * <p>The one caller-supplied field is {@code init.instance_id}, which the
+	 * generated service managers set to the pod hostname so peers connecting by
+	 * hostname pass hostname verification. It is bound to the caller's verified
+	 * identity here: the name must be the service name itself or under it
+	 * ({@code svc-0}, {@code svc.ns.svc}), the shape every k8s workload name in
+	 * this platform takes. Anything else is another service's name — kernel
+	 * would otherwise sign, under a trusted CA, a cert asserting a hostname the
+	 * caller does not own, letting it impersonate that peer in TLS. Unowned
+	 * names are dropped, not refused, so a stale client cannot be locked out of
+	 * cert renewal. Same rule and same disposition as
+	 * {@code IdentityServiceImpl.kernelCertRequest} applies on the X509Mint path.
+	 *
+	 * <p>The token's own {@code instance_id} claim is deliberately not the thing
+	 * matched against: kernel mints it as a random UUID (see
+	 * {@code IdentityServiceImpl}), so it is not a DNS name and carries no
+	 * hostname ownership.
+	 */
+	static X509.X509CertRequest kernelCertRequest(
+			KeyOuterClass.PublicKey publicKey,
+			String spiffeId,
+			String serviceName,
+			String instanceId,
+			long exp) {
+		LinkedHashSet<String> dnsNames = new LinkedHashSet<>();
+		dnsNames.add(serviceName);
+		dnsNames.add("*." + serviceName);
+		if (instanceId != null && !instanceId.isEmpty()) {
+			if (instanceId.equals(serviceName)
+					|| instanceId.startsWith(serviceName + "-")
+					|| instanceId.startsWith(serviceName + ".")
+					|| instanceId.equals("*." + serviceName)) {
+				dnsNames.add(instanceId);
+			} else {
+				logger.warn("ManageCert: dropping DNS SAN '{}' requested by {} — not a name that service owns",
+						instanceId, spiffeId);
+			}
+		}
+
+		return X509.X509CertRequest.newBuilder()
+				.setKey(publicKey)
+				.setExp(exp)
+				.setIssuer(serviceName)
+				.addUriSans(spiffeId)
+				.addAllDnsNames(dnsNames)
+				.build();
 	}
 
 	// ========================================================================

@@ -125,9 +125,16 @@ public final class RatisFencedLock implements AutoCloseable {
 		return new File(storageDir, groupId.getUuid().toString()).isDirectory();
 	}
 
-	/** acquire submits an Acquire through Raft and returns the replicated answer. */
-	public Kernel.FencedLockAcquireResponse acquire(Kernel.FencedLockAcquireRequest request) throws IOException {
-		final byte[] reply = send(FencedLockOp.encodeAcquire(request));
+	/**
+	 * acquire submits an Acquire through Raft and returns the replicated answer.
+	 *
+	 * @param holderId the caller identity kernel verified for this RPC; it, not
+	 *                 the request's {@code holder_id} field, is what gets
+	 *                 recorded as the holder
+	 */
+	public Kernel.FencedLockAcquireResponse acquire(String holderId, Kernel.FencedLockAcquireRequest request)
+			throws IOException {
+		final byte[] reply = send(FencedLockOp.encodeAcquire(holderId, request));
 		try {
 			return Kernel.FencedLockAcquireResponse.parseFrom(reply);
 		} catch (com.google.protobuf.InvalidProtocolBufferException e) {
@@ -135,9 +142,15 @@ public final class RatisFencedLock implements AutoCloseable {
 		}
 	}
 
-	/** release submits a Release through Raft and returns the replicated answer. */
-	public Kernel.FencedLockReleaseResponse release(Kernel.FencedLockReleaseRequest request) throws IOException {
-		final byte[] reply = send(FencedLockOp.encodeRelease(request));
+	/**
+	 * release submits a Release through Raft and returns the replicated answer.
+	 *
+	 * @param holderId the caller identity kernel verified for this RPC; the state
+	 *                 machine releases only if it matches the recorded holder
+	 */
+	public Kernel.FencedLockReleaseResponse release(String holderId, Kernel.FencedLockReleaseRequest request)
+			throws IOException {
+		final byte[] reply = send(FencedLockOp.encodeRelease(holderId, request));
 		try {
 			return Kernel.FencedLockReleaseResponse.parseFrom(reply);
 		} catch (com.google.protobuf.InvalidProtocolBufferException e) {

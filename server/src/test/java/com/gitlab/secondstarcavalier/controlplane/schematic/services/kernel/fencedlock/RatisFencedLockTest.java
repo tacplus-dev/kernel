@@ -82,13 +82,18 @@ class RatisFencedLockTest {
 		nodes.clear();
 	}
 
+	/**
+	 * The holder is the identity kernel verified for the RPC, which is why it is
+	 * a separate argument here rather than a request field: the request's
+	 * holder_id is client-supplied and the lock does not trust it.
+	 */
 	private Kernel.FencedLockAcquireResponse acquire(String key, String holder) throws Exception {
-		return lock.acquire(Kernel.FencedLockAcquireRequest.newBuilder()
+		return lock.acquire(holder, Kernel.FencedLockAcquireRequest.newBuilder()
 				.setKey(key).setHolderId(holder).build());
 	}
 
-	private Kernel.FencedLockReleaseResponse release(String key, long token) throws Exception {
-		return lock.release(Kernel.FencedLockReleaseRequest.newBuilder()
+	private Kernel.FencedLockReleaseResponse release(String key, String holder, long token) throws Exception {
+		return lock.release(holder, Kernel.FencedLockReleaseRequest.newBuilder()
 				.setKey(key).setFencingToken(token).build());
 	}
 
@@ -140,7 +145,8 @@ class RatisFencedLockTest {
 		Kernel.FencedLockAcquireResponse first = acquire("workspace/b", "holder-1");
 		assertTrue(first.getGranted());
 
-		assertTrue(release("workspace/b", first.getFencingToken()).getOk(), "the holder's own token must release");
+		assertTrue(release("workspace/b", "holder-1", first.getFencingToken()).getOk(),
+				"the holder's own token must release");
 
 		Kernel.FencedLockAcquireResponse second = acquire("workspace/b", "holder-2");
 		assertTrue(second.getGranted(), "a released key must grant to the next contender");
@@ -153,7 +159,7 @@ class RatisFencedLockTest {
 	void aStaleFencingTokenIsDistinguishableFromTheCurrentOne() throws Exception {
 		Kernel.FencedLockAcquireResponse stale = acquire("workspace/c", "holder-1");
 		assertTrue(stale.getGranted());
-		assertTrue(release("workspace/c", stale.getFencingToken()).getOk());
+		assertTrue(release("workspace/c", "holder-1", stale.getFencingToken()).getOk());
 
 		Kernel.FencedLockAcquireResponse current = acquire("workspace/c", "holder-2");
 		assertTrue(current.getGranted());
@@ -164,7 +170,7 @@ class RatisFencedLockTest {
 		assertTrue(stale.getFencingToken() < current.getFencingToken());
 
 		// And the stale holder cannot unlock the live one.
-		assertFalse(release("workspace/c", stale.getFencingToken()).getOk(),
+		assertFalse(release("workspace/c", "holder-1", stale.getFencingToken()).getOk(),
 				"a stale token must not release the current holder");
 		assertFalse(acquire("workspace/c", "holder-3").getGranted(),
 				"the live holder must still hold the lock after a stale release attempt");
@@ -193,7 +199,25 @@ class RatisFencedLockTest {
 
 	@Test
 	void releasingAnUnheldKeyReportsNotOk() throws Exception {
-		assertFalse(release("workspace/never-held", 1).getOk());
+		assertFalse(release("workspace/never-held", "holder-1", 1).getOk());
+	}
+
+	/**
+	 * The fencing token is a Raft log index: monotonic, small, and therefore
+	 * guessable by anyone who has ever held any lock. Holding the right number
+	 * must not be enough — only the recorded holder can release.
+	 */
+	@Test
+	void aDifferentHolderCannotReleaseWithTheCurrentHoldersToken() throws Exception {
+		Kernel.FencedLockAcquireResponse held = acquire("workspace/g", "holder-1");
+		assertTrue(held.getGranted());
+
+		assertFalse(release("workspace/g", "holder-2", held.getFencingToken()).getOk(),
+				"a caller that is not the holder must not release, even with the holder's token");
+		assertFalse(acquire("workspace/g", "holder-2").getGranted(),
+				"the hold must survive the attempt");
+		assertTrue(release("workspace/g", "holder-1", held.getFencingToken()).getOk(),
+				"the real holder must still be able to release");
 	}
 
 	/**
@@ -216,7 +240,7 @@ class RatisFencedLockTest {
 		assertFalse(acquire("workspace/durable", "holder-9").getGranted(),
 				"a hold committed to the Raft log must survive a restart");
 		// And the next grant is above every token issued before the restart.
-		assertTrue(release("workspace/other", other.getFencingToken()).getOk());
+		assertTrue(release("workspace/other", "holder-2", other.getFencingToken()).getOk());
 		Kernel.FencedLockAcquireResponse afterRestart = acquire("workspace/other", "holder-3");
 		assertTrue(afterRestart.getGranted());
 		assertTrue(afterRestart.getFencingToken() > other.getFencingToken(),

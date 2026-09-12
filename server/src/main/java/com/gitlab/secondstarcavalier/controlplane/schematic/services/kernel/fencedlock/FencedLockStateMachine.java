@@ -30,6 +30,11 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
  * token is necessarily lower than the current one. A lock without a fencing
  * token only shrinks that race; it cannot close it.
  *
+ * <p>The holder recorded against a key is the identity kernel verified for the
+ * RPC, carried into the log by {@link FencedLockOp}. It is never the
+ * client-supplied {@code holder_id} field, which any authenticated caller could
+ * set to somebody else's id.
+ *
  * <p>Not thread-safe by design: Ratis applies committed transactions to a state
  * machine serially, and the map is read only from within {@link #applyTransaction}.
  */
@@ -52,8 +57,13 @@ public class FencedLockStateMachine extends BaseStateMachine {
 			return switch (FencedLockOp.opcode(op)) {
 				case FencedLockOp.ACQUIRE -> CompletableFuture.completedFuture(
 						reply(applyAcquire(FencedLockOp.decodeAcquire(op), index).toByteArray()));
-				case FencedLockOp.RELEASE -> CompletableFuture.completedFuture(
-						reply(applyRelease(FencedLockOp.decodeRelease(op)).toByteArray()));
+				case FencedLockOp.RELEASE -> {
+					final FencedLockOp.Release release = FencedLockOp.decodeRelease(op);
+					yield CompletableFuture.completedFuture(
+							reply(applyRelease(release.holderId(), release.request()).toByteArray()));
+				}
+				case FencedLockOp.RELEASE_UNVERIFIED -> CompletableFuture.completedFuture(
+						reply(applyUnverifiedRelease(FencedLockOp.decodeUnverifiedRelease(op)).toByteArray()));
 				default -> CompletableFuture.failedFuture(
 						new IllegalArgumentException("unknown FencedLock opcode " + (char) FencedLockOp.opcode(op)));
 			};
@@ -68,6 +78,9 @@ public class FencedLockStateMachine extends BaseStateMachine {
 	 * idempotent arm matters because Acquire is retried: a holder whose reply was
 	 * lost in flight must not be told it lost a lock it actually holds, and must
 	 * not have its token silently move under a resource owner that already saw it.
+	 *
+	 * <p>The {@code holder_id} read here is the one {@link FencedLockOp} wrote
+	 * from the verified caller, not whatever the client put in the field.
 	 */
 	private Kernel.FencedLockAcquireResponse applyAcquire(Kernel.FencedLockAcquireRequest request, long index) {
 		final Hold current = holds.get(request.getKey());
@@ -82,12 +95,34 @@ public class FencedLockStateMachine extends BaseStateMachine {
 	}
 
 	/**
-	 * applyRelease drops the hold only when the presented token is the one the
-	 * current holder was granted. A stale token releases nothing: that is the
-	 * whole point — a holder that no longer holds the lock must not be able to
-	 * unlock the holder that does.
+	 * applyRelease drops the hold only when the caller is the current holder AND
+	 * the presented token is the one that holder was granted. A stale token
+	 * releases nothing: that is the whole point — a holder that no longer holds
+	 * the lock must not be able to unlock the holder that does. The identity
+	 * check is the other half of the same rule: the fencing token is a Raft log
+	 * index, so it is guessable, and a token alone must not be enough to unlock
+	 * somebody else's key.
+	 *
+	 * @param holderId the caller kernel verified for the RPC, never a request field
 	 */
-	private Kernel.FencedLockReleaseResponse applyRelease(Kernel.FencedLockReleaseRequest request) {
+	private Kernel.FencedLockReleaseResponse applyRelease(String holderId, Kernel.FencedLockReleaseRequest request) {
+		final Hold current = holds.get(request.getKey());
+		final boolean ok = current != null
+				&& current.holderId().equals(holderId)
+				&& current.fencingToken() == request.getFencingToken();
+		if (ok) {
+			holds.remove(request.getKey());
+		}
+		return Kernel.FencedLockReleaseResponse.newBuilder().setOk(ok).build();
+	}
+
+	/**
+	 * applyUnverifiedRelease replays a release written before kernel carried the
+	 * holder identity in the log. Replay must reproduce the history the log
+	 * actually recorded, so it applies the rule that was in force when the entry
+	 * was committed — token only. Nothing writes this opcode any more.
+	 */
+	private Kernel.FencedLockReleaseResponse applyUnverifiedRelease(Kernel.FencedLockReleaseRequest request) {
 		final Hold current = holds.get(request.getKey());
 		final boolean ok = current != null && current.fencingToken() == request.getFencingToken();
 		if (ok) {

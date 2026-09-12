@@ -282,56 +282,31 @@ public class ClusterServer {
 		// All boundaries are convergent — quorum is always available
 		backendServers.services().setQuorumAvailable(true);
 
-		// Create JWK verifying keys view server
-		this.jwkViewServer = new JwkVerifyingKeysViewServer(
-				backendServers.getAuthenticator(),
-				() -> {
-					java.util.Map<String, JwkOuterClass.Jwk> result = new java.util.LinkedHashMap<>();
-					try {
-						for (JwkOuterClass.Jwk jwk : backendServers
-								.services()
-								.getIdentityMap()
-								.proto()
-								.getVerifyingKeysList()) {
-							String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
-							result.put(kid, jwk);
-						}
-					} catch (Exception e) {
-						logger.warn("Failed to read IdentityState verifying keys: {}", e.getMessage());
-					}
-					return result;
-				},
-				() -> {
-					java.util.Map<String, JwkOuterClass.Jwk> result = new java.util.LinkedHashMap<>();
-					try {
-						for (JwkOuterClass.Jwk jwk : backendServers
-								.services()
-								.getIdentityMap()
-								.proto()
-								.getVerifyingKeysList()) {
-							String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
-							result.put(kid, jwk);
-						}
-					} catch (Exception e) {
-						logger.warn("Failed to read TokenExchangerInternal verifying keys: {}", e.getMessage());
-					}
-					return result;
-				});
+		// Every verifying-key read below goes through ONE last-known-good guard.
+		// A read that throws — or that comes back empty after keys have been
+		// seen — is a failed read, not "the cluster has zero valid keys", and
+		// returning an empty list for it used to empty the served key set
+		// through every consumer at once: the JWK view watchers, the WatchJwks
+		// subscribers and kernel's own Authorizer all read from here, so one
+		// Hazelcast partition-migration timeout became platform-wide
+		// UNAUTHENTICATED until the next successful poll.
+		final Supplier<List<JwkOuterClass.Jwk>> allKeysSupplier = lastKnownGoodVerifyingKeys(
+				() -> backendServers.services().getIdentityMap().proto().getVerifyingKeysList());
 
-		// Combined key supplier
-		Supplier<List<JwkOuterClass.Jwk>> allKeysSupplier = () -> {
-			var keys = new java.util.ArrayList<JwkOuterClass.Jwk>();
-			try {
-				keys.addAll(backendServers
-						.services()
-						.getIdentityMap()
-						.proto()
-						.getVerifyingKeysList());
-			} catch (Exception e) {
-				logger.warn("Failed to read verifying keys: {}", e.getMessage());
+		final Supplier<java.util.Map<String, JwkOuterClass.Jwk>> keysByKid = () -> {
+			java.util.Map<String, JwkOuterClass.Jwk> result = new java.util.LinkedHashMap<>();
+			for (JwkOuterClass.Jwk jwk : allKeysSupplier.get()) {
+				result.put(Objects.requireNonNull(jwk.getKid(), "jwk.kid"), jwk);
 			}
-			return keys;
+			return result;
 		};
+
+		// Create JWK verifying keys view server. Both member maps the generated
+		// view declares (IdentityState and TokenExchangerInternal) resolve to
+		// the same IdentityState verifying_keys boundary, as they did before;
+		// buildMergedResponse merges them by kid.
+		this.jwkViewServer = new JwkVerifyingKeysViewServer(
+				backendServers.getAuthenticator(), keysByKid, keysByKid);
 
 		// Wire JWT key provider for SecurityAuthenticator
 		backendServers.getAuthenticator().setKeyProvider(() -> {
@@ -359,9 +334,18 @@ public class ClusterServer {
 		// publisher/remover/reader operate on the IdentityState verifying_keys
 		// boundary; onKeysChanged persists a fresh disk snapshot (the snapshot is
 		// taken lazily via the kernelPersistence field, assigned just below).
+		// Retention must outlast every token signed with the key, so it is
+		// derived from the rotation interval and BOTH mint ceilings rather than
+		// set to max_token_lifetime alone — see KeyRotator.retentionSecondsFor.
+		// The defaults here mirror IdentityServiceImpl's own.
+		final long keyRotationIntervalSeconds =
+				cfg.getKeyRotationIntervalSeconds() > 0 ? cfg.getKeyRotationIntervalSeconds() : 86400;
 		this.keyRotator = new KeyRotator(
-				cfg.getKeyRotationIntervalSeconds() > 0 ? cfg.getKeyRotationIntervalSeconds() : 86400,
-				cfg.getMaxTokenLifetimeSeconds() > 0 ? cfg.getMaxTokenLifetimeSeconds() : 2592000,
+				keyRotationIntervalSeconds,
+				KeyRotator.retentionSecondsFor(
+						keyRotationIntervalSeconds,
+						cfg.getMaxTokenLifetimeSeconds() > 0 ? cfg.getMaxTokenLifetimeSeconds() : 2592000,
+						cfg.getOfflineTokenLifetimeSeconds() > 0 ? cfg.getOfflineTokenLifetimeSeconds() : 7776000),
 				jwk -> {
 					try {
 						String kid = Objects.requireNonNull(jwk.getKid(), "jwk.kid");
@@ -981,6 +965,50 @@ public class ClusterServer {
 		throw new IllegalStateException(
 				"none of the configured members resolves to a local address; "
 						+ "this node cannot tell which FencedLock Raft peer it is");
+	}
+
+	/**
+	 * Wraps a {@code verifying_keys} state read so that one failed read cannot
+	 * empty the key set kernel serves.
+	 *
+	 * <p>Kernel keeps its own two active signing keys published for as long as
+	 * it is running, and {@link KeyRotator}'s sweep never evicts them, so the
+	 * set going empty is not a state the cluster reaches legitimately. Both an
+	 * outright exception and an empty result after keys have been seen are
+	 * therefore treated as a failed read, and the last successfully-read set is
+	 * returned instead. Only a genuine cold start, where no read has ever
+	 * succeeded, yields an empty list.
+	 *
+	 * <p>Serving a stale verifying key is the safe direction to fail: every JWK
+	 * carries its own {@code exp} and every consumer still checks token expiry,
+	 * whereas serving none rejects every caller on the platform at once.
+	 */
+	static Supplier<List<JwkOuterClass.Jwk>> lastKnownGoodVerifyingKeys(
+			Supplier<List<JwkOuterClass.Jwk>> reader) {
+		final java.util.concurrent.atomic.AtomicReference<List<JwkOuterClass.Jwk>> lastGood =
+				new java.util.concurrent.atomic.AtomicReference<>(List.of());
+		return () -> {
+			List<JwkOuterClass.Jwk> keys;
+			try {
+				keys = List.copyOf(reader.get());
+			} catch (Exception e) {
+				List<JwkOuterClass.Jwk> previous = lastGood.get();
+				logger.warn("Failed to read verifying keys ({}); serving last-known-good set of {} key(s)",
+						e.getMessage(), previous.size());
+				return previous;
+			}
+			if (keys.isEmpty()) {
+				List<JwkOuterClass.Jwk> previous = lastGood.get();
+				if (!previous.isEmpty()) {
+					logger.warn("verifying_keys read came back empty; serving last-known-good set of {} key(s)",
+							previous.size());
+					return previous;
+				}
+				return keys;
+			}
+			lastGood.set(keys);
+			return keys;
+		};
 	}
 
 	private void installTrustedCas(List<X509.X509Cert> configCas) {

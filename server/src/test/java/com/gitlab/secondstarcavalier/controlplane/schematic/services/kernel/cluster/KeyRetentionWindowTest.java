@@ -1,0 +1,135 @@
+// Copyright (c) 2026 Second Star Cavalier, LLC.
+package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster;
+
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.jwk.JwkOuterClass;
+import org.junit.jupiter.api.Test;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Regression for the audit finding that kernel's verifying-key retention window
+ * was shorter than the longest token it will mint, so already-issued, still-valid
+ * tokens became "unknown kid" before their own expiry.
+ *
+ * <p>Two things were wrong with retaining for {@code max_token_lifetime_seconds}:
+ *
+ * <ul>
+ *   <li>A key does not stop signing when it is created — it stays the active
+ *       signing key for a whole rotation interval, so the last token it signs
+ *       is minted just before the next tick and runs its full lifetime from
+ *       there. Retention has to cover rotation interval PLUS a token lifetime.</li>
+ *   <li>The longest lifetime kernel mints is the OFFLINE ceiling
+ *       ({@code offline_token_lifetime_seconds}, 90 days by default), not
+ *       {@code max_token_lifetime_seconds} (30 days). Offline tokens were
+ *       outliving their signing key by two months.</li>
+ * </ul>
+ */
+class KeyRetentionWindowTest {
+
+	/** The shipped defaults, matching ClusterServer's fallbacks. */
+	private static final long ROTATION_SECONDS = 86400;          // 1 day
+	private static final long MAX_TOKEN_LIFETIME = 2592000;      // 30 days
+	private static final long OFFLINE_TOKEN_LIFETIME = 7776000;  // 90 days
+
+	private static final long RETENTION = KeyRotator.retentionSecondsFor(
+			ROTATION_SECONDS, MAX_TOKEN_LIFETIME, OFFLINE_TOKEN_LIFETIME);
+
+	private final Map<String, JwkOuterClass.Jwk> shared = new LinkedHashMap<>();
+
+	private KeyRotator replica() {
+		return new KeyRotator(
+				ROTATION_SECONDS,
+				RETENTION,
+				jwk -> shared.put(jwk.getKid(), jwk),
+				shared::remove,
+				() -> new ArrayList<>(shared.values()),
+				() -> {});
+	}
+
+	/**
+	 * The arithmetic itself. Retention must cover the whole window during which
+	 * a token signed by the key can still be live.
+	 */
+	@Test
+	void retentionCoversRotationIntervalPlusTheLongestMintCeiling() {
+		assertEquals(ROTATION_SECONDS + OFFLINE_TOKEN_LIFETIME, RETENTION,
+				"retention must cover a full signing interval plus the longest token lifetime");
+
+		assertTrue(RETENTION >= ROTATION_SECONDS + MAX_TOKEN_LIFETIME,
+				"a max-lifetime token minted just before rotation must stay verifiable");
+		assertTrue(RETENTION >= ROTATION_SECONDS + OFFLINE_TOKEN_LIFETIME,
+				"an offline token minted just before rotation must stay verifiable");
+	}
+
+	/** The offline ceiling wins even when it is the smaller of the two configured values. */
+	@Test
+	void retentionTracksWhicheverMintCeilingIsLonger() {
+		assertEquals(100 + 900, KeyRotator.retentionSecondsFor(100, 900, 500),
+				"max-token ceiling is the longer one here");
+		assertEquals(100 + 900, KeyRotator.retentionSecondsFor(100, 500, 900),
+				"offline ceiling is the longer one here");
+	}
+
+	/**
+	 * The published JWK's own {@code exp} is what the state store evicts on, so
+	 * it — not just the sweep — has to outlast the last token the key signs.
+	 */
+	@Test
+	void publishedKeyExpiryOutlastsTheLastTokenItCanSign() {
+		replica().start();
+
+		assertEquals(2, shared.size(), "one active key per algorithm");
+		for (JwkOuterClass.Jwk jwk : shared.values()) {
+			long lastTokenSignedAt = jwk.getCreated() + ROTATION_SECONDS;
+			long lastTokenExpiresAt = lastTokenSignedAt + OFFLINE_TOKEN_LIFETIME;
+			assertTrue(jwk.getExp() >= lastTokenExpiresAt,
+					"key " + jwk.getKid() + " expires at " + jwk.getExp()
+							+ ", before a token it signed expires at " + lastTokenExpiresAt);
+		}
+	}
+
+	/**
+	 * The concrete incident: an offline token minted just before this key rotated
+	 * out still has a second to live, so the key must not have been swept.
+	 */
+	@Test
+	void keyIsNotSweptWhileAnOfflineTokenItSignedIsStillValid() {
+		long now = Instant.now().getEpochSecond();
+		// Created a full rotation interval plus almost the whole offline lifetime
+		// ago: the last offline token it signed expires one second from now.
+		long created = now - ROTATION_SECONDS - OFFLINE_TOKEN_LIFETIME + 1;
+		shared.put("rotated-out", JwkOuterClass.Jwk.newBuilder()
+				.setKid("rotated-out")
+				.setAlg("EdDSA")
+				.setCreated(created)
+				.build());
+
+		replica().start();
+
+		assertTrue(shared.containsKey("rotated-out"),
+				"a key whose offline tokens are still valid must stay verifiable");
+	}
+
+	/** Once nothing it signed can still be live, the key is swept as before. */
+	@Test
+	void keyIsSweptOnceEveryTokenItSignedHasExpired() {
+		long now = Instant.now().getEpochSecond();
+		long created = now - ROTATION_SECONDS - OFFLINE_TOKEN_LIFETIME - 1;
+		shared.put("fully-expired", JwkOuterClass.Jwk.newBuilder()
+				.setKid("fully-expired")
+				.setAlg("EdDSA")
+				.setCreated(created)
+				.build());
+
+		replica().start();
+
+		assertTrue(!shared.containsKey("fully-expired"),
+				"retention must not be open-ended once no signed token can be live");
+	}
+}

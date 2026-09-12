@@ -77,8 +77,8 @@ public class KeyRotator {
      * is retained for {@code keyRetentionSeconds} so tokens it signed stay
      * verifiable. With the shipped defaults that is
      *
-     *   replicas(3) × algorithms(2) × (retention 2592000s / rotation 86400s + 1)
-     *     = 3 × 2 × 31 = 186 keys
+     *   replicas(3) × algorithms(2) × (retention 7862400s / rotation 86400s + 1)
+     *     = 3 × 2 × 92 = 552 keys
      *
      * but the set is published as a {@code jwk.Jwks}, whose {@code keys} field
      * is capped at 128 by {@code sys/jwk.proto} — a shared, do-not-modify
@@ -86,14 +86,43 @@ public class KeyRotator {
      * kernel-owned caps ({@code Identity.verifying_keys} and
      * {@code KernelDiskState.verifying_keys}) are set to match it.
      *
-     * <p>Because 186 > 128 the count bound can bind before the TTL does. When
+     * <p>Because 552 > 128 the count bound can bind before the TTL does. When
      * it does the OLDEST keys go first: they are the ones whose tokens are
      * closest to expiry. Bringing the two apart is a config change, not a code
-     * one — shorten {@code max_token_lifetime_seconds} or lengthen
-     * {@code key_rotation_interval_seconds} until
-     * replicas × 2 × (retention/rotation + 1) ≤ 128.
+     * one — shorten {@code offline_token_lifetime_seconds} (retention tracks
+     * the LONGER of the two mint ceilings, see {@link #retentionSecondsFor})
+     * or lengthen {@code key_rotation_interval_seconds} until
+     * replicas × 2 × (retention/rotation + 1) ≤ 128. At the shipped defaults
+     * it does not fit, and the count rule evicts keys whose tokens are still
+     * live — the sweep logs a warning naming this each time it does.
      */
     static final int MAX_VERIFYING_KEYS = 128;
+
+    /**
+     * The retention window a key must get for every token signed with it to
+     * stay verifiable until it expires.
+     *
+     * <p>A key is not retired the moment a newer one appears: it stays THE
+     * active signing key for a full rotation interval, so the last token it
+     * signs is minted just before the next tick and then lives its own full
+     * lifetime on top of that. Retention has to cover both — rotation interval
+     * PLUS the longest lifetime kernel will mint with the key.
+     *
+     * <p>That longest lifetime is the OFFLINE-token ceiling, not the ordinary
+     * max-token one: {@code IdentityServiceImpl} mints offline-access tokens
+     * against {@code offline_token_lifetime_seconds} (90 days by default)
+     * while {@code max_token_lifetime_seconds} is 30. Retaining for the
+     * max-token ceiling alone left offline tokens hitting "unknown kid" two
+     * months before their own expiry, and any max-lifetime token minted just
+     * before a rotation outliving its key by up to a rotation interval.
+     */
+    static long retentionSecondsFor(
+            long rotationIntervalSeconds,
+            long maxTokenLifetimeSeconds,
+            long offlineTokenLifetimeSeconds) {
+        return rotationIntervalSeconds
+                + Math.max(maxTokenLifetimeSeconds, offlineTokenLifetimeSeconds);
+    }
 
     /** Signing algorithms kernel maintains. */
     public enum SigAlg {

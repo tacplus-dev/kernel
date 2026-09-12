@@ -10,6 +10,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.generated.tenant_config.TenantConfigOuterClass;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.errors.ProtoException;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.spec.Spec;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 
@@ -127,6 +128,16 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         String ns = require(request.getTenantNamespace(), "tenant_namespace");
         if (configMap.getTenants(ns).getName().isEmpty()) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
+        }
+        // Refuse to orphan a subtree. Deleting only this level left every nested
+        // tenant's record and tenant_config in place, so its cred_pairs kept
+        // minting tokens under a parent that no longer exists — and no ceiling
+        // above them could ever be tightened again. DeleteTenantRequest carries
+        // no cascade flag, so the caller must delete the subtree leaf-first.
+        List<String> nested = descendantTenantKeys(ns);
+        if (!nested.isEmpty()) {
+            throw new ProtoException(ProtoException.FAILED_PRECONDITION,
+                    "tenant at " + ns + " still has nested tenants: " + String.join(", ", nested));
         }
         // Remove the tenant + its tenant_config + child project_configs.
         configMap.deleteTenants(ns);
@@ -398,6 +409,44 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         return out;
     }
 
+    /**
+     * Full namespaces of live tenants strictly below {@code tenantNs}, sorted.
+     *
+     * <p>The tenants map's keys are not recoverable from {@code proto()}, so —
+     * exactly as ListTenants does — candidates come from the keyed sibling
+     * collections and are then verified against the tenants map: tenant_configs
+     * keys (configured tenants) and the owning namespace of every project key
+     * (every tenant gets an auto-created "/{tenant}/default" project at
+     * creation, so a tenant with no config yet is still discoverable).
+     */
+    private List<String> descendantTenantKeys(String tenantNs) throws ProtoException {
+        String prefix = tenantNs + "/";
+        java.util.Set<String> candidates = new java.util.LinkedHashSet<>();
+        Kernel.ConfigState state = configMap.proto();
+        for (Kernel.TenantConfigEntry e : state.getTenantConfigsList()) {
+            if (e.getTenantName().startsWith(prefix)) {
+                candidates.add(e.getTenantName());
+            }
+        }
+        for (Kernel.ProjectConfigEntry e : state.getProjectConfigsList()) {
+            String pk = e.getProjectNamespace();
+            if (pk.startsWith(prefix)) {
+                String owner = pk.substring(0, pk.lastIndexOf('/'));
+                if (!owner.equals(tenantNs)) {
+                    candidates.add(owner);
+                }
+            }
+        }
+        List<String> out = new ArrayList<>();
+        for (String key : candidates) {
+            if (!configMap.getTenants(key).getName().isEmpty()) {
+                out.add(key);
+            }
+        }
+        java.util.Collections.sort(out);
+        return out;
+    }
+
     private static <T> CollectionRuntime.Page<T> pageByStringKey(
             List<T> orderedItems, CollectionRuntime.PageParams page, java.util.function.Function<T, String> keyFn)
             throws ProtoException {
@@ -439,10 +488,16 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     }
 
     /**
-     * Subset check for native flat grant tokens. Wildcards are expanded through
-     * the generated Grants catalog before comparison. A null/empty ceiling means
-     * "no grants" (only an empty candidate is a subset). An unbounded ceiling
-     * (ROOT) is handled by the caller passing {@code null} and skipping the check.
+     * Subset check across EVERY authority-bearing field of TokenEntitlements —
+     * {@code grants}, {@code data_grants} and {@code principal_scope}. Checking
+     * only {@code grants} left the other two unbounded: a tenant could hand a
+     * sub-tenant (or a cred_pair) data grants it does not hold itself, or widen
+     * {@code principal_scope} to ANY, escaping the ceiling on the two dimensions
+     * the ceiling never compared.
+     *
+     * <p>A null/empty ceiling means "nothing granted" (only an equally empty
+     * candidate is a subset). An unbounded ceiling (the tenants ROOT) is handled
+     * by the caller passing {@code null} and skipping the check.
      */
     static boolean entitlementsSubsetOf(
             Entitlements.TokenEntitlements candidate, Entitlements.TokenEntitlements ceiling) {
@@ -452,7 +507,42 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (ceiling == null) {
             ceiling = Entitlements.TokenEntitlements.getDefaultInstance();
         }
-        return Grants.containsAll(candidate.getGrantsList(), ceiling.getGrantsList());
+        // grants: wildcards are expanded through the generated Grants catalog
+        // before comparison.
+        if (!Grants.containsAll(candidate.getGrantsList(), ceiling.getGrantsList())) {
+            return false;
+        }
+        // data_grants have no wildcard catalog entries — Grants.normalize would
+        // silently DROP any token it doesn't recognise — so compare the flat
+        // lists directly rather than normalizing.
+        if (!new java.util.HashSet<>(ceiling.getDataGrantsList())
+                .containsAll(candidate.getDataGrantsList())) {
+            return false;
+        }
+        // principal_scope is a single widening dial rather than a set: the
+        // candidate may not out-rank the ceiling.
+        return principalScopeRank(candidate.getPrincipalScope())
+                <= principalScopeRank(ceiling.getPrincipalScope());
+    }
+
+    /**
+     * Parses a principal_scope value (an enum VALUE NAME, e.g.
+     * "PRINCIPAL_SCOPE_ANY") into its ordinal rank. Absent/empty/unrecognized
+     * values are treated as SELF_ONLY, the enum's own documented default for
+     * "says nothing about principal scope", so both sides fail closed.
+     */
+    private static int principalScopeRank(String value) {
+        if (value != null && !value.isEmpty()) {
+            try {
+                Spec.PrincipalScope parsed = Spec.PrincipalScope.valueOf(value);
+                if (parsed.getNumber() > 0) {
+                    return parsed.getNumber();
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Unrecognized value — fall through to the SELF_ONLY default.
+            }
+        }
+        return Spec.PrincipalScope.PRINCIPAL_SCOPE_SELF_ONLY.getNumber();
     }
 
     /**

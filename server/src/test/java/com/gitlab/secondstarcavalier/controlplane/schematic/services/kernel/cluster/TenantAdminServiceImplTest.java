@@ -9,6 +9,8 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacp
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -126,6 +128,128 @@ class TenantAdminServiceImplTest {
 
 		assertEquals("globex", created.getName());
 		assertEquals("globex", configMap.getTenants("/tenants/globex").getName());
+	}
+
+	/**
+	 * The ceiling exploit. {@code entitlementsSubsetOf} compared only the
+	 * {@code grants} list, so a sub-tenant could stay within its parent's RPC
+	 * grants while requesting {@code data_grants} the parent does not hold and
+	 * {@code principal_scope: ANY} — authority over every principal — neither of
+	 * which the ceiling ever looked at. Against the unfixed check both of these
+	 * calls SUCCEED.
+	 */
+	@Test
+	void createTenantRejectsDataGrantsAndPrincipalScopeBeyondTheParentCeiling() {
+		ProtoException dataGrants = assertThrows(ProtoException.class,
+				() -> impl.createTenant(null, Kernel.CreateTenantRequest.newBuilder()
+						.setTenantNamespace(ACME + "/sub")
+						.setConstraints(fullCeiling(
+								List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"),
+								List.of("KERNEL_TENANT_CONSTRAINTS"),
+								""))
+						.build()));
+		assertEquals(ProtoException.INVALID_ARGUMENT, dataGrants.getCode(), dataGrants.getMessage());
+		assertTrue(dataGrants.getMessage().contains("exceeds the parent tenant's ceiling"),
+				dataGrants.getMessage());
+
+		ProtoException scope = assertThrows(ProtoException.class,
+				() -> impl.createTenant(null, Kernel.CreateTenantRequest.newBuilder()
+						.setTenantNamespace(ACME + "/sub")
+						.setConstraints(fullCeiling(
+								List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"),
+								List.of(),
+								"PRINCIPAL_SCOPE_ANY"))
+						.build()));
+		assertEquals(ProtoException.INVALID_ARGUMENT, scope.getCode(), scope.getMessage());
+		assertTrue(scope.getMessage().contains("exceeds the parent tenant's ceiling"), scope.getMessage());
+
+		assertTrue(configMap.getTenants(ACME + "/sub").getName().isEmpty(),
+				"tenant must not have been created");
+	}
+
+	/**
+	 * Negative control for the widened check: data_grants and principal_scope no
+	 * wider than the parent's still pass.
+	 */
+	@Test
+	void createTenantAllowsDataGrantsAndPrincipalScopeWithinTheParentCeiling() throws Exception {
+		configMap.putTenants(ACME, Kernel.Tenant.newBuilder()
+				.setName("acme")
+				.setStatus(Kernel.TenantStatus.TENANT_STATUS_ACTIVE)
+				.setConstraints(fullCeiling(
+						List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"),
+						List.of("KERNEL_TENANT_CONSTRAINTS"),
+						"PRINCIPAL_SCOPE_SUBTREE"))
+				.build());
+
+		Kernel.Tenant created = impl.createTenant(null, Kernel.CreateTenantRequest.newBuilder()
+				.setTenantNamespace(ACME + "/sub")
+				.setConstraints(fullCeiling(
+						List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"),
+						List.of("KERNEL_TENANT_CONSTRAINTS"),
+						"PRINCIPAL_SCOPE_SELF_ONLY"))
+				.build());
+
+		assertEquals("sub", created.getName());
+	}
+
+	/**
+	 * The orphaning exploit. DeleteTenant removed only the named tenant's record
+	 * and config, leaving every nested tenant beneath it live — its cred_pairs
+	 * kept minting tokens under a parent that no longer existed. Against the
+	 * unfixed handler this call SUCCEEDS and /tenants/acme/sub survives, with no
+	 * tenant above it to ever narrow or revoke it.
+	 */
+	@Test
+	void deleteTenantRefusesToOrphanNestedTenants() throws Exception {
+		impl.createTenant(null, Kernel.CreateTenantRequest.newBuilder()
+				.setTenantNamespace(ACME + "/sub")
+				.setConstraints(ceiling("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"))
+				.build());
+
+		ProtoException e = assertThrows(ProtoException.class,
+				() -> impl.deleteTenant(null, Kernel.DeleteTenantRequest.newBuilder()
+						.setTenantNamespace(ACME)
+						.build()));
+
+		assertEquals(ProtoException.FAILED_PRECONDITION, e.getCode(), e.getMessage());
+		assertTrue(e.getMessage().contains(ACME + "/sub"),
+				"error should name the nested tenant, got: " + e.getMessage());
+
+		// Nothing was partially removed.
+		assertEquals("acme", configMap.getTenants(ACME).getName());
+		assertEquals("sub", configMap.getTenants(ACME + "/sub").getName());
+		assertEquals(ACME + "/sub/default",
+				configMap.getProjectConfigs(ACME + "/sub/default").getProjectNamespace());
+	}
+
+	/** Negative control: leaf-first deletion of the whole subtree still works. */
+	@Test
+	void deleteTenantDeletesALeafTenantAndThenItsParent() throws Exception {
+		impl.createTenant(null, Kernel.CreateTenantRequest.newBuilder()
+				.setTenantNamespace(ACME + "/sub")
+				.setConstraints(ceiling("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"))
+				.build());
+
+		impl.deleteTenant(null, Kernel.DeleteTenantRequest.newBuilder()
+				.setTenantNamespace(ACME + "/sub")
+				.build());
+		assertTrue(configMap.getTenants(ACME + "/sub").getName().isEmpty());
+
+		impl.deleteTenant(null, Kernel.DeleteTenantRequest.newBuilder()
+				.setTenantNamespace(ACME)
+				.build());
+		assertTrue(configMap.getTenants(ACME).getName().isEmpty());
+	}
+
+	private static Kernel.Constraints fullCeiling(
+			List<String> grants, List<String> dataGrants, String principalScope) {
+		return Kernel.Constraints.newBuilder()
+				.setEntitlementsCeiling(Entitlements.TokenEntitlements.newBuilder()
+						.addAllGrants(grants)
+						.addAllDataGrants(dataGrants)
+						.setPrincipalScope(principalScope))
+				.build();
 	}
 
 	private static Kernel.Constraints ceiling(String... grants) {

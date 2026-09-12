@@ -47,7 +47,8 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     private static final Logger logger = LoggerFactory.getLogger(TenantAdminServiceImpl.class);
 
     /** Canonical root of the tenant subtree; every tenant namespace lives under it. */
-    private static final String TENANTS_PREFIX = "/tenants/";
+    private static final String TENANTS_ROOT = "/tenants";
+    private static final String TENANTS_PREFIX = TENANTS_ROOT + "/";
 
     private final ConfigMap configMap;
     private final Supplier<String> trustDomainReader;
@@ -89,8 +90,8 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         }
 
         // Validate the new tenant's ceiling against the parent's ceiling. The
-        // parent is the namespace one level up; ROOT (no tenant record above)
-        // has an unbounded ceiling.
+        // parent is the namespace one level up and must already exist (only
+        // TENANTS_ROOT, the parent of a top-level tenant, is unbounded).
         Kernel.Constraints constraints = request.hasConstraints()
                 ? request.getConstraints() : Kernel.Constraints.getDefaultInstance();
         Entitlements.TokenEntitlements parentCeiling = parentCeiling(ns);
@@ -346,20 +347,30 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
 
     /**
      * Returns the parent tenant's entitlements ceiling, or {@code null} when the
-     * parent is ROOT (unbounded ceiling — no validation needed).
+     * parent is {@link #TENANTS_ROOT} (unbounded ceiling — no validation needed).
+     *
+     * <p>Every other parent MUST already hold a tenant record: a tenant is only
+     * ever created one level below an existing tenant, so a namespace whose
+     * immediate parent segment does not exist is rejected rather than treated as
+     * unbounded. Treating it as unbounded let a tenant admin skip a level
+     * ({@code /tenants/acme/ghost/evil} with no {@code /tenants/acme/ghost}) and
+     * escape its own ceiling entirely.
+     *
+     * <p>Because every existing tenant was itself validated against its parent
+     * at creation, the immediate parent's ceiling is already a subset of every
+     * ceiling above it — so it IS the tightest ceiling on the ancestor chain and
+     * no walk is needed.
      */
-    private Entitlements.TokenEntitlements parentCeiling(String ns) {
-        int slash = ns.lastIndexOf('/');
-        if (slash <= 0) {
-            // Parent is the root "/" — unbounded ceiling.
+    private Entitlements.TokenEntitlements parentCeiling(String ns) throws ProtoException {
+        String parentNs = ns.substring(0, ns.lastIndexOf('/'));
+        if (TENANTS_ROOT.equals(parentNs)) {
+            // Parent is the tenants root — a top-level tenant, unbounded ceiling.
             return null;
         }
-        String parentNs = ns.substring(0, slash);
         Kernel.Tenant parent = configMap.getTenants(parentNs);
         if (parent.getName().isEmpty()) {
-            // No tenant record above (e.g. parent is the cluster-root namespace).
-            // Treat as unbounded.
-            return null;
+            throw new ProtoException(ProtoException.NOT_FOUND,
+                    "no parent tenant at " + parentNs);
         }
         return parent.getConstraints().getEntitlementsCeiling();
     }

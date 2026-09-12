@@ -43,7 +43,13 @@ public class Bootstrap {
 		if (config == null)
 			return;
 
-		LogbackConfigurator.install(null);
+		// Re-install now that Kernel.Config is resolved, so the operator's
+		// configured logger block (level, format, appenders) actually takes
+		// effect. The pre-config install above runs with defaults because it
+		// has to happen before any gRPC channel exists; this is the generated
+		// GrpcConfigLoader's install(cfg.getLogger()) call, which kernel never
+		// reaches because it resolves its own Kernel.Config.
+		LogbackConfigurator.install(config.getLogger());
 		logger.info(
 				"Starting kernel node: listener={}, cluster={}",
 				config.getListener(),

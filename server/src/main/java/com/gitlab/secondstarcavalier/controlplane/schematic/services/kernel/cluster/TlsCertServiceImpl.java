@@ -12,11 +12,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.Executors;
@@ -48,9 +44,6 @@ import org.slf4j.LoggerFactory;
 public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBase {
 
 	private static final Logger logger = LoggerFactory.getLogger(TlsCertServiceImpl.class);
-
-	/** Intermediate CA lifetime: 10 years. */
-	private static final long INTERMEDIATE_CA_LIFETIME_SECONDS = 10L * 365 * 24 * 3600;
 
 	private final long certLifetimeSeconds;
 	private final ImmutableCertChain signingCa;
@@ -126,19 +119,7 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 		String callerSubject;
 		String callerInstanceId;
 		try {
-			TokenWrapper token = TokenWrapper.parse(rawToken);
-			String kid = token.getKid();
-			JwkOuterClass.Jwk matchingKey = null;
-			for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
-				if (kid.equals(jwk.getKid())) {
-					matchingKey = jwk;
-					break;
-				}
-			}
-			if (matchingKey == null) {
-				throw new IllegalStateException("token signed with unknown key: " + kid);
-			}
-			token.verify(ImmutableJwk.from(matchingKey));
+			TokenWrapper token = verifiedServiceToken(rawToken, verifyingKeysReader.get());
 			callerSubject = token.getSubject();
 			callerInstanceId = token.getCustomField("instance_id");
 		} catch (Exception e) {
@@ -156,6 +137,63 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 		logger.info("ManageCert stream opened: caller={}, instanceId={}", callerSubject, callerInstanceId);
 
 		return new ManageCertObserver(responseObserver, callerSubject, callerInstanceId);
+	}
+
+	/**
+	 * Parses and fully verifies the caller's bearer for a ManageCert stream.
+	 *
+	 * <p>ManageCert authenticates itself: the cluster gRPC server's
+	 * callerInterceptor deliberately bypasses this service, so the checks
+	 * {@code IdentityServiceImpl.doX509Mint} makes on the same class of token
+	 * have to be made here too. This method used to be inline and was missing two
+	 * of them:
+	 *
+	 * <ul>
+	 *   <li>the {@link IdentityServiceImpl#isPlausibleKid} fast-reject. Without
+	 *       it an attacker-supplied oversized or garbage kid forced a full
+	 *       O(verifying keys) scan on every stream open — exactly the Phase 0.1
+	 *       DoS gate whose javadoc says every externally-influenced kid scan
+	 *       calls it.</li>
+	 *   <li>a subject-class check. {@code handleInit} requires the subject to be
+	 *       a SPIFFE URI, but nothing required the token to be a SERVICE-class
+	 *       token at all, so any token whose {@code sub} happened to be a SPIFFE
+	 *       URI opened a stream. A mesh identity is issued to workloads; a user
+	 *       or bootstrap token is not one.</li>
+	 * </ul>
+	 *
+	 * <p>{@code token.verify} covers {@code exp}, {@code nbf}, {@code alg} and
+	 * the signature, so this was hardening drift rather than an auth bypass.
+	 *
+	 * @return the verified token
+	 * @throws IllegalStateException if the token is not an acceptable service
+	 *                               bearer; the caller maps it to UNAUTHENTICATED
+	 */
+	static TokenWrapper verifiedServiceToken(String rawToken, List<JwkOuterClass.Jwk> verifyingKeys) {
+		TokenWrapper token = TokenWrapper.parse(rawToken);
+		String kid = token.getKid();
+		// Fast-reject before the key scan, same gate and same message shape as
+		// the unknown-key miss below so the two are indistinguishable to a caller.
+		if (!IdentityServiceImpl.isPlausibleKid(kid)) {
+			throw new IllegalStateException("token signed with unknown key: " + kid);
+		}
+		JwkOuterClass.Jwk matchingKey = null;
+		for (JwkOuterClass.Jwk jwk : verifyingKeys) {
+			if (kid.equals(jwk.getKid())) {
+				matchingKey = jwk;
+				break;
+			}
+		}
+		if (matchingKey == null) {
+			throw new IllegalStateException("token signed with unknown key: " + kid);
+		}
+		token.verify(ImmutableJwk.from(matchingKey));
+
+		String subType = token.getSubType();
+		if (!IdentityServiceImpl.SUB_TYPE_SERVICE.equals(subType)) {
+			throw new IllegalStateException(
+					"ManageCert requires a service token; sub_type is " + subType);
+		}
+		return token;
 	}
 
 	// ========================================================================
@@ -411,76 +449,20 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	}
 
 	// ========================================================================
-	// Intermediate CA (same pattern as IdentityServiceImpl)
+	// Intermediate CA
 	// ========================================================================
 
-	private synchronized ImmutableCertChain getOrCreateIntermediateCa(
+	/**
+	 * Delegates to {@link ServiceIntermediateCa}, the single implementation
+	 * shared with {@code IdentityServiceImpl.X509Mint}. This method used to be a
+	 * near-verbatim copy of that one, each guarded by {@code synchronized} on its
+	 * own instance — two different monitors, so a concurrent X509Mint and
+	 * ManageCert for the same service could both sign an intermediate and race
+	 * the write, leaving the loser's leaf chaining to a CA no longer in state.
+	 */
+	private ImmutableCertChain getOrCreateIntermediateCa(
 			String serviceName, ImmutableCertChain rootCa) throws Exception {
-
-		// Check if intermediate CA already exists for this service.
-		X509.X509CertChain existing = serviceCaReader.apply(serviceName);
-		if (existing != null && existing.getChainCount() > 0) {
-			ImmutableCertChain reusable = ServiceIntermediateCa.reusable(serviceName, existing, rootCa, logger);
-			if (reusable != null) {
-				return reusable;
-			}
-			logger.info("Recreating intermediate CA for service: {}", serviceName);
-		}
-
-		// Generate EC P-384 keypair for the intermediate CA.
-		// Ed25519 is avoided because Netty (used by Keycloak/Quarkus) has known
-		// compatibility issues with Ed25519 in TLS certificate chains.
-		KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
-		kpg.initialize(new ECGenParameterSpec("secp384r1"));
-		KeyPair intermediateKeyPair = kpg.generateKeyPair();
-
-		String intermediateId = serviceName + "-intermediate-ca";
-		long now = Instant.now().getEpochSecond();
-		long intermediateExp = now + INTERMEDIATE_CA_LIFETIME_SECONDS;
-
-		// Build public key proto for signing request.
-		byte[] pubKeyBytes = intermediateKeyPair.getPublic().getEncoded();
-		String pubKeyBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(pubKeyBytes);
-		KeyOuterClass.PublicKey intermediatePubKey = KeyOuterClass.PublicKey.newBuilder()
-				.setId(intermediateId)
-				.setBase64(pubKeyBase64)
-				.build();
-
-		// Sign the intermediate CA cert with the root CA (CA:TRUE, pathlen:0).
-		X509.X509CertRequest intermediateRequest = X509.X509CertRequest.newBuilder()
-				.setKey(intermediatePubKey)
-				.setExp(intermediateExp)
-				.setIssuer(serviceName + " Intermediate CA")
-				.setKeyUsage(X509.X509KeyUsage.X509_KEY_USAGE_CERT_SIGN)
-				.setIsCa(true)
-				.setPathLenConstraint(0)
-				.build();
-
-		X509.X509Cert intermediateCert = rootCa.sign(intermediateRequest);
-
-		// Build the private key proto.
-		byte[] privKeyBytes = intermediateKeyPair.getPrivate().getEncoded();
-		String privKeyPem = "-----BEGIN PRIVATE KEY-----\n"
-				+ Base64.getMimeEncoder(64, "\n".getBytes()).encodeToString(privKeyBytes)
-				+ "\n-----END PRIVATE KEY-----\n";
-		String privKeyBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(privKeyPem.getBytes());
-
-		KeyOuterClass.Key intermediateKey = KeyOuterClass.Key.newBuilder()
-				.setId(intermediateId)
-				.setBase64(privKeyBase64)
-				.setCreated(now)
-				.build();
-
-		// Store the intermediate CA keypair in the Ca state.
-		X509.X509CertChain intermediateProto = X509.X509CertChain.newBuilder()
-				.setId(serviceName)
-				.setKey(intermediateKey)
-				.addChain(intermediateCert)
-				.build();
-
-		serviceCaWriter.accept(serviceName, intermediateProto);
-		logger.info("Created intermediate CA for service: {}", serviceName);
-
-		return ImmutableCertChain.from(intermediateProto);
+		return ServiceIntermediateCa.getOrCreate(
+				serviceName, serviceCaReader, serviceCaWriter, rootCa, null, logger);
 	}
 }

@@ -553,7 +553,7 @@ class DevicePrincipalTest {
 			long now = Instant.now().getEpochSecond();
 			String header = "{\"alg\":\"EdDSA\",\"typ\":\"JWT\",\"kid\":\"" + credentialId + "\"}";
 			String payload = "{\"iss\":\"" + credentialId + "\",\"sub\":\"" + credentialId
-					+ "\",\"aud\":\"kernel\",\"iat\":" + now + ",\"exp\":" + (now + 300)
+					+ "\",\"aud\":\"kernel\",\"iat\":" + now + ",\"exp\":" + (now + 60)
 					+ ",\"jti\":\"" + UUID.randomUUID() + "\"}";
 			String signingInput = B64.encodeToString(header.getBytes(StandardCharsets.UTF_8))
 					+ "." + B64.encodeToString(payload.getBytes(StandardCharsets.UTF_8));

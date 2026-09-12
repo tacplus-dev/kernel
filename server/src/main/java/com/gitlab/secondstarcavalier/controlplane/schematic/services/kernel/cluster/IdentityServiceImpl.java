@@ -38,12 +38,8 @@ import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 
 import java.nio.charset.StandardCharsets;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
-import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -108,18 +104,14 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static final String TOKEN_USE_ACCESS = Helpers.tokenUseToString(TokenUse.TOKEN_USE_ACCESS);
 	private static final String TOKEN_USE_SERVICE = Helpers.tokenUseToString(TokenUse.TOKEN_USE_SERVICE);
 	private static final String TOKEN_USE_BOOTSTRAP = Helpers.tokenUseToString(TokenUse.TOKEN_USE_BOOTSTRAP);
-	// TODO: Replace with Helpers.tokenUseToString(TokenUse.TOKEN_USE_OFFLINE) once
-	// tacplus is rebuilt with token.proto TOKEN_USE_OFFLINE=7 (commit 9acf59f).
-	// The literal matches that enum's (spec.json_return_value).
-	private static final String TOKEN_USE_OFFLINE = "offline";
-	private static final String SUB_TYPE_SERVICE = Helpers.subTypeToString(SubType.SUB_TYPE_SERVICE);
+	private static final String TOKEN_USE_OFFLINE = Helpers.tokenUseToString(TokenUse.TOKEN_USE_OFFLINE);
+	static final String SUB_TYPE_SERVICE = Helpers.subTypeToString(SubType.SUB_TYPE_SERVICE);
 	private static final String SUB_TYPE_USER = Helpers.subTypeToString(SubType.SUB_TYPE_USER);
 
 	// Claim names — derived from proto-defined JwtPayloadType enum.
 	private static final String TERMINAL = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_TERMINAL);
-	// TODO: Replace with Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_PARENT_SUB)
-	// after tacplus is rebuilt with the renamed token.proto enum value.
-	private static final String PARENT_SUB = "parent_sub";
+	private static final String PARENT_SUB =
+			Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_PARENT_SUB);
 	private static final String LOCALITY = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_LOCALITY);
 	private static final String SERVICE_ENTITLEMENTS = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_SERVICE_ENTITLEMENTS);
 
@@ -129,12 +121,15 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static final String SPIFFE_PREFIX = Spiffe.SCHEME + "://";
 
 	// Plausible-kid gate, mirroring SecurityInterceptor/SecurityAuthenticator (Phase 0.1
-	// DoS-hardening). Production kids are base64url(24 bytes) = 32 chars of [A-Za-z0-9_-]
-	// (see generateRandomID); we accept the permissive-but-safe superset up to KID_MAX_LENGTH
-	// so a bogus/oversized kid is cheaply rejected before any key-set scan.
+	// DoS-hardening). Kernel's own kids are UUIDs — 36 chars of [0-9a-f-], see
+	// KeyRotator.newKey — and a cred_pair's kid is whatever id the tenant config gave it,
+	// so the charset stays the permissive-but-safe [A-Za-z0-9_-] superset rather than
+	// anything UUID-shaped. Length is gated by KID_MAX_LENGTH alone; the pattern carries
+	// no bound of its own, which previously read {1,512} and was dead against the
+	// 128-char cap checked beside it.
 	private static final int KID_MAX_LENGTH =
 			Integer.getInteger("tacplus.auth.kidMaxLength", 128);
-	private static final Pattern KID_FORMAT = Pattern.compile("^[A-Za-z0-9_-]{1,512}$");
+	private static final Pattern KID_FORMAT = Pattern.compile("^[A-Za-z0-9_-]+$");
 
 	/**
 	 * Phase 0.1 fast-rejection gate: is {@code kid} a plausible key id worth scanning
@@ -145,8 +140,12 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	 * then throws its own call-site-appropriate status on {@code false}. Validation only:
 	 * deliberately NO sleep/retry/semaphore — the blocking just-published-key retry lives
 	 * exclusively on the cross-kernel propagation (data-plane interceptor) path.
+	 *
+	 * <p>Package-visible because {@code TlsCertServiceImpl.ManageCert} authenticates
+	 * its own callers and scans the same verifying-key set, so it goes through the
+	 * same gate rather than growing a second copy.
 	 */
-	private static boolean isPlausibleKid(String kid) {
+	static boolean isPlausibleKid(String kid) {
 		return kid != null
 				&& kid.length() <= KID_MAX_LENGTH
 				&& KID_FORMAT.matcher(kid).matches();
@@ -167,14 +166,25 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 	private static final String CLAIM_GRANT_ID = "gid";
 
 
-	/** Intermediate CA lifetime: 10 years. */
-	private static final long INTERMEDIATE_CA_LIFETIME_SECONDS = 10L * 365 * 24 * 3600;
-
 	private static final long DEFAULT_MAX_TOKEN_LIFETIME_SECONDS = 2592000; // 30 days
 	private static final long DEFAULT_OFFLINE_TOKEN_LIFETIME_SECONDS = 7776000; // 90 days
 
 	/** Default cred_pair → C2S token lifetime (MintClientToken). */
 	private static final long DEFAULT_TOKEN_TTL_SECONDS = 3600; // 1 hour
+
+	/**
+	 * Longest lifetime kernel will accept on a CLIENT-minted proof JWT, whatever
+	 * the client put in {@code exp} — see {@link #proofReplayRefusal}. A proof
+	 * asserts possession of a key right now; it is not a credential to carry
+	 * around, and its lifetime is the window a captured one could be replayed in.
+	 */
+	private static final long MAX_PROOF_LIFETIME_SECONDS = 60;
+
+	/** Clock-skew allowance on the proof cap, matching {@code TokenWrapper.verify}. */
+	private static final long PROOF_CLOCK_SKEW_SECONDS = 60;
+
+	/** Size at which {@link #seenProofJtis} is swept for expired entries. */
+	private static final int PROOF_JTI_PURGE_THRESHOLD = 1024;
 
 	/** Maximum lifetime of an externally-minted token (MintExternalToken). */
 	private static final long EXTERNAL_TOKEN_MAX_TTL_SECONDS = 300;
@@ -247,6 +257,17 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 		return new ExternalSigningSelection(signingAlg, signingKey);
 	}
+
+	/**
+	 * Seen {@code jti}s of accepted client-minted proofs → the epoch second past
+	 * which the entry is dead. A proof is single-use; see
+	 * {@link #proofReplayRefusal} for why this is node-local.
+	 */
+	private final java.util.concurrent.ConcurrentMap<String, Long> seenProofJtis =
+			new java.util.concurrent.ConcurrentHashMap<>();
+
+	/** Serializes CreatePersonalPrincipal's read-check-write; see the call site. */
+	private final Object personalPrincipalRegistryLock = new Object();
 
 	private final long defaultTokenExpirySeconds;
 	private final long maxTokenLifetimeSeconds;
@@ -716,6 +737,13 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				} catch (Exception e) {
 					throw deviceProofRefused();
 				}
+				// Same anti-replay binding MintClientToken applies to a cred_pair
+				// proof. Folded into the single refusal for the same reason every
+				// other failure here is: distinguishing them turns this into an
+				// oracle for which credentials exist.
+				if (proofReplayRefusal(proof, Instant.now().getEpochSecond()) != null) {
+					throw deviceProofRefused();
+				}
 				return principal;
 			}
 		}
@@ -724,6 +752,69 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 	private static StatusException deviceProofRefused() {
 		return new StatusException(Status.PERMISSION_DENIED, "device proof verification failed");
+	}
+
+	/**
+	 * Anti-replay binding for the two CLIENT-minted proof JWTs kernel accepts —
+	 * a cred_pair proof ({@code MintClientToken}) and a device possession proof
+	 * ({@link #verifyDeviceProof}). Every kernel-MINTED token gets a fresh
+	 * {@code jti} at the point it is signed; these two are the one credential
+	 * class where the client chooses the whole payload, and they used to be
+	 * nothing but {@code parse} then {@code verify}.
+	 *
+	 * <p>{@code TokenWrapper.verify} does enforce {@code exp}, so replay was
+	 * bounded by the proof's own expiry — but the CLIENT set that expiry, with
+	 * nothing constraining how far out, and nothing tied the proof to kernel or
+	 * noticed the same proof arriving twice. Anyone who captured one proof could
+	 * replay it verbatim for fresh tokens and fresh registrations. Three checks
+	 * close that, and the caller decides what to say about a failure:
+	 *
+	 * <ul>
+	 *   <li>{@code aud} must be kernel's audience, so a proof minted for some
+	 *       other relying party is not accepted here.</li>
+	 *   <li>the accepted lifetime is capped independently of what the client
+	 *       asked for, which bounds the replay window and bounds how long the
+	 *       {@code jti} below has to be remembered.</li>
+	 *   <li>the {@code jti} must be present and unseen. A proof is single-use.</li>
+	 * </ul>
+	 *
+	 * <p>Called only AFTER the signature verifies, so an unauthenticated caller
+	 * cannot burn a {@code jti} it does not hold the key for.
+	 *
+	 * <p><b>Node-local seen-set.</b> {@link #seenProofJtis} is per-JVM, so a
+	 * replay aimed at a different kernel pod inside the cap window is not caught.
+	 * A cluster-wide TTL map would need a Hazelcast handle these services are not
+	 * given; tracked as a follow-up. The audience and lifetime checks are
+	 * unaffected.
+	 *
+	 * @return null when the proof is acceptable, else why it was refused
+	 */
+	@Nullable
+	private String proofReplayRefusal(TokenWrapper proof, long now) {
+		if (!Kernel.getDescriptor().getPackage().equals(proof.getAudience())) {
+			return "proof audience is not " + Kernel.getDescriptor().getPackage();
+		}
+		// verify() has already established exp > 0 and not-yet-expired; this bounds
+		// the other end. The skew allowance is the same 60s TokenWrapper.verify
+		// applies, so a client whose clock runs fast is not refused for it.
+		long expCeiling = now + MAX_PROOF_LIFETIME_SECONDS + PROOF_CLOCK_SKEW_SECONDS;
+		if (proof.getExpiration() > expCeiling) {
+			return "proof lifetime exceeds the " + MAX_PROOF_LIFETIME_SECONDS + "s cap";
+		}
+		String jti = proof.getJTI();
+		if (jti == null || jti.isEmpty()) {
+			return "proof has no jti";
+		}
+		// Entries live at most as long as a proof may, so the set is bounded by the
+		// proof rate over that window; purge the expired ones rather than let a
+		// burst leave them behind.
+		if (seenProofJtis.size() >= PROOF_JTI_PURGE_THRESHOLD) {
+			seenProofJtis.values().removeIf(seenUntil -> seenUntil <= now);
+		}
+		if (seenProofJtis.putIfAbsent(jti, expCeiling) != null) {
+			return "proof jti has already been used";
+		}
+		return null;
 	}
 
 	/**
@@ -2721,108 +2812,18 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 
 	/**
 	 * Gets or creates a per-service intermediate CA.
-	 * The intermediate CA is signed by the root CA with BasicConstraints CA:TRUE, pathlen:0.
-	 * It's stored in the Ca state's service_cas collection, keyed by service name.
+	 *
+	 * <p>Delegates to {@link ServiceIntermediateCa}, which is the single
+	 * implementation shared with {@code TlsCertServiceImpl.ManageCert}. The two
+	 * services each used to carry their own copy guarded by {@code synchronized}
+	 * on their own instance, so nothing serialized a concurrent X509Mint and
+	 * ManageCert for the same service and both could sign an intermediate the
+	 * other's write then dropped.
 	 */
-	private synchronized ImmutableCertChain getOrCreateIntermediateCa(
-			String serviceName, ImmutableCertChain rootCa) throws Exception {
-		return getOrCreateIntermediateCa(null, serviceName, rootCa);
-	}
-
-	private synchronized ImmutableCertChain getOrCreateIntermediateCa(
+	private ImmutableCertChain getOrCreateIntermediateCa(
 			String traceId, String serviceName, ImmutableCertChain rootCa) throws Exception {
-		long startNanos = System.nanoTime();
-
-		// Check if intermediate CA already exists for this service.
-		X509.X509CertChain existing = serviceCaReader.apply(serviceName);
-		if (existing != null && existing.getChainCount() > 0) {
-			ImmutableCertChain reusable = ServiceIntermediateCa.reusable(serviceName, existing, rootCa, logger);
-			if (reusable == null) {
-				logger.info("Recreating intermediate CA for service: {}{}", serviceName,
-						traceId != null ? " traceId=" + traceId : "");
-			} else {
-				if (traceId != null) {
-					logger.info("X509Mint[{}] found existing intermediate CA service={}, chainLength={} in {}ms",
-							traceId, serviceName, existing.getChainCount(), elapsedMillis(startNanos));
-				}
-				return reusable;
-			}
-		}
-
-		// Generate EC P-384 keypair for the intermediate CA.
-		// Ed25519 is avoided because Netty (used by Keycloak/Quarkus) has known
-		// compatibility issues with Ed25519 in TLS certificate chains.
-		if (traceId != null) {
-			logger.info("X509Mint[{}] generating intermediate CA key service={}", traceId, serviceName);
-		}
-		KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
-		kpg.initialize(new ECGenParameterSpec("secp384r1"));
-		KeyPair intermediateKeyPair = kpg.generateKeyPair();
-		if (traceId != null) {
-			logger.info("X509Mint[{}] generated intermediate CA key service={} in {}ms",
-					traceId, serviceName, elapsedMillis(startNanos));
-		}
-
-		String intermediateId = serviceName + "-intermediate-ca";
-		long now = Instant.now().getEpochSecond();
-		long intermediateExp = now + INTERMEDIATE_CA_LIFETIME_SECONDS;
-
-		// Build public key proto for signing request.
-		byte[] pubKeyBytes = intermediateKeyPair.getPublic().getEncoded();
-		String pubKeyBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(pubKeyBytes);
-		KeyOuterClass.PublicKey intermediatePubKey = KeyOuterClass.PublicKey.newBuilder()
-				.setId(intermediateId)
-				.setBase64(pubKeyBase64)
-				.build();
-
-		// Sign the intermediate CA cert with the root CA (CA:TRUE, pathlen:0).
-		X509.X509CertRequest intermediateRequest = X509.X509CertRequest.newBuilder()
-				.setKey(intermediatePubKey)
-				.setExp(intermediateExp)
-				.setIssuer(serviceName + " Intermediate CA")
-				.setKeyUsage(X509.X509KeyUsage.X509_KEY_USAGE_CERT_SIGN)
-				.setIsCa(true)
-				.setPathLenConstraint(0)
-				.build();
-
-		if (traceId != null) {
-			logger.info("X509Mint[{}] signing intermediate CA service={} issuer={}",
-					traceId, serviceName, intermediateRequest.getIssuer());
-		}
-		X509.X509Cert intermediateCert = rootCa.sign(intermediateRequest);
-		if (traceId != null) {
-			logger.info("X509Mint[{}] signed intermediate CA service={} in {}ms",
-					traceId, serviceName, elapsedMillis(startNanos));
-		}
-
-		// Build the private key proto.
-		byte[] privKeyBytes = intermediateKeyPair.getPrivate().getEncoded();
-		String privKeyPem = "-----BEGIN PRIVATE KEY-----\n"
-				+ Base64.getMimeEncoder(64, "\n".getBytes()).encodeToString(privKeyBytes)
-				+ "\n-----END PRIVATE KEY-----\n";
-		String privKeyBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(privKeyPem.getBytes());
-
-		KeyOuterClass.Key intermediateKey = KeyOuterClass.Key.newBuilder()
-				.setId(intermediateId)
-				.setBase64(privKeyBase64)
-				.setCreated(now)
-				.build();
-
-		// Store the intermediate CA keypair in the Ca state.
-		X509.X509CertChain intermediateProto = X509.X509CertChain.newBuilder()
-				.setId(serviceName)
-				.setKey(intermediateKey)
-				.addChain(intermediateCert)
-				.build();
-
-		if (traceId != null) {
-			logger.info("X509Mint[{}] writing intermediate CA service={}", traceId, serviceName);
-		}
-		serviceCaWriter.accept(serviceName, intermediateProto);
-		logger.info("Created intermediate CA for service: {}{}", serviceName,
-				traceId != null ? " traceId=" + traceId : "");
-
-		return ImmutableCertChain.from(intermediateProto);
+		return ServiceIntermediateCa.getOrCreate(
+				serviceName, serviceCaReader, serviceCaWriter, rootCa, traceId, logger);
 	}
 
 	// ========================================================================
@@ -3625,23 +3626,35 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// Resolve the CredPair by id across tenants' cred_pairs. The owning
 		// tenant's namespace becomes the minted token's namespace (entitlements +
 		// at-or-below cover the tenant and its projects).
+		//
+		// Nothing — not the proto, not updateTenantConfig — enforces that cred_pair
+		// ids are unique ACROSS tenants, so this used to break on the first id match
+		// and let `tenant_configs` iteration order decide which tenant's namespace a
+		// token was scoped to. The loser's credential would mint tokens into somebody
+		// else's namespace. Collect every match instead and refuse an ambiguous id:
+		// there is no correct answer to pick, and picking one silently is the bug.
 		Credentials.CredPair matched = null;
 		String namespace = null;
+		List<String> owningTenants = new java.util.ArrayList<>();
 		for (Kernel.TenantConfigEntry e : configMap.proto().getTenantConfigsList()) {
 			for (Credentials.CredPair cp : e.getConfig().getKernel().getCredPairsList()) {
 				if (credPairId.equals(cp.getId())) {
 					matched = cp;
 					namespace = e.getTenantName();
+					owningTenants.add(e.getTenantName());
 					break;
 				}
-			}
-			if (matched != null) {
-				break;
 			}
 		}
 		if (matched == null) {
 			throw new ProtoException(ProtoException.UNAUTHENTICATED,
 					"unknown cred_pair: " + credPairId);
+		}
+		if (owningTenants.size() > 1) {
+			logger.error("cred_pair {} is configured under {} tenants: {} — refusing to mint",
+					credPairId, owningTenants.size(), owningTenants);
+			throw new ProtoException(ProtoException.FAILED_PRECONDITION,
+					"cred_pair " + credPairId + " is configured under more than one tenant");
 		}
 
 		// Expiry check on the cred_pair itself.
@@ -3659,6 +3672,11 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			throw new ProtoException(ProtoException.UNAUTHENTICATED,
 					"cred_pair proof verification failed: " + e.getMessage());
 		}
+		String replayRefusal = proofReplayRefusal(proof, now);
+		if (replayRefusal != null) {
+			throw new ProtoException(ProtoException.UNAUTHENTICATED,
+					"cred_pair proof verification failed: " + replayRefusal);
+		}
 
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		if (signingKey == null) {
@@ -3669,7 +3687,17 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// max-token-lifetime ceiling (not the offline one) every other
 		// short-lived mint path in this class applies, with the same
 		// INVALID_ARGUMENT on breach.
+		//
+		// The cred_pair's own expires_at is the second ceiling, and it was missing:
+		// expires_at gated the credential at mint time (above) but never bounded the
+		// token's exp, so a holder minting one second before the credential expired
+		// got a token good for the full max_token_lifetime. Expiring or revoking the
+		// credential then left up to that whole window of live access. Both ceilings
+		// are the same INVALID_ARGUMENT shape so they read identically to a caller.
 		long maxExp = now + maxTokenLifetimeSeconds;
+		if (matched.hasExpiresAt() && matched.getExpiresAt().getSeconds() > 0) {
+			maxExp = Math.min(maxExp, matched.getExpiresAt().getSeconds());
+		}
 		long exp;
 		if (request.getExp() > 0) {
 			exp = request.getExp();
@@ -3681,7 +3709,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
 			}
 		} else {
-			exp = now + DEFAULT_TOKEN_TTL_SECONDS;
+			exp = Math.min(now + DEFAULT_TOKEN_TTL_SECONDS, maxExp);
 		}
 
 		// Mint a C2S token carrying the cred_pair's entitlements + namespace.
@@ -3690,7 +3718,7 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		TokenWrapper token = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
 				.setSubject("cred-pair:" + credPairId)
-				.setAudience("kernel")
+				.setAudience(Kernel.getDescriptor().getPackage())
 				.setIssuedAt(now)
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
@@ -3775,6 +3803,29 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 					"proof_token verification failed: " + e.getMessage());
 		}
 
+		// Read-check-write, serialized. The cap check and the credential-uniqueness
+		// scan below both read principalMap, then the write puts a FRESH random key,
+		// so nothing collides and nothing made the three steps atomic: two concurrent
+		// registrations of the same credential both saw it absent and both created a
+		// principal. verifyDeviceProof would then resolve whichever the map's
+		// iteration order yielded first, and the person would silently become two
+		// people, which is exactly what the comment below says is forbidden. The cap
+		// could be overshot the same way, and that one is worse than it looks — see
+		// MAX_PERSONAL_PRINCIPALS for why an over-cap registry loses every later
+		// snapshot.
+		//
+		// Node-local, like the other guards in this file that want a cluster lock and
+		// have none: it closes concurrent registrations reaching one kernel, not two
+		// pods at once. A cross-node CAS would need either a Hazelcast handle these
+		// services are not given or a credential-id index boundary in the proto;
+		// tracked as a follow-up.
+		synchronized (personalPrincipalRegistryLock) {
+			return registerPersonalPrincipal(request, credentialId);
+		}
+	}
+
+	private Kernel.CreatePersonalPrincipalResponse registerPersonalPrincipal(
+			Kernel.CreatePersonalPrincipalRequest request, String credentialId) throws ProtoException {
 		Kernel.PrincipalState registry = principalMap.proto();
 		if (registry.getPersonalPrincipalsCount() >= MAX_PERSONAL_PRINCIPALS) {
 			throw new ProtoException(ProtoException.RESOURCE_EXHAUSTED,

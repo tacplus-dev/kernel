@@ -45,6 +45,7 @@ import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -2579,27 +2580,35 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		// Intermediate CA state is keyed by bare service name, matching the
 		// ManageCert path. The full SPIFFE URI remains the leaf cert identity.
 		String serviceName = SpiffeIds.serviceName(spiffeId);
+		if (serviceName.isEmpty()) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"X509Mint requires a service SPIFFE URI; sub has no service path: " + spiffeId);
+		}
 		logger.info("X509Mint[{}] resolving intermediate CA service={}, spiffeId={}",
 				traceId, serviceName, spiffeId);
 		ImmutableCertChain intermediateCa = getOrCreateIntermediateCa(traceId, serviceName, signingCa);
 		logger.info("X509Mint[{}] intermediate CA ready service={} in {}ms",
 				traceId, serviceName, elapsedMillis(startNanos));
 
-		// Enrich cert request with the SPIFFE URI SAN (canonical identity).
-		X509.X509CertRequest enrichedRequest = request.getCertRequest().toBuilder()
-				.addUriSans(spiffeId)
-				.build();
+		// Build the cert request kernel signs from kernel's own verified view of
+		// the caller. Nothing identity- or constraint-bearing is carried over from
+		// the request body: the caller supplies a public key and a requested
+		// expiry, and kernel decides everything the certificate asserts.
+		long now = Instant.now().getEpochSecond();
+		X509.X509CertRequest kernelRequest = kernelCertRequest(
+				originalCertRequest, spiffeId, serviceName, now,
+				maxTokenLifetimeSeconds, defaultTokenExpirySeconds);
 
-		// Sign the enriched cert request with the intermediate CA.
+		// Sign the kernel-built cert request with the intermediate CA.
 		logger.info("X509Mint[{}] signing leaf service={}, keyId={}, issuer={}, exp={}, dnsSans={}, uriSans={}",
 				traceId,
 				serviceName,
-				enrichedRequest.hasKey() ? enrichedRequest.getKey().getId() : "",
-				enrichedRequest.getIssuer(),
-				enrichedRequest.getExp(),
-				enrichedRequest.getDnsNamesCount(),
-				enrichedRequest.getUriSansCount());
-		X509.X509Cert leafCert = intermediateCa.sign(enrichedRequest);
+				kernelRequest.hasKey() ? kernelRequest.getKey().getId() : "",
+				kernelRequest.getIssuer(),
+				kernelRequest.getExp(),
+				kernelRequest.getDnsNamesCount(),
+				kernelRequest.getUriSansCount());
+		X509.X509Cert leafCert = intermediateCa.sign(kernelRequest);
 		logger.info("X509Mint[{}] leaf signed service={} in {}ms",
 				traceId, serviceName, elapsedMillis(startNanos));
 
@@ -2613,6 +2622,91 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 				spiffeId, request.getCertRequest().getKey().getId());
 
 		return certChain;
+	}
+
+	/**
+	 * Builds the X509CertRequest kernel actually signs for an X509Mint call.
+	 *
+	 * <p>Everything the certificate asserts is kernel's, not the caller's: the URI
+	 * SAN is the SPIFFE id kernel just verified from the presented token, the
+	 * subject CN (carried in {@code issuer}) and the base DNS SANs are derived
+	 * from that same identity, key usage is a leaf mTLS usage, and the CA flag and
+	 * path-length constraint are never honored from the request body. Otherwise
+	 * any service holding a valid token of its own could have a cert signed
+	 * carrying another service's identity, or a CA cert.
+	 *
+	 * <p>The one caller-supplied field kept is a DNS SAN the caller demonstrably
+	 * owns — its pod hostname, which the generated service managers send so peers
+	 * connecting by hostname pass hostname verification. "Owns" means the name is
+	 * the service name itself or is under it ({@code svc-0}, {@code svc.ns.svc}),
+	 * which is the shape every k8s workload name in this platform takes; anything
+	 * else is another service's name and is dropped.
+	 *
+	 * <p>The requested expiry is bounded by the same max-token-lifetime ceiling
+	 * every other mint path in this class applies, with the same INVALID_ARGUMENT
+	 * on breach.
+	 */
+	static X509.X509CertRequest kernelCertRequest(
+			X509.X509CertRequest requested,
+			String spiffeId,
+			String serviceName,
+			long now,
+			long maxLifetimeSeconds,
+			long defaultLifetimeSeconds) throws StatusException {
+		long maxExp = now + maxLifetimeSeconds;
+		long exp;
+		if (requested.getExp() > 0) {
+			exp = requested.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > maxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
+			}
+		} else {
+			exp = now + defaultLifetimeSeconds;
+		}
+
+		// DNS SANs kernel grants unconditionally, matching the ManageCert path.
+		LinkedHashSet<String> dnsNames = new LinkedHashSet<>();
+		dnsNames.add(serviceName);
+		dnsNames.add("*." + serviceName);
+		for (String dns : requested.getDnsNamesList()) {
+			if (dns.equals(serviceName)
+					|| dns.startsWith(serviceName + "-")
+					|| dns.startsWith(serviceName + ".")
+					|| dns.equals("*." + serviceName)) {
+				dnsNames.add(dns);
+			} else {
+				logger.warn("X509Mint: dropping DNS SAN '{}' requested by {} — not a name that service owns",
+						dns, spiffeId);
+			}
+		}
+
+		for (String uri : requested.getUriSansList()) {
+			if (!uri.equals(spiffeId)) {
+				logger.warn("X509Mint: dropping URI SAN '{}' requested by {} — the signed identity is the "
+						+ "caller's verified SPIFFE id", uri, spiffeId);
+			}
+		}
+		if (requested.getIsCa() || requested.getPathLenConstraint() != 0) {
+			logger.warn("X509Mint: dropping CA constraints requested by {} (is_ca={}, path_len_constraint={}) "
+					+ "— X509Mint signs leaf certs only",
+					spiffeId, requested.getIsCa(), requested.getPathLenConstraint());
+		}
+
+		return X509.X509CertRequest.newBuilder()
+				.setKey(requested.getKey())
+				.setExp(exp)
+				.setIssuer(serviceName)
+				.setKeyUsage(X509.X509KeyUsage.X509_KEY_USAGE_DIGITAL_SIGNATURE)
+				.addExtKeyUsage(X509.X509ExtKeyUsage.X509_EXT_KEY_USAGE_SERVER_AUTH)
+				.addExtKeyUsage(X509.X509ExtKeyUsage.X509_EXT_KEY_USAGE_CLIENT_AUTH)
+				.addUriSans(spiffeId)
+				.addAllDnsNames(dnsNames)
+				.build();
 	}
 
 	private static long elapsedMillis(long startNanos) {

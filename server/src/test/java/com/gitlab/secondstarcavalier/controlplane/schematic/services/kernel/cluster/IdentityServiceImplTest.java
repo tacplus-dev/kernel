@@ -3,6 +3,7 @@ package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.clu
 
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.key.ImmutableKey;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.token.TokenWrapper;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.x509.ImmutableCert;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.grants.Grants;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.generated.entitlements.Entitlements;
@@ -12,6 +13,7 @@ import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.cert.X509Certificate;
 import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.Base64;
@@ -295,6 +297,126 @@ class IdentityServiceImplTest {
 		assertEquals("joeuser@example.test", token.getCustomField("email"));
 		// A Schematic-internal claim supplied by the IdP is still dropped.
 		assertNull(token.getCustomField("token_use"));
+	}
+
+	private static final String CALLER_SPIFFE_ID = "spiffe://local.dev/system/services/oauth";
+	private static final String VICTIM_SPIFFE_ID = "spiffe://local.dev/system/services/kernel";
+	private static final long MAX_TOKEN_LIFETIME_SECONDS = 2_592_000; // bootstrap default, 30 days
+	private static final long DEFAULT_TOKEN_EXPIRY_SECONDS = 3_600;
+
+	/**
+	 * X509Mint used to sign {@code request.cert_request.toBuilder().addUriSans(sub)}
+	 * — the caller's whole CSR with the one verified identity appended — so any
+	 * service holding a valid token of its own could have a cert signed carrying
+	 * another service's SPIFFE id, another service's DNS name, a spoofed subject
+	 * CN, or CA:TRUE with a path length. The signed cert must assert only what
+	 * kernel derived from the token it verified.
+	 */
+	@Test
+	void x509MintSignsOnlyTheCallersVerifiedIdentityAndNoCallerConstraints() throws Exception {
+		String serviceName = SpiffeIds.serviceName(CALLER_SPIFFE_ID);
+		assertEquals("oauth", serviceName);
+
+		long now = Instant.now().getEpochSecond();
+		KeyPair callerKey = generateEcKeyPair();
+		X509.X509CertRequest hostile = X509.X509CertRequest.newBuilder()
+				.setKey(publicKeyProto("oauth-tls", callerKey))
+				.setExp(now + 86_400)
+				// Spoofed subject CN, identity, peer DNS name and CA rights.
+				.setIssuer("kernel")
+				.setKeyUsage(X509.X509KeyUsage.X509_KEY_USAGE_CERT_SIGN)
+				.addUriSans(VICTIM_SPIFFE_ID)
+				.addDnsNames("oauth")
+				.addDnsNames("oauth-0")
+				.addDnsNames("kernel")
+				.addDnsNames("gateway.default.svc")
+				.setIsCa(true)
+				.setPathLenConstraint(5)
+				.build();
+
+		X509.X509CertRequest signed = IdentityServiceImpl.kernelCertRequest(
+				hostile, CALLER_SPIFFE_ID, serviceName, now,
+				MAX_TOKEN_LIFETIME_SECONDS, DEFAULT_TOKEN_EXPIRY_SECONDS);
+
+		assertEquals(List.of(CALLER_SPIFFE_ID), signed.getUriSansList());
+		assertEquals(serviceName, signed.getIssuer());
+		assertEquals(X509.X509KeyUsage.X509_KEY_USAGE_DIGITAL_SIGNATURE, signed.getKeyUsage());
+		assertFalse(signed.getIsCa());
+		assertEquals(0, signed.getPathLenConstraint());
+		// Names the caller owns survive (its own service name, wildcard, pod
+		// hostname); another service's name does not.
+		assertEquals(List.of("oauth", "*.oauth", "oauth-0"), signed.getDnsNamesList());
+
+		// And the same holds of the certificate that comes out of the signer.
+		ImmutableCertChain intermediateCa = ImmutableCertChain.from(
+				serviceCa(serviceName, signingCa("signing-ca")));
+		X509Certificate leaf = ImmutableCert.from(intermediateCa.sign(signed)).getX509Certificate();
+
+		assertEquals("CN=oauth", leaf.getSubjectX500Principal().getName());
+		assertEquals(-1, leaf.getBasicConstraints(), "leaf cert must not be a CA");
+		List<String> sans = leaf.getSubjectAlternativeNames().stream()
+				.map(entry -> String.valueOf(entry.get(1)))
+				.toList();
+		assertTrue(sans.contains(CALLER_SPIFFE_ID));
+		assertFalse(sans.contains(VICTIM_SPIFFE_ID));
+		assertFalse(sans.contains("kernel"));
+		assertFalse(sans.contains("gateway.default.svc"));
+	}
+
+	/**
+	 * The cert path dropped the max-token-lifetime ceiling every other mint path
+	 * in IdentityServiceImpl applies, so a caller's requested exp was signed
+	 * as-is — a decade-long service cert for the asking. Same ceiling, same
+	 * INVALID_ARGUMENT, same wording as the token paths.
+	 */
+	@Test
+	void x509MintRefusesAnExpBeyondTheMaxTokenLifetimeCeiling() throws Exception {
+		long now = Instant.now().getEpochSecond();
+		KeyPair callerKey = generateEcKeyPair();
+		X509.X509CertRequest.Builder base = X509.X509CertRequest.newBuilder()
+				.setKey(publicKeyProto("oauth-tls", callerKey))
+				.setIssuer("oauth")
+				.setKeyUsage(X509.X509KeyUsage.X509_KEY_USAGE_DIGITAL_SIGNATURE);
+
+		long tenYears = now + 10L * 365 * 24 * 3600;
+		IdentityServiceImpl.StatusException tooLong = assertThrows(
+				IdentityServiceImpl.StatusException.class,
+				() -> IdentityServiceImpl.kernelCertRequest(
+						base.setExp(tenYears).build(), CALLER_SPIFFE_ID, "oauth", now,
+						MAX_TOKEN_LIFETIME_SECONDS, DEFAULT_TOKEN_EXPIRY_SECONDS));
+		assertTrue(tooLong.getMessage().contains("exceeds max token lifetime ceiling"), tooLong.getMessage());
+
+		// An exp in the past is refused the same way the token paths refuse it.
+		assertThrows(IdentityServiceImpl.StatusException.class,
+				() -> IdentityServiceImpl.kernelCertRequest(
+						base.setExp(now - 1).build(), CALLER_SPIFFE_ID, "oauth", now,
+						MAX_TOKEN_LIFETIME_SECONDS, DEFAULT_TOKEN_EXPIRY_SECONDS));
+
+		// A request at the ceiling, and the ordinary 24h request the generated
+		// service managers send, are both honored unchanged.
+		assertEquals(now + MAX_TOKEN_LIFETIME_SECONDS,
+				IdentityServiceImpl.kernelCertRequest(
+						base.setExp(now + MAX_TOKEN_LIFETIME_SECONDS).build(), CALLER_SPIFFE_ID, "oauth", now,
+						MAX_TOKEN_LIFETIME_SECONDS, DEFAULT_TOKEN_EXPIRY_SECONDS).getExp());
+		assertEquals(now + 86_400,
+				IdentityServiceImpl.kernelCertRequest(
+						base.setExp(now + 86_400).build(), CALLER_SPIFFE_ID, "oauth", now,
+						MAX_TOKEN_LIFETIME_SECONDS, DEFAULT_TOKEN_EXPIRY_SECONDS).getExp());
+
+		// No exp requested falls back to the default token expiry, as the token
+		// paths do.
+		assertEquals(now + DEFAULT_TOKEN_EXPIRY_SECONDS,
+				IdentityServiceImpl.kernelCertRequest(
+						base.clearExp().build(), CALLER_SPIFFE_ID, "oauth", now,
+						MAX_TOKEN_LIFETIME_SECONDS, DEFAULT_TOKEN_EXPIRY_SECONDS).getExp());
+	}
+
+	private static KeyOuterClass.PublicKey publicKeyProto(String id, KeyPair keyPair) {
+		return KeyOuterClass.PublicKey.newBuilder()
+				.setId(id)
+				.setBase64(Base64.getUrlEncoder().withoutPadding()
+						.encodeToString(keyPair.getPublic().getEncoded()))
+				.build();
 	}
 
 	private static ImmutableCertChain signingCa(String name) throws Exception {

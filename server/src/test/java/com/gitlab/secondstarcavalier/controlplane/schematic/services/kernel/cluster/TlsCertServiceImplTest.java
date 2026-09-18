@@ -68,7 +68,7 @@ class TlsCertServiceImplTest {
 		long exp = Instant.now().plusSeconds(86_400).getEpochSecond();
 		KeyPair callerKey = generateEcKeyPair();
 
-		for (String own : List.of("oauth-0", "oauth.default.svc", "oauth")) {
+		for (String own : List.of("oauth-0", "oauth.default.svc", "oauth", "oauth0")) {
 			X509.X509CertRequest signed = TlsCertServiceImpl.kernelCertRequest(
 					publicKeyProto("oauth-tls", callerKey),
 					CALLER_SPIFFE_ID, CALLER_SERVICE_NAME, own, exp);

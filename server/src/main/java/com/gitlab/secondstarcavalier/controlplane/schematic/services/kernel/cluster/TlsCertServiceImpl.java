@@ -405,8 +405,9 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	 * generated service managers set to the pod hostname so peers connecting by
 	 * hostname pass hostname verification. It is bound to the caller's verified
 	 * identity here: the name must be the service name itself or under it
-	 * ({@code svc-0}, {@code svc.ns.svc}), the shape every k8s workload name in
-	 * this platform takes. Anything else is another service's name — kernel
+	 * ({@code svc-0}, {@code svc.ns.svc}, {@code svc0}), the shapes every k8s
+	 * workload name in this platform takes. Anything else is another service's
+	 * name — kernel
 	 * would otherwise sign, under a trusted CA, a cert asserting a hostname the
 	 * caller does not own, letting it impersonate that peer in TLS. Unowned
 	 * names are dropped, not refused, so a stale client cannot be locked out of
@@ -431,7 +432,11 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			if (instanceId.equals(serviceName)
 					|| instanceId.startsWith(serviceName + "-")
 					|| instanceId.startsWith(serviceName + ".")
-					|| instanceId.equals("*." + serviceName)) {
+					|| instanceId.equals("*." + serviceName)
+					// <service><replica-index> with no separator, e.g. "eventbus0" —
+					// the actual pod hostname convention every chart uses
+					// (scotty/backend/looper/charts/schematic/templates/*/deployment.yaml).
+					|| instanceId.matches(java.util.regex.Pattern.quote(serviceName) + "[0-9]+")) {
 				dnsNames.add(instanceId);
 			} else {
 				logger.warn("ManageCert: dropping DNS SAN '{}' requested by {} — not a name that service owns",

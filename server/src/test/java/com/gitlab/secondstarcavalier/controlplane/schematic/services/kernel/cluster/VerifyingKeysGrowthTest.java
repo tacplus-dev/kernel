@@ -28,6 +28,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class VerifyingKeysGrowthTest {
 
+	// Synthetic fixture values, not the shipped defaults: these tests exercise
+	// the sweep's two rules (age, then count) and the exp stamping, none of
+	// which depend on the production cadence. The shipped weekly default and
+	// the fleet arithmetic it has to satisfy are covered by
+	// KeyRetentionWindowTest.
 	private static final long ROTATION_SECONDS = 86400;
 	private static final long RETENTION_SECONDS = 2592000;
 

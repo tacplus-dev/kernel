@@ -344,7 +344,7 @@ public class ClusterServer {
 		// set to max_token_lifetime alone — see KeyRotator.retentionSecondsFor.
 		// The defaults here mirror IdentityServiceImpl's own.
 		final long keyRotationIntervalSeconds =
-				cfg.getKeyRotationIntervalSeconds() > 0 ? cfg.getKeyRotationIntervalSeconds() : 86400;
+				cfg.getKeyRotationIntervalSeconds() > 0 ? cfg.getKeyRotationIntervalSeconds() : 604800;
 		this.keyRotator = new KeyRotator(
 				keyRotationIntervalSeconds,
 				KeyRotator.retentionSecondsFor(

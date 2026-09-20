@@ -71,30 +71,39 @@ public class KeyRotator {
     /**
      * Hard bound on the shared {@code verifying_keys} set.
      *
-     * <p>The design worst case is larger than this: kernel keeps ONE active
-     * signing key per algorithm PER REPLICA (the private keys live in each
-     * node's own disk snapshot and are never shared), and a rotated public key
-     * is retained for {@code keyRetentionSeconds} so tokens it signed stay
-     * verifiable. With the shipped defaults that is
+     * <p>Kernel keeps ONE active signing key per algorithm PER REPLICA (the
+     * private keys live in each node's own disk snapshot and are never
+     * shared), and a rotated public key is retained for
+     * {@code keyRetentionSeconds} so tokens it signed stay verifiable. The
+     * steady-state size of the set is therefore
      *
-     *   replicas(3) × algorithms(2) × (retention 7862400s / rotation 86400s + 1)
-     *     = 3 × 2 × 92 = 552 keys
+     *   replicas × algorithms × (retention / rotation + 1)
      *
-     * but the set is published as a {@code jwk.Jwks}, whose {@code keys} field
+     * and with the shipped defaults (rotation 604800s — weekly, retention
+     * 604800 + 7776000 = 8380800s) that is
+     *
+     *   3 × 2 × (8380800 / 604800 + 1) = 3 × 2 × 14 = 84 keys
+     *
+     * against a set published as a {@code jwk.Jwks}, whose {@code keys} field
      * is capped at 128 by {@code sys/jwk.proto} — a shared, do-not-modify
      * proto. 128 is therefore the ceiling kernel actually has, and the two
      * kernel-owned caps ({@code Identity.verifying_keys} and
      * {@code KernelDiskState.verifying_keys}) are set to match it.
      *
-     * <p>Because 552 > 128 the count bound can bind before the TTL does. When
-     * it does the OLDEST keys go first: they are the ones whose tokens are
-     * closest to expiry. Bringing the two apart is a config change, not a code
-     * one — shorten {@code offline_token_lifetime_seconds} (retention tracks
-     * the LONGER of the two mint ceilings, see {@link #retentionSecondsFor})
-     * or lengthen {@code key_rotation_interval_seconds} until
-     * replicas × 2 × (retention/rotation + 1) ≤ 128. At the shipped defaults
-     * it does not fit, and the count rule evicts keys whose tokens are still
-     * live — the sweep logs a warning naming this each time it does.
+     * <p>84 ≤ 128, so at the shipped defaults the TTL rule is the one that
+     * binds and no key is evicted while tokens it signed are still live. This
+     * is why rotation is weekly and not daily: daily rotation gave
+     * 3 × 2 × (7862400 / 86400 + 1) = 552 keys, and the count rule then
+     * evicted still-needed keys around day 21.
+     *
+     * <p>The count rule remains as a backstop for configurations that do not
+     * fit — a larger replica count, or a longer
+     * {@code offline_token_lifetime_seconds} (retention tracks the LONGER of
+     * the two mint ceilings, see {@link #retentionSecondsFor}). When it binds
+     * the OLDEST keys go first: they are the ones whose tokens are closest to
+     * expiry, and the sweep logs a warning naming this each time it does.
+     * Keeping it from binding is a config change, not a code one: hold
+     * replicas × 2 × (retention/rotation + 1) ≤ 128.
      */
     static final int MAX_VERIFYING_KEYS = 128;
 

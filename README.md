@@ -98,7 +98,7 @@ TokenExchanger's backend state root holds:
 Set via `Config.token_exchanger`:
 
 - `refresh_audience` — Expected `aud` claim in refresh tokens (default: `"refresh"`)
-- `key_rotation_interval_seconds` — How often signing keys rotate (default: 24h)
+- `key_rotation_interval_seconds` — How often signing keys rotate (default: 7d)
 - `default_token_expiry_seconds` — Lifetime of issued access tokens (default: 1h)
 - `opa_entry_point` / `opa_bundle` — Optional OPA policy for authorization decisions
 

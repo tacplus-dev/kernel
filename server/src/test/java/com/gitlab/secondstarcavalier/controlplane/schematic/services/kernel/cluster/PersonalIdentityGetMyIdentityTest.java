@@ -75,7 +75,7 @@ class PersonalIdentityGetMyIdentityTest {
 		authorizer = new Authorizer(new LocalJwkSource(() -> verifyingKeys));
 		principalMap = new PrincipalMap(new InMemoryManager());
 
-		var wrapper = new PersonalIdentity(new PersonalIdentityServiceImpl(principalMap), authorizer);
+		var wrapper = new PersonalIdentity(new PersonalIdentityServiceImpl(principalMap, null), authorizer);
 		// The production authenticate func (see ClusterServer): token-only, which
 		// is what auth_any_user means.
 		wrapper.setAuthenticateFunc((PersonalIdentity.Authenticator) targetNamespace ->

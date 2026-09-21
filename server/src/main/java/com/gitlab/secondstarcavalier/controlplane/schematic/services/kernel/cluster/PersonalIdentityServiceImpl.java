@@ -37,12 +37,16 @@ public class PersonalIdentityServiceImpl implements PersonalIdentity.PersonalIde
 	private static final String PEOPLE_PREFIX = "/" + Spiffe.PEOPLE_SEGMENT + "/";
 
 	private final PrincipalMap principalMap;
+	private final Runnable persistState;
 
 	/**
 	 * @param principalMap kernel PrincipalState accessor (personal_principals, keyed by principal_id)
+	 * @param persistState fires the disk snapshot after a write; nullable, for tests that
+	 *                     assert on the live map rather than on durability
 	 */
-	public PersonalIdentityServiceImpl(PrincipalMap principalMap) {
+	public PersonalIdentityServiceImpl(PrincipalMap principalMap, Runnable persistState) {
 		this.principalMap = principalMap;
+		this.persistState = persistState;
 		logger.info("PersonalIdentityServiceImpl initialised");
 	}
 
@@ -67,6 +71,95 @@ public class PersonalIdentityServiceImpl implements PersonalIdentity.PersonalIde
 			}
 		}
 		return response.build();
+	}
+
+	/**
+	 * Unlink: marks the caller's own edge to the named peer revoked, in both
+	 * directions.
+	 *
+	 * <p>The owning side is the caller's verified {@code sub} and the namespace
+	 * inside it — never a request field, for the same reason
+	 * {@link #getMyIdentity} takes no argument. The request names only the peer,
+	 * so the worst a caller can do with it is revoke a link they already hold.
+	 *
+	 * <p>Both directions, because the mint reads the registry by the caller's own
+	 * key: a mark on one row only would leave the other side's token still
+	 * carrying the {@code linked} claim, which is the entire thing unlink exists
+	 * to withdraw.
+	 *
+	 * <p>Marked, never deleted. A link is proved once by two live credentials and
+	 * nothing kernel holds can re-derive it, so a deleted edge is
+	 * indistinguishable from one that was never proved — see
+	 * {@code TenantUserLink.revoked_at_ms}.
+	 */
+	@Override
+	public Kernel.RevokeTenantUserLinkResponse revokeTenantUserLink(Caller caller,
+			Kernel.RevokeTenantUserLinkRequest request) throws ProtoException {
+		if (caller == null) {
+			throw ProtoException.newErrUnauthorized(null, "no verified caller");
+		}
+		// The registry is keyed on the pair kernel MINTED — the `namespace` and
+		// `sub` claims as they stand in the token — not on anything re-derived
+		// from the subject. Deriving would disagree for exactly the callers §2
+		// built the key this way for: an ordinary tenant's `sub` is whatever its
+		// IdP broker supplied and need not be a SPIFFE id at all.
+		String ownerSubject = caller.getSubject();
+		String ownerNamespace = caller.getNamespace();
+		if (ownerSubject.isEmpty() || ownerNamespace.isEmpty()) {
+			throw ProtoException.newErrPermissionDenied(null, "caller is not a linkable identity");
+		}
+		String ownerKey = IdentityServiceImpl.linkKey(ownerNamespace, ownerSubject);
+		String peerKey = IdentityServiceImpl.linkKey(
+				request.getPeerNamespace(), request.getPeerSubject());
+
+		long revokedAtMs;
+		synchronized (IdentityServiceImpl.LINK_REGISTRY_LOCK) {
+			revokedAtMs = markRevoked(ownerKey, request.getPeerNamespace(),
+					request.getPeerSubject(), System.currentTimeMillis());
+			if (revokedAtMs == 0) {
+				// Non-enumerating: "no such link" and "that link is not yours" are
+				// the same answer, because the owner half is the caller's own key.
+				throw ProtoException.newErrNotFound("no such link");
+			}
+			// The mirror may legitimately be absent if a half-written pair survived
+			// a crash between the two writes; marking what is there is still the
+			// right outcome, and the owner's own claim has already stopped.
+			markRevoked(peerKey, ownerNamespace, ownerSubject, revokedAtMs);
+		}
+		if (persistState != null) {
+			persistState.run();
+		}
+		logger.info("Unlinked tenant users: {} -x- {}", ownerKey, peerKey);
+		return Kernel.RevokeTenantUserLinkResponse.newBuilder()
+				.setRevokedAtMs(revokedAtMs)
+				.build();
+	}
+
+	/**
+	 * Marks one edge out of {@code ownerKey} revoked and returns the mark, or 0
+	 * if there is no such edge. An edge that was already revoked returns the mark
+	 * it already carried — unlinking twice is the same fact, not an error.
+	 *
+	 * <p>Call under {@link IdentityServiceImpl#LINK_REGISTRY_LOCK}.
+	 */
+	private long markRevoked(String ownerKey, String peerNamespace, String peerSubject,
+			long nowMs) throws ProtoException {
+		Kernel.TenantUserLinks row = principalMap.getTenantUserLinks(ownerKey);
+		for (int i = 0; i < row.getLinksCount(); i++) {
+			Kernel.TenantUserLink link = row.getLinks(i);
+			if (!link.getPeerNamespace().equals(peerNamespace)
+					|| !link.getPeerSubject().equals(peerSubject)) {
+				continue;
+			}
+			if (link.getRevokedAtMs() != 0) {
+				return link.getRevokedAtMs();
+			}
+			principalMap.putTenantUserLinks(ownerKey, row.toBuilder()
+					.setLinks(i, link.toBuilder().setRevokedAtMs(nowMs))
+					.build());
+			return nowMs;
+		}
+		return 0;
 	}
 
 	/**

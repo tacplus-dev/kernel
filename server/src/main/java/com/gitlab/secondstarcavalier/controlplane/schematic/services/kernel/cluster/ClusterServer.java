@@ -946,7 +946,8 @@ public class ClusterServer {
 			// only a root-namespace caller — which would refuse every
 			// /people/<pid> caller this RPC exists for. See the item's decision doc.
 			var personalIdentityImpl = new PersonalIdentityServiceImpl(
-					backendServers.services().getPrincipalMap());
+					backendServers.services().getPrincipalMap(),
+					this::persistKernelState);
 			var personalIdentityWrapper = new PersonalIdentity(personalIdentityImpl, kernelAuthorizer);
 			personalIdentityWrapper.setAuthenticateFunc((PersonalIdentity.Authenticator) targetNamespace ->
 					com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer

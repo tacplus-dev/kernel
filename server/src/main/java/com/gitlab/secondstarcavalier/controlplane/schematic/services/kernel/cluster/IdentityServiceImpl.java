@@ -296,8 +296,18 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	/** Serializes the people-tenant mint's find-or-create; see {@link #mintPersonToken}. */
 	private final Object personRegistryLock = new Object();
 
-	/** Serializes the link registry's read-modify-write; see {@link #doCreateTenantUserLink}. */
-	private final Object linkRegistryLock = new Object();
+	/**
+	 * Serializes the link registry's read-modify-write; see
+	 * {@link #doCreateTenantUserLink}.
+	 *
+	 * <p>Static and package-private, not an instance field, because
+	 * {@code PersonalIdentityServiceImpl.revokeTenantUserLink} writes the same
+	 * two rows from the other side of the C2S boundary and a second lock would
+	 * serialize nothing. Node-local, with the same limitation every other guard
+	 * in this file has and for the same reason: no cluster CAS is available to
+	 * these services.
+	 */
+	static final Object LINK_REGISTRY_LOCK = new Object();
 
 	private final long defaultTokenExpirySeconds;
 	private final long maxTokenLifetimeSeconds;
@@ -894,19 +904,21 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	private Kernel.CreateTenantUserLinkResponse doCreateTenantUserLink(
 			Kernel.CreateTenantUserLinkRequest request) throws StatusException {
 		String callerSub = verifiedCallerToken("CreateTenantUserLink").getSubject();
-		Kernel.Delegate broker = requireBrokerDelegate(
-				callerSub, Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP);
+		// Which class of proof the caller must be trusted to broker follows from
+		// which class of proof the request carries: a device side is a WebAuthn
+		// assertion, which is AUTH_BROKER_KIND_DEVICE's proof, not an IdP
+		// assertion. The people-side gate in resolveLinkSide still applies on top,
+		// so a device link needs a broker that is BOTH a device broker AND rooted
+		// at the people tenant.
+		boolean deviceLink = request.getA().hasDeviceAssertion() || request.getB().hasDeviceAssertion();
+		Kernel.Delegate broker = requireBrokerDelegate(callerSub, deviceLink
+				? Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE
+				: Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP);
 
-		String nonceA = claimString(request.getA().getClaims(), "origin_nonce");
-		String nonceB = claimString(request.getB().getClaims(), "origin_nonce");
-		if (nonceA == null || nonceB == null) {
-			throw new StatusException(Status.UNAUTHENTICATED,
-					"both sides of a link must carry a verified origin_nonce");
-		}
-		if (!nonceA.equals(nonceB)) {
-			throw new StatusException(Status.PERMISSION_DENIED,
-					"the two sides of a link do not share a nonce");
-		}
+		// Every binding check runs before anything is resolved, because resolving a
+		// side can CREATE a row — a person on the people side, a personal principal
+		// on a device side. An unbound proof must write nothing at all.
+		bindSides(request.getA(), request.getB(), broker);
 
 		LinkedUser a = resolveLinkSide(request.getA(), broker, request.getTraceId(), "a");
 		LinkedUser b = resolveLinkSide(request.getB(), broker, request.getTraceId(), "b");
@@ -917,7 +929,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		}
 
 		long createdAt;
-		synchronized (linkRegistryLock) {
+		synchronized (LINK_REGISTRY_LOCK) {
 			// Both directions, because the mint reads this by the caller's own key
 			// and must not scan for a row that happens to mention them. The
 			// timestamp of the first edge written is reused for the mirror so the
@@ -954,6 +966,14 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private LinkedUser resolveLinkSide(Kernel.TenantUserLinkSide side, Kernel.Delegate broker,
 			String traceId, String which) throws StatusException {
+		if (side.hasDeviceAssertion()) {
+			// A device side names no login and reaches no OPA: its identity is the
+			// personal principal that holds the credential the assertion is signed
+			// by, which is exactly what the DEVICE mint arm resolves from a proof.
+			// bindSides has already verified the assertion, so by here the caller is
+			// known to hold the private half.
+			return resolveDeviceSide(side);
+		}
 		Struct claims = side.getClaims();
 		String issuer = claimString(claims, "origin_iss");
 		String providerSubject = claimString(claims, "origin_sub");
@@ -996,6 +1016,226 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				side.getSubject());
 	}
 
+	// ------------------------------------------------------------------
+	// The device side of a link (identity decision doc §3, WebAuthn arm)
+	// ------------------------------------------------------------------
+
+	/**
+	 * Checks that the two sides were obtained together, before either is
+	 * resolved and before anything is written.
+	 *
+	 * <p>Two shapes, one property. <b>Two IdP sides</b> are bound by the shared
+	 * nonce §2 built: one value the client generated and sent into both logins.
+	 * <b>One device side and one people side</b> are bound by a pair of checks in
+	 * opposite directions, because a device has no nonce of its own to share —
+	 * the id_token's nonce is the device key's thumbprint, and the assertion's
+	 * challenge names that id_token's login. See {@link WebauthnProof} for why
+	 * the two orderings are what make the pair unforgeable rather than circular.
+	 */
+	private void bindSides(Kernel.TenantUserLinkSide a, Kernel.TenantUserLinkSide b,
+			Kernel.Delegate broker) throws StatusException {
+		if (a.hasDeviceAssertion() && b.hasDeviceAssertion()) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"a device links to a person, not to another device");
+		}
+		if (!a.hasDeviceAssertion() && !b.hasDeviceAssertion()) {
+			String nonceA = claimString(a.getClaims(), "origin_nonce");
+			String nonceB = claimString(b.getClaims(), "origin_nonce");
+			if (nonceA == null || nonceB == null) {
+				throw new StatusException(Status.UNAUTHENTICATED,
+						"both sides of a link must carry a verified origin_nonce");
+			}
+			if (!nonceA.equals(nonceB)) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"the two sides of a link do not share a nonce");
+			}
+			return;
+		}
+
+		Kernel.TenantUserLinkSide device = a.hasDeviceAssertion() ? a : b;
+		Kernel.TenantUserLinkSide login = a.hasDeviceAssertion() ? b : a;
+
+		String issuer = claimString(login.getClaims(), "origin_iss");
+		String providerSubject = claimString(login.getClaims(), "origin_sub");
+		String nonce = claimString(login.getClaims(), "origin_nonce");
+		if (issuer == null || providerSubject == null || nonce == null) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"the login side of a device link carries no verified "
+							+ "origin_iss/origin_sub/origin_nonce claims");
+		}
+		// §3 is "linking device → person": the other half is a person, proved by
+		// one of the people tenant's two fixed providers. A device linked to an
+		// ordinary tenant user would be a credential for an account kernel did not
+		// create and cannot re-derive.
+		if (PeopleTenant.providerForIssuer(issuer) == null) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"a device links to a person; the other side is not a people-tenant login");
+		}
+		// The people-side gate, applied HERE and not left to resolveLinkSide.
+		// Resolving a device side REGISTERS its credential, and resolution runs
+		// side a before side b — so a device broker outside the people tenant
+		// would get a row written before the gate that refuses it ever fired.
+		// Same check, same reason as resolveLinkSide's; only the moment differs.
+		if (!PeopleTenant.NAMESPACE.equals(broker.getTenantNamespace())) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"only the people tenant's own broker may attest a people-tenant link side");
+		}
+
+		DeviceCredential credential = deviceCredential(device);
+		try {
+			// BINDING ONE: the login names this key. An id_token obtained in any
+			// other ceremony carries some other key's thumbprint, so a stolen one
+			// cannot be presented alongside a device the thief does hold.
+			if (!nonce.equals(WebauthnProof.thumbprint(credential.publicKey()))) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"the login's nonce is not this device key's thumbprint");
+			}
+			// BINDING TWO: this assertion names that login. An assertion captured
+			// from any other ceremony carries some other challenge, so possession of
+			// one does not let it be replayed against a login the attacker controls.
+			WebauthnProof.verify(device.getDeviceAssertion(), credential.publicKey(),
+					WebauthnProof.loginBinding(issuer, providerSubject, nonce));
+		} catch (WebauthnProof.Invalid e) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"device assertion refused: " + e.getMessage());
+		}
+	}
+
+	/** The credential a device side presents: its id, and the key to check against. */
+	private record DeviceCredential(String credentialId, JwkOuterClass.Jwk publicKey,
+			@Nullable Kernel.PersonalPrincipal principal) {
+	}
+
+	/**
+	 * The credential id a device side names, and the key its assertion must
+	 * verify under.
+	 *
+	 * <p>The STORED key once the credential is registered, and the key out of the
+	 * request only on a first link. That is the same bootstrap split
+	 * {@code CreatePersonalPrincipal} already makes — the request's copy is
+	 * consulted exactly once, when there is no row to consult instead, and never
+	 * again. Without it a broker could re-present an existing credential id under
+	 * a key of its own choosing.
+	 */
+	private DeviceCredential deviceCredential(Kernel.TenantUserLinkSide side)
+			throws StatusException {
+		String credentialId = side.getDeviceAssertion().getCredentialId();
+		if (credentialId.isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"device assertion names no credential");
+		}
+		Kernel.PersonalPrincipal principal = findPrincipalByCredentialId(credentialId);
+		if (principal != null) {
+			for (Kernel.PersonalCredential credential : principal.getCredentialsList()) {
+				if (credentialId.equals(credential.getCredentialId())) {
+					if (credential.getRevokedAtMs() != 0) {
+						throw new StatusException(Status.PERMISSION_DENIED,
+								"device assertion refused: the credential is revoked");
+					}
+					return new DeviceCredential(credentialId, credential.getPublicKey(), principal);
+				}
+			}
+		}
+		if (!side.hasDevicePublicKey()) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"an unregistered device must present its public key");
+		}
+		return new DeviceCredential(credentialId, side.getDevicePublicKey(), null);
+	}
+
+	/**
+	 * The personal principal a device side is, registering the credential on a
+	 * first link.
+	 *
+	 * <p>Registration is folded into the link rather than given an RPC of its own,
+	 * and that is a decision, not a shortcut: a passkey nobody has linked
+	 * authorizes nothing and belongs to nobody, so a standalone registration
+	 * would be an unauthenticated write with no owner to attribute it to. Here
+	 * the row is written only once both halves of §3's proof hold.
+	 *
+	 * <p>The namespace is {@code /people/<pid>} — the shape
+	 * {@link #mintDevicePersonalToken} already mints — so the device logs in the
+	 * way every other registered device does, and what the link adds is the
+	 * {@code linked: /tenants/people} claim on that token.
+	 */
+	private LinkedUser resolveDeviceSide(Kernel.TenantUserLinkSide side) throws StatusException {
+		String principalId;
+		synchronized (personalPrincipalRegistryLock) {
+			DeviceCredential credential = deviceCredential(side);
+			if (credential.principal() != null) {
+				if (credential.principal().getDisabledAtMs() != 0) {
+					throw new StatusException(Status.PERMISSION_DENIED,
+							"device assertion refused: the principal is disabled");
+				}
+				principalId = credential.principal().getPrincipalId();
+			} else {
+				principalId = registerWebauthnPrincipal(credential, side);
+			}
+		}
+		String namespace = PEOPLE_PREFIX + principalId;
+		return new LinkedUser(namespace,
+				Spiffe.userSpiffeId(trustDomainReader.get(), namespace, principalId));
+	}
+
+	/** Call under {@link #personalPrincipalRegistryLock}. */
+	private String registerWebauthnPrincipal(DeviceCredential credential,
+			Kernel.TenantUserLinkSide side) throws StatusException {
+		Kernel.PrincipalState registry;
+		try {
+			registry = principalMap.proto();
+		} catch (ProtoException e) {
+			throw new StatusException(Status.INTERNAL, "principal registry unavailable");
+		}
+		if (registry.getPersonalPrincipalsCount() >= MAX_PERSONAL_PRINCIPALS) {
+			throw new StatusException(Status.RESOURCE_EXHAUSTED,
+					"personal principal registry is full");
+		}
+		String principalId = UUID.randomUUID().toString();
+		long nowMs = System.currentTimeMillis();
+		try {
+			principalMap.putPersonalPrincipals(principalId, Kernel.PersonalPrincipal.newBuilder()
+					.setPrincipalId(principalId)
+					.addCredentials(Kernel.PersonalCredential.newBuilder()
+							.setCredentialId(credential.credentialId())
+							.setPublicKey(credential.publicKey())
+							.setLabel(side.getDeviceLabel())
+							.setPlatformSynced(side.getDevicePlatformSynced())
+							.setCreatedAtMs(nowMs))
+					.setCreatedAtMs(nowMs)
+					.build());
+		} catch (ProtoException e) {
+			throw new StatusException(Status.INTERNAL,
+					"device credential could not be registered: " + e.getMessage());
+		}
+		logger.info("Registered WebAuthn device principal: principal_id={} platform_synced={}",
+				principalId, side.getDevicePlatformSynced());
+		return principalId;
+	}
+
+	/**
+	 * The personal principal holding a credential id, or null. One key, one
+	 * person: {@code registerPersonalPrincipal} refuses a duplicate id precisely
+	 * so this never has to choose between two rows.
+	 */
+	@Nullable
+	private Kernel.PersonalPrincipal findPrincipalByCredentialId(String credentialId)
+			throws StatusException {
+		Kernel.PrincipalState registry;
+		try {
+			registry = principalMap.proto();
+		} catch (ProtoException e) {
+			throw new StatusException(Status.INTERNAL, "principal registry unavailable");
+		}
+		for (Kernel.PersonalPrincipal principal : registry.getPersonalPrincipalsList()) {
+			for (Kernel.PersonalCredential credential : principal.getCredentialsList()) {
+				if (credentialId.equals(credential.getCredentialId())) {
+					return principal;
+				}
+			}
+		}
+		return null;
+	}
+
 	/**
 	 * Adds the edge from {@code owner} to {@code peer} if it is not already
 	 * there, and returns its {@code created_at_ms}. Re-proving an existing link
@@ -1007,11 +1247,30 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private long recordLink(LinkedUser owner, LinkedUser peer, long now) throws StatusException {
 		Kernel.TenantUserLinks existing = principalMap.getTenantUserLinks(owner.key());
-		for (Kernel.TenantUserLink link : existing.getLinksList()) {
-			if (link.getPeerNamespace().equals(peer.namespace())
-					&& link.getPeerSubject().equals(peer.subject())) {
+		for (int i = 0; i < existing.getLinksCount(); i++) {
+			Kernel.TenantUserLink link = existing.getLinks(i);
+			if (!link.getPeerNamespace().equals(peer.namespace())
+					|| !link.getPeerSubject().equals(peer.subject())) {
+				continue;
+			}
+			if (link.getRevokedAtMs() == 0) {
 				return link.getCreatedAtMs();
 			}
+			// Re-proved after an unlink. The same pair of credentials is the same
+			// fact, so the mark is cleared rather than a second edge added — a row
+			// carrying one live and one revoked edge for one peer would make
+			// "is this link live?" depend on which the reader saw first.
+			// created_at_ms moves to now: the link that exists is the one just
+			// proved, not the one that was withdrawn.
+			try {
+				principalMap.putTenantUserLinks(owner.key(), existing.toBuilder()
+						.setLinks(i, link.toBuilder().setRevokedAtMs(0).setCreatedAtMs(now))
+						.build());
+			} catch (ProtoException e) {
+				throw new StatusException(Status.INTERNAL,
+						"link could not be recorded: " + e.getMessage());
+			}
+			return now;
 		}
 		if (existing.getLinksCount() >= MAX_LINKS_PER_USER) {
 			throw new StatusException(Status.RESOURCE_EXHAUSTED,
@@ -1057,6 +1316,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// the claim names subtrees, and the backstop compares it to one.
 		List<String> namespaces = new java.util.ArrayList<>(row.getLinksCount());
 		for (Kernel.TenantUserLink link : row.getLinksList()) {
+			// An unlinked edge is marked, not deleted, so the claim has to skip it
+			// here. This is the whole read side of unlink: revoking the mark is
+			// what stops the peer's namespace reaching the next token, and through
+			// it the generated namespace backstop.
+			if (link.getRevokedAtMs() != 0) {
+				continue;
+			}
 			if (!namespaces.contains(link.getPeerNamespace())) {
 				namespaces.add(link.getPeerNamespace());
 			}
@@ -1072,7 +1338,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * no path to derive; the namespace half is what keeps two tenants'
 	 * identically-named users apart.
 	 */
-	private static String linkKey(String namespace, String subject) {
+	static String linkKey(String namespace, String subject) {
 		return namespace + LINK_KEY_SEPARATOR + subject;
 	}
 

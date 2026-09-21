@@ -1155,6 +1155,242 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 		return Spec.PrincipalScope.PRINCIPAL_SCOPE_SELF_ONLY.getNumber();
 	}
 
+	// ========================================================================
+	// Runtime delegation — delegate-bound Offline Token via a one-time code
+	// (MintDelegateOfflineToken / BrokerDelegateOfflineToken)
+	// ========================================================================
+
+	/**
+	 * One Offline Token kernel minted for a delegate and is WITHHOLDING until
+	 * that delegate redeems the code it is filed under.
+	 */
+	static final class WithheldOfflineToken {
+		final TokenWrapper token;
+		/** The delegate the token's {@code act} names; redemption must match it. */
+		final String act;
+		final long expiresAtMs;
+
+		WithheldOfflineToken(TokenWrapper token, String act, long expiresAtMs) {
+			this.token = token;
+			this.act = act;
+			this.expiresAtMs = expiresAtMs;
+		}
+	}
+
+	/**
+	 * How long a one-time code stays redeemable. Five minutes: this is the
+	 * window in which a person copies a code out of one screen and into their
+	 * agent, not a security boundary on its own — redemption re-checks that the
+	 * redeeming identity IS the delegate the token was minted for, so a leaked
+	 * code buys nothing without that identity.
+	 */
+	static final long DELEGATE_OFFLINE_CODE_TTL_MS = 5 * 60 * 1000L;
+
+	/** Size at which {@link #withheldOfflineTokens} is swept for dead entries. */
+	private static final int WITHHELD_TOKEN_PURGE_THRESHOLD = 1024;
+
+	/**
+	 * code → the Offline Token minted against it, node-local and in-memory, the
+	 * same durability class as {@code CliTokenBroker}'s nonce registry: a kernel
+	 * restart clears it and the user mints a fresh code. Nothing here is durable
+	 * state — the code lives minutes and is burned on first use.
+	 *
+	 * <p>Package-private so tests can age an entry rather than sleep through the
+	 * TTL.
+	 */
+	final java.util.concurrent.ConcurrentMap<String, WithheldOfflineToken> withheldOfflineTokens =
+			new java.util.concurrent.ConcurrentHashMap<>();
+
+	/** Source of one-time codes. 48 random bytes → 64 base64url characters. */
+	private static final java.security.SecureRandom CODE_RANDOM = new java.security.SecureRandom();
+
+	@Override
+	public Tokenrequest.MintDelegateOfflineTokenResponse mintDelegateOfflineToken(Caller caller,
+			Tokenrequest.MintDelegateOfflineTokenRequest request) throws ProtoException {
+		try {
+			return doMintDelegateOfflineToken(request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("MintDelegateOfflineToken failed", e);
+			throw new ProtoException(ProtoException.INTERNAL,
+					"delegate offline token mint failed: " + e.getMessage(), e);
+		}
+	}
+
+	/**
+	 * Runtime delegation, user half. The USER calls this with their own bearer
+	 * token to connect an agent they own. Kernel resolves the
+	 * ({@code delegate_name}, {@code delegate_namespace}) pair, mints an Offline
+	 * Token with sub = the calling user, act = the delegate name, and the user's
+	 * fresh OPA entitlements narrowed by the request's optional scope — and does
+	 * NOT return it. The OT never transits the user's client: the response
+	 * carries only a short-lived single-use code the user hands to the delegate,
+	 * which redeems it S2S via {@link #doBrokerDelegateOfflineToken}.
+	 */
+	private Tokenrequest.MintDelegateOfflineTokenResponse doMintDelegateOfflineToken(
+			Tokenrequest.MintDelegateOfflineTokenRequest request) throws StatusException {
+
+		TokenWrapper callerToken = verifiedCallerToken("MintDelegateOfflineToken");
+		String userSubject = callerToken.getSubject();
+
+		// The delegate this OT is bound to, keyed by (name, namespace) — the name
+		// alone is not a key, exactly as findDelegateBySubject spells out. An
+		// empty delegate_namespace means the /system delegate of that name.
+		String delegateName = request.getDelegateName();
+		String delegateNamespace = request.getDelegateNamespace().isEmpty()
+				? SpiffeIds.SYSTEM_NAMESPACE : request.getDelegateNamespace();
+		Kernel.Delegate delegate = findDelegateByName(delegateName, delegateNamespace);
+		if (delegate == null) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no delegate " + delegateName + " in " + delegateNamespace);
+		}
+
+		// The user's CURRENT authority, computed the same way every other user
+		// mint computes it, then narrowed by the request's optional scope. The
+		// request can only ever narrow: intersectAuthorizedScope is the same
+		// narrow-only intersection doMintDelegatedToken applies to a Grant's
+		// recorded authorized_scope, and every later mint from this OT intersects
+		// fresh OPA output with what is embedded here.
+		Userentitlements.EntitlementEvalResult opaResult =
+				resolveEntitlementsViaOpa(buildClaimsStruct(callerToken), request.getTraceId());
+		Entitlements.TokenEntitlements fresh = expandEntitlements(opaResult);
+		Entitlements.TokenEntitlements scoped = request.hasScope()
+				? intersectAuthorizedScope(fresh, request.getScope()) : fresh;
+
+		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+
+		long now = Instant.now().getEpochSecond();
+		long exp = now + offlineTokenLifetimeSeconds;
+
+		TokenWrapper newToken = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(userSubject)
+				.setAudience(Kernel.getDescriptor().getPackage())
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+
+		// azp is kernel: this OT is minted directly from the user's own verified
+		// token, not on a broker's attestation, exactly as on the Grant path.
+		newToken.setAzp(Kernel.getDescriptor().getPackage());
+		// act is the BARE delegate name, pre-normalized, per the act-claim-format
+		// decision — the same shape doMintDelegatedToken stamps from a Grant.
+		newToken.setAct(delegate.getName());
+		newToken.setSubType(SUB_TYPE_USER);
+		newToken.setTokenUse(TOKEN_USE_OFFLINE);
+		newToken.setNamespace(requireNamespaceFromOpa(opaResult));
+		newToken.setClaimsFromStruct(buildClaimsStruct(callerToken),
+				STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
+		setFlatServiceEntitlements(newToken, scoped);
+		newToken.sign(signingKey);
+
+		// Withhold it. Entries live at most the TTL, so the map is bounded by the
+		// mint rate over that window; purge the dead ones rather than let a burst
+		// leave them behind, the same sweep seenProofJtis does.
+		long nowMs = Instant.now().toEpochMilli();
+		if (withheldOfflineTokens.size() >= WITHHELD_TOKEN_PURGE_THRESHOLD) {
+			withheldOfflineTokens.values().removeIf(held -> held.expiresAtMs <= nowMs);
+		}
+		long codeExpiresAtMs = nowMs + DELEGATE_OFFLINE_CODE_TTL_MS;
+		String code = newOneTimeCode();
+		withheldOfflineTokens.put(code,
+				new WithheldOfflineToken(newToken, delegate.getName(), codeExpiresAtMs));
+
+		logger.info("MintDelegateOfflineToken: sub={}, act={}, exp={}, code_expires_at_ms={}",
+				userSubject, delegate.getName(), exp, codeExpiresAtMs);
+
+		return Tokenrequest.MintDelegateOfflineTokenResponse.newBuilder()
+				.setCode(code)
+				.setExpiresAtMs(codeExpiresAtMs)
+				.build();
+	}
+
+	@Override
+	public Tokenrequest.RedeemDelegateOfflineTokenResponse brokerDelegateOfflineToken(Caller caller,
+			Tokenrequest.RedeemDelegateOfflineTokenRequest request) throws ProtoException {
+		try {
+			return doBrokerDelegateOfflineToken(request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("BrokerDelegateOfflineToken failed", e);
+			throw new ProtoException(ProtoException.INTERNAL,
+					"delegate offline token redemption failed: " + e.getMessage(), e);
+		}
+	}
+
+	/**
+	 * Runtime delegation, delegate half. The delegate presents its OWN S2S bearer
+	 * token plus the code the user handed it. The code alone is not sufficient:
+	 * the caller's verified identity must equal the withheld token's {@code act}
+	 * claim, which is the actual security boundary here — the code is a handoff
+	 * convenience with a UX-length TTL.
+	 *
+	 * <p>Single-use: the entry is removed under a compare-and-remove, so of two
+	 * concurrent redemptions of the same code exactly one wins and the loser sees
+	 * the same refusal a second, later redemption would.
+	 *
+	 * <p>The misses — no such code, expired, or not this delegate's code —
+	 * collapse to ONE non-enumerating message, mirroring
+	 * {@code doMintDelegatedToken}'s paired negative control, so redemption
+	 * cannot be used to probe which codes exist.
+	 */
+	private Tokenrequest.RedeemDelegateOfflineTokenResponse doBrokerDelegateOfflineToken(
+			Tokenrequest.RedeemDelegateOfflineTokenRequest request) throws StatusException {
+
+		TokenWrapper callerToken = verifiedCallerToken("BrokerDelegateOfflineToken");
+
+		// The caller's own verified identity as the act claim spells it: the bare
+		// delegate name, resolved from a SPIFFE subject exactly as
+		// doMintDelegatedToken resolves it.
+		String rawCallerSub = callerToken.getSubject();
+		String callerDelegateName = SpiffeIds.isSpiffeUri(rawCallerSub)
+				? SpiffeIds.serviceName(rawCallerSub) : rawCallerSub;
+
+		String code = request.getCode();
+		WithheldOfflineToken held = withheldOfflineTokens.get(code);
+		if (held == null
+				|| held.expiresAtMs <= Instant.now().toEpochMilli()
+				|| !held.act.equals(callerDelegateName)) {
+			// An expired entry is dead whoever asks; drop it on the way past
+			// rather than wait for the next purge sweep.
+			if (held != null && held.expiresAtMs <= Instant.now().toEpochMilli()) {
+				withheldOfflineTokens.remove(code, held);
+			}
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no redeemable delegate offline token for delegate " + callerDelegateName);
+		}
+
+		// Burn it. Compare-and-remove: the entry this call validated is the entry
+		// it removes, so a concurrent redemption of the same code cannot also win.
+		if (!withheldOfflineTokens.remove(code, held)) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no redeemable delegate offline token for delegate " + callerDelegateName);
+		}
+
+		logger.info("BrokerDelegateOfflineToken: sub={}, act={}", held.token.getSubject(), held.act);
+
+		return Tokenrequest.RedeemDelegateOfflineTokenResponse.newBuilder()
+				.setToken(held.token.getProto())
+				.build();
+	}
+
+	/**
+	 * A fresh one-time code: 48 bytes of {@link java.security.SecureRandom} in
+	 * base64url, which is 64 characters — the minimum the request/response
+	 * protos assert, and the same entropy class as a {@code CliTokenBroker}
+	 * nonce.
+	 */
+	private static String newOneTimeCode() {
+		byte[] raw = new byte[48];
+		CODE_RANDOM.nextBytes(raw);
+		return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+	}
+
 	/**
 	 * Resolves user claims into entitlements via UncleOPA.
 	 * Returns the raw EntitlementEvalResult (grant_all flags + explicit entitlements).
@@ -2512,6 +2748,15 @@ public class IdentityServiceImpl implements Mint.MintHandler {
 			name = subject;
 			namespace = SpiffeIds.SYSTEM_NAMESPACE;
 		}
+		return findDelegateByName(name, namespace);
+	}
+
+	/**
+	 * Resolves the Delegate named by an explicit ({@code name}, {@code namespace})
+	 * pair — the key {@link #findDelegateBySubject} derives from a subject, and
+	 * the one a request that names a delegate by field carries directly.
+	 */
+	private Kernel.Delegate findDelegateByName(String name, String namespace) {
 		for (Kernel.Delegate d : delegatesReader.get()) {
 			if (name.equals(d.getName()) && namespace.equals(delegateNamespace(d))) {
 				return d;

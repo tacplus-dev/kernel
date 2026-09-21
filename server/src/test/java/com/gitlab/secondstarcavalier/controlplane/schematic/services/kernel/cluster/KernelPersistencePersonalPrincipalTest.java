@@ -62,7 +62,8 @@ class KernelPersistencePersonalPrincipalTest {
 		Kernel.PersonalPrincipal expected = principal("p-alice");
 
 		KernelPersistence p = new KernelPersistence(
-				dir.toString(), null, null, null, null, null, null, () -> List.of(expected));
+				dir.toString(), null, null, null, null, null, null,
+				() -> Kernel.PrincipalState.newBuilder().addPersonalPrincipals(expected).build());
 		p.save();
 
 		Kernel.KernelDiskState loaded = p.load();
@@ -88,7 +89,7 @@ class KernelPersistencePersonalPrincipalTest {
 				dir.toString(), null, null, null, null, null, null,
 				() -> {
 					try {
-						return before.proto().getPersonalPrincipalsList();
+						return before.proto();
 					} catch (Exception e) {
 						throw new RuntimeException(e);
 					}

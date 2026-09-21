@@ -202,6 +202,15 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private static final int MAX_PERSONAL_PRINCIPALS = 65536;
 
+	/**
+	 * Cap on {@code PrincipalState.people}, matching the proto's
+	 * {@code assert_max_size} for the same reason {@link #MAX_PERSONAL_PRINCIPALS}
+	 * does: a registry grown past the bound fails validation on the way into the
+	 * disk snapshot, so every later write would be lost rather than the one that
+	 * overflowed.
+	 */
+	private static final int MAX_PEOPLE = 65536;
+
 	/** Canonical root of the personal-principal subtree ({@code /people/<pid>}). */
 	private static final String PEOPLE_PREFIX = "/" + Spiffe.PEOPLE_SEGMENT + "/";
 
@@ -269,6 +278,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 	/** Serializes CreatePersonalPrincipal's read-check-write; see the call site. */
 	private final Object personalPrincipalRegistryLock = new Object();
+
+	/** Serializes the people-tenant mint's find-or-create; see {@link #mintPersonToken}. */
+	private final Object personRegistryLock = new Object();
 
 	private final long defaultTokenExpirySeconds;
 	private final long maxTokenLifetimeSeconds;
@@ -629,11 +641,22 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// a delegate trusted to broker THIS class of user authentication proof.
 		String callerSub = verifiedCallerToken("MintUserToken").getSubject();
 		Tokenrequest.AuthBrokerKind brokerKind = request.getBrokerKind();
-		requireBrokerDelegate(callerSub, brokerKind);
+		Kernel.Delegate broker = requireBrokerDelegate(callerSub, brokerKind);
 		switch (brokerKind) {
 			case AUTH_BROKER_KIND_IDP:
 				// The broker validated the IdP assertion itself; kernel trusts the
 				// attestation and carries the broker in azp. Today's path.
+				//
+				// One exception: a broker whose own identity is rooted at the
+				// reserved `people` tenant mints PEOPLE, not tenant users — the
+				// subject is derived from the verified IdP claims rather than taken
+				// from request.subject, and the row is created on first sight. The
+				// delegate's own tenant_namespace is what selects the arm, per the
+				// 2026-09-08 ruling that the namespace is stamped from the minting
+				// delegate's identity and never from OPA output.
+				if (PeopleTenant.NAMESPACE.equals(broker.getTenantNamespace())) {
+					return mintPersonToken(request, callerSub);
+				}
 				break;
 			case AUTH_BROKER_KIND_DEVICE:
 				// Kernel verifies the device proof ITSELF against the principal's own
@@ -687,6 +710,132 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				Spiffe.userSpiffeId(trustDomainReader.get(), namespace, principalId),
 				claims, request.getExp(), request.getTraceId(), callerSub,
 				request.getOfflineAccess(), namespace);
+	}
+
+	/**
+	 * The {@code people}-tenant arm of the IdP mint: the first login for a
+	 * (provider, subject) pair CREATES that person's user row, and every login
+	 * after it finds the same row. Same human, same user, from any device or
+	 * browser.
+	 *
+	 * <p>Nothing identifying is taken from the request except the claims the
+	 * broker already verified. {@code request.subject} is ignored the way the
+	 * device arm ignores it: the subject minted here is derived from
+	 * {@code origin_iss} and {@code origin_sub} — the IdP's own issuer and
+	 * subject, which oauth copies verbatim out of the id_token it verified — so
+	 * there is no field a broker could point at somebody else's person.
+	 *
+	 * <p>The issuer is matched against {@link PeopleTenant}'s fixed table rather
+	 * than against the tenant's configured providers. The tenant's IdP set is
+	 * fixed in the proto enum, and checking it here means a broker misconfigured
+	 * with a third issuer mints nothing rather than minting a person keyed to an
+	 * issuer this tenant does not recognise.
+	 *
+	 * <p>The claims ARE relayed into OPA, unlike the device arm: on this path the
+	 * broker attested the login, so OPA is entitled to see what it attested. The
+	 * NAMESPACE is not OPA's to name — it is stamped {@code /tenants/people}
+	 * from the delegate's own identity, per the 2026-09-08 ruling.
+	 */
+	private Tokenrequest.TokenMintResponse mintPersonToken(
+			Tokenrequest.MintUserTokenRequest request, String callerSub) throws StatusException {
+		Struct claims = request.getClaims();
+		String issuer = claimString(claims, "origin_iss");
+		String providerSubject = claimString(claims, "origin_sub");
+		if (issuer == null || providerSubject == null) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"people-tenant login carries no verified origin_iss/origin_sub claims");
+		}
+		Kernel.PeopleIdpProvider provider = PeopleTenant.providerForIssuer(issuer);
+		if (provider == null) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"issuer " + issuer + " is not one of the people tenant's fixed providers");
+		}
+		String userId = PeopleTenant.userId(provider, providerSubject);
+		String subject = Spiffe.userSpiffeId(trustDomainReader.get(), PeopleTenant.NAMESPACE, userId);
+
+		// Read-check-write, serialized, for the same reason CreatePersonalPrincipal
+		// serializes registration: two concurrent first logins for one pair both
+		// see the row absent. Here they would both write the SAME key, so nothing
+		// is duplicated — but the later write would reset created_at_ms, and the
+		// cap check could be overshot. Node-local, like the other guards in this
+		// file that want a cluster lock and have none.
+		synchronized (personRegistryLock) {
+			findOrCreatePerson(userId, provider, providerSubject);
+		}
+
+		return mintUserTokenInternal(subject, claims, request.getExp(), request.getTraceId(),
+				callerSub, request.getOfflineAccess(), PeopleTenant.NAMESPACE);
+	}
+
+	/**
+	 * Returns the person keyed by {@code userId}, creating the row on first
+	 * sight. Call under {@link #personRegistryLock}.
+	 *
+	 * <p>A disabled person mints nothing: the row is marked, never deleted (the
+	 * same audit rule {@code PersonalPrincipal.disabled_at_ms} states), so the
+	 * only thing that keeps a disabled person from signing straight back in is
+	 * this check.
+	 *
+	 * <p>Package-private so the create/find behaviour can be proven directly:
+	 * the mint that wraps it cannot complete until tacplus stops reserving
+	 * {@code people} as a tenant name (see the slice's decision doc), and the
+	 * storage semantics are not the thing that blocker is about.
+	 */
+	void findOrCreatePerson(String userId, Kernel.PeopleIdpProvider provider,
+			String providerSubject) throws StatusException {
+		Kernel.PrincipalState registry;
+		try {
+			registry = principalMap.proto();
+		} catch (ProtoException e) {
+			throw new StatusException(Status.INTERNAL, "principal registry unavailable");
+		}
+		Kernel.Person existing = null;
+		for (Kernel.Person person : registry.getPeopleList()) {
+			if (userId.equals(person.getUserId())) {
+				existing = person;
+				break;
+			}
+		}
+		if (existing != null) {
+			if (existing.getDisabledAtMs() != 0) {
+				throw new StatusException(Status.PERMISSION_DENIED, "person is disabled");
+			}
+			return;
+		}
+		if (registry.getPeopleCount() >= MAX_PEOPLE) {
+			throw new StatusException(Status.RESOURCE_EXHAUSTED, "people registry is full");
+		}
+		Kernel.Person person = Kernel.Person.newBuilder()
+				.setUserId(userId)
+				.setProvider(provider)
+				.setProviderSubject(providerSubject)
+				.setCreatedAtMs(System.currentTimeMillis())
+				.build();
+		try {
+			principalMap.putPeople(userId, person);
+		} catch (ProtoException e) {
+			throw new StatusException(Status.INTERNAL, "person could not be recorded: " + e.getMessage());
+		}
+		// The registry's durability is the disk snapshot, and nothing else on this
+		// path triggers one — the same reason CreatePersonalPrincipal fires it.
+		if (persistState != null) {
+			persistState.run();
+		}
+		logger.info("Created person: user_id={} provider={}", userId, provider.name());
+	}
+
+	/** The value of a string claim, or null when it is absent or not a non-empty string. */
+	@Nullable
+	private static String claimString(@Nullable Struct claims, String key) {
+		if (claims == null) {
+			return null;
+		}
+		Value value = claims.getFieldsMap().get(key);
+		if (value == null || value.getKindCase() != Value.KindCase.STRING_VALUE
+				|| value.getStringValue().isEmpty()) {
+			return null;
+		}
+		return value.getStringValue();
 	}
 
 	/**

@@ -51,7 +51,7 @@ public final class KernelPersistence {
     private final Supplier<Kernel.ConfigState> configStateReader;
     private final Supplier<List<Kernel.WorkloadRevocation>> revocationsReader;
     private final Supplier<List<Kernel.Grant>> grantsReader;
-    private final Supplier<List<Kernel.PersonalPrincipal>> personalPrincipalsReader;
+    private final Supplier<Kernel.PrincipalState> principalStateReader;
 
     /**
      * @param persistenceDir       the kernel persistence directory (Config.persistence_dir); the
@@ -62,8 +62,8 @@ public final class KernelPersistence {
      * @param configStateReader    current ConfigState (tenants + tenant_configs + project_configs)
      * @param revocationsReader    current workload revocations (WorkloadState.revocations)
      * @param grantsReader         current standing delegation grants
-     * @param personalPrincipalsReader current registered personal principals
-     *                             (PrincipalState.personal_principals)
+     * @param principalStateReader current PrincipalState: the registered personal
+     *                             principals and the `people` tenant's user rows
      */
     public KernelPersistence(
             String persistenceDir,
@@ -73,7 +73,7 @@ public final class KernelPersistence {
             Supplier<Kernel.ConfigState> configStateReader,
             Supplier<List<Kernel.WorkloadRevocation>> revocationsReader,
             Supplier<List<Kernel.Grant>> grantsReader,
-            Supplier<List<Kernel.PersonalPrincipal>> personalPrincipalsReader) {
+            Supplier<Kernel.PrincipalState> principalStateReader) {
         this.base = Paths.get(
                 (persistenceDir != null && !persistenceDir.isEmpty()) ? persistenceDir : "/var/lib/kernel");
         this.keyRotator = keyRotator;
@@ -82,7 +82,7 @@ public final class KernelPersistence {
         this.configStateReader = configStateReader;
         this.revocationsReader = revocationsReader;
         this.grantsReader = grantsReader;
-        this.personalPrincipalsReader = personalPrincipalsReader;
+        this.principalStateReader = principalStateReader;
     }
 
     /**
@@ -116,7 +116,7 @@ public final class KernelPersistence {
                 "Loaded kernel disk snapshot from {}: signing_keys={}, verifying_keys={}, "
                         + "ca_certs={}, service_cas={}, tenants={}, tenant_configs={}, "
                         + "project_configs={}, revocations={}, grants={}, "
-                        + "personal_principals={}",
+                        + "personal_principals={}, people={}",
                 base,
                 state.getSigningKeysCount(),
                 state.getVerifyingKeysCount(),
@@ -127,7 +127,8 @@ public final class KernelPersistence {
                 state.getProjectConfigsCount(),
                 state.getWorkloadRevocationsCount(),
                 state.getGrantsCount(),
-                state.getPersonalPrincipalsCount());
+                state.getPersonalPrincipalsCount(),
+                state.getPeopleCount());
         return state;
     }
 
@@ -171,8 +172,10 @@ public final class KernelPersistence {
             if (grantsReader != null) {
                 b.addAllGrants(grantsReader.get());
             }
-            if (personalPrincipalsReader != null) {
-                b.addAllPersonalPrincipals(personalPrincipalsReader.get());
+            if (principalStateReader != null) {
+                Kernel.PrincipalState principals = principalStateReader.get();
+                b.addAllPersonalPrincipals(principals.getPersonalPrincipalsList());
+                b.addAllPeople(principals.getPeopleList());
             }
 
             DiskStores.saveKernelDiskState(base, NS, b.build(), Snapshot.Opts.defaults());

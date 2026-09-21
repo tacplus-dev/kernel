@@ -104,6 +104,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT,
                     "tenant_namespace must be under \"" + TENANTS_PREFIX + "\"");
         }
+        rejectReserved(ns);
         if (!configMap.getTenants(ns).getName().isEmpty()) {
             throw new ProtoException(ProtoException.ALREADY_EXISTS, "tenant already exists at " + ns);
         }
@@ -148,6 +149,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     public Kernel.DeleteTenantResponse deleteTenant(Caller caller, Kernel.DeleteTenantRequest request)
             throws ProtoException {
         String ns = require(request.getTenantNamespace(), "tenant_namespace");
+        rejectReserved(ns);
         if (configMap.getTenants(ns).getName().isEmpty()) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
         }
@@ -234,6 +236,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     public TenantConfigOuterClass.TenantConfig updateTenantConfig(
             Caller caller, Kernel.SetTenantConfigRequest request) throws ProtoException {
         String ns = require(request.getTenantNamespace(), "tenant_namespace");
+        rejectReserved(ns);
         if (!request.hasConfig()) {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT, "config is required");
         }
@@ -766,6 +769,24 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         configMap.putTenantConfigs(rootNamespace, entry);
         logger.info("Seeded {} root cred_pair(s) into root namespace {} ({} cred_pair(s) total)",
                 rootCredPairs.size(), rootNamespace, kernelCfg.getCredPairsCount());
+    }
+
+    /**
+     * Refuses any write to a RESERVED tenant namespace.
+     *
+     * <p>{@code /tenants/people} is the one reserved name (see {@link
+     * PeopleTenant}). Kernel creates it at boot and owns its fixed IdP set, so
+     * there is nothing here for an admin to create, reconfigure or delete — and
+     * this tenant deliberately has no admin, so the refusal is what makes that
+     * true rather than merely intended. A root-entitled caller passes the
+     * generated level-or-below check like any other namespace, which is exactly
+     * why the check cannot live in the authorizer.
+     */
+    private static void rejectReserved(String ns) throws ProtoException {
+        if (PeopleTenant.NAMESPACE.equals(ns)) {
+            throw new ProtoException(ProtoException.PERMISSION_DENIED,
+                    PeopleTenant.NAMESPACE + " is a reserved tenant and is not administrable");
+        }
     }
 
     /** Index of the cred_pair with {@code id} in {@code credPairs}, or -1. */

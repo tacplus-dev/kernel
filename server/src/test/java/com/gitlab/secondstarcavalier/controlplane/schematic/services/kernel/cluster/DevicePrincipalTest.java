@@ -160,7 +160,7 @@ class DevicePrincipalTest {
 				dir.toString(), null, null, null, null, null, null,
 				() -> {
 					try {
-						return principalMap.proto().getPersonalPrincipalsList();
+						return principalMap.proto();
 					} catch (Exception e) {
 						throw new RuntimeException(e);
 					}

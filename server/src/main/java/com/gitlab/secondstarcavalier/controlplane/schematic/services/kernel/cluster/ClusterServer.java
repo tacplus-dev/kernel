@@ -421,10 +421,10 @@ public class ClusterServer {
 				() -> java.util.List.copyOf(liveGrants),
 				() -> {
 					try {
-						return principalState.proto().getPersonalPrincipalsList();
+						return principalState.proto();
 					} catch (Exception e) {
-						logger.warn("Failed to read personal principals for snapshot: {}", e.getMessage());
-						return List.of();
+						logger.warn("Failed to read the principal registry for snapshot: {}", e.getMessage());
+						return Kernel.PrincipalState.getDefaultInstance();
 					}
 				});
 
@@ -435,6 +435,7 @@ public class ClusterServer {
 		Kernel.KernelDiskState snapshot = kernelPersistence.load();
 		rehydrateFromSnapshot(snapshot, identityState, caState, workloadState, kernelConfigMap);
 		restorePersonalPrincipals(snapshot, principalState);
+		restorePeople(snapshot, principalState);
 		restoreGrantRevocations(snapshot, liveGrants);
 		keyRotator.restore(snapshot != null ? snapshot.getSigningKeysList() : List.of());
 
@@ -630,6 +631,17 @@ public class ClusterServer {
 						SpiffeIds.namespaceRoot());
 			} catch (Exception e) {
 				logger.warn("Failed to seed root cred_pairs: {}", e.getMessage());
+			}
+
+			// Create the RESERVED `people` tenant and write its fixed Apple/Google
+			// provider set into its oauth config slice. The platform knows this
+			// tenant exists ahead of time — that is the one deliberate special case
+			// (see PeopleTenant) — so it is seeded here rather than created through
+			// TenantAdmin, which refuses the name.
+			try {
+				PeopleTenant.seed(kernelConfigMap, cfg.getPeopleIdpCredentialsList());
+			} catch (Exception e) {
+				logger.warn("Failed to seed the reserved people tenant: {}", e.getMessage());
 			}
 
 			// Mandatory, fail-closed Authorizer shared by the kernel's token-auth
@@ -1199,6 +1211,40 @@ public class ClusterServer {
 			throw new IllegalStateException(
 					"kernel refuses to start: personal principals could not be restored from the "
 							+ "disk snapshot", e);
+		}
+	}
+
+	/**
+	 * Restores the {@code people} tenant's user rows from the disk snapshot into
+	 * the live {@code PrincipalState} boundary.
+	 *
+	 * <p>Separate from {@link #restorePersonalPrincipals} rather than folded into
+	 * it because the two collections are independently populated: a cluster can
+	 * hold people and no personal principals, and that method returns early on an
+	 * empty principal list.
+	 *
+	 * <p>Fails closed for the same reason: a person whose row does not come back
+	 * is not merely absent, they are re-created with a fresh {@code created_at_ms}
+	 * on their next login, so a partial restore is a silently rewritten identity
+	 * rather than a missing one.
+	 */
+	static void restorePeople(
+			Kernel.KernelDiskState snapshot,
+			com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap principalState) {
+		if (snapshot == null || snapshot.getPeopleCount() == 0) {
+			return;
+		}
+		try {
+			for (Kernel.Person person : snapshot.getPeopleList()) {
+				principalState.putPeople(
+						Objects.requireNonNull(person.getUserId(), "person.user_id"), person);
+			}
+			logger.info("Restored {} person row(s) from the disk snapshot", snapshot.getPeopleCount());
+		} catch (Exception e) {
+			logger.error("Failed to restore people from the disk snapshot — refusing to start with "
+					+ "a partial restore: {}", e.getMessage(), e);
+			throw new IllegalStateException(
+					"kernel refuses to start: people could not be restored from the disk snapshot", e);
 		}
 	}
 

@@ -23,7 +23,6 @@ import io.grpc.Channel;
 import io.grpc.ClientCall;
 import io.grpc.MethodDescriptor;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -69,23 +68,6 @@ class PeopleTenantMintTest {
 	private static final String APPLE_SUB = "001672.9c4f1a33be7d4e1fb0c2.0913";
 	private static final String GOOGLE_SUB = "110169484474386276334";
 	private static final Caller CALLER = new Caller("", "test-req");
-
-	/**
-	 * Why every test that has to reach the people arm is disabled: the generated
-	 * {@code Spiffe} grammar reserves {@code people} as a structural tag, so
-	 * {@code /tenants/people} is not a constructible namespace at all —
-	 * {@code Spiffe.namespaceSpiffeId} and {@code Spiffe.userSpiffeId} both refuse
-	 * it with "reserved tag \"people\" cannot be a tenant name". That blocks the
-	 * people-tenant broker's OWN delegate identity as well as its users, so these
-	 * tests cannot even build a caller token. It is tacplus's work-split item
-	 * ("`people` as a reserved tenant name in the grammar validators"), and
-	 * hand-building the SPIFFE strings here instead is exactly the duplication of
-	 * generated code this fleet forbids. Delete these annotations when tacplus
-	 * lands it; nothing else here should need to change.
-	 */
-	private static final String PEOPLE_NAMESPACE_BLOCKED =
-			"blocked: the tacplus Spiffe grammar reserves `people`, so /tenants/people is not yet "
-					+ "a constructible namespace — see the slice's decision doc";
 
 	private final List<JwkOuterClass.Jwk> verifyingKeys = new CopyOnWriteArrayList<>();
 	private final List<Kernel.Delegate> delegates = new ArrayList<>();
@@ -253,7 +235,6 @@ class PeopleTenantMintTest {
 	 * configuration's. Refused before any identity is derived, so it runs today.
 	 */
 	@Test
-	@Disabled(PEOPLE_NAMESPACE_BLOCKED)
 	void anIssuerOutsideTheFixedSetMintsNothing() {
 		ProtoException ex = assertThrows(ProtoException.class,
 				() -> peopleLogin("https://login.microsoftonline.com/common/v2.0", "abc"));
@@ -269,7 +250,6 @@ class PeopleTenantMintTest {
 	 * request cannot fall back to naming a person itself.
 	 */
 	@Test
-	@Disabled(PEOPLE_NAMESPACE_BLOCKED)
 	void aLoginWithNoVerifiedIdpClaimsMintsNothing() {
 		ProtoException ex = assertThrows(ProtoException.class, () -> mint(
 				Tokenrequest.MintUserTokenRequest.newBuilder()
@@ -288,19 +268,8 @@ class PeopleTenantMintTest {
 	 * spiffe://<td>/tenants/people/users/apple.<sub>}, namespace
 	 * {@code /tenants/people} (not the {@code /tenants/acme} the fake OPA keeps
 	 * answering).
-	 *
-	 * <p>DISABLED, and the one thing in this slice that does not work: the
-	 * generated {@code Spiffe} grammar reserves {@code people} as a structural
-	 * tag, so {@code Spiffe.userSpiffeId(td, "/tenants/people", ...)} refuses with
-	 * "reserved tag \"people\" cannot be a tenant name". That is tacplus's own
-	 * work-split item ("`people` as a reserved tenant name in the grammar
-	 * validators"), and hand-building the SPIFFE string here instead is exactly
-	 * the duplication of generated code this fleet forbids. Delete the
-	 * {@code @Disabled} when tacplus lands it; nothing else here should need to
-	 * change.
 	 */
 	@Test
-	@Disabled(PEOPLE_NAMESPACE_BLOCKED)
 	void aFirstApplePeopleLoginMintsThatPersonsToken() throws Exception {
 		Tokenrequest.TokenMintResponse resp = peopleLogin(APPLE_ISSUER, APPLE_SUB);
 

@@ -286,3 +286,69 @@ Full suite, `mvn -B install` at `platform/services/kernel`:
 
 `PeopleTenantMintTest`: `Tests run: 13, Failures: 0, Errors: 0, Skipped: 3` — the
 three skips being the tacplus blocker above.
+
+---
+
+## Unblocked
+
+2026-09-21, ~16:45 MDT. The headline blocker above is gone.
+
+**What changed (upstream, not here).** tacplus commit
+`248effdd42713b3d8d6aa6c1298e8fc10841d2da` ("spiffe: make \"people\" a legal reserved
+tenant name across all 5 chassis languages", branch `annotation-charset-injection`,
+local/unpushed) carves `people` out of the reserved-tag rejection in the tenant-name
+position only. In the regenerated Java chassis
+(`.../model/chassis/spiffe/Spiffe.java`) that is one explicit branch in the new
+`normalizeTenantSegment` helper and one `!segs[1].equals(PEOPLE_SEGMENT)` guard in
+`validateNamespaceSegments`; `PEOPLE_SEGMENT` stays in `RESERVED_TAGS`, and every
+other tag — `/tenants/system` included — is still refused. `Spiffe.tenantSpiffeId(td,
+"people")` and `Spiffe.userSpiffeId(td, "/tenants/people", u)` now construct.
+
+**What changed here.** Only `PeopleTenantMintTest.java`: the three `@Disabled`
+annotations, the `PEOPLE_NAMESPACE_BLOCKED` constant they shared and its javadoc, the
+now-unused `org.junit.jupiter.api.Disabled` import, and the stale "DISABLED, and the one
+thing in this slice that does not work" paragraph on
+`aFirstApplePeopleLoginMintsThatPersonsToken`. No production code was touched — the
+slice's own prediction ("deleting the annotations should be the whole of the follow-up")
+held exactly.
+
+**Regeneration.** Same merged source set as the Verification section above —
+`tacplus build --tag latest --src platform/proto --src scotty/backend/proto`, with the
+`tacplus` binary built from the local tacplus repo HEAD into scratch space (the installed
+v1.2.248 is still too old) and the pinned protoc toolchain from `justfile generate`. The
+tacplus repo was not modified.
+
+**Counts,** `mvn -B install` at `platform/services/kernel`:
+
+- **Before (this doc's "After"):** `Tests run: 326, Failures: 1, Errors: 1, Skipped: 3`
+- **After:** `Tests run: 326, Failures: 1, Errors: 1, Skipped: 0`
+
+Identical totals, three fewer skips. The same two pre-existing source-set artifacts
+remain and nothing else moved:
+
+- `IdentityServiceImplTest.serviceScopedEventBusAudienceTokenKeepsRoutingAliasedContractGrant`
+  — still "generated grant catalog is missing
+  TASKS_DELEGATION_PROBE_BUS_STATE_SERVICE_PUBLISH_TO_STREAM".
+- `SelfAuthenticatingRpcSkipTest.selfAuthenticatingRpcsPassUnauthenticated`
+  — still `UNAUTHENTICATED: missing authorization header`.
+
+`PeopleTenantMintTest`: `Tests run: 13, Failures: 0, Errors: 0, Skipped: 0`. All three
+previously-skipped cases pass, including the end-to-end
+`aFirstApplePeopleLoginMintsThatPersonsToken`, which is the first proof that the people
+arm mints `spiffe://<td>/tenants/people/users/apple.<sub>` under namespace
+`/tenants/people`.
+
+### On pinning that tacplus SHA
+
+There is no commit-SHA pin for tacplus anywhere in this repo — checked `pom.xml`,
+`tacplus.yaml`, `justfile`, `Dockerfile` and `.gitlab-ci.yml`. The only pin mechanism CI
+has is a `tacplus-version:` key in `tacplus.yaml`, which `.gitlab-ci.yml` (lines 13 and
+180) reads and resolves to a MAJOR.MINOR *image series*
+(`…/tacplus/tacplus-${MAJOR}-${MINOR}:latest`) — a series pin, not a commit. Two
+consequences worth stating rather than fixing here:
+
+1. Nothing in kernel can name `248effdd` today. When that commit ships in a released
+   tacplus, kernel picks it up by the series image moving, not by a SHA bump.
+2. `tacplus.yaml` does **not** currently set `tacplus-version:` at all, so the CI
+   generate job would hard-fail at its own "ERROR: tacplus-version not set" guard. That
+   predates this slice and is out of its scope; flagged, not touched.

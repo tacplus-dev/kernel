@@ -436,6 +436,7 @@ public class ClusterServer {
 		rehydrateFromSnapshot(snapshot, identityState, caState, workloadState, kernelConfigMap);
 		restorePersonalPrincipals(snapshot, principalState);
 		restorePeople(snapshot, principalState);
+		restoreTenantUserLinks(snapshot, principalState);
 		restoreGrantRevocations(snapshot, liveGrants);
 		keyRotator.restore(snapshot != null ? snapshot.getSigningKeysList() : List.of());
 
@@ -1245,6 +1246,35 @@ public class ClusterServer {
 					+ "a partial restore: {}", e.getMessage(), e);
 			throw new IllegalStateException(
 					"kernel refuses to start: people could not be restored from the disk snapshot", e);
+		}
+	}
+
+	/**
+	 * Restores the tenant-user link registry from the disk snapshot, fail-closed
+	 * like its {@link #restorePeople} neighbour and more sharply than it: a link
+	 * is proved once, by two live IdP logins sharing a nonce, and nothing kernel
+	 * holds can re-derive it. A partial restore silently unlinks users, and the
+	 * only symptom is a {@code linked} claim that stops appearing.
+	 */
+	static void restoreTenantUserLinks(
+			Kernel.KernelDiskState snapshot,
+			com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap principalState) {
+		if (snapshot == null || snapshot.getTenantUserLinksCount() == 0) {
+			return;
+		}
+		try {
+			for (Kernel.TenantUserLinks links : snapshot.getTenantUserLinksList()) {
+				principalState.putTenantUserLinks(
+						Objects.requireNonNull(links.getUserKey(), "tenant_user_links.user_key"), links);
+			}
+			logger.info("Restored {} tenant-user link row(s) from the disk snapshot",
+					snapshot.getTenantUserLinksCount());
+		} catch (Exception e) {
+			logger.error("Failed to restore tenant user links from the disk snapshot — refusing to "
+					+ "start with a partial restore: {}", e.getMessage(), e);
+			throw new IllegalStateException(
+					"kernel refuses to start: tenant user links could not be restored from the "
+							+ "disk snapshot", e);
 		}
 	}
 

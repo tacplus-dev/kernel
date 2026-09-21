@@ -176,6 +176,7 @@ public final class KernelPersistence {
                 Kernel.PrincipalState principals = principalStateReader.get();
                 b.addAllPersonalPrincipals(principals.getPersonalPrincipalsList());
                 b.addAllPeople(principals.getPeopleList());
+                b.addAllTenantUserLinks(principals.getTenantUserLinksList());
             }
 
             DiskStores.saveKernelDiskState(base, NS, b.build(), Snapshot.Opts.defaults());

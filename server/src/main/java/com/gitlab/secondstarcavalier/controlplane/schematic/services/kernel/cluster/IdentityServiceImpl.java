@@ -211,6 +211,20 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private static final int MAX_PEOPLE = 65536;
 
+	/**
+	 * Cap on one user's links, matching {@code TenantUserLinks.links}'s
+	 * {@code assert_max_size} for the same reason {@link #MAX_PEOPLE} matches its
+	 * own: a row grown past the bound fails validation on the way into the disk
+	 * snapshot, losing every later write rather than the one that overflowed.
+	 */
+	private static final int MAX_LINKS_PER_USER = 64;
+
+	/**
+	 * Separates the two halves of a link registry key. Neither a namespace nor a
+	 * SPIFFE id may contain it, so the pair can never be ambiguous.
+	 */
+	private static final String LINK_KEY_SEPARATOR = "|";
+
 	/** Canonical root of the personal-principal subtree ({@code /people/<pid>}). */
 	private static final String PEOPLE_PREFIX = "/" + Spiffe.PEOPLE_SEGMENT + "/";
 
@@ -281,6 +295,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 	/** Serializes the people-tenant mint's find-or-create; see {@link #mintPersonToken}. */
 	private final Object personRegistryLock = new Object();
+
+	/** Serializes the link registry's read-modify-write; see {@link #doCreateTenantUserLink}. */
+	private final Object linkRegistryLock = new Object();
 
 	private final long defaultTokenExpirySeconds;
 	private final long maxTokenLifetimeSeconds;
@@ -838,6 +855,227 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		return value.getStringValue();
 	}
 
+	// ========================================================================
+	// CreateTenantUserLink RPC (tenant-user ↔ tenant-user links)
+	// ========================================================================
+
+	@Override
+	public Kernel.CreateTenantUserLinkResponse createTenantUserLink(Caller caller,
+			Kernel.CreateTenantUserLinkRequest request) throws ProtoException {
+		try {
+			return doCreateTenantUserLink(request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("CreateTenantUserLink failed", e);
+			throw new ProtoException(ProtoException.INTERNAL,
+					"tenant user link failed: " + e.getMessage(), e);
+		}
+	}
+
+	/**
+	 * Records that two tenant-user identities are the same human, proved by BOTH
+	 * logins in one request.
+	 *
+	 * <p>The proof is the shared nonce. Each side carries the IdP's own
+	 * {@code nonce} claim, verified by the broker and relayed as
+	 * {@code origin_nonce}; the client generated one value and sent it into both
+	 * logins, so two id_tokens carrying it were obtained together by somebody
+	 * holding both accounts. Without that binding a single stolen token could be
+	 * replayed on its own against a login the attacker does control, and the
+	 * result would be a link to somebody else's account — which is the whole of
+	 * what a link authorizes.
+	 *
+	 * <p>Neither side's namespace is taken from the request. A {@code people}
+	 * side is derived from the verified issuer/subject, exactly as
+	 * {@link #mintPersonToken} derives it; any other side's namespace comes from
+	 * OPA, the same authority that names it at mint.
+	 */
+	private Kernel.CreateTenantUserLinkResponse doCreateTenantUserLink(
+			Kernel.CreateTenantUserLinkRequest request) throws StatusException {
+		String callerSub = verifiedCallerToken("CreateTenantUserLink").getSubject();
+		Kernel.Delegate broker = requireBrokerDelegate(
+				callerSub, Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP);
+
+		String nonceA = claimString(request.getA().getClaims(), "origin_nonce");
+		String nonceB = claimString(request.getB().getClaims(), "origin_nonce");
+		if (nonceA == null || nonceB == null) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"both sides of a link must carry a verified origin_nonce");
+		}
+		if (!nonceA.equals(nonceB)) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"the two sides of a link do not share a nonce");
+		}
+
+		LinkedUser a = resolveLinkSide(request.getA(), broker, request.getTraceId(), "a");
+		LinkedUser b = resolveLinkSide(request.getB(), broker, request.getTraceId(), "b");
+		if (a.namespace().equals(b.namespace())) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"a link joins users in two different tenants; both sides resolved to "
+							+ a.namespace());
+		}
+
+		long createdAt;
+		synchronized (linkRegistryLock) {
+			// Both directions, because the mint reads this by the caller's own key
+			// and must not scan for a row that happens to mention them. The
+			// timestamp of the first edge written is reused for the mirror so the
+			// two halves of one link never disagree about when it was made.
+			createdAt = recordLink(a, b, System.currentTimeMillis());
+			recordLink(b, a, createdAt);
+		}
+		// The registry's durability is the disk snapshot, and nothing else on this
+		// path triggers one — the same reason findOrCreatePerson fires it.
+		if (persistState != null) {
+			persistState.run();
+		}
+		logger.info("Linked tenant users: {} <-> {}", a.key(), b.key());
+		return Kernel.CreateTenantUserLinkResponse.newBuilder()
+				.setAUserKey(a.key())
+				.setBUserKey(b.key())
+				.setCreatedAtMs(createdAt)
+				.build();
+	}
+
+	/** One resolved half of a link: the identity kernel would mint for that login. */
+	private record LinkedUser(String namespace, String subject) {
+		String key() {
+			return linkKey(namespace, subject);
+		}
+	}
+
+	/**
+	 * Resolves one side of a link to the identity kernel would mint for it.
+	 *
+	 * <p>{@code which} names the side in refusals only — {@code a} or {@code b} —
+	 * so a broker can tell which half it got wrong without kernel echoing any of
+	 * the claims back.
+	 */
+	private LinkedUser resolveLinkSide(Kernel.TenantUserLinkSide side, Kernel.Delegate broker,
+			String traceId, String which) throws StatusException {
+		Struct claims = side.getClaims();
+		String issuer = claimString(claims, "origin_iss");
+		String providerSubject = claimString(claims, "origin_sub");
+		if (issuer == null || providerSubject == null) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"link side " + which + " carries no verified origin_iss/origin_sub claims");
+		}
+
+		Kernel.PeopleIdpProvider provider = PeopleTenant.providerForIssuer(issuer);
+		if (provider != null) {
+			// A people side is a login into the reserved tenant, and only that
+			// tenant's own broker may attest one — the same gate doMintUserToken
+			// uses to reach the people arm, for the same reason. Without it any
+			// delegate trusted to broker some other tenant's IdP could name an
+			// Apple subject and link itself to a person it never authenticated.
+			if (!PeopleTenant.NAMESPACE.equals(broker.getTenantNamespace())) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"only the people tenant's own broker may attest a people-tenant link side");
+			}
+			String userId = PeopleTenant.userId(provider, providerSubject);
+			// A link may be the first time this person has been seen. Creating the
+			// row here is still "only an IdP creates a person": the claims this
+			// derives from are an IdP login the broker just verified.
+			synchronized (personRegistryLock) {
+				findOrCreatePerson(userId, provider, providerSubject);
+			}
+			return new LinkedUser(PeopleTenant.NAMESPACE,
+					Spiffe.userSpiffeId(trustDomainReader.get(), PeopleTenant.NAMESPACE, userId));
+		}
+
+		// Any other side is an ordinary tenant login, and its namespace is OPA's
+		// to name, exactly as it is at mint. The broker therefore names neither
+		// the tenant nor, through it, whose account is being linked.
+		if (side.getSubject().isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"link side " + which + " names no subject");
+		}
+		return new LinkedUser(
+				requireNamespaceFromOpa(resolveEntitlementsViaOpa(claims, traceId)),
+				side.getSubject());
+	}
+
+	/**
+	 * Adds the edge from {@code owner} to {@code peer} if it is not already
+	 * there, and returns its {@code created_at_ms}. Re-proving an existing link
+	 * changes nothing — the same two logins presented again are the same fact.
+	 *
+	 * <p>Call under {@link #linkRegistryLock}: read-modify-write on one row, the
+	 * same shape and the same node-local limitation as
+	 * {@link #findOrCreatePerson}'s.
+	 */
+	private long recordLink(LinkedUser owner, LinkedUser peer, long now) throws StatusException {
+		Kernel.TenantUserLinks existing = principalMap.getTenantUserLinks(owner.key());
+		for (Kernel.TenantUserLink link : existing.getLinksList()) {
+			if (link.getPeerNamespace().equals(peer.namespace())
+					&& link.getPeerSubject().equals(peer.subject())) {
+				return link.getCreatedAtMs();
+			}
+		}
+		if (existing.getLinksCount() >= MAX_LINKS_PER_USER) {
+			throw new StatusException(Status.RESOURCE_EXHAUSTED,
+					"user is at the " + MAX_LINKS_PER_USER + "-link cap");
+		}
+		try {
+			principalMap.putTenantUserLinks(owner.key(), existing.toBuilder()
+					.setUserKey(owner.key())
+					.addLinks(Kernel.TenantUserLink.newBuilder()
+							.setPeerNamespace(peer.namespace())
+							.setPeerSubject(peer.subject())
+							.setCreatedAtMs(now))
+					.build());
+		} catch (ProtoException e) {
+			throw new StatusException(Status.INTERNAL,
+					"link could not be recorded: " + e.getMessage());
+		}
+		return now;
+	}
+
+	/**
+	 * The namespaces a token's {@code linked} claim should carry for the identity
+	 * about to be minted — empty for an unlinked user, which is every user until
+	 * somebody proves otherwise.
+	 *
+	 * <p>NAMESPACES, not user paths. tacplus's generated namespace backstop
+	 * compares this claim against {@code (spec.store_namespace)}, which holds a
+	 * namespace, so a user path would never compare equal and a linked caller's
+	 * read would never be accepted (tacplus, 2026-09-21).
+	 *
+	 * <p>One keyed read, because this runs on every user mint. That is why the
+	 * registry stores both directions of every link rather than one row per pair.
+	 */
+	private List<String> linkedNamespaces(String namespace, String subject) {
+		if (namespace == null || namespace.isEmpty() || subject == null || subject.isEmpty()) {
+			return List.of();
+		}
+		Kernel.TenantUserLinks row = principalMap.getTenantUserLinks(linkKey(namespace, subject));
+		if (row.getLinksCount() == 0) {
+			return List.of();
+		}
+		// One namespace per entry however many users in it this one is linked to:
+		// the claim names subtrees, and the backstop compares it to one.
+		List<String> namespaces = new java.util.ArrayList<>(row.getLinksCount());
+		for (Kernel.TenantUserLink link : row.getLinksList()) {
+			if (!namespaces.contains(link.getPeerNamespace())) {
+				namespaces.add(link.getPeerNamespace());
+			}
+		}
+		return namespaces;
+	}
+
+	/**
+	 * The link registry's key for one tenant user: the {@code namespace} and
+	 * {@code sub} claims kernel mints for them, in that order. The minted pair
+	 * rather than a derived path because an ordinary tenant's {@code sub} is
+	 * whatever its IdP broker supplies and need not be a SPIFFE id, so there is
+	 * no path to derive; the namespace half is what keeps two tenants'
+	 * identically-named users apart.
+	 */
+	private static String linkKey(String namespace, String subject) {
+		return namespace + LINK_KEY_SEPARATOR + subject;
+	}
+
 	/**
 	 * The four steps {@code MintClientToken} already runs for a cred_pair, against
 	 * {@code PersonalPrincipal.credentials} instead of
@@ -1041,6 +1279,16 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// does not get to name the subtree kernel already resolved.
 		newToken.setNamespace(
 				stampedNamespace != null ? stampedNamespace : requireNamespaceFromOpa(opaResult));
+
+		// The `linked` claim: the NAMESPACES of the tenant users this one is
+		// linked to (decision doc §2). Set after the namespace, because the
+		// registry is keyed on the namespace kernel just resolved, and before the
+		// relayed claims are copied in, so a broker that puts a `linked` key in
+		// its claim struct cannot name a namespace the registry does not.
+		List<String> linked = linkedNamespaces(newToken.getNamespace(), subject);
+		if (!linked.isEmpty()) {
+			newToken.setLinked(linked);
+		}
 
 		if (claims != null) {
 			newToken.setClaimsFromStruct(claims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);

@@ -18,6 +18,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.tokenrequest.Tokenrequest;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.Mint;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.UserMint;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.servicemanager.Caller;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.errors.ProtoException;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.spec.Spec;
@@ -78,7 +79,7 @@ import org.slf4j.LoggerFactory;
  * ManageCert-based auto-TLS (task #31). New services should use
  * {@link TlsCertServiceImpl}'s {@code ManageCert} bidi stream instead.
  */
-public class IdentityServiceImpl implements Mint.MintHandler {
+public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintHandler {
 
 	private static final Logger logger = LoggerFactory.getLogger(IdentityServiceImpl.class);
 

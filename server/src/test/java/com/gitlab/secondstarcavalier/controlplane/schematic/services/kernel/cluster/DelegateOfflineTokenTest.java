@@ -6,6 +6,9 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.spiffe.Spiffe;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.token.TokenWrapper;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.clients.vservices.userentitlements.OpaEvalGrpcClient;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.UserMint;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.UserMintGrpc;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.generated.entitlements.Entitlements;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.errors.ProtoException;
@@ -16,6 +19,18 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacp
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.authz.InMemoryManager;
 import io.grpc.Channel;
+import io.grpc.Contexts;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import io.grpc.Metadata;
+import io.grpc.Server;
+import io.grpc.ServerBuilder;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
+import io.grpc.ServerInterceptor;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import io.grpc.stub.MetadataUtils;
 import io.grpc.CallOptions;
 import io.grpc.MethodDescriptor;
 import io.grpc.ClientCall;
@@ -24,6 +39,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -369,5 +385,91 @@ class DelegateOfflineTokenTest {
         String entitlementsJson = ot.getCustomField("service_entitlements");
         assertTrue(entitlementsJson.contains("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"));
         assertTrue(entitlementsJson.contains("KERNEL_TENANT_ADMIN_GET_PROJECT_CONFIG"));
+    }
+
+    // ---- The C2S surface (token-management item 7) -------------------------
+
+    private static final Metadata.Key<String> AUTHORIZATION =
+            Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+
+    /**
+     * ClusterServer's own raw-token interceptor, which is an anonymous class
+     * there and so cannot be imported: it forwards the bearer value the handler
+     * re-verifies with {@code verifiedCallerToken}. Without it the handler has
+     * no credential to mint against, exactly as in production.
+     */
+    private static ServerInterceptor rawTokenInterceptor() {
+        return new ServerInterceptor() {
+            @Override
+            public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
+                    ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
+                io.grpc.Context ctx = io.grpc.Context.current();
+                String authHeader = headers.get(AUTHORIZATION);
+                if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                    ctx = ctx.withValue(ClusterServer.RAW_AUTH_TOKEN_KEY, authHeader.substring(7));
+                }
+                return Contexts.interceptCall(ctx, call, headers, next);
+            }
+        };
+    }
+
+    /**
+     * Item 7's kernel half: the user's mint is served on kernel's C2S
+     * {@code UserMint} service, through the real generated wrapper and the real
+     * {@link Authorizer}, wired exactly as {@code ClusterServer} wires it
+     * (token-only authenticate func — that is what {@code auth_any_user} means,
+     * and the at-or-below rule would refuse the ordinary user callers this RPC
+     * exists for).
+     *
+     * <p>Both directions in one run: a user holding their own bearer token gets
+     * a code, and a caller with no token at all is refused by the wrapper before
+     * the handler runs. The gateway side of the same path — that this RPC is
+     * routable through generic C2S routing with no hand-written front — is
+     * pinned in gateway's {@code e2e_user_mint.rs}.
+     */
+    @Test
+    void theUserMintIsServedOnKernelsC2sSurface() throws Exception {
+        IdentityServiceImpl svc = newService(FakeOpaEvalGrpcClient.returning(
+                scope(List.of("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG"))));
+        addDelegate("", DELEGATE_NAME);
+
+        Authorizer authorizer = new Authorizer(new LocalJwkSource(() -> verifyingKeys));
+        UserMint wrapper = new UserMint(svc, authorizer);
+        wrapper.setAuthenticateFunc((UserMint.Authenticator) targetNamespace ->
+                Authorizer.identityClaims(
+                        authorizer.authenticateWithToken(Authorizer.AUTH_HEADER_CTX_KEY.get())));
+
+        Server server = ServerBuilder.forPort(0)
+                .intercept(rawTokenInterceptor())
+                .intercept(Authorizer.headerCaptureInterceptor())
+                .addService(wrapper)
+                .build()
+                .start();
+        ManagedChannel channel = ManagedChannelBuilder
+                .forAddress("localhost", server.getPort()).usePlaintext().build();
+        try {
+            Tokenrequest.MintDelegateOfflineTokenRequest request =
+                    Tokenrequest.MintDelegateOfflineTokenRequest.newBuilder()
+                            .setDelegateName(DELEGATE_NAME)
+                            .build();
+
+            Metadata bearer = new Metadata();
+            bearer.put(AUTHORIZATION, "Bearer " + mintUserToken());
+            Tokenrequest.MintDelegateOfflineTokenResponse minted = UserMintGrpc
+                    .newBlockingStub(channel)
+                    .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(bearer))
+                    .mintDelegateOfflineToken(request);
+            assertTrue(minted.getCode().length() >= 64,
+                    "the C2S surface must return the same one-time code the handler mints");
+
+            // No token at all: auth_any_user still means authenticated.
+            StatusRuntimeException refused = assertThrows(StatusRuntimeException.class,
+                    () -> UserMintGrpc.newBlockingStub(channel).mintDelegateOfflineToken(request));
+            assertEquals(Status.Code.UNAUTHENTICATED, refused.getStatus().getCode(),
+                    "an unauthenticated caller must be refused by the wrapper, not by the handler");
+        } finally {
+            channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+            server.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+        }
     }
 }

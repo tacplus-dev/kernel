@@ -54,6 +54,7 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.fenc
 import org.apache.ratis.protocol.RaftGroup;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.FencedLock;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.PersonalIdentity;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.UserMint;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.TenantAdmin;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -850,6 +851,33 @@ public class ClusterServer {
 			rateLimiter.registerServices(List.of(mintServiceDefinition));
 			logger.info("MintService registered on gRPC server ({} delegates, methods={})",
 					delegates.size(), methodNames(mintServiceDefinition));
+
+			// UserMint — the same IdentityServiceImpl, seen from the client side.
+			// MintDelegateOfflineToken's caller is a PERSON holding their own
+			// bearer token, so it is declared (spec.service_c2s) on its own
+			// service (tacplus refuses two caller surfaces on one service) and
+			// the gateway reaches it through its ordinary generic C2S routing —
+			// no hand-written gateway front (token-management decision item 7).
+			//
+			// The authenticate func is token-only for the same reason
+			// PersonalIdentity's is: the wrapper passes no target namespace for an
+			// auth_any_user RPC with no target_namespace_field, and the
+			// at-or-below rule would refuse the ordinary user callers this RPC
+			// exists for. The handler re-reads and re-verifies the caller's token
+			// itself (verifiedCallerToken) to get the subject it mints against.
+			var userMintWrapper = new UserMint(identityService, kernelAuthorizer);
+			userMintWrapper.setAuthenticateFunc((UserMint.Authenticator) targetNamespace ->
+					com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer
+							.identityClaims(kernelAuthorizer.authenticateWithToken(
+									com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer.AUTH_HEADER_CTX_KEY
+											.get())));
+			ServerServiceDefinition userMintServiceDefinition = userMintWrapper.bindService();
+			serverBuilder.addService(userMintServiceDefinition);
+			// Rate-limited for the same reason Mint is: this RPC issues a
+			// credential, and it kept that property when it moved off Mint.
+			rateLimiter.registerServices(List.of(userMintServiceDefinition));
+			logger.info("UserMintService registered on gRPC server (methods={})",
+					methodNames(userMintServiceDefinition));
 
 			// TLS certificate lifecycle service (tlscert.TlsCertService/ManageCert
 			// bidi stream): kernel is the cluster cert authority for auto_tls

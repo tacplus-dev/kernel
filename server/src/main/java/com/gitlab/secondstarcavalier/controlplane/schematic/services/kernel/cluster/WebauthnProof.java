@@ -12,7 +12,12 @@ import com.google.gson.JsonParser;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.Signature;
+import java.util.Arrays;
 import java.util.Base64;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
+import javax.annotation.Nullable;
 
 /**
  * The WebAuthn (passkey) half of a device→person link: the two bindings kernel
@@ -47,21 +52,24 @@ import java.util.Base64;
  * same link, which {@code recordLink} makes idempotent — the same position §2
  * took on the two-IdP proof, for the same reason.
  *
- * <p><b>What is deliberately NOT checked, and why.</b> The RP ID hash in
+ * <p><b>The third binding: the relying party.</b> The RP ID hash in
  * {@code authenticatorData} and the {@code origin} in {@code clientDataJSON} are
- * read by nothing here. Both are checks against a CONFIGURED relying party, and
- * the platform has no relying-party configuration to check them against — a
- * constant compiled into kernel would be a guess that silently locks out every
- * deployment whose origin differs. They are named as a follow-on in the slice's
- * decision doc rather than faked, and their absence costs less here than it
- * would in a password-replacement flow: an assertion obtained by a hostile
- * relying party is still useless without an id_token whose nonce is that key's
- * thumbprint.
+ * checked against {@link RelyingParty}, the deployment's configured domain and
+ * web origins. This is WebAuthn's own anti-phishing control, and it is what
+ * stops a hostile page from collecting a signature over a challenge it was
+ * handed. §3 can survive without it — an assertion obtained by a hostile relying
+ * party is useless without an id_token whose nonce is that key's thumbprint —
+ * but §5's approval has no second half: the challenge is all the device signs.
+ * So both flows check it, and a deployment that configures no relying party gets
+ * every assertion refused rather than an unchecked one accepted.
  */
 final class WebauthnProof {
 
 	/** authenticatorData is rpIdHash(32) || flags(1) || signCount(4), at minimum. */
 	private static final int MIN_AUTHENTICATOR_DATA_LENGTH = 37;
+
+	/** Length of the leading SHA-256 RP ID hash in authenticatorData. */
+	private static final int RP_ID_HASH_LENGTH = 32;
 
 	/** Offset of the flags byte in authenticatorData. */
 	private static final int FLAGS_OFFSET = 32;
@@ -92,6 +100,109 @@ final class WebauthnProof {
 	static final class Invalid extends Exception {
 		Invalid(String message) {
 			super(message);
+		}
+	}
+
+	/**
+	 * The relying party a device assertion must have been produced for: the
+	 * domain the authenticator hashed into {@code authenticatorData}, and the web
+	 * origins a browser may have collected the signature from.
+	 *
+	 * <p><b>Where the values come from.</b> Two environment variables read once
+	 * at startup, {@link #RP_ID_ENV} and {@link #ORIGINS_ENV}. That is the
+	 * mechanism kernel already uses for per-deployment values the bundle's
+	 * {@code Config} has no field for — {@code KERNEL_K8S_TOKEN_AUDIENCE},
+	 * {@code KERNEL_KUBE_API_URL} — and it is read in {@code ClusterServer}
+	 * beside those, so the service itself still takes the value by injection.
+	 *
+	 * <p><b>No default, and no default is safe.</b> An RP ID is the deployment's
+	 * own domain; any constant compiled in here would be wrong for every
+	 * deployment but one, and a wrong one that is checked is worse than one that
+	 * is absent. So an unconfigured relying party is not "skip the check": it is
+	 * {@link #check} refusing every assertion. A deployment that runs the device
+	 * flows must configure it; one that does not is unaffected, because nothing
+	 * else reaches this code.
+	 */
+	static final class RelyingParty {
+
+		/** The WebAuthn relying party ID: the deployment's domain, e.g. {@code example.com}. */
+		static final String RP_ID_ENV = "KERNEL_WEBAUTHN_RP_ID";
+
+		/** The origins a browser may sign from, comma separated, e.g. {@code https://example.com}. */
+		static final String ORIGINS_ENV = "KERNEL_WEBAUTHN_ORIGINS";
+
+		/**
+		 * The relying party of a deployment that configured none: it refuses every
+		 * assertion, which is what "fail closed" means here.
+		 */
+		static final RelyingParty NONE = new RelyingParty(null, Set.of());
+
+		/** SHA-256 of the RP ID, or null when nothing is configured. */
+		@Nullable
+		private final byte[] rpIdHash;
+
+		private final Set<String> origins;
+
+		private RelyingParty(@Nullable byte[] rpIdHash, Set<String> origins) {
+			this.rpIdHash = rpIdHash;
+			this.origins = origins;
+		}
+
+		/**
+		 * The relying party the environment names, or an unconfigured one — which
+		 * refuses every assertion — if either variable is missing or empty.
+		 *
+		 * <p>Both or neither: an RP ID with no origins would check half of
+		 * WebAuthn's anti-phishing pair, which is the state this exists to end.
+		 */
+		static RelyingParty fromEnvironment(Map<String, String> env) {
+			String rpId = env.get(RP_ID_ENV);
+			Set<String> origins = new LinkedHashSet<>();
+			String configured = env.get(ORIGINS_ENV);
+			if (configured != null) {
+				for (String origin : configured.split(",")) {
+					if (!origin.isBlank()) {
+						origins.add(origin.strip());
+					}
+				}
+			}
+			if (rpId == null || rpId.isBlank() || origins.isEmpty()) {
+				return NONE;
+			}
+			return of(rpId.strip(), origins);
+		}
+
+		/** The relying party named directly, for {@code ClusterServer} and tests. */
+		static RelyingParty of(String rpId, Set<String> origins) {
+			return new RelyingParty(sha256(rpId.getBytes(StandardCharsets.UTF_8)),
+					Set.copyOf(origins));
+		}
+
+		/** True when a relying party is configured; false means every assertion is refused. */
+		boolean isConfigured() {
+			return rpIdHash != null;
+		}
+
+		/**
+		 * Refuses an assertion that was not produced for this relying party.
+		 *
+		 * <p>The two halves are not redundant. The RP ID hash is the
+		 * AUTHENTICATOR's statement of which domain it unlocked the key for, and
+		 * no page can change it; the origin is the BROWSER's statement of which
+		 * page asked, and it is what catches a subdomain or a look-alike serving
+		 * the same RP ID.
+		 */
+		private void check(byte[] authenticatorData, @Nullable String origin) throws Invalid {
+			if (rpIdHash == null) {
+				throw new Invalid("no WebAuthn relying party is configured to check against");
+			}
+			if (!Arrays.equals(authenticatorData, 0, RP_ID_HASH_LENGTH,
+					rpIdHash, 0, RP_ID_HASH_LENGTH)) {
+				throw new Invalid("the assertion was produced for a different relying party");
+			}
+			if (origin == null || !origins.contains(origin)) {
+				throw new Invalid("the assertion was collected from an origin this deployment does not serve");
+			}
 		}
 	}
 
@@ -196,9 +307,12 @@ final class WebauthnProof {
 	 * SHA-256(clientDataJSON)}, as the WebAuthn spec defines them — rather than
 	 * taken from the request, so a broker cannot present a signature over
 	 * something other than the data it also sent.
+	 *
+	 * @param relyingParty the deployment's relying party; an unconfigured one
+	 *                     refuses every assertion rather than skipping the check
 	 */
 	static void verify(Kernel.WebauthnAssertion assertion, JwkOuterClass.Jwk key,
-			String expectedChallenge) throws Invalid {
+			String expectedChallenge, RelyingParty relyingParty) throws Invalid {
 		byte[] authenticatorData = assertion.getAuthenticatorData().toByteArray();
 		if (authenticatorData.length < MIN_AUTHENTICATOR_DATA_LENGTH) {
 			throw new Invalid("authenticator data is too short to be a WebAuthn assertion");
@@ -223,6 +337,10 @@ final class WebauthnProof {
 		if (!expectedChallenge.equals(stringMember(clientData, "challenge"))) {
 			throw new Invalid("the assertion's challenge does not name the presented login");
 		}
+		// WebAuthn's anti-phishing pair, checked before the signature so a
+		// hostile relying party's assertion is refused on the ground that names
+		// what is actually wrong with it.
+		relyingParty.check(authenticatorData, stringMember(clientData, "origin"));
 
 		byte[] signed = new byte[authenticatorData.length + 32];
 		System.arraycopy(authenticatorData, 0, signed, 0, authenticatorData.length);

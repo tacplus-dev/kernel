@@ -114,7 +114,8 @@ class MintLifetimeCeilingTest {
 				null,            // persistState
 				null,            // kubernetesTokenVerifier
 				null,            // kubernetesTokenAudience
-				null);           // opaConfigWriter
+				null,            // opaConfigWriter
+				null);           // webauthnRelyingParty (fail closed)
 	}
 
 	/**

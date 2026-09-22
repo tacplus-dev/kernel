@@ -41,6 +41,7 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -87,6 +88,12 @@ class DeviceWebauthnLinkTest {
 
 	/** The people user the Apple login above resolves to. */
 	private static final String PERSON_USER_ID = "apple." + APPLE_SUB;
+
+	/** The relying party this deployment serves, and the one the passkey signs for. */
+	private static final String RP_ID = "example.test";
+	private static final String ORIGIN = "https://example.test";
+	private static final WebauthnProof.RelyingParty RELYING_PARTY =
+			WebauthnProof.RelyingParty.of(RP_ID, java.util.Set.of(ORIGIN));
 
 	private static final Base64.Encoder B64 = Base64.getUrlEncoder().withoutPadding();
 
@@ -138,7 +145,8 @@ class DeviceWebauthnLinkTest {
 				null,            // persistState
 				null,            // kubernetesTokenVerifier
 				KERNEL_AUDIENCE,
-				null);           // opaConfigWriter
+				null,           // opaConfigWriter
+				RELYING_PARTY);
 		personalIdentity = new PersonalIdentityServiceImpl(principalMap, null);
 		passkey = Passkey.generate();
 	}
@@ -233,6 +241,100 @@ class DeviceWebauthnLinkTest {
 
 		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
 		assertNothingWritten();
+	}
+
+	/**
+	 * BINDING THREE, the relying party: the authenticator's own statement of
+	 * which domain it unlocked the key for.
+	 *
+	 * <p>Everything else about this request holds — the key is real, the
+	 * signature verifies, the nonce is the thumbprint, the challenge names this
+	 * exact login. Only the {@code rpIdHash} names another domain, which is what
+	 * an assertion collected by a hostile relying party looks like.
+	 */
+	@Test
+	void anAssertionProducedForAnotherRelyingPartyLinksNothing() throws Exception {
+		Kernel.WebauthnAssertion elsewhere = passkey.assertFor(
+				WebauthnProof.loginBinding(APPLE_ISSUER, APPLE_SUB,
+						WebauthnProof.thumbprint(passkey.publicJwk)),
+				"attacker.test", ORIGIN);
+
+		ProtoException ex = assertThrows(ProtoException.class,
+				() -> linkCall(requestWith(elsewhere, passkey.publicJwk,
+						WebauthnProof.thumbprint(passkey.publicJwk), APPLE_ISSUER, APPLE_SUB),
+						PeopleTenant.NAMESPACE,
+						Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+		assertTrue(ex.getMessage().contains("different relying party"), ex.getMessage());
+		assertNothingWritten();
+	}
+
+	/**
+	 * The other half of the pair: the BROWSER's statement of which page asked.
+	 * The RP ID is this deployment's, so the authenticator is satisfied — a
+	 * look-alike page served under the same RP ID is exactly the case the origin
+	 * is there to catch.
+	 */
+	@Test
+	void anAssertionCollectedFromAnotherOriginLinksNothing() throws Exception {
+		Kernel.WebauthnAssertion elsewhere = passkey.assertFor(
+				WebauthnProof.loginBinding(APPLE_ISSUER, APPLE_SUB,
+						WebauthnProof.thumbprint(passkey.publicJwk)),
+				RP_ID, "https://phish.example.test");
+
+		ProtoException ex = assertThrows(ProtoException.class,
+				() -> linkCall(requestWith(elsewhere, passkey.publicJwk,
+						WebauthnProof.thumbprint(passkey.publicJwk), APPLE_ISSUER, APPLE_SUB),
+						PeopleTenant.NAMESPACE,
+						Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+		assertTrue(ex.getMessage().contains("origin this deployment does not serve"),
+				ex.getMessage());
+		assertNothingWritten();
+	}
+
+	/**
+	 * A deployment that configured no relying party refuses every assertion
+	 * rather than accepting an unchecked one. There is no constant that would be
+	 * right for two deployments, so the absent configuration must fail closed —
+	 * and this is the test that says so, because nothing else would notice the
+	 * difference between "no relying party" and "no check".
+	 */
+	@Test
+	void anUnconfiguredRelyingPartyRefusesAPerfectlyGoodAssertion() throws Exception {
+		String challenge = WebauthnProof.loginBinding(APPLE_ISSUER, APPLE_SUB,
+				WebauthnProof.thumbprint(passkey.publicJwk));
+		Kernel.WebauthnAssertion good = passkey.assertFor(challenge);
+
+		WebauthnProof.verify(good, passkey.publicJwk, challenge, RELYING_PARTY);
+
+		WebauthnProof.Invalid ex = assertThrows(WebauthnProof.Invalid.class,
+				() -> WebauthnProof.verify(good, passkey.publicJwk, challenge,
+						WebauthnProof.RelyingParty.NONE));
+		assertEquals("no WebAuthn relying party is configured to check against",
+				ex.getMessage());
+	}
+
+	/**
+	 * The environment is the deployment's configuration surface, and half of it
+	 * is not configuration: an RP ID with no origins would check one half of
+	 * WebAuthn's anti-phishing pair and silently skip the other.
+	 */
+	@Test
+	void halfAnEnvironmentConfiguresNoRelyingParty() {
+		assertTrue(WebauthnProof.RelyingParty.fromEnvironment(java.util.Map.of(
+				WebauthnProof.RelyingParty.RP_ID_ENV, RP_ID,
+				WebauthnProof.RelyingParty.ORIGINS_ENV, ORIGIN)).isConfigured());
+		assertFalse(WebauthnProof.RelyingParty.fromEnvironment(java.util.Map.of(
+				WebauthnProof.RelyingParty.RP_ID_ENV, RP_ID)).isConfigured());
+		assertFalse(WebauthnProof.RelyingParty.fromEnvironment(java.util.Map.of(
+				WebauthnProof.RelyingParty.ORIGINS_ENV, ORIGIN)).isConfigured());
+		assertFalse(WebauthnProof.RelyingParty.fromEnvironment(java.util.Map.of(
+				WebauthnProof.RelyingParty.RP_ID_ENV, "  ",
+				WebauthnProof.RelyingParty.ORIGINS_ENV, ORIGIN)).isConfigured());
+		assertFalse(WebauthnProof.RelyingParty.fromEnvironment(java.util.Map.of()).isConfigured());
 	}
 
 	/**
@@ -725,16 +827,27 @@ class DeviceWebauthnLinkTest {
 
 		/** A real assertion over the challenge given, as a browser would produce. */
 		Kernel.WebauthnAssertion assertFor(String challenge) throws Exception {
+			return assertFor(challenge, RP_ID, ORIGIN);
+		}
+
+		/**
+		 * The same assertion, but produced for the relying party named — the
+		 * fixture a phished ceremony needs. Everything else is identical and the
+		 * signature is real, so a test using it fails on the relying party or on
+		 * nothing.
+		 */
+		Kernel.WebauthnAssertion assertFor(String challenge, String rpId, String origin)
+				throws Exception {
 			// rpIdHash(32) || flags(1) || signCount(4). Flags 0x05 = user present +
 			// user verified, which is what a passkey unlock sets.
 			byte[] authenticatorData = new byte[37];
-			System.arraycopy(sha256("example.test".getBytes(StandardCharsets.UTF_8)), 0,
+			System.arraycopy(sha256(rpId.getBytes(StandardCharsets.UTF_8)), 0,
 					authenticatorData, 0, 32);
 			authenticatorData[32] = 0x05;
 			authenticatorData[36] = 0x01;
 
 			byte[] clientDataJson = ("{\"type\":\"webauthn.get\",\"challenge\":\"" + challenge
-					+ "\",\"origin\":\"https://example.test\",\"crossOrigin\":false}")
+					+ "\",\"origin\":\"" + origin + "\",\"crossOrigin\":false}")
 					.getBytes(StandardCharsets.UTF_8);
 
 			byte[] signed = new byte[authenticatorData.length + 32];

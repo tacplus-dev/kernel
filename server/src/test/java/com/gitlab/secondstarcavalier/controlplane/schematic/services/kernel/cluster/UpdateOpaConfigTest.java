@@ -115,6 +115,7 @@ class UpdateOpaConfigTest {
 				null,            // persistState
 				null,            // kubernetesTokenVerifier
 				null,            // kubernetesTokenAudience
-				opaConfigWriter);
+				opaConfigWriter,
+				null);           // webauthnRelyingParty (fail closed)
 	}
 }

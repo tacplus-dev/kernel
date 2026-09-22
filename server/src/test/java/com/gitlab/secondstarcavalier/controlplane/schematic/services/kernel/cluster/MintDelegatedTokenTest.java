@@ -101,7 +101,8 @@ class MintDelegatedTokenTest {
                 null,            // persistState
                 null,            // kubernetesTokenVerifier
                 KERNEL_AUDIENCE,
-                null);           // opaConfigWriter
+                null,            // opaConfigWriter
+                null);           // webauthnRelyingParty (fail closed)
     }
 
     /** Mints and signs a caller S2S token for the /system delegate {@code delegateName}. */

@@ -336,8 +336,12 @@ the wrong way.
 
 ## Open questions, and the defaults taken
 
-1. **Nothing checks the WebAuthn relying party, and it costs more here than in
-   §3.** §3 left this open and named §5 as where to revisit it ("§5 needs RP
+1. **~~Nothing checks the WebAuthn relying party, and it costs more here than in
+   §3.~~ RESOLVED — see "RP ID / origin check landed" at the end of this doc.**
+   Jody ruled the same day that this is not a question; the check is now enforced
+   in both flows and the default recorded below no longer holds. The paragraph is
+   kept as written because it is the reasoning the ruling acted on. §3 left this
+   open and named §5 as where to revisit it ("§5 needs RP
    configuration anyway"); §5 does not fix it, because the platform still has no
    relying-party configuration and a constant compiled into kernel would lock out
    every deployment whose origin differs. **The cost is genuinely higher here.**
@@ -397,8 +401,8 @@ the wrong way.
 
 - **The generated `requires_device` check** — tacplus's item 3, now unblocked;
   the call shape is in their inbox.
-- **Relying-party configuration** — open question 1, and it unblocks §3's open
-  question 2 at the same time.
+- ~~**Relying-party configuration** — open question 1, and it unblocks §3's open
+  question 2 at the same time.~~ Built; see "RP ID / origin check landed" below.
 - **Cluster-wide single-use via `FencedLock`** — open question 2.
 - **`PersonalPrincipal` vs `Person`** — §3 asked whether a device should be a
   credential ON the `Person` row rather than its own `/people/<pid>` principal,
@@ -406,3 +410,155 @@ the wrong way.
   It does not: verification goes device→person (resolve the credential, then read
   that device's own link row), which is one keyed read and needs no index. So §5
   does not reopen it, and the question stands where §3 left it.
+
+---
+
+## RP ID / origin check landed
+
+**Supersedes open question 1 above.** Jody ruled on 2026-09-21 23:00 MDT (schematic
+looper `inbox.md`): *"not a question — enforce it. The pending-approval signature
+MUST verify `rpIdHash` and `origin` against the configured relying party; an
+approval with no second half cannot skip WebAuthn's anti-phishing control. Same
+check in §3 while you are there."* Question 1's "default taken: not checked" no
+longer holds, and §3's open question 2 (`platform/services/personalauth/decisions/
+2026-09-21-device-webauthn-link.md`) is closed by the same change. The class
+javadoc's "What is deliberately NOT checked, and why" section is gone.
+
+### What was built
+
+`WebauthnProof.RelyingParty` — a nested value holding `SHA-256(rpId)` and the set
+of allowed origins, and one private `check(authenticatorData, origin)` that
+`verify` calls. Both flows go through the one `verify`, so §3's link proof and
+§5's approval get the same check from the same four lines; there is no second
+code path that could drift.
+
+The check is two comparisons, and they are not redundant:
+
+- `authenticatorData[0:32]` must equal `SHA-256(rpId)`. This is the
+  **authenticator's** statement of which domain it unlocked the key for, and no
+  page can change it.
+- `clientDataJSON.origin` must be one of the configured origins, compared for
+  exact string equality. This is the **browser's** statement of which page asked,
+  and it is what catches a look-alike or a subdomain serving the same RP ID.
+
+It runs after the challenge binding and before the signature, so an assertion from
+a hostile relying party is refused on the ground that names what is actually wrong
+with it rather than on a generic signature failure.
+
+### The config shape, and why
+
+**Two environment variables, `KERNEL_WEBAUTHN_RP_ID` and
+`KERNEL_WEBAUTHN_ORIGINS`** (the latter comma-separated), read once in
+`ClusterServer.webauthnRelyingParty()` and injected into `IdentityServiceImpl` as
+a constructor parameter.
+
+The instinct was a `Kernel.Config` field beside `people_idp_credentials`, which is
+where `PeopleTenant`'s per-deployment values live and which tacplus would have
+given an env-var binding (`PROTO_CONFIG_*`) and validation for free. That is
+probably where it belongs long-term. It was **not** done here for one reason: the
+`Config` message lives in `platform/proto/services/kernel.proto`, outside this
+slice's write boundary, and adding a field means regenerating every language's
+tacplus output for a change that is otherwise pure application logic in one file.
+
+So the mechanism chosen is the one kernel **already** uses for per-deployment
+values the bundle has no field for: a hand-read `KERNEL_*` environment variable,
+exactly as `KERNEL_K8S_TOKEN_AUDIENCE`, `KERNEL_KUBE_API_URL` and
+`KERNEL_KUBE_TOKEN_FILE` are read today. Nothing new was invented, and the
+`KERNEL_` prefix does not collide with the `PROTO_CONFIG_` namespace tacplus
+generates. **Follow-on, named not built:** move these two onto `Config` when the
+proto is next opened, at which point `RelyingParty.of(...)` is the only call site
+that changes.
+
+Three judgment calls the ruling did not need to specify, made here and recorded:
+
+1. **Global, not per-tenant.** The relying party is the deployment's own web
+   domain — the page a passkey ceremony runs on — not a property of the tenant the
+   person belongs to. The `people` tenant is the only tenant these flows touch at
+   all, and it is reserved and fleet-wide, so a per-tenant knob would have exactly
+   one value forever.
+2. **Exact origin match against a list, no patterns.** A wildcard is how origin
+   checks get quietly widened to something that matches an attacker's host. A list
+   covers the real case (apex plus a staging host) and a deployment that needs
+   more adds more.
+3. **Both variables or neither.** An RP ID with no origins would check one half of
+   WebAuthn's anti-phishing pair and silently skip the other, which is the state
+   this change exists to end. Either missing or blank yields
+   `RelyingParty.NONE`.
+
+### Fail closed, and what that costs
+
+`RelyingParty.NONE` — no configuration — is **not** "skip the check": it refuses
+every assertion, with `no WebAuthn relying party is configured to check against`.
+There is no compiled-in default because there is no domain that is right for two
+deployments, and a wrong RP ID that is checked is worse than one that is absent.
+
+The `IdentityServiceImpl` constructor parameter is `@Nullable` and null means
+`NONE`, so every one of the 18 test wirings that does not do WebAuthn now gets the
+fail-closed relying party by default. A deployment that runs the device flows must
+set both variables; one that does not is unaffected, because nothing else reaches
+this code. `ClusterServer` logs at INFO when nothing is configured, so an operator
+who meant to run the flows can see why every tap is being refused.
+
+### Test evidence
+
+Six new tests, three per flow, in the two files that already own these ceremonies.
+Both `Passkey` fixtures gained an `assertFor(challenge, rpId, origin)` overload —
+the existing `assertFor(challenge)` now delegates to it with the test deployment's
+own values (`example.test` / `https://example.test`, which is what the fixtures
+already baked in), so every pre-existing test is unchanged in behaviour.
+
+`DeviceWebauthnLinkTest` (§3), 15 → 19:
+
+- `anAssertionProducedForAnotherRelyingPartyLinksNothing` — real key, real
+  signature, nonce IS the thumbprint, challenge names this exact login; only
+  `rpIdHash` names `attacker.test`. `PERMISSION_DENIED`, nothing written.
+- `anAssertionCollectedFromAnotherOriginLinksNothing` — the deployment's own RP
+  ID, so the authenticator is satisfied, but `origin` is
+  `https://phish.example.test`.
+- `anUnconfiguredRelyingPartyRefusesAPerfectlyGoodAssertion` — the same assertion
+  verifies against the configured relying party and is refused by
+  `RelyingParty.NONE`. This is the fail-closed proof.
+- `halfAnEnvironmentConfiguresNoRelyingParty` — RP ID alone, origins alone, a
+  blank RP ID and an empty environment all yield an unconfigured relying party.
+
+`PendingApprovalTest` (§5), 17 → 19:
+
+- `anAssertionProducedForAnotherRelyingPartyApprovesNothing` — genuine assertion
+  over this approval's own challenge, wrong RP ID. `PERMISSION_DENIED`, and the
+  approval is **not** burned.
+- `anAssertionCollectedFromAnotherOriginApprovesNothing` — wrong origin, refused,
+  and then the real page's tap still succeeds, which is what proves the refusal
+  was about the origin and not about a spent approval.
+
+**Mutation run, because passing tests prove nothing about a check that might not
+exist.** With `RelyingParty.check` replaced by an immediate `return`, exactly five
+tests fail and no others:
+
+```
+[ERROR]   DeviceWebauthnLinkTest.anAssertionCollectedFromAnotherOriginLinksNothing:286 Expected ProtoException to be thrown, but nothing was thrown.
+[ERROR]   DeviceWebauthnLinkTest.anAssertionProducedForAnotherRelyingPartyLinksNothing:262 Expected ProtoException to be thrown, but nothing was thrown.
+[ERROR]   DeviceWebauthnLinkTest.anUnconfiguredRelyingPartyRefusesAPerfectlyGoodAssertion:313 Expected WebauthnProof.Invalid to be thrown, but nothing was thrown.
+[ERROR]   PendingApprovalTest.anAssertionCollectedFromAnotherOriginApprovesNothing:296 Expected ProtoException to be thrown, but nothing was thrown.
+[ERROR]   PendingApprovalTest.anAssertionProducedForAnotherRelyingPartyApprovesNothing:277 Expected ProtoException to be thrown, but nothing was thrown.
+```
+
+The sixth new test passes under the mutation, correctly: it tests how the
+environment is parsed, not what the check does. The check was restored
+immediately; the run below is the restored tree.
+
+Full kernel suite, `mvn -B install`, on the same tree before and after:
+
+- **Before:** `Tests run: 367, Failures: 1, Errors: 1, Skipped: 0`
+- **After:** `Tests run: 373, Failures: 1, Errors: 1, Skipped: 0`
+
++6, exactly this change's tests, with the same two pre-existing source-set
+artifacts and unchanged messages —
+`IdentityServiceImplTest.serviceScopedEventBusAudienceTokenKeepsRoutingAliasedContractGrant`
+("generated grant catalog is missing
+TASKS_DELEGATION_PROBE_BUS_STATE_SERVICE_PUBLISH_TO_STREAM") and
+`SelfAuthenticatingRpcSkipTest.selfAuthenticatingRpcsPassUnauthenticated`
+(`UNAUTHENTICATED: missing authorization header`). The build therefore still
+reports `BUILD FAILURE` on those two, as it did before this change.
+
+No proto change, no regeneration, no new dependency: the check is a `MessageDigest`
+and an `Arrays.equals`.

@@ -115,6 +115,28 @@ public class ClusterServer {
 				.asRuntimeException();
 	}
 
+	/**
+	 * The WebAuthn relying party the device flows check assertions against, read
+	 * from the environment beside kernel's other per-deployment values the
+	 * bundle's {@code Config} has no field for.
+	 *
+	 * <p>Absent configuration is not "no check": it is a relying party that
+	 * refuses every assertion. Logged at startup so an operator who meant to run
+	 * the device flows sees why they are all being refused, and at INFO rather
+	 * than WARN because most deployments never touch them.
+	 */
+	private static WebauthnProof.RelyingParty webauthnRelyingParty() {
+		WebauthnProof.RelyingParty relyingParty =
+				WebauthnProof.RelyingParty.fromEnvironment(System.getenv());
+		if (!relyingParty.isConfigured()) {
+			logger.info("No WebAuthn relying party configured ({} and {}); "
+					+ "device link and device approval assertions will be refused",
+					WebauthnProof.RelyingParty.RP_ID_ENV,
+					WebauthnProof.RelyingParty.ORIGINS_ENV);
+		}
+		return relyingParty;
+	}
+
 	private static String kubernetesTokenAudience() {
 		String audience = System.getenv("KERNEL_K8S_TOKEN_AUDIENCE");
 		return audience == null || audience.isBlank() ? DEFAULT_KUBERNETES_TOKEN_AUDIENCE : audience.strip();
@@ -830,7 +852,8 @@ public class ClusterServer {
 						} catch (Exception e) {
 							throw new RuntimeException("putConfig failed", e);
 						}
-					});
+					},
+					webauthnRelyingParty());
 
 			Mint mintWrapper = new Mint(identityService, kernelAuthorizer) {
 				@Override

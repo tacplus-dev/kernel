@@ -106,7 +106,8 @@ class DelegateOfflineTokenTest {
                 null,            // persistState
                 null,            // kubernetesTokenVerifier
                 KERNEL_AUDIENCE,
-                null);           // opaConfigWriter
+                null,            // opaConfigWriter
+                null);           // webauthnRelyingParty (fail closed)
     }
 
     /** Registers a delegate rooted at {@code tenantNamespace} ("" = /system). */

@@ -85,7 +85,8 @@ class MintServiceTokenKubernetesTest {
                 null,            // persistState
                 verifier,
                 KERNEL_AUDIENCE,
-                null);           // opaConfigWriter
+                null,            // opaConfigWriter
+                null);           // webauthnRelyingParty (fail closed)
     }
 
     private void addDelegateWithSa(String namespace, String sa) {

@@ -383,6 +383,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	private final PrincipalMap principalMap;
 	@Nullable
 	private final java.util.function.Consumer<Opa.Config> opaConfigWriter;
+	/**
+	 * The WebAuthn relying party both device flows check an assertion against —
+	 * §3's link proof and §5's approval. Never null: an absent configuration
+	 * becomes an unconfigured relying party that refuses every assertion, the
+	 * same fail-closed default as {@link #kubernetesTokenVerifier}.
+	 */
+	private final WebauthnProof.RelyingParty webauthnRelyingParty;
 
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
@@ -407,7 +414,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			Runnable persistState,
 			@Nullable KubernetesTokenVerifier kubernetesTokenVerifier,
 			@Nullable String kubernetesTokenAudience,
-			@Nullable java.util.function.Consumer<Opa.Config> opaConfigWriter) {
+			@Nullable java.util.function.Consumer<Opa.Config> opaConfigWriter,
+			@Nullable WebauthnProof.RelyingParty webauthnRelyingParty) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
 		this.offlineTokenLifetimeSeconds = offlineTokenLifetimeSeconds > 0 ? offlineTokenLifetimeSeconds : DEFAULT_OFFLINE_TOKEN_LIFETIME_SECONDS;
@@ -436,6 +444,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				kubernetesTokenVerifier != null ? kubernetesTokenVerifier : new UnwiredKubernetesTokenVerifier();
 		this.kubernetesTokenAudience = kubernetesTokenAudience != null ? kubernetesTokenAudience : "";
 		this.opaConfigWriter = opaConfigWriter;
+		this.webauthnRelyingParty = webauthnRelyingParty != null
+				? webauthnRelyingParty
+				: WebauthnProof.RelyingParty.NONE;
 	}
 
 	// ========================================================================
@@ -1109,7 +1120,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			// from any other ceremony carries some other challenge, so possession of
 			// one does not let it be replayed against a login the attacker controls.
 			WebauthnProof.verify(device.getDeviceAssertion(), credential.publicKey(),
-					WebauthnProof.loginBinding(issuer, providerSubject, nonce));
+					WebauthnProof.loginBinding(issuer, providerSubject, nonce),
+					webauthnRelyingParty);
 		} catch (WebauthnProof.Invalid e) {
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"device assertion refused: " + e.getMessage());
@@ -1539,7 +1551,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		try {
 			WebauthnProof.verify(request.getDeviceAssertion(), credential.getPublicKey(),
 					WebauthnProof.approvalBinding(approval.getApprovalId(),
-							request.getRpcMethod(), request.getRequestHash().toByteArray()));
+							request.getRpcMethod(), request.getRequestHash().toByteArray()),
+					webauthnRelyingParty);
 		} catch (WebauthnProof.Invalid e) {
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"device approval refused: " + e.getMessage());

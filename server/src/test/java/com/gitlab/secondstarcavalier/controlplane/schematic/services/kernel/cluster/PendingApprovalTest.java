@@ -78,6 +78,12 @@ class PendingApprovalTest {
 	/** The RPC being approved, in the form the platform identifies an RPC by. */
 	private static final String RPC_METHOD = "profile.Profile/UpdateRuleNode";
 
+	/** The relying party this deployment serves, and the one the passkey signs for. */
+	private static final String RP_ID = "example.test";
+	private static final String ORIGIN = "https://example.test";
+	private static final WebauthnProof.RelyingParty RELYING_PARTY =
+			WebauthnProof.RelyingParty.of(RP_ID, java.util.Set.of(ORIGIN));
+
 	private static final Base64.Encoder B64 = Base64.getUrlEncoder().withoutPadding();
 
 	private final List<JwkOuterClass.Jwk> verifyingKeys = new CopyOnWriteArrayList<>();
@@ -121,7 +127,8 @@ class PendingApprovalTest {
 				null,            // persistState
 				null,            // kubernetesTokenVerifier
 				KERNEL_AUDIENCE,
-				null);           // opaConfigWriter
+				null,           // opaConfigWriter
+				RELYING_PARTY);
 		personalIdentity = new PersonalIdentityServiceImpl(principalMap, null);
 		passkey = Passkey.generate();
 		// The §3 ceremony: this passkey and this Apple login become a registered
@@ -249,6 +256,60 @@ class PendingApprovalTest {
 						personCaller(), passkey.assertFor(proposed.getChallenge()))));
 
 		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+	}
+
+	// ------------------------------------------------------------------
+	// THE RELYING-PARTY CHECK
+	// ------------------------------------------------------------------
+
+	/**
+	 * §5's approval has no second half — the challenge is all the device signs —
+	 * so the relying-party check is the only thing standing between a phishing
+	 * page that learned a live challenge and a real approval. The assertion here
+	 * is genuine and its challenge is this approval's; it was simply produced for
+	 * another domain.
+	 */
+	@Test
+	void anAssertionProducedForAnotherRelyingPartyApprovesNothing() throws Exception {
+		byte[] hash = requestHash("transfer 5 to alice");
+		Kernel.CreatePendingApprovalResponse proposed = propose(personCaller(), hash);
+
+		ProtoException ex = assertThrows(ProtoException.class, () -> brokerCall(
+				brokerRequest(proposed.getApprovalId(), RPC_METHOD, hash, personCaller(),
+						passkey.assertFor(proposed.getChallenge(), "attacker.test", ORIGIN))));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+		assertTrue(ex.getMessage().contains("different relying party"), ex.getMessage());
+		assertEquals(0, principalMap.getPendingApprovals(proposed.getApprovalId())
+				.getConsumedAtMs());
+	}
+
+	/**
+	 * The origin half, and the approval is not burned by the attempt: a refused
+	 * tap must leave the person able to approve from the real page.
+	 */
+	@Test
+	void anAssertionCollectedFromAnotherOriginApprovesNothing() throws Exception {
+		byte[] hash = requestHash("transfer 5 to alice");
+		Kernel.CreatePendingApprovalResponse proposed = propose(personCaller(), hash);
+
+		ProtoException ex = assertThrows(ProtoException.class, () -> brokerCall(
+				brokerRequest(proposed.getApprovalId(), RPC_METHOD, hash, personCaller(),
+						passkey.assertFor(proposed.getChallenge(), RP_ID,
+								"https://phish.example.test"))));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+		assertTrue(ex.getMessage().contains("origin this deployment does not serve"),
+				ex.getMessage());
+
+		// And the real page still works, which is what proves the refusal was
+		// about the origin and not about the approval having been spent.
+		assertEquals(0, principalMap.getPendingApprovals(proposed.getApprovalId())
+				.getConsumedAtMs());
+		Kernel.BrokerPendingApprovalResponse ok = brokerCall(
+				brokerRequest(proposed.getApprovalId(), RPC_METHOD, hash, personCaller(),
+						passkey.assertFor(proposed.getChallenge())));
+		assertTrue(ok.getConsumedAtMs() > 0);
 	}
 
 	// ------------------------------------------------------------------
@@ -691,14 +752,25 @@ class PendingApprovalTest {
 
 		/** A real assertion over the challenge given, as an authenticator produces. */
 		Kernel.WebauthnAssertion assertFor(String challenge) throws Exception {
+			return assertFor(challenge, RP_ID, ORIGIN);
+		}
+
+		/**
+		 * The same assertion, but produced for the relying party named — the
+		 * fixture a phished ceremony needs. Everything else is identical and the
+		 * signature is real, so a test using it fails on the relying party or on
+		 * nothing.
+		 */
+		Kernel.WebauthnAssertion assertFor(String challenge, String rpId, String origin)
+				throws Exception {
 			byte[] authenticatorData = new byte[37];
-			System.arraycopy(sha256("example.test".getBytes(StandardCharsets.UTF_8)), 0,
+			System.arraycopy(sha256(rpId.getBytes(StandardCharsets.UTF_8)), 0,
 					authenticatorData, 0, 32);
 			authenticatorData[32] = 0x05;
 			authenticatorData[36] = 0x01;
 
 			byte[] clientDataJson = ("{\"type\":\"webauthn.get\",\"challenge\":\"" + challenge
-					+ "\",\"origin\":\"https://example.test\",\"crossOrigin\":false}")
+					+ "\",\"origin\":\"" + origin + "\",\"crossOrigin\":false}")
 					.getBytes(StandardCharsets.UTF_8);
 
 			byte[] signed = new byte[authenticatorData.length + 32];

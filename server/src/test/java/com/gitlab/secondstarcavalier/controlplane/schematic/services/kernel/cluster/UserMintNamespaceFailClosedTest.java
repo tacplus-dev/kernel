@@ -88,7 +88,8 @@ class UserMintNamespaceFailClosedTest {
 				null,            // persistState
 				null,            // kubernetesTokenVerifier
 				KERNEL_AUDIENCE,
-				null);           // opaConfigWriter
+				null,            // opaConfigWriter
+				null);           // webauthnRelyingParty (fail closed)
 	}
 
 	/** The delegate's own S2S token, which is what authenticates a MintUserToken call. */

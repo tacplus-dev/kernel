@@ -309,6 +309,21 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	static final Object LINK_REGISTRY_LOCK = new Object();
 
+	/**
+	 * Serializes a pending approval's read-check-write. Static and
+	 * package-private for the same reason {@link #LINK_REGISTRY_LOCK} is:
+	 * {@code PersonalIdentityServiceImpl.createPendingApproval} writes the same
+	 * collection from the other side of the C2S boundary.
+	 *
+	 * <p>It is what makes an approval SINGLE-USE, and it is node-local with the
+	 * same limitation every other guard in this file has: two kernel nodes
+	 * serving two copies of the same request could each consume the same approval
+	 * once. Recorded in the slice's decision doc rather than papered over — the
+	 * absent cluster CAS is the same gap {@code seenProofJtis} has for proof
+	 * replay, and closing it needs the FencedLock, not a second mutex.
+	 */
+	static final Object PENDING_APPROVAL_LOCK = new Object();
+
 	private final long defaultTokenExpirySeconds;
 	private final long maxTokenLifetimeSeconds;
 	private final long offlineTokenLifetimeSeconds;
@@ -1340,6 +1355,208 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	static String linkKey(String namespace, String subject) {
 		return namespace + LINK_KEY_SEPARATOR + subject;
+	}
+
+	// ========================================================================
+	// Pending approvals (identity decision doc §5)
+	// ========================================================================
+
+	/**
+	 * The person a caller is, or is linked to — the key
+	 * {@code PendingApproval.person_user_key} holds, and the key the approving
+	 * device's own link edges are compared against.
+	 *
+	 * <p>A caller already standing in the people tenant IS the person. Anybody
+	 * else — a tenant user, or a {@code /people/<pid>} device — is the person at
+	 * the far end of their live link into {@code /tenants/people}, which is the
+	 * only thing in the platform that says two identities are one human.
+	 *
+	 * <p>Returns null when there is not EXACTLY ONE such person: none, because an
+	 * unlinked user has no device to approve with anyway, and more than one,
+	 * because "which human approved this" cannot be answered by picking. Both are
+	 * one refusal at each call site, deliberately: a caller cannot tell from the
+	 * answer whether somebody else's link exists.
+	 */
+	@Nullable
+	static String personUserKey(PrincipalMap principalMap, String namespace, String subject) {
+		if (namespace == null || namespace.isEmpty() || subject == null || subject.isEmpty()) {
+			return null;
+		}
+		if (PeopleTenant.NAMESPACE.equals(namespace)) {
+			return linkKey(namespace, subject);
+		}
+		String person = null;
+		for (Kernel.TenantUserLink link
+				: principalMap.getTenantUserLinks(linkKey(namespace, subject)).getLinksList()) {
+			if (link.getRevokedAtMs() != 0
+					|| !PeopleTenant.NAMESPACE.equals(link.getPeerNamespace())) {
+				continue;
+			}
+			String candidate = linkKey(link.getPeerNamespace(), link.getPeerSubject());
+			if (person != null && !person.equals(candidate)) {
+				return null;
+			}
+			person = candidate;
+		}
+		return person;
+	}
+
+	/**
+	 * The §5 check the generated {@code (spec.rpc).requires_device} will call:
+	 * this approval, this request, this person, signed by one of this person's
+	 * devices — and then burned.
+	 *
+	 * <p>Kernel is not writing that generated check; this is the primitive it
+	 * calls into, and everything the check cannot be trusted to have done is done
+	 * here. In particular the RPC name and the request hash it presents are
+	 * compared against the record AND are inside the challenge the device signed,
+	 * so an approval for one request cannot be spent on another however the
+	 * calling service behaves.
+	 */
+	@Override
+	public Kernel.BrokerPendingApprovalResponse brokerPendingApproval(Caller caller,
+			Kernel.BrokerPendingApprovalRequest request) throws ProtoException {
+		try {
+			return doBrokerPendingApproval(request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("BrokerPendingApproval failed", e);
+			throw new ProtoException(ProtoException.INTERNAL,
+					"pending approval check failed: " + e.getMessage(), e);
+		}
+	}
+
+	private Kernel.BrokerPendingApprovalResponse doBrokerPendingApproval(
+			Kernel.BrokerPendingApprovalRequest request) throws StatusException {
+		long nowMs = System.currentTimeMillis();
+		// The whole check runs under the lock, because "verify then consume" with a
+		// gap in the middle is not single-use.
+		synchronized (PENDING_APPROVAL_LOCK) {
+			Kernel.PendingApproval approval =
+					principalMap.getPendingApprovals(request.getApprovalId());
+			// An absent row reads back as the default instance, so the key/field
+			// agreement check answers "no such approval" the same way
+			// GetMyIdentity's does.
+			if (!approval.getApprovalId().equals(request.getApprovalId())) {
+				throw new StatusException(Status.NOT_FOUND, "no such pending approval");
+			}
+			if (approval.getConsumedAtMs() != 0) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"that approval has already been used");
+			}
+			if (approval.getExpiresAtMs() <= nowMs) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"that approval has expired");
+			}
+			if (!approval.getRpcMethod().equals(request.getRpcMethod())) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"that approval is for a different RPC");
+			}
+			// THE EXACT-REQUEST PIN. Everything else here is about WHO approved;
+			// this line is what makes it an approval of one call rather than a
+			// standing permission for a shape of call. A same-shaped request with
+			// one field changed hashes differently and stops here.
+			if (!approval.getRequestHash().equals(request.getRequestHash())) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"that approval is for a different request");
+			}
+			// The caller the guarded service is serving must be the person the
+			// approval was created for. Without it a service could spend an
+			// approval one of its users proposed on a call it is serving for
+			// another.
+			String callerPerson = personUserKey(principalMap,
+					request.getCallerNamespace(), request.getCallerSubject());
+			if (callerPerson == null || !callerPerson.equals(approval.getPersonUserKey())) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"that approval belongs to a different person");
+			}
+
+			DeviceApprover approver = verifyApprovingDevice(request, approval);
+
+			try {
+				principalMap.putPendingApprovals(approval.getApprovalId(),
+						approval.toBuilder().setConsumedAtMs(nowMs).build());
+			} catch (ProtoException e) {
+				throw new StatusException(Status.INTERNAL,
+						"approval could not be consumed: " + e.getMessage());
+			}
+			logger.info("Device approval accepted: rpc={} person={} device={}",
+					approval.getRpcMethod(), approval.getPersonUserKey(), approver.namespace());
+			return Kernel.BrokerPendingApprovalResponse.newBuilder()
+					.setConsumedAtMs(nowMs)
+					.setPersonUserKey(approval.getPersonUserKey())
+					.setDeviceNamespace(approver.namespace())
+					.build();
+		}
+	}
+
+	/** The device an approval was signed by: its identity, once it has stood up. */
+	private record DeviceApprover(String namespace, String subject) {
+	}
+
+	/**
+	 * Verifies the tap: this assertion, under a credential kernel stores, by a
+	 * device linked to the person the approval names.
+	 *
+	 * <p><b>The stored key, and only the stored key.</b> A first device→person
+	 * link has a bootstrap moment where the request's copy of the key is the only
+	 * thing there is to check against ({@code deviceCredential}); an approval has
+	 * no such moment, because an approving device is by definition already
+	 * registered and linked. A key out of this request would let its sender choose
+	 * what the signature is verified with, so none is accepted — the proto carries
+	 * no field for one.
+	 *
+	 * <p><b>The device-link check</b> is the last step and the one §5 is about:
+	 * "signed by a key linked to the caller's person. Nothing else counts." A
+	 * registered device that is not linked to this person — or was unlinked — gets
+	 * as far as a valid signature and no further.
+	 */
+	private DeviceApprover verifyApprovingDevice(Kernel.BrokerPendingApprovalRequest request,
+			Kernel.PendingApproval approval) throws StatusException {
+		String credentialId = request.getDeviceAssertion().getCredentialId();
+		if (credentialId.isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"device assertion names no credential");
+		}
+		Kernel.PersonalPrincipal principal = findPrincipalByCredentialId(credentialId);
+		Kernel.PersonalCredential credential = null;
+		if (principal != null) {
+			for (Kernel.PersonalCredential candidate : principal.getCredentialsList()) {
+				if (credentialId.equals(candidate.getCredentialId())) {
+					credential = candidate;
+					break;
+				}
+			}
+		}
+		// One refusal for every way the credential does not stand — unknown,
+		// revoked, disabled principal — so this is not an oracle for which
+		// credentials exist, the same rule verifyDeviceProof states.
+		if (principal == null || credential == null
+				|| credential.getRevokedAtMs() != 0 || principal.getDisabledAtMs() != 0) {
+			throw new StatusException(Status.PERMISSION_DENIED, "device approval refused");
+		}
+		try {
+			WebauthnProof.verify(request.getDeviceAssertion(), credential.getPublicKey(),
+					WebauthnProof.approvalBinding(approval.getApprovalId(),
+							request.getRpcMethod(), request.getRequestHash().toByteArray()));
+		} catch (WebauthnProof.Invalid e) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"device approval refused: " + e.getMessage());
+		}
+
+		String namespace = PEOPLE_PREFIX + principal.getPrincipalId();
+		String subject = Spiffe.userSpiffeId(trustDomainReader.get(), namespace,
+				principal.getPrincipalId());
+		for (Kernel.TenantUserLink link
+				: principalMap.getTenantUserLinks(linkKey(namespace, subject)).getLinksList()) {
+			if (link.getRevokedAtMs() == 0 && approval.getPersonUserKey()
+					.equals(linkKey(link.getPeerNamespace(), link.getPeerSubject()))) {
+				return new DeviceApprover(namespace, subject);
+			}
+		}
+		throw new StatusException(Status.PERMISSION_DENIED,
+				"that device is not linked to the person the approval names");
 	}
 
 	/**

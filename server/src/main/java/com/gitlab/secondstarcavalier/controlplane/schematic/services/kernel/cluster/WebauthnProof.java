@@ -79,6 +79,12 @@ final class WebauthnProof {
 	 */
 	private static final byte FIELD_SEPARATOR = 0x1f;
 
+	/**
+	 * Domain tag on an approval binding, so it can never collide with a login
+	 * binding. No IdP issuer is this string.
+	 */
+	private static final String APPROVAL_TAG = "schematic-pending-approval";
+
 	private WebauthnProof() {
 	}
 
@@ -132,18 +138,54 @@ final class WebauthnProof {
 	 * {@code iat}/{@code exp}.
 	 */
 	static String loginBinding(String issuer, String subject, String nonce) {
-		byte[] iss = issuer.getBytes(StandardCharsets.UTF_8);
-		byte[] sub = subject.getBytes(StandardCharsets.UTF_8);
-		byte[] non = nonce.getBytes(StandardCharsets.UTF_8);
-		byte[] input = new byte[iss.length + sub.length + non.length + 2];
+		return binding(issuer.getBytes(StandardCharsets.UTF_8),
+				subject.getBytes(StandardCharsets.UTF_8),
+				nonce.getBytes(StandardCharsets.UTF_8));
+	}
+
+	/**
+	 * The value an APPROVAL assertion's {@code challenge} must carry (identity
+	 * decision doc §5): a digest over the pending approval's id, the RPC it
+	 * approves, and the hash of the exact request.
+	 *
+	 * <p>All three, not just the id. The id alone would make the tap mean "I
+	 * approve whatever this id turns out to be", and the whole point of §5 is
+	 * that the device signature says WHAT was approved. The method and the hash
+	 * are also checked against the record for equality by the handler; having
+	 * them inside the signed challenge as well is what makes a
+	 * same-shaped-but-different request fail even if that comparison were ever
+	 * removed.
+	 *
+	 * <p>Tagged {@link #APPROVAL_TAG} so an approval binding and a login binding
+	 * can never be the same digest: without it, a login whose issuer happened to
+	 * be an approval id would produce a challenge an approval would accept.
+	 */
+	static String approvalBinding(String approvalId, String rpcMethod, byte[] requestHash) {
+		return binding(APPROVAL_TAG.getBytes(StandardCharsets.UTF_8),
+				approvalId.getBytes(StandardCharsets.UTF_8),
+				rpcMethod.getBytes(StandardCharsets.UTF_8),
+				base64Url(requestHash).getBytes(StandardCharsets.UTF_8));
+	}
+
+	/**
+	 * base64url(SHA-256(f0 || 0x1f || f1 || ...)). {@link #FIELD_SEPARATOR}
+	 * appears in none of the values any caller passes, so no two distinct field
+	 * lists can produce one input string.
+	 */
+	private static String binding(byte[]... fields) {
+		int length = fields.length - 1;
+		for (byte[] field : fields) {
+			length += field.length;
+		}
+		byte[] input = new byte[length];
 		int at = 0;
-		System.arraycopy(iss, 0, input, at, iss.length);
-		at += iss.length;
-		input[at++] = FIELD_SEPARATOR;
-		System.arraycopy(sub, 0, input, at, sub.length);
-		at += sub.length;
-		input[at++] = FIELD_SEPARATOR;
-		System.arraycopy(non, 0, input, at, non.length);
+		for (int i = 0; i < fields.length; i++) {
+			if (i > 0) {
+				input[at++] = FIELD_SEPARATOR;
+			}
+			System.arraycopy(fields[i], 0, input, at, fields[i].length);
+			at += fields[i].length;
+		}
 		return base64Url(sha256(input));
 	}
 

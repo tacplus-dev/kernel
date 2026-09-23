@@ -22,37 +22,55 @@ import java.util.Objects;
  *
  * <p>
  * All boundaries are convergent. Locks are always no-ops.
- * When a {@link PersistenceProvider} is provided, maps have a cluster-wide
- * persistence listener registered for redo logging.
+ *
+ * <p>A boundary its proto flags {@code (spec.persistence) = true} is registered
+ * with {@link BoundaryPersistence} and handed back wrapped in a {@link
+ * PersistentMap}, so every write to it rewrites its snapshot file before the
+ * write is acked. An unflagged boundary is handed back unwrapped and stays
+ * purely in memory.
  */
 public class HazelcastManager implements Manager {
 
 	private final HazelcastInstance hazelcast;
-	private final PersistenceProvider persistence;
+	private final BoundaryPersistence persistence;
 
 	public HazelcastManager(HazelcastInstance hazelcast) {
 		this(hazelcast, null);
 	}
 
-	public HazelcastManager(HazelcastInstance hazelcast, PersistenceProvider persistence) {
+	public HazelcastManager(HazelcastInstance hazelcast, BoundaryPersistence persistence) {
 		this.hazelcast = Objects.requireNonNull(hazelcast, "hazelcast");
 		this.persistence = persistence;
 	}
 
 	@Override
 	public <K, V> IMap<K, V> getConvergentMap(String name) {
-		return getConvergentMap(name, false);
+		return getConvergentMap(name, false, null);
 	}
 
 	@Override
 	public <K, V> IMap<K, V> getConvergentMap(String name, boolean persistent) {
+		return getConvergentMap(name, persistent, null);
+	}
+
+	@Override
+	public <K, V> IMap<K, V> getConvergentMap(
+			String name, boolean persistent, com.google.protobuf.Message defaultInstance) {
 		String mapName = Objects.requireNonNull(name, "name");
 		com.hazelcast.map.IMap<K, V> hzMap = hazelcast.getMap(mapName);
 		IMap<K, V> base = new HazelcastMap<>(hzMap);
-		if (persistent && persistence != null) {
-			persistence.registerMap(mapName, hzMap, base, ConsistencyType.CONSISTENCY_CONVERGENT);
+		if (!persistent || persistence == null) {
+			return base;
 		}
-		return base;
+		persistence.register(
+				mapName, hzMap, base, defaultInstance, ConsistencyType.CONSISTENCY_CONVERGENT);
+		if (!persistence.isEnabled() || defaultInstance == null) {
+			// Registered for cluster stats, but there is nothing to write to:
+			// no persistence directory, or a caller that did not name the value
+			// type (the two-argument overload, kept for hand-written callers).
+			return base;
+		}
+		return new PersistentMap<>(base, persistence, mapName);
 	}
 
 	@Override

@@ -29,8 +29,8 @@ import com.gitlab.secondstarcavalier.controlplane.codegen.model.SharedBoundary;
  * </ul>
  *
  * <p>
- * Used by StateRestorer to skip expired entries and apply TTL-aware puts
- * during restore from dump/redo logs.
+ * Used on the rehydration path to skip entries that expired while the node
+ * was down, and to apply TTL-aware puts when restoring a boundary snapshot.
  */
 public class EpochExpirationHelperGenerator {
 
@@ -90,8 +90,9 @@ public class EpochExpirationHelperGenerator {
 		sb.append(" * Generated helper for extracting epoch expiration timestamps from\n");
 		sb.append(" * protobuf values in maps annotated with {@code epoch_expiration}.\n");
 		sb.append(" *\n");
-		sb.append(" * <p>Used by StateRestorer to skip expired entries and compute TTLs\n");
-		sb.append(" * during restore from dump/redo logs.\n");
+		sb.append(" * <p>Used on the rehydration path to skip entries that expired while\n");
+		sb.append(" * the node was down, and to compute TTLs when restoring a boundary\n");
+		sb.append(" * snapshot.\n");
 		sb.append(" */\n");
 		sb.append("public final class EpochExpirationHelper {\n\n");
 		sb.append("    private EpochExpirationHelper() {}\n\n");

@@ -31,7 +31,7 @@ internal code name used everywhere else.
                     │    ├── ServiceHealthState                     │
                     │    └── ... (external service state roots)     │
                     │                                               │
-                    │  Persistence (redo logs + full dumps)         │
+                    │  Persistence (per-boundary disk snapshots)    │
                     │  Background publishers (metrics, health)      │
                     │  TokenExchangerService (built-in RPC)         │
                     └───────────────────────────────────────────────┘
@@ -143,7 +143,7 @@ boundaries:
 **Per-node collections** (keyed by node_id, TTL 120s):
 - `node_metrics` — Memory (heap, GC), CPU (load, uptime), disk usage
 - `grpc_stats` — Active connections, total RPCs, active streams, rate limiting
-- `persistence_status` — Redo log entry count, dump timestamps
+- `persistence_status` — On-disk snapshot size, last snapshot timestamp
 - `network_stats` — Listen address, cluster connections, bytes sent/received
 - `thread_info` — Thread counts, peak, daemon, deadlocked
 - `token_cache_stats` — Cache hit/miss/eviction counts
@@ -232,13 +232,38 @@ Rate limiting is per-service per-method. Violations are tracked in
 
 ## Persistence
 
-Kernel persists all boundary data marked with `(spec.persistence) = true`:
+Kernel is the durable store for the whole cluster. Every state boundary marked
+`(spec.persistence) = true` — in ANY service's proto, not just kernel's own —
+is written to the kernel `data` volume and restored on a cold start. Services
+do NOT persist their own state. A boundary WITHOUT the flag is ephemeral: it
+lives in Hazelcast memory, survives a single pod restart through partition
+backups, and is gone once every pod has restarted.
 
-- **Redo log** — Records every mutation (put/delete) with map name, key,
-  proto bytes, operation type, timestamp, and consistency model. Enables
-  recovery and convergent LWW merge on restore.
-- **Full dumps** — Periodic snapshots with header (timestamp, entry count,
-  node_id). Format configurable (default: binary protobuf).
+- **Kernel's own state** — one atomic `KernelDiskState` snapshot
+  (`_root/kernel_disk_state.snapshot`), written by `KernelPersistence`: signing
+  keys, the public verifying set, the CA tree, the tenant/project tree,
+  workload revocations, standing grants and personal principals.
+- **Every other flagged boundary** — one file per boundary under
+  `_root/boundaries/`, written by `BoundaryPersistence`. Per boundary rather
+  than one blob because the flagged set includes collections whose declared
+  maxima run to the millions; one blob would rewrite the whole fleet's state on
+  every write. The payload is a stream of length-delimited `PersistenceEntry`
+  records, each value wrapped in an `Any` so the file names the proto type it
+  holds.
+
+Both are written **on change, synchronously, on the node serving the write**,
+through the same atomic helper (fresh temp, fsync, rename, numbered archives).
+A write whose snapshot does not land throws, so the RPC fails rather than
+acking data that exists only in memory. The other nodes keep their own copies
+current from the boundary's Hazelcast entry listener, so every node holds a
+complete set.
+
+**Restore is cold-start only.** A node that boots and finds no reachable
+Hazelcast peer is forming the cluster and loads its snapshots; a node that
+joins live peers takes its state from them and never reads its own files. A
+rolling restart must not let a node resurrect what it held when it went down.
+A file that exists but cannot be read or parsed fails the boot rather than
+coming up with a service's state silently emptied.
 
 ## Consistency Model
 

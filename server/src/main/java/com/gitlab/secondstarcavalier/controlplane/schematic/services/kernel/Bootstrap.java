@@ -9,7 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster.ClusterServer;
-import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.PersistenceProvider;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.BoundaryPersistence;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.logger.LogbackConfigurator;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
@@ -55,14 +55,21 @@ public class Bootstrap {
 				config.getListener(),
 				config.getClusterName());
 
-		// Kernel no longer maintains durable persistence — its durable JWT-signing
-		// layer (KeyRotator) and the kernel-wide persistence subsystem
-		// (RedoLog/FullDumper/StateRestorer/PersistenceManager) have been removed.
-		// Hazelcast is now in-memory coordination only; every map is config-seeded,
-		// rebuildable, or ephemeral. The no-op provider keeps the in-memory map
-		// registry (used for cluster stats) without any redo log / snapshot /
-		// restore-on-boot.
-		PersistenceProvider persistence = PersistenceProvider.disabled();
+		// Kernel is the cluster's durable store. Every state boundary flagged
+		// (spec.persistence) = true — from any service's proto — is snapshotted
+		// per boundary onto the kernel `data` volume and rehydrated on a cold
+		// start; unflagged boundaries stay in Hazelcast memory only. A node
+		// configured without a persistence directory gets the registry-only
+		// store, which keeps cluster stats working and persists nothing: it is
+		// for local runs, and a flagged boundary on such a node is NOT durable.
+		String persistenceDir = config.getPersistenceDir();
+		BoundaryPersistence persistence;
+		if (persistenceDir == null || persistenceDir.isEmpty()) {
+			logger.warn("No persistence_dir configured — (spec.persistence) boundaries will NOT be durable");
+			persistence = BoundaryPersistence.disabled();
+		} else {
+			persistence = BoundaryPersistence.at(persistenceDir);
+		}
 
 		ClusterServer server;
 		try {

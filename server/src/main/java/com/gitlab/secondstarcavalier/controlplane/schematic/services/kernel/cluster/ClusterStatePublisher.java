@@ -2,7 +2,7 @@
 package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster;
 
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.MapRegistry;
-import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.PersistenceProvider;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.BoundaryPersistence;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.common.hazelcast.Hazelcast;
 
@@ -40,7 +40,7 @@ public class ClusterStatePublisher {
 
 	private final HazelcastInstance hazelcast;
 	private final ClusterMap clusterStateMap;
-	private final PersistenceProvider persistence;
+	private final BoundaryPersistence persistence;
 	private final Kernel.Config config;
 	private final int grpcPort;
 	private final RateLimitInterceptor rateLimiter;
@@ -53,7 +53,7 @@ public class ClusterStatePublisher {
 	public ClusterStatePublisher(
 			HazelcastInstance hazelcast,
 			ClusterMap clusterStateMap,
-			PersistenceProvider persistence,
+			BoundaryPersistence persistence,
 			Kernel.Config config,
 			int grpcPort,
 			RateLimitInterceptor rateLimiter,
@@ -238,10 +238,10 @@ public class ClusterStatePublisher {
 					.setTotalBytes(dir.getTotalSpace())
 					.setUsableBytes(dir.getUsableSpace())
 					.setUsedBytes(dir.getTotalSpace() - dir.getUsableSpace());
-			// Estimate persistence size from redo log
-			long redoSize = persistence.getRedoLogSizeBytes();
-			if (redoSize >= 0) {
-				disk.setPersistenceSizeBytes(redoSize);
+			// On-disk size of the per-boundary snapshot files, archives included.
+			long snapshotBytes = persistence.getSnapshotSizeBytes();
+			if (snapshotBytes >= 0) {
+				disk.setPersistenceSizeBytes(snapshotBytes);
 			}
 		}
 
@@ -281,8 +281,14 @@ public class ClusterStatePublisher {
 						.setNodeId(nodeId)
 						.setEnabled(persistence.isEnabled())
 						.setPersistenceDir(config.getPersistenceDir())
-						.setRedoLogSizeBytes(Math.max(0, persistence.getRedoLogSizeBytes()))
-						.setLastDumpTimeMs(persistence.getLastDumpTimestamp())
+						// AdminPersistenceStatus still names these two fields after
+						// the redo log this replaced; they now carry the total
+						// size of the per-boundary snapshot files and the time of
+						// the last one written. Renaming them is a change to
+						// platform/proto's common/hazelcast.proto and to every
+						// consumer of the admin surface, so it is not made here.
+						.setRedoLogSizeBytes(Math.max(0, persistence.getSnapshotSizeBytes()))
+						.setLastDumpTimeMs(persistence.getLastSnapshotTimestamp())
 						.setTimestampMs(System.currentTimeMillis())
 						.build());
 	}

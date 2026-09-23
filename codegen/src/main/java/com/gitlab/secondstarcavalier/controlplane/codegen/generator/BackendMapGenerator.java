@@ -52,14 +52,10 @@ public class BackendMapGenerator {
         StringBuilder ctor = new StringBuilder();
         ctor.append("\n    public ").append(className).append("(Manager manager) {\n");
         for (SharedBoundary b : info.getSingletons()) {
-            String mapGetter = b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
-            ctor.append("        this.").append(b.getFieldCamel()).append("Map = manager.").append(mapGetter)
-              .append("(CLASS_NAME + \":").append(b.getMapName()).append("\", ").append(b.isPersistent()).append(");\n");
+            ctor.append(mapAccessor(b, outerClassName, ctx));
         }
         for (SharedBoundary b : info.getCollections()) {
-            String mapGetter = b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
-            ctor.append("        this.").append(b.getFieldCamel()).append("Map = manager.").append(mapGetter)
-              .append("(CLASS_NAME + \":").append(b.getMapName()).append("\", ").append(b.isPersistent()).append(");\n");
+            ctor.append(mapAccessor(b, outerClassName, ctx));
         }
         for (SharedBoundary b : info.getQueues()) {
             ctor.append("        this.").append(b.getFieldCamel()).append("Queue = manager.getQueue(CLASS_NAME + \":").append(b.getMapName()).append("\");\n");
@@ -222,5 +218,27 @@ public class BackendMapGenerator {
         vars.put("MAP_NAME", b.getMapName());
         vars.put("HELPERS_REF", ctx.getHelpersRef(svc, b));
         return vars;
+    }
+
+    /**
+     * The manager call that binds one map boundary.
+     *
+     * <p>A convergent boundary passes its {@code (spec.persistence)} flag AND
+     * its value type: kernel's persistence loads a boundary file at boot,
+     * before any value has been seen, so it cannot infer the type from the
+     * map's contents. A replicated boundary has no persistence leg and takes
+     * the plain accessor.
+     */
+    private static String mapAccessor(SharedBoundary b, String outerClassName, GeneratorContext ctx) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("        this.").append(b.getFieldCamel()).append("Map = manager.");
+        if (b.isReplicated()) {
+            sb.append("getReplicatedMap(CLASS_NAME + \":").append(b.getMapName()).append("\");\n");
+            return sb.toString();
+        }
+        sb.append("getConvergentMap(CLASS_NAME + \":").append(b.getMapName()).append("\", ")
+          .append(b.isPersistent()).append(", ")
+          .append(ctx.getQualifiedType(outerClassName, b)).append(".getDefaultInstance());\n");
+        return sb.toString();
     }
 }

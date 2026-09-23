@@ -6,7 +6,7 @@ import static com.gitlab.secondstarcavalier.controlplane.schematic.services.kern
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.MetaData;
 
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.HazelcastManager;
-import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.PersistenceProvider;
+import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.BoundaryPersistence;
 // StateServer is in this package
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.tokenrequest.Tokenrequest;
@@ -76,8 +76,11 @@ import org.slf4j.LoggerFactory;
  * <p>Kernel is the cluster TRUST ROOT: it mints all tokens (via the
  * {@link IdentityServiceImpl} {@code Mint} handler with the dual-key
  * {@link KeyRotator}), signs X.509 certs, owns tenancy (the
- * {@link TenantAdminServiceImpl} {@code TenantAdmin} handler), and persists its
- * OWN state via the diskstore ({@link KernelPersistence}).
+ * {@link TenantAdminServiceImpl} {@code TenantAdmin} handler), and is the
+ * cluster's DURABLE STORE: its own state goes to the diskstore as one atomic
+ * snapshot ({@link KernelPersistence}), and every state boundary any service's
+ * proto flags {@code (spec.persistence) = true} is snapshotted per boundary by
+ * {@link BoundaryPersistence}. Services do not persist their own state.
  */
 public class ClusterServer {
 
@@ -200,7 +203,7 @@ public class ClusterServer {
 
 	private final int grpcPort;
 	private final HazelcastInstance hazelcast;
-	private final PersistenceProvider persistence;
+	private final BoundaryPersistence persistence;
 	private final BackendServers backendServers;
 	private final JwkVerifyingKeysViewServer jwkViewServer;
 	private final ClusterStatePublisher clusterPublisher;
@@ -220,11 +223,11 @@ public class ClusterServer {
 
 	/**
 	 * @param config      the kernel configuration
-	 * @param persistence persistence provider
+	 * @param persistence the durable store for {@code (spec.persistence)} boundaries
 	 */
 	public ClusterServer(
 			Kernel.Config config,
-			PersistenceProvider persistence) {
+			BoundaryPersistence persistence) {
 
 		Kernel.Config cfg = Helpers.configDefaults(config).build();
 
@@ -298,14 +301,43 @@ public class ClusterServer {
 			this.healthProbeServer = null;
 		}
 
+		// Is this a TRUE cold start? Hazelcast has finished its join by the time
+		// newHazelcastInstance returns, so a member count of one means no peer
+		// was reachable and this pod is forming the cluster. Read it HERE, once,
+		// before any boundary is touched: a peer joining a moment later must not
+		// turn into "load the snapshot after all".
+		//
+		// This is the invariant the whole persistence feature rests on. A pod
+		// restarted one-at-a-time takes its state from the two live peers, as it
+		// always has; replaying its on-disk snapshot over them would resurrect
+		// whatever it held when it went down, silently, over live data.
+		int memberCount = hazelcast.getCluster().getMembers().size();
+		boolean coldStart = isColdStart(hazelcast);
+
 		// 3. Create backend servers. Kernel coordinates state in-memory via
-		// Hazelcast; its OWN durable state is persisted as a single atomic disk
-		// snapshot (KernelDiskState) by KernelPersistence — NOT via the legacy
-		// redo-log PersistenceProvider, which is now a no-op map tracker for
-		// cluster stats only. Every Hazelcast map is config-seeded, rebuilt from
-		// the disk snapshot at boot, or ephemeral.
+		// Hazelcast and is the cluster's durable store on top of it. Its OWN
+		// state is one atomic disk snapshot (KernelDiskState) written by
+		// KernelPersistence; every boundary flagged (spec.persistence) = true —
+		// from ANY service's proto, not just kernel's own — gets its own
+		// snapshot file written by BoundaryPersistence on each write, and is
+		// rehydrated below on a cold start. Unflagged boundaries are
+		// config-seeded or ephemeral.
 		HazelcastManager manager = new HazelcastManager(hazelcast, persistence);
 		this.backendServers = new BackendServers(manager);
+
+		// Constructing the backend servers is what registers every persistent
+		// boundary with the store (each generated map binds its boundary in its
+		// constructor), so rehydration can only run once they exist — and must
+		// run before the Config-seeded installs below, which are the operator's
+		// current truth and legitimately win over anything on disk.
+		if (coldStart) {
+			logger.info("Cold start: no Hazelcast peers reachable — rehydrating persistent boundaries from disk");
+			persistence.rehydrate();
+		} else {
+			logger.info(
+					"Joined a cluster of {} members — taking boundary state from peers, NOT from the local snapshot",
+					memberCount);
+		}
 
 		// All boundaries are convergent — quorum is always available
 		backendServers.services().setQuorumAvailable(true);
@@ -453,8 +485,20 @@ public class ClusterServer {
 		// Load the persisted snapshot and rehydrate Hazelcast-backed state before
 		// the rotator starts (signing_keys are restored into the rotator; the
 		// public verifying set + Ca + ConfigState + revocations are restored into
-		// their boundary maps). A cold start returns null.
-		Kernel.KernelDiskState snapshot = kernelPersistence.load();
+		// their boundary maps). An absent snapshot returns null.
+		//
+		// Gated on the same cold-start test as the generic boundaries above, and
+		// for the same reason: a pod rejoining live peers already has the
+		// cluster's keys, CAs and revocations from them, and replaying its own
+		// older snapshot over that state would un-revoke workloads and grants
+		// the cluster has since revoked. The signing-key restore into the local
+		// KeyRotator is the one leg that is per-pod rather than cluster-wide, so
+		// it reads an empty list on a rejoin and picks the cluster's keys up
+		// through the boundary map.
+		Kernel.KernelDiskState snapshot = coldStart ? kernelPersistence.load() : null;
+		if (!coldStart) {
+			logger.info("Rejoined a live cluster — kernel's own disk snapshot is NOT replayed over peer state");
+		}
 		rehydrateFromSnapshot(snapshot, identityState, caState, workloadState, kernelConfigMap);
 		restorePersonalPrincipals(snapshot, principalState);
 		restorePeople(snapshot, principalState);
@@ -1524,4 +1568,17 @@ public class ClusterServer {
 		return token.getBase64();
 	}
 
+
+	/**
+	 * Whether this node is forming the cluster rather than joining one — the one
+	 * condition under which a snapshot on local disk may be replayed.
+	 *
+	 * <p>Hazelcast completes its join before {@code newHazelcastInstance}
+	 * returns, so the live member count already distinguishes the two cases: one
+	 * member is this node alone (a true cold start), more than one is a rolling
+	 * restart into peers that hold the cluster's current state.
+	 */
+	static boolean isColdStart(HazelcastInstance hazelcast) {
+		return hazelcast.getCluster().getMembers().size() <= 1;
+	}
 }

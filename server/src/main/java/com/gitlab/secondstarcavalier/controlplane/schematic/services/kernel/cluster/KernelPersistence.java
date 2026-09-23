@@ -16,14 +16,23 @@ import org.slf4j.LoggerFactory;
 
 /**
  * KernelPersistence wraps the tacplus-generated diskstore UC1 helpers for
- * kernel's OWN whole-state snapshot ({@code KernelDiskState}). The kernel is the
- * cluster trust root and persists ONLY its own durable state — signing keys,
+ * kernel's OWN whole-state snapshot ({@code KernelDiskState}) — signing keys,
  * the public verifying set, the cluster CA + per-service intermediate CAs, the
  * tenant/project tree, workload revocations, standing delegation grants, and
- * the registered personal principals — as one atomic object on its local
- * volume. Ephemeral, rebuilt-at-runtime state (cluster membership,
- * service health, localities, FQDN, trusted CAs from Config) is deliberately
- * NOT snapshotted.
+ * the registered personal principals — written as one atomic object on the
+ * kernel's local volume. Ephemeral, rebuilt-at-runtime state (cluster
+ * membership, service health, localities, FQDN, trusted CAs from Config) is
+ * deliberately NOT snapshotted.
+ *
+ * <p>This is kernel's own half of the durable store, not the whole of it.
+ * Kernel is the durable store for the CLUSTER: every state boundary any
+ * service's proto flags {@code (spec.persistence) = true} is snapshotted to the
+ * same volume, one file per boundary, by {@link
+ * com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.BoundaryPersistence
+ * BoundaryPersistence}. The two stores share this volume, the atomic-write
+ * helper and the fail-closed rules below; they are separate only because
+ * kernel's own state is a single typed object with a generated store, and a
+ * service boundary is an arbitrary keyed map.
  *
  * <p>{@link #load()} is called once at boot to rehydrate Hazelcast-backed state;
  * {@link #save()} is invoked after every state mutation that must survive a

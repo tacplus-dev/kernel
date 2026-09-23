@@ -21,7 +21,7 @@ public class SharedBoundary {
     private boolean replicated;
     private boolean instanceKeyed;  // server builds key from auth context (instance_id claim)
     private long evictionTtlSeconds;
-    private boolean persistent;     // (spec.persistence) = true — redo log persisted
+    private boolean persistent;     // (spec.persistence) = true — kernel snapshots this boundary to disk
 
     public String getFieldName() { return fieldName; }
     public void setFieldName(String fieldName) { this.fieldName = fieldName; }

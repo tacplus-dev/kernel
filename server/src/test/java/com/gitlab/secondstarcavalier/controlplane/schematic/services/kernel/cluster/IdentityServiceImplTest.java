@@ -328,6 +328,7 @@ class IdentityServiceImplTest {
 				.addUriSans(VICTIM_SPIFFE_ID)
 				.addDnsNames("oauth")
 				.addDnsNames("oauth-0")
+				.addDnsNames("oauth0")
 				.addDnsNames("kernel")
 				.addDnsNames("gateway.default.svc")
 				.setIsCa(true)
@@ -345,7 +346,7 @@ class IdentityServiceImplTest {
 		assertEquals(0, signed.getPathLenConstraint());
 		// Names the caller owns survive (its own service name, wildcard, pod
 		// hostname); another service's name does not.
-		assertEquals(List.of("oauth", "*.oauth", "oauth-0"), signed.getDnsNamesList());
+		assertEquals(List.of("oauth", "*.oauth", "oauth-0", "oauth0"), signed.getDnsNamesList());
 
 		// And the same holds of the certificate that comes out of the signer.
 		ImmutableCertChain intermediateCa = ImmutableCertChain.from(

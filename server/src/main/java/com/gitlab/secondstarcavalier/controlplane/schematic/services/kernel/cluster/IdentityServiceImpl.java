@@ -3913,7 +3913,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			if (dns.equals(serviceName)
 					|| dns.startsWith(serviceName + "-")
 					|| dns.startsWith(serviceName + ".")
-					|| dns.equals("*." + serviceName)) {
+					|| dns.equals("*." + serviceName)
+					// <service><replica-index> with no separator, e.g. "letsencrypt0" —
+					// the pod hostname convention every chart uses; same rule as
+					// TlsCertServiceImpl.kernelCertRequest (ManageCert path).
+					|| dns.matches(java.util.regex.Pattern.quote(serviceName) + "[0-9]+")) {
 				dnsNames.add(dns);
 			} else {
 				logger.warn("X509Mint: dropping DNS SAN '{}' requested by {} — not a name that service owns",

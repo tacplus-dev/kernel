@@ -277,6 +277,13 @@ public class ClusterServer {
 
 		hzConfig.getRestConfig().setEnabled(false);
 
+		// The cold-start decision below is taken off two cluster-shared maps, and
+		// this pod's StatefulSet ordinal has to travel with its member so every
+		// sibling elects the same state origin. Both are declared before the
+		// instance starts because neither can be added to a running member.
+		StateBearingLedger.configure(hzConfig);
+		StateBearingLedger.publishOrdinal(hzConfig, StateBearingLedger.ordinalOf(hostname));
+
 		SerializerRegistry.register(hzConfig);
 		this.hazelcast = com.hazelcast.core.Hazelcast.newHazelcastInstance(hzConfig);
 
@@ -308,18 +315,7 @@ public class ClusterServer {
 			this.healthProbeServer = null;
 		}
 
-		// Is this a TRUE cold start? Hazelcast has finished its join by the time
-		// newHazelcastInstance returns, so a member count of one means no peer
-		// was reachable and this pod is forming the cluster. Read it HERE, once,
-		// before any boundary is touched: a peer joining a moment later must not
-		// turn into "load the snapshot after all".
-		//
-		// This is the invariant the whole persistence feature rests on. A pod
-		// restarted one-at-a-time takes its state from the two live peers, as it
-		// always has; replaying its on-disk snapshot over them would resurrect
-		// whatever it held when it went down, silently, over live data.
 		int memberCount = hazelcast.getCluster().getMembers().size();
-		boolean coldStart = isColdStart(hazelcast);
 
 		// 3. Create backend servers. Kernel coordinates state in-memory via
 		// Hazelcast and is the cluster's durable store on top of it. Its OWN
@@ -332,19 +328,40 @@ public class ClusterServer {
 		HazelcastManager manager = new HazelcastManager(hazelcast, persistence);
 		this.backendServers = new BackendServers(manager);
 
+		// The join-time checkpoint below may only write a file smaller than the
+		// one already on this volume when some member of the cluster has proved
+		// it holds the state. Wired before anything can call it.
+		persistence.setStateBearingGate(() -> StateBearingLedger.clusterBearsState(hazelcast));
+
 		// Constructing the backend servers is what registers every persistent
 		// boundary with the store (each generated map binds its boundary in its
 		// constructor), so rehydration can only run once they exist — and must
 		// run before the Config-seeded installs below, which are the operator's
 		// current truth and legitimately win over anything on disk.
+		//
+		// It is also why the cold-start decision is taken HERE rather than right
+		// after the Hazelcast instance came up: the decision now asks this pod's
+		// volume how many rows it holds, and the boundaries it would ask about do
+		// not exist until the line above ran. Nothing touches a boundary in
+		// between, so the decision is still made before any state is read or
+		// written — which is the property the old placement was protecting.
+		boolean coldStart = isColdStart(hazelcast, persistence);
 		if (coldStart) {
-			logger.info("Cold start: no Hazelcast peers reachable — replaying persistent boundaries from disk");
-			persistence.rehydrate();
+			logger.info("Cold start: no peer of this cluster bears boundary state and this pod is its"
+					+ " cohort's state origin — replaying persistent boundaries from disk");
+			int replayed = persistence.rehydrate();
+			// TRUE only if this pod actually put rows back. A cohort whose volumes
+			// are all empty has no state-bearing member, and saying otherwise
+			// would hand the checkpoint guard below the proof it exists to demand.
+			StateBearingLedger.settle(hazelcast, replayed > 0);
 		} else {
 			logger.info(
 					"Joined a cluster of {} members — taking boundary state from peers, NOT from the local log",
 					memberCount);
 			snapshotJoinedStateInBackground(hazelcast, persistence);
+			// A pod holding a state-bearing cluster's rows in memory IS a durable
+			// copy for the restart that happens next — stratum's serving-peer rule.
+			StateBearingLedger.settle(hazelcast, StateBearingLedger.clusterBearsState(hazelcast));
 		}
 
 		// All boundaries are convergent — quorum is always available
@@ -1584,13 +1601,26 @@ public class ClusterServer {
 	 * Whether this node is forming the cluster rather than joining one — the one
 	 * condition under which a snapshot on local disk may be replayed.
 	 *
-	 * <p>Hazelcast completes its join before {@code newHazelcastInstance}
-	 * returns, so the live member count already distinguishes the two cases: one
-	 * member is this node alone (a true cold start), more than one is a rolling
-	 * restart into peers that hold the cluster's current state.
+	 * <p>This used to be {@code getMembers().size() <= 1}, on the reasoning that
+	 * Hazelcast completes its join before {@code newHazelcastInstance} returns,
+	 * so a lone member is a node forming the cluster. That reasoning holds only
+	 * for a start that is STAGGERED. {@code kubectl scale statefulset kernel
+	 * 0 -> 3} with {@code podManagementPolicy: Parallel} starts three pods at
+	 * once; each of them sees a cluster of three, each concludes it joined peers
+	 * that hold state, and not one of them replays its own log — after which each
+	 * writes its empty memory back over its own boundary files. A member count
+	 * cannot answer "does any peer HOLD state"; it answers "is anyone else
+	 * there", and those are different questions whenever the answer matters.
+	 *
+	 * <p>{@link StateBearingLedger} makes the fact explicit instead: a member
+	 * that has rehydrated, or that is serving a cluster which bears state, says
+	 * so in a cluster-shared map, and this pod is a cold start unless a PEER has
+	 * said it. When nobody has — the simultaneous-start case — the cohort elects
+	 * one pod to replay its volume and the rest wait for it. Blocks for as long
+	 * as that takes; see {@code StateBearingLedger.ORIGIN_TIMEOUT}.
 	 */
-	static boolean isColdStart(HazelcastInstance hazelcast) {
-		return hazelcast.getCluster().getMembers().size() <= 1;
+	static boolean isColdStart(HazelcastInstance hazelcast, BoundaryPersistence persistence) {
+		return StateBearingLedger.awaitColdStartDecision(hazelcast, persistence.diskRowCount());
 	}
 
 	/**

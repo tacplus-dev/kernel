@@ -46,6 +46,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.BooleanSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -100,11 +101,13 @@ import org.slf4j.LoggerFactory;
  *
  * <p><b>Replay is cold-start only.</b> {@link #rehydrate} is called by {@link
  * com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster.ClusterServer
- * ClusterServer} only when this pod booted alone. A pod joining peers takes its
- * state from them; replaying a log over a live cluster would resurrect whatever
- * that pod last wrote before it went down. Replay also writes with
- * put-if-absent, so even if it were ever reached with entries present it cannot
- * overwrite them.
+ * ClusterServer} only when this pod is its boot cohort's STATE ORIGIN — no peer
+ * has declared itself state-bearing and this pod won the election in {@link
+ * com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster.StateBearingLedger
+ * StateBearingLedger}. A pod joining peers that hold state takes it from them;
+ * replaying a log over a live cluster would resurrect whatever that pod last
+ * wrote before it went down. Replay also writes with put-if-absent, so even if
+ * it were ever reached with entries present it cannot overwrite them.
  *
  * <p><b>A pod that joined peers still writes its own full copy.</b> Taking
  * state from peers puts nothing on THIS pod's disk, so a row that never
@@ -173,6 +176,17 @@ public final class BoundaryPersistence implements AutoCloseable {
 	private final Set<String> pendingCheckpoint = ConcurrentHashMap.newKeySet();
 	private final AtomicLong lastWriteMs = new AtomicLong(0);
 	private final ScheduledExecutorService flusher;
+	/**
+	 * Whether the cluster is PROVABLY holding boundary state, which is the one
+	 * condition under which the join-time checkpoint may write a file smaller
+	 * than the one already on disk. Wired by {@code ClusterServer} to {@code
+	 * StateBearingLedger.clusterBearsState}.
+	 *
+	 * <p>Defaults to "no". A store standing on its own — a test, a node with no
+	 * cluster — has nothing that could prove the claim, and the whole point of
+	 * the guard is that the unproven case does not shrink the file.
+	 */
+	private volatile BooleanSupplier stateBearing = () -> false;
 
 	private BoundaryPersistence(Path base) {
 		this.base = base;
@@ -212,6 +226,51 @@ public final class BoundaryPersistence implements AutoCloseable {
 
 	public boolean isEnabled() {
 		return enabled;
+	}
+
+	/**
+	 * Tells this store how to find out whether the cluster is provably holding
+	 * boundary state. See {@link #checkpointAll} for what turns on it.
+	 */
+	public void setStateBearingGate(BooleanSupplier gate) {
+		this.stateBearing = Objects.requireNonNull(gate, "gate");
+	}
+
+	/**
+	 * Live rows this pod's own boundary logs hold on disk, across every
+	 * registered boundary.
+	 *
+	 * <p>Read from the FILES, not from the maps: this is what the cold-start
+	 * election asks of each pod's volume, and the maps are precisely what is in
+	 * question at that moment. Deduplicated to the latest record per key and
+	 * tombstones excluded, so it is the recoverable row count rather than the
+	 * log's length — a boundary written a thousand times holds one row.
+	 */
+	public long diskRowCount() {
+		if (!enabled) {
+			return 0;
+		}
+		long total = 0;
+		for (Boundary b : boundaries.values()) {
+			total += diskRows(b);
+		}
+		return total;
+	}
+
+	/** Live rows on disk for one registered boundary; 0 if it has no log yet. */
+	public long diskRowCount(String mapName) {
+		Boundary b = boundaries.get(mapName);
+		return b == null ? 0 : diskRows(b);
+	}
+
+	private static long diskRows(Boundary b) {
+		long rows = 0;
+		for (RedoLog.Record rec : RedoLog.dedupFile(b.log().activePath())) {
+			if (!rec.deleted) {
+				rows++;
+			}
+		}
+		return rows;
 	}
 
 	/** The registry of persistent boundaries, read by the cluster-stats publisher. */
@@ -360,6 +419,11 @@ public final class BoundaryPersistence implements AutoCloseable {
 	 * {@code evictAll} — and for the size-based trigger and the post-join full
 	 * write. Everything else appends.
 	 *
+	 * <p>UNGUARDED: this is the path behind an observed mutation — a {@code
+	 * clear}, an {@code evictAll}, the size-based trigger — where a row count
+	 * smaller than the file's is the correct result of what the caller did.
+	 * {@link #checkpointAll} is the path that cannot tell, and it is guarded.
+	 *
 	 * @return the number of rows written
 	 * @throws DiskStoreException if the checkpoint could not be built or written
 	 */
@@ -368,15 +432,34 @@ public final class BoundaryPersistence implements AutoCloseable {
 		if (b == null) {
 			return 0;
 		}
-		return checkpoint(b);
+		return checkpoint(b, false);
 	}
 
-	private int checkpoint(Boundary b) {
+	/**
+	 * @param guardShrink refuse the write if it would leave FEWER rows on disk
+	 *                    than the file already holds and nothing in the cluster
+	 *                    is provably state-bearing — see {@link #checkpointAll}
+	 * @return rows written, or {@code -1} if the guard refused and the file was
+	 *         left exactly as it was
+	 */
+	private int checkpoint(Boundary b, boolean guardShrink) {
 		b.lock().writeLock().lock();
 		try {
 			List<RedoLog.Record> rows = new ArrayList<>();
 			for (Map.Entry<String, Message> e : b.hzMap().entrySet()) {
 				rows.add(RedoLog.Record.upsert(e.getKey(), encode(b, e.getKey(), e.getValue())));
+			}
+			if (guardShrink) {
+				long onDisk = diskRows(b);
+				if (rows.size() < onDisk && !stateBearing.getAsBoolean()) {
+					logger.error("REFUSING to checkpoint boundary {}: this pod's memory holds {} row(s)"
+							+ " and its log already holds {}, and no member of this cluster has declared"
+							+ " itself state-bearing. Writing would truncate durable state to what an"
+							+ " empty member happens to hold — the simultaneous-restart data loss this"
+							+ " guard exists to stop. The log at {} is left untouched.",
+							b.mapName(), rows.size(), onDisk, b.log().activePath());
+					return -1;
+				}
 			}
 			b.log().roll(rows);
 			b.checkpointedBytes().set(sizeOf(b.log().activePath()));
@@ -406,6 +489,24 @@ public final class BoundaryPersistence implements AutoCloseable {
 	 * on serializing every boundary, and nothing depends on the result — the
 	 * live cluster is still the source of truth until the pod goes down.
 	 *
+	 * <p><b>It never shrinks a boundary file on an unproven cluster.</b> This is
+	 * the write that destroyed state in the simultaneous-restart incident: every
+	 * pod of a {@code Parallel} StatefulSet came up at once, each concluded from
+	 * the member count that it had joined peers holding state, each took "state"
+	 * from peers that were equally empty, and each then rewrote its own log from
+	 * an empty map. The rewrite had no opinion about what it was replacing. It
+	 * has one now: a checkpoint that would leave FEWER rows on disk than the file
+	 * already holds is REFUSED and logged at error, unless {@code
+	 * StateBearingLedger} says some member of this cluster is provably bearing
+	 * state — in which case the in-memory view IS the cluster's state and a
+	 * smaller file is the legitimate result of rows having been deleted.
+	 *
+	 * <p>The residual it does not cover, named: when a peer is state-bearing the
+	 * rows on this pod's volume and the ones the cluster holds need not be the
+	 * same set, and the shrink is then allowed on the cluster's authority.
+	 * Merging logs across pods is a different feature; what this guarantees is
+	 * that an UNPROVEN cluster cannot empty a volume.
+	 *
 	 * @param reason what put this pod in this position, for the log line
 	 */
 	public void checkpointAll(String reason) {
@@ -415,9 +516,14 @@ public final class BoundaryPersistence implements AutoCloseable {
 		flusher.execute(() -> {
 			long rows = 0;
 			int failed = 0;
+			int refused = 0;
 			for (Boundary b : boundaries.values()) {
 				try {
-					int n = checkpoint(b);
+					int n = checkpoint(b, true);
+					if (n < 0) {
+						refused++;
+						continue;
+					}
 					rows += n;
 					logger.info("Boundary {}: wrote {} rows to {} ({})",
 							b.mapName(), n, b.log().activePath(), reason);
@@ -427,8 +533,9 @@ public final class BoundaryPersistence implements AutoCloseable {
 							b.mapName(), reason, e.getMessage(), e);
 				}
 			}
-			logger.info("Wrote this pod's own copy of {} boundaries ({} rows, {} failed) — {}",
-					boundaries.size(), rows, failed, reason);
+			logger.info("Wrote this pod's own copy of {} boundaries ({} rows, {} failed,"
+					+ " {} refused as shrinking) — {}",
+					boundaries.size(), rows, failed, refused, reason);
 		});
 	}
 
@@ -625,7 +732,7 @@ public final class BoundaryPersistence implements AutoCloseable {
 			// A remote clear or evict-all: the surviving state is what the map
 			// now holds, and no per-key record describes "everything else went".
 			pending.remove(b.mapName());
-			checkpoint(b);
+			checkpoint(b, false);
 			return;
 		}
 		Set<String> keys = pending.remove(b.mapName());
@@ -653,7 +760,7 @@ public final class BoundaryPersistence implements AutoCloseable {
 		if (size < MIN_CHECKPOINT_BYTES || size < 2 * b.checkpointedBytes().get()) {
 			return;
 		}
-		int rows = checkpoint(b);
+		int rows = checkpoint(b, false);
 		logger.info("Checkpointed boundary {}: log had grown to {} bytes, coalesced to {} rows in {} bytes",
 				b.mapName(), size, rows, b.checkpointedBytes().get());
 	}

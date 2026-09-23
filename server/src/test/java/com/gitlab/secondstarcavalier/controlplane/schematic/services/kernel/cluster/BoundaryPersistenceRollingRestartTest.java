@@ -35,11 +35,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * at all.
  *
  * <ol>
- *   <li>The cold-start gate. {@code ClusterServer} rehydrates only when the pod
- *       booted alone; a pod that joined peers takes their state and never reads
- *       its own file. This is the guard that matters in production, because a
- *       rejoining pod's file is stale by exactly the writes it missed while it
- *       was down.</li>
+ *   <li>The cold-start gate. {@code ClusterServer} rehydrates only when no peer
+ *       of this cluster BEARS state; a pod that joined a state-bearing peer
+ *       takes that peer's state and never reads its own file. This is the guard
+ *       that matters in production, because a rejoining pod's file is stale by
+ *       exactly the writes it missed while it was down.</li>
  *   <li>Put-if-absent on the rehydration path itself, so that even a mistaken
  *       call — a future caller, a reordered boot — cannot clobber a live entry.
  *       The two guards are deliberately redundant: the first is a decision made
@@ -68,21 +68,34 @@ class BoundaryPersistenceRollingRestartTest {
 	}
 
 	/**
-	 * The production guard. A node alone is forming the cluster and may load its
-	 * snapshot; a node that found peers must not.
+	 * The production guard, in its staggered form: a node alone is forming the
+	 * cluster and may load its snapshot; a node that found a peer BEARING STATE
+	 * must not.
+	 *
+	 * <p>What the second node reads is the peer's entry in {@code
+	 * StateBearingLedger}, not the member count — a count could only ever say
+	 * "someone else is there", which is a different fact and the one that made
+	 * the simultaneous start destroy data. The simultaneous case is
+	 * {@link BoundaryPersistenceSimultaneousStartTest}.
+	 *
+	 * <p>The decision is taken ONCE per boot and each node here takes it once:
+	 * re-asking would file a fresh boot entry for a member that has already
+	 * settled, which no pod does.
 	 */
 	@Test
-	void coldStartIsOnlyTrueWhenNoPeerWasReachable() {
+	void coldStartIsOnlyTrueWhenNoPeerBearsState() {
 		String cluster = "rolling-restart-test-" + UUID.randomUUID();
-		HazelcastInstance first = start(joinableConfig(cluster));
-		assertTrue(ClusterServer.isColdStart(first),
-				"the first node of a cluster has no peers — it is a cold start and loads its snapshot");
+		BoundaryPersistence noVolume = BoundaryPersistence.disabled();
 
-		HazelcastInstance second = start(joinableConfig(cluster));
-		assertFalse(ClusterServer.isColdStart(second),
-				"a node that joined a live peer must take state from it, not from its own disk");
-		assertFalse(ClusterServer.isColdStart(first),
-				"and the same is true read from either side of the cluster");
+		HazelcastInstance first = start(joinableConfig(cluster, 0));
+		assertTrue(ClusterServer.isColdStart(first, noVolume),
+				"the first node of a cluster has no state-bearing peer — it is a cold start and loads its snapshot");
+		// What a pod does next: it replayed real rows, so it says so.
+		StateBearingLedger.settle(first, true);
+
+		HazelcastInstance second = start(joinableConfig(cluster, 1));
+		assertFalse(ClusterServer.isColdStart(second, noVolume),
+				"a node that joined a peer bearing state must take state from it, not from its own disk");
 	}
 
 	/**
@@ -180,8 +193,9 @@ class BoundaryPersistenceRollingRestartTest {
 	}
 
 	/** Two members of one cluster, joining over loopback. */
-	private static Config joinableConfig(String clusterName) {
+	private static Config joinableConfig(String clusterName, int ordinal) {
 		Config config = baseConfig(clusterName);
+		StateBearingLedger.publishOrdinal(config, ordinal);
 		var join = config.getNetworkConfig().getJoin();
 		join.getMulticastConfig().setEnabled(false);
 		join.getTcpIpConfig().setEnabled(true).addMember("127.0.0.1");
@@ -202,6 +216,7 @@ class BoundaryPersistenceRollingRestartTest {
 		Config config = new Config();
 		config.setClusterName(clusterName);
 		config.setProperty("hazelcast.phone.home.enabled", "false");
+		StateBearingLedger.configure(config);
 		SerializerRegistry.register(config);
 		return config;
 	}

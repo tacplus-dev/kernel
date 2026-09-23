@@ -17,16 +17,16 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Kernel installs the bundle's per-service configs into the ConfigHolder
  * boundary maps on every start ({@code ClusterServer.installConfigHolder}).
- * When that install was an unconditional put, a plain rolling restart reverted
- * live-pushed config — an OPA policy, the gateway cert, the OAuth providers —
- * to whatever the bundle carried, with nothing in the cluster surfacing the
- * loss.
  *
- * <p>Seeding is therefore create-only, decided per root: seed what is absent,
- * never overwrite what is populated. Both directions are asserted here, against
- * the generated {@code BackendServers.installServices} that does the work.
+ * <p>The bundle wins, per root and unconditionally: config is code, so the
+ * git-committed bundle is the single source of truth and a changed bundle value
+ * must become live on the next kernel restart, for every service. A config
+ * edited live outside the bundle — an OPA policy pushed over
+ * {@code UpdateOpaConfig}, say — is transient by definition and is reverted by
+ * the next install. Both directions are asserted here, against the generated
+ * {@code BackendServers.installServices} that does the work.
  */
-class ConfigStateSeedCreateOnlyTest {
+class ConfigStateSeedBundleWinsTest {
 
 	/** The policy an operator pushed live, after the cluster was already up. */
 	private static final Opa.Config LIVE_OPA_CONFIG = Opa.Config.newBuilder()
@@ -35,7 +35,7 @@ class ConfigStateSeedCreateOnlyTest {
 					.setCreated(1_770_000_000L))
 			.build();
 
-	/** The policy the bundle carries — what a restart used to revert to. */
+	/** The policy the bundle carries — what every restart reverts to. */
 	private static final Opa.Config BUNDLE_OPA_CONFIG = Opa.Config.newBuilder()
 			.setEntitlementsPolicy(Opalib.OpaPolicy.newBuilder()
 					.setEntryPoint("schematic/authz/bundle")
@@ -64,7 +64,7 @@ class ConfigStateSeedCreateOnlyTest {
 		}
 	}
 
-	/** Bootstrap: a cold cluster with empty roots still gets seeded. */
+	/** Bootstrap: a cold cluster with empty roots gets seeded. */
 	@Test
 	void emptyRootsAreSeededFromTheBundle() throws Exception {
 		assertEquals(2, servers.installServices(BUNDLE));
@@ -73,28 +73,47 @@ class ConfigStateSeedCreateOnlyTest {
 		assertEquals(BUNDLE_GATEWAY_CONFIG, servers.getGatewayConfigStateMap().getConfig());
 	}
 
-	/** Restart: the second install must not revert a populated root. */
+	/** Restart: a live-pushed config is reverted to the bundle's. */
 	@Test
-	void populatedRootSurvivesReinstall() throws Exception {
+	void populatedRootIsOverwrittenByTheBundleOnReinstall() throws Exception {
 		servers.installServices(BUNDLE);
 		// Operator pushes a policy over the seeded default while the cluster runs.
 		servers.getOpaConfigStateMap().putConfig(LIVE_OPA_CONFIG);
 
 		// The restarting member re-runs the install with the same bundle.
-		assertEquals(0, servers.installServices(BUNDLE));
+		assertEquals(2, servers.installServices(BUNDLE));
 
-		assertEquals(LIVE_OPA_CONFIG, servers.getOpaConfigStateMap().getConfig());
+		assertEquals(BUNDLE_OPA_CONFIG, servers.getOpaConfigStateMap().getConfig());
 	}
 
 	/**
-	 * The decision is per root, not per cluster: a cluster holding one populated
-	 * root still gets its remaining empty roots filled in.
+	 * The incident this rule exists for: a bundle value changed between boots
+	 * reaches the running cluster even though the root is already populated.
 	 */
 	@Test
-	void partiallyPopulatedClusterGetsItsMissingRootsSeeded() throws Exception {
+	void aChangedBundleValueTakesEffectOnTheNextInstall() throws Exception {
+		servers.installServices(BUNDLE);
+
+		ServicesConfig.Services changed = BUNDLE.toBuilder()
+				.setGatewayConfig(Gateway.Config.newBuilder()
+						.addExternalHostnames("changed.schematic.test"))
+				.build();
+
+		assertEquals(2, servers.installServices(changed));
+
+		assertEquals(changed.getGatewayConfig(), servers.getGatewayConfigStateMap().getConfig());
+	}
+
+	/** A root the bundle does not carry is left as it is. */
+	@Test
+	void rootsAbsentFromTheBundleAreLeftAlone() throws Exception {
 		servers.getOpaConfigStateMap().putConfig(LIVE_OPA_CONFIG);
 
-		assertEquals(1, servers.installServices(BUNDLE));
+		ServicesConfig.Services gatewayOnly = ServicesConfig.Services.newBuilder()
+				.setGatewayConfig(BUNDLE_GATEWAY_CONFIG)
+				.build();
+
+		assertEquals(1, servers.installServices(gatewayOnly));
 
 		assertEquals(LIVE_OPA_CONFIG, servers.getOpaConfigStateMap().getConfig());
 		assertEquals(BUNDLE_GATEWAY_CONFIG, servers.getGatewayConfigStateMap().getConfig());

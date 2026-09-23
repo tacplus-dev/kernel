@@ -230,6 +230,19 @@ Rate limiting is per-service per-method. Violations are tracked in
 - `token_exchanger` — TokenExchanger configuration
 - `delegates` — Service identities, bootstrap matchers, and S2S mint grants
 
+### Config seeding: the bundle always wins
+
+Kernel installs `Config.configs` into every service's ConfigState root on **every
+boot**, overwriting whatever the root already held. The git-committed bundle is
+the single source of truth (config-as-code): a changed bundle value always
+becomes live on the next kernel restart or roll, for every service, with no
+create-only exception.
+
+A config edited live outside the bundle — an OPA policy pushed over
+`UpdateOpaConfig`, for instance — is therefore transient: it applies immediately
+but is overwritten from the bundle the next time kernel restarts. To change a
+config durably, change the bundle and roll kernel.
+
 ## Persistence
 
 Kernel is the durable store for the whole cluster. Every state boundary marked

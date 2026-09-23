@@ -4330,15 +4330,18 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	// ========================================================================
 
 	/**
-	 * Unconditionally overwrites opa's live config-state root with the given
-	 * config, bypassing {@link ClusterServer}'s normal create-only seeding
-	 * (a populated root is otherwise never overwritten by
-	 * {@code installConfigHolder}, so a rolling restart can't revert a
-	 * live-edited config back to the bundle default). This is the one
-	 * triggered path around that create-only rule: an authorized operator can
-	 * push a changed opa config into an already-running, already-seeded
-	 * cluster on demand. auth_services: ["operator"] on the RPC restricts
-	 * callers to the operator service; no further caller check is needed here.
+	 * Overwrites opa's live config-state root with the given config, so an
+	 * authorized operator can push a changed opa config into an already-running
+	 * cluster without waiting for a kernel roll. auth_services: ["operator"] on
+	 * the RPC restricts callers to the operator service; no further caller check
+	 * is needed here.
+	 *
+	 * <p>The push is transient. Kernel's {@code installConfigHolder} overwrites
+	 * every ConfigState root from the bundle on every start, so whatever is
+	 * pushed here survives only until the next kernel restart, when the bundle's
+	 * {@code opa_config} wins again. The durable way to change opa's config is
+	 * to change the bundle; operator re-pushes its own bundle-derived config on
+	 * each reconcile, which is what keeps this path consistent with the bundle.
 	 */
 	@Override
 	public void updateOpaConfig(Caller caller, Kernel.UpdateOpaConfigRequest request) throws ProtoException {

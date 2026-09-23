@@ -896,8 +896,9 @@ public class ClusterServer {
 					kubernetesTokenVerifier,
 					kubernetesTokenAudience,
 					// UpdateOpaConfig's single write path: an unconditional put into opa's
-					// config-state root, bypassing installConfigHolder's create-only
-					// seeding so an authorized operator can push a live config change.
+					// config-state root, so an authorized operator can push a live config
+					// change without a kernel roll. Transient — installConfigHolder
+					// overwrites this root from the bundle on the next start.
 					opaConfig -> {
 						try {
 							backendServers.services().getOpaConfigStateMap().putConfig(opaConfig);
@@ -1161,11 +1162,13 @@ public class ClusterServer {
 	}
 
 	/**
-	 * Seeds the bundle's per-service configs into the ConfigHolder boundary maps.
-	 * Kernel runs this on every start, so seeding is create-only: only roots that
-	 * are still empty are filled in. Populated roots — a live config push, or a
-	 * seed a surviving cluster member already holds — are left alone, so a
-	 * rolling restart cannot revert them to the bundle default.
+	 * Installs the bundle's per-service configs into the ConfigHolder boundary maps.
+	 * Kernel runs this on every start and the bundle always wins: every root the
+	 * bundle carries is overwritten, whether or not it already holds a config.
+	 * Config is code, so the git-committed bundle is the single source of truth —
+	 * a changed bundle value always becomes live on the next restart or roll, and
+	 * a config edited live outside the bundle (a push over {@code UpdateOpaConfig},
+	 * say) is transient and is reverted here.
 	 */
 	private void installConfigHolder(Kernel.Config config) {
 		if (!config.hasConfigs()) {
@@ -1173,8 +1176,8 @@ public class ClusterServer {
 			return;
 		}
 		int installed = backendServers.services().installServices(config.getConfigs());
-		logger.info("Installed {} config(s) into empty per-service config state maps "
-				+ "(create-only; populated roots left unchanged)", installed);
+		logger.info("Installed {} config(s) into per-service config state maps "
+				+ "(bundle wins; every seeded root overwritten)", installed);
 	}
 
 	/**

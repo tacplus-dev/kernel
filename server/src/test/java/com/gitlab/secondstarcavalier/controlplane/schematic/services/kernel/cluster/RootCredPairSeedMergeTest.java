@@ -24,10 +24,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * silently discarded whatever the running cluster held for the root namespace
  * and left only the bootstrap bundle's cred_pairs behind.
  *
- * <p>The create-only ConfigState seeding fix (see
- * {@code ConfigStateSeedCreateOnlyTest}) covers the per-service ConfigHolder
- * roots installed by {@code installConfigHolder}; it never touched this path,
- * which writes the kernel's own {@code ConfigState.tenant_configs}.
+ * <p>{@code installConfigHolder}'s bundle-wins seeding (see
+ * {@code ConfigStateSeedBundleWinsTest}) covers the per-service ConfigHolder
+ * roots; it never touched this path, which writes the kernel's own
+ * {@code ConfigState.tenant_configs}.
  *
  * <p>The seed now merges: bootstrap ids are upserted (so rotating a root key in
  * the bundle still takes effect), everything else in the root config survives.

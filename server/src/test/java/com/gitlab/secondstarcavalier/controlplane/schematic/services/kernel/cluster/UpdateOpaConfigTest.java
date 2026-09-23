@@ -21,10 +21,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Mint.UpdateOpaConfig's single write path: an unconditional put into opa's
- * config-state root, the one triggered way around {@code installConfigHolder}'s
- * create-only seeding (see {@link ConfigStateSeedCreateOnlyTest}) so an
- * authorized operator can push a live config change into an already-seeded
- * cluster on demand.
+ * config-state root, so an authorized operator can push a live config change
+ * into a running cluster without waiting for a kernel roll.
+ *
+ * <p>The push is transient. {@code installConfigHolder} overwrites every
+ * ConfigState root from the bundle on every kernel start (see
+ * {@link ConfigStateSeedBundleWinsTest}), so a pushed config survives only
+ * until the next restart.
  */
 class UpdateOpaConfigTest {
 
@@ -54,7 +57,7 @@ class UpdateOpaConfigTest {
 		}
 	}
 
-	/** The RPC overwrites an already-populated root, unlike installConfigHolder's seeding. */
+	/** The RPC overwrites an already-populated root. */
 	@Test
 	void overwritesAnAlreadyPopulatedRoot() throws Exception {
 		servers.installServices(ServicesConfig.Services.newBuilder().setOpaConfig(SEEDED_CONFIG).build());
@@ -70,13 +73,23 @@ class UpdateOpaConfigTest {
 		assertEquals(PUSHED_CONFIG, servers.getOpaConfigStateMap().getConfig());
 	}
 
-	/** The existing create-only seed behavior is unaffected by this RPC's existence. */
+	/**
+	 * The push is transient: the bundle wins at the next kernel start, so the
+	 * seed re-install reverts a live-pushed config to the bundle's.
+	 */
 	@Test
-	void seedCreateOnlyBehaviorIsUnchanged() throws Exception {
-		servers.getOpaConfigStateMap().putConfig(SEEDED_CONFIG);
+	void aPushedConfigIsRevertedByTheNextBundleInstall() throws Exception {
+		IdentityServiceImpl identityService = newIdentityService(
+				config -> servers.getOpaConfigStateMap().putConfig(config));
 
-		assertEquals(0, servers.installServices(
-				ServicesConfig.Services.newBuilder().setOpaConfig(PUSHED_CONFIG).build()));
+		identityService.updateOpaConfig(null, Kernel.UpdateOpaConfigRequest.newBuilder()
+				.setConfig(ServicesConfig.Services.newBuilder().setOpaConfig(PUSHED_CONFIG))
+				.build());
+		assertEquals(PUSHED_CONFIG, servers.getOpaConfigStateMap().getConfig());
+
+		// The restarting kernel re-installs its bundle.
+		assertEquals(1, servers.installServices(
+				ServicesConfig.Services.newBuilder().setOpaConfig(SEEDED_CONFIG).build()));
 
 		assertEquals(SEEDED_CONFIG, servers.getOpaConfigStateMap().getConfig());
 	}

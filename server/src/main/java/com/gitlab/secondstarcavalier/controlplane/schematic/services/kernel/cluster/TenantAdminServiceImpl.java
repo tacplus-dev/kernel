@@ -728,9 +728,9 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
      * every other cred_pair and every other field of the root
      * {@link TenantConfigOuterClass.TenantConfig} is left untouched. A blind
      * replace here discarded whatever the running cluster held for the root
-     * namespace on each restart — the same defect the create-only ConfigState
-     * seeding fixed for the per-service config roots, which never covered this
-     * path.
+     * namespace on each restart. The per-service config roots solve the same
+     * class of problem differently — the bundle simply overwrites them on every
+     * start — which never covered this path.
      */
     static void seedRootCredPairs(
             ConfigMap configMap,

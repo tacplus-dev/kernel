@@ -25,9 +25,9 @@ import java.util.Objects;
  *
  * <p>A boundary its proto flags {@code (spec.persistence) = true} is registered
  * with {@link BoundaryPersistence} and handed back wrapped in a {@link
- * PersistentMap}, so every write to it rewrites its snapshot file before the
- * write is acked. An unflagged boundary is handed back unwrapped and stays
- * purely in memory.
+ * PersistentMap}, so every write to it appends a record to its boundary's redo
+ * log before the write is acked. An unflagged boundary is handed back unwrapped
+ * and stays purely in memory.
  */
 public class HazelcastManager implements Manager {
 

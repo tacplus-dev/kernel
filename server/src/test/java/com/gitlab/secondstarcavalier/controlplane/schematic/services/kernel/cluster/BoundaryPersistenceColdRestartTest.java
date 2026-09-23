@@ -104,7 +104,7 @@ class BoundaryPersistenceColdRestartTest {
 		HazelcastManager second = boot(volume);
 		ScottyagentMap cursorsAfter = new ScottyagentMap(second);
 		EventbusMap nodesAfter = new EventbusMap(second);
-		assertEquals(0, cursorsAfter.proto().getCursorsCount(), "a fresh member starts empty before rehydration");
+		assertEquals(0, cursorsAfter.proto().getCursorsCount(), "a fresh member starts empty before replay");
 
 		persistence.rehydrate();
 
@@ -133,7 +133,7 @@ class BoundaryPersistenceColdRestartTest {
 		assertEquals("jody", after.getCursors("jody").getUser());
 	}
 
-	/** One file per boundary, on the kernel volume — not one blob for the whole fleet. */
+	/** One log per boundary, on the kernel volume — not one blob for the whole fleet. */
 	@Test
 	void eachFlaggedBoundaryGetsItsOwnFile(@TempDir Path volume) throws Exception {
 		HazelcastManager manager = boot(volume);
@@ -141,10 +141,10 @@ class BoundaryPersistenceColdRestartTest {
 		new EventbusMap(manager).putNodes("0", node(0));
 
 		Path dir = volume.resolve("_root").resolve("boundaries");
-		assertTrue(Files.isDirectory(dir), "boundary files live under <volume>/_root/boundaries");
+		assertTrue(Files.isDirectory(dir), "boundary logs live under <volume>/_root/boundaries");
 		try (var files = Files.list(dir)) {
 			var names = files.map(p -> p.getFileName().toString())
-					.filter(n -> n.endsWith(".snapshot"))
+					.filter(n -> n.endsWith(".log"))
 					.toList();
 			assertEquals(1, names.size(), "only the flagged boundary is written: " + names);
 			assertTrue(names.get(0).contains("Scottyagent.Cursors"), names.get(0));
@@ -155,7 +155,7 @@ class BoundaryPersistenceColdRestartTest {
 				.orElse(null));
 	}
 
-	/** A boundary file that exists but cannot be parsed refuses the boot. */
+	/** A boundary log that exists but cannot be parsed refuses the boot. */
 	@Test
 	void unreadableBoundaryFileFailsClosed(@TempDir Path volume) throws Exception {
 		HazelcastManager first = boot(volume);
@@ -163,12 +163,14 @@ class BoundaryPersistenceColdRestartTest {
 		Path file = persistence.files().values().iterator().next();
 		tearDown();
 
-		Files.write(file, new byte[] { 0x42, 0x42, 0x42, 0x42 });
+		// A complete line — a torn FINAL line is a crash mid-append and is
+		// recovered, not refused (see BoundaryPersistenceRedoLogTest).
+		Files.write(file, new byte[] { 0x42, 0x42, 0x42, 0x42, '\n' });
 
 		HazelcastManager second = boot(volume);
 		new ScottyagentMap(second);
 		org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class, () -> persistence.rehydrate(),
-				"a present-but-corrupt boundary file must stop the boot, not come up empty");
+				"a present-but-corrupt boundary log must stop the boot, not come up empty");
 	}
 
 	private static Config isolatedConfig() {

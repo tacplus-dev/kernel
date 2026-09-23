@@ -12,13 +12,24 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * The write leg of {@code (spec.persistence) = true}: an {@link IMap} that
- * rewrites its boundary's snapshot file as part of every mutation.
+ * appends the key it touched to its boundary's redo log as part of every
+ * mutation.
  *
- * <p>The write is synchronous and its failure is not caught, so a state-plane
- * RPC whose snapshot did not land fails rather than acking data that exists
- * only in Hazelcast memory. That is the rule kernel already applies to its own
- * state through {@code KernelPersistence.save()}; this extends it to every
- * flagged boundary, from any service's proto.
+ * <p>One record per mutation, not a rewrite of the boundary: the append is
+ * O(1) in the boundary's row count, which is what lets a collection whose
+ * declared maximum runs to the millions be durable at all. {@link
+ * BoundaryPersistence} coalesces the log back down to current state on its own
+ * schedule.
+ *
+ * <p>The append is synchronous and its failure is not caught, so a state-plane
+ * RPC whose record did not land fails rather than acking data that exists only
+ * in Hazelcast memory. That is the rule kernel already applies to its own state
+ * through {@code KernelPersistence.save()}; this extends it to every flagged
+ * boundary, from any service's proto.
+ *
+ * <p>The three mutations that are not one key — {@code putAll}, {@code clear},
+ * {@code evictAll} — have no single record to append and take a checkpoint
+ * instead. They are administrative, not on any hot path.
  *
  * <p>Reads and the non-mutating surface delegate untouched.
  */
@@ -34,139 +45,144 @@ final class PersistentMap<K, V> implements IMap<K, V> {
 		this.mapName = Objects.requireNonNull(mapName, "mapName");
 	}
 
-	/** Rewrites this boundary's file from the live map; throws if it does not land. */
-	private void persist() {
-		persistence.snapshot(mapName);
+	/** Appends {@code key}'s current state to the log; throws if it does not land. */
+	private void persist(K key) {
+		persistence.record(mapName, key);
 	}
 
-	private <T> T persistAfter(T result) {
-		persist();
+	/** Coalesces the whole boundary, for the mutations that are not one key. */
+	private void persistAll() {
+		persistence.checkpoint(mapName);
+	}
+
+	private <T> T persistAfter(K key, T result) {
+		persist(key);
 		return result;
 	}
 
 	// ==================== Mutating ====================
 	@Override
 	public V put(K key, V value) {
-		return persistAfter(delegate.put(key, value));
+		return persistAfter(key, delegate.put(key, value));
 	}
 
 	@Override
 	public V put(K key, V value, long ttl, TimeUnit ttlUnit) {
-		return persistAfter(delegate.put(key, value, ttl, ttlUnit));
+		return persistAfter(key, delegate.put(key, value, ttl, ttlUnit));
 	}
 
 	@Override
 	public void set(K key, V value) {
 		delegate.set(key, value);
-		persist();
+		persist(key);
 	}
 
 	@Override
 	public void set(K key, V value, long ttl, TimeUnit ttlUnit) {
 		delegate.set(key, value, ttl, ttlUnit);
-		persist();
+		persist(key);
 	}
 
 	@Override
 	public V putIfAbsent(K key, V value) {
-		return persistAfter(delegate.putIfAbsent(key, value));
+		return persistAfter(key, delegate.putIfAbsent(key, value));
 	}
 
 	@Override
 	public V putIfAbsent(K key, V value, long ttl, TimeUnit ttlUnit) {
-		return persistAfter(delegate.putIfAbsent(key, value, ttl, ttlUnit));
+		return persistAfter(key, delegate.putIfAbsent(key, value, ttl, ttlUnit));
 	}
 
 	@Override
 	public void putAll(Map<? extends K, ? extends V> map) {
 		delegate.putAll(map);
-		persist();
+		persistAll();
 	}
 
 	@Override
 	public V remove(K key) {
-		return persistAfter(delegate.remove(key));
+		return persistAfter(key, delegate.remove(key));
 	}
 
 	@Override
 	public boolean remove(K key, V value) {
-		return persistAfter(delegate.remove(key, value));
+		return persistAfter(key, delegate.remove(key, value));
 	}
 
 	@Override
 	public void delete(K key) {
 		delegate.delete(key);
-		persist();
+		persist(key);
 	}
 
 	@Override
 	public V replace(K key, V value) {
-		return persistAfter(delegate.replace(key, value));
+		return persistAfter(key, delegate.replace(key, value));
 	}
 
 	@Override
 	public boolean replace(K key, V oldValue, V newValue) {
-		return persistAfter(delegate.replace(key, oldValue, newValue));
+		return persistAfter(key, delegate.replace(key, oldValue, newValue));
 	}
 
 	@Override
 	public void clear() {
 		delegate.clear();
-		persist();
+		persistAll();
 	}
 
 	@Override
 	public boolean evict(K key) {
-		return persistAfter(delegate.evict(key));
+		return persistAfter(key, delegate.evict(key));
 	}
 
 	@Override
 	public void evictAll() {
 		delegate.evictAll();
-		persist();
+		persistAll();
 	}
 
 	@Override
 	public boolean tryPut(K key, V value, long timeout, TimeUnit timeUnit) {
-		return persistAfter(delegate.tryPut(key, value, timeout, timeUnit));
+		return persistAfter(key, delegate.tryPut(key, value, timeout, timeUnit));
 	}
 
 	@Override
 	public boolean tryRemove(K key, long timeout, TimeUnit timeUnit) {
-		return persistAfter(delegate.tryRemove(key, timeout, timeUnit));
+		return persistAfter(key, delegate.tryRemove(key, timeout, timeUnit));
 	}
 
 	// Async mutations persist when the mutation itself completes. The returned
 	// stage is the one the caller awaits, so a caller that waits for the write
-	// also waits for the snapshot and sees its failure.
+	// also waits for the log append and sees its failure.
 	@Override
 	public CompletionStage<V> putAsync(K key, V value) {
-		return delegate.putAsync(key, value).thenApply(this::persistAfter);
+		return delegate.putAsync(key, value).thenApply(v -> persistAfter(key, v));
 	}
 
 	@Override
 	public CompletionStage<V> putAsync(K key, V value, long ttl, TimeUnit ttlUnit) {
-		return delegate.putAsync(key, value, ttl, ttlUnit).thenApply(this::persistAfter);
+		return delegate.putAsync(key, value, ttl, ttlUnit).thenApply(v -> persistAfter(key, v));
 	}
 
 	@Override
 	public CompletionStage<Void> setAsync(K key, V value) {
-		return delegate.setAsync(key, value).thenApply(this::persistAfter);
+		return delegate.setAsync(key, value).thenApply(v -> persistAfter(key, v));
 	}
 
 	@Override
 	public CompletionStage<Void> setAsync(K key, V value, long ttl, TimeUnit ttlUnit) {
-		return delegate.setAsync(key, value, ttl, ttlUnit).thenApply(this::persistAfter);
+		return delegate.setAsync(key, value, ttl, ttlUnit).thenApply(v -> persistAfter(key, v));
 	}
 
 	@Override
 	public CompletionStage<V> removeAsync(K key) {
-		return delegate.removeAsync(key).thenApply(this::persistAfter);
+		return delegate.removeAsync(key).thenApply(v -> persistAfter(key, v));
 	}
 
 	@Override
 	public CompletionStage<Boolean> deleteAsync(K key) {
-		return delegate.deleteAsync(key).thenApply(this::persistAfter);
+		return delegate.deleteAsync(key).thenApply(v -> persistAfter(key, v));
 	}
 
 	// ==================== Read-only / pass-through ====================

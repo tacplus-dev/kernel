@@ -238,7 +238,7 @@ public class ClusterStatePublisher {
 					.setTotalBytes(dir.getTotalSpace())
 					.setUsableBytes(dir.getUsableSpace())
 					.setUsedBytes(dir.getTotalSpace() - dir.getUsableSpace());
-			// On-disk size of the per-boundary snapshot files, archives included.
+			// On-disk size of the per-boundary redo logs, archives included.
 			long snapshotBytes = persistence.getSnapshotSizeBytes();
 			if (snapshotBytes >= 0) {
 				disk.setPersistenceSizeBytes(snapshotBytes);
@@ -281,12 +281,10 @@ public class ClusterStatePublisher {
 						.setNodeId(nodeId)
 						.setEnabled(persistence.isEnabled())
 						.setPersistenceDir(config.getPersistenceDir())
-						// AdminPersistenceStatus still names these two fields after
-						// the redo log this replaced; they now carry the total
-						// size of the per-boundary snapshot files and the time of
-						// the last one written. Renaming them is a change to
-						// platform/proto's common/hazelcast.proto and to every
-						// consumer of the admin surface, so it is not made here.
+						// AdminPersistenceStatus's names are literal again: the
+						// per-boundary stores ARE redo logs, so this is their
+						// total on-disk size and the time of the last record
+						// written to one.
 						.setRedoLogSizeBytes(Math.max(0, persistence.getSnapshotSizeBytes()))
 						.setLastDumpTimeMs(persistence.getLastSnapshotTimestamp())
 						.setTimestampMs(System.currentTimeMillis())

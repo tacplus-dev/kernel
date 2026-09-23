@@ -243,27 +243,41 @@ backups, and is gone once every pod has restarted.
   (`_root/kernel_disk_state.snapshot`), written by `KernelPersistence`: signing
   keys, the public verifying set, the CA tree, the tenant/project tree,
   workload revocations, standing grants and personal principals.
-- **Every other flagged boundary** — one file per boundary under
-  `_root/boundaries/`, written by `BoundaryPersistence`. Per boundary rather
-  than one blob because the flagged set includes collections whose declared
-  maxima run to the millions; one blob would rewrite the whole fleet's state on
-  every write. The payload is a stream of length-delimited `PersistenceEntry`
-  records, each value wrapped in an `Any` so the file names the proto type it
-  holds.
+- **Every other flagged boundary** — one **redo log** per boundary under
+  `_root/boundaries/<map name>.log`, written by `BoundaryPersistence` through
+  the chassis `RedoLog`. Per boundary rather than one blob because the flagged
+  set includes collections whose declared maxima run to the millions; one blob
+  would rewrite the whole fleet's state on every write. A mutation **appends
+  one record for the one key it touched** — O(1) whatever the boundary holds —
+  carrying a `PersistenceEntry` whose value is wrapped in an `Any`, so the log
+  names the proto type it holds. Periodically the log is **checkpointed**: it
+  is rebuilt as the boundary's current state and swapped in by one atomic
+  rename, which coalesces the history and truncates it. The trigger is
+  size-based — past 4MiB and past twice the size the last checkpoint left — so
+  the amortized cost per write stays O(1) and the log stays within twice the
+  live state.
 
-Both are written **on change, synchronously, on the node serving the write**,
-through the same atomic helper (fresh temp, fsync, rename, numbered archives).
-A write whose snapshot does not land throws, so the RPC fails rather than
-acking data that exists only in memory. The other nodes keep their own copies
-current from the boundary's Hazelcast entry listener, so every node holds a
-complete set.
+Both are written **on change, synchronously, on the node serving the write**.
+A write whose record does not land throws, so the RPC fails rather than acking
+data that exists only in memory. The other nodes keep their own logs current
+from the boundary's Hazelcast entry listener, so every node holds a complete
+set.
 
-**Restore is cold-start only.** A node that boots and finds no reachable
-Hazelcast peer is forming the cluster and loads its snapshots; a node that
-joins live peers takes its state from them and never reads its own files. A
-rolling restart must not let a node resurrect what it held when it went down.
-A file that exists but cannot be read or parsed fails the boot rather than
-coming up with a service's state silently emptied.
+**Replay is cold-start only.** A node that boots and finds no reachable
+Hazelcast peer is forming the cluster and replays its logs; a node that joins
+live peers takes its state from them and never reads its own files. A rolling
+restart must not let a node resurrect what it held when it went down. A log
+that exists but cannot be parsed fails the boot rather than coming up with a
+service's state silently emptied — the one tolerated damage is an unterminated
+final line, which is a crash between an append and its fsync and therefore a
+record no caller was ever acked for.
+
+**A node that joined peers still writes its own full copy.** Taking state from
+peers puts nothing on that node's disk, so a row that never mutates again
+would be durable on no node at all after a rolling restart. Once its
+partitions are safe, a joining node checkpoints every boundary in the
+background — off the readiness path — and logs one line per boundary with the
+row count written, which is what a rolling deploy is verified against.
 
 ## Consistency Model
 

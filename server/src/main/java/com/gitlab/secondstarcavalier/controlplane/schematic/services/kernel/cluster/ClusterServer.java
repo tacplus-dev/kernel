@@ -79,8 +79,8 @@ import org.slf4j.LoggerFactory;
  * {@link TenantAdminServiceImpl} {@code TenantAdmin} handler), and is the
  * cluster's DURABLE STORE: its own state goes to the diskstore as one atomic
  * snapshot ({@link KernelPersistence}), and every state boundary any service's
- * proto flags {@code (spec.persistence) = true} is snapshotted per boundary by
- * {@link BoundaryPersistence}. Services do not persist their own state.
+ * proto flags {@code (spec.persistence) = true} gets its own redo log, written
+ * by {@link BoundaryPersistence}. Services do not persist their own state.
  */
 public class ClusterServer {
 
@@ -204,6 +204,13 @@ public class ClusterServer {
 	private final int grpcPort;
 	private final HazelcastInstance hazelcast;
 	private final BoundaryPersistence persistence;
+
+	/**
+	 * How long the post-join copy waits for this member's partitions to settle.
+	 * Generous: it blocks nothing, and a partially-migrated copy is the one
+	 * outcome worth avoiding.
+	 */
+	private static final long JOIN_SNAPSHOT_SAFE_TIMEOUT_MINUTES = 10;
 	private final BackendServers backendServers;
 	private final JwkVerifyingKeysViewServer jwkViewServer;
 	private final ClusterStatePublisher clusterPublisher;
@@ -318,10 +325,10 @@ public class ClusterServer {
 		// Hazelcast and is the cluster's durable store on top of it. Its OWN
 		// state is one atomic disk snapshot (KernelDiskState) written by
 		// KernelPersistence; every boundary flagged (spec.persistence) = true —
-		// from ANY service's proto, not just kernel's own — gets its own
-		// snapshot file written by BoundaryPersistence on each write, and is
-		// rehydrated below on a cold start. Unflagged boundaries are
-		// config-seeded or ephemeral.
+		// from ANY service's proto, not just kernel's own — gets its own redo
+		// log, appended to by BoundaryPersistence on each write and replayed
+		// below on a cold start. Unflagged boundaries are config-seeded or
+		// ephemeral.
 		HazelcastManager manager = new HazelcastManager(hazelcast, persistence);
 		this.backendServers = new BackendServers(manager);
 
@@ -331,12 +338,13 @@ public class ClusterServer {
 		// run before the Config-seeded installs below, which are the operator's
 		// current truth and legitimately win over anything on disk.
 		if (coldStart) {
-			logger.info("Cold start: no Hazelcast peers reachable — rehydrating persistent boundaries from disk");
+			logger.info("Cold start: no Hazelcast peers reachable — replaying persistent boundaries from disk");
 			persistence.rehydrate();
 		} else {
 			logger.info(
-					"Joined a cluster of {} members — taking boundary state from peers, NOT from the local snapshot",
+					"Joined a cluster of {} members — taking boundary state from peers, NOT from the local log",
 					memberCount);
+			snapshotJoinedStateInBackground(hazelcast, persistence);
 		}
 
 		// All boundaries are convergent — quorum is always available
@@ -1580,5 +1588,54 @@ public class ClusterServer {
 	 */
 	static boolean isColdStart(HazelcastInstance hazelcast) {
 		return hazelcast.getCluster().getMembers().size() <= 1;
+	}
+
+	/**
+	 * Writes this pod's own full copy of every persistent boundary, after it took
+	 * their state from peers.
+	 *
+	 * <p>Joining a cluster puts nothing on the local volume. Only a subsequent
+	 * mutation writes a row here, so a row that is never written again is absent
+	 * from THIS pod's disk for as long as it runs — and the first simultaneous
+	 * cold restart after a rolling deploy would lose exactly the quiet rows, on
+	 * every pod at once, which is the gap the whole feature exists to close.
+	 *
+	 * <p>It waits for this member's partitions to settle first. Rows arrive here
+	 * by partition migration, and migration fires no entry events, so a copy
+	 * taken before the member is safe would silently omit whatever had not
+	 * migrated yet and nothing later would notice.
+	 *
+	 * <p>On its own daemon thread, and nothing waits on it: readiness must not
+	 * depend on serializing every boundary, and until this pod goes down the
+	 * live cluster is still the source of truth. {@code checkpointAll} logs one
+	 * line per boundary with the row count it wrote, which is what a rolling
+	 * restart is verified against.
+	 */
+	private static void snapshotJoinedStateInBackground(
+			HazelcastInstance hazelcast, BoundaryPersistence persistence) {
+		if (persistence == null || !persistence.isEnabled()) {
+			return;
+		}
+		Thread t = new Thread(() -> {
+			try {
+				if (!hazelcast.getPartitionService().forceLocalMemberToBeSafe(
+						JOIN_SNAPSHOT_SAFE_TIMEOUT_MINUTES, java.util.concurrent.TimeUnit.MINUTES)) {
+					// Migration is still moving after ten minutes. Write anyway —
+					// a copy short some still-migrating rows is strictly better
+					// than none — but say so, because the per-boundary row counts
+					// below may then be under the cluster's.
+					logger.warn("This member's partitions were still migrating after {} minutes; writing"
+							+ " this pod's copy of the persistent boundaries anyway, possibly incomplete",
+							JOIN_SNAPSHOT_SAFE_TIMEOUT_MINUTES);
+				}
+				persistence.checkpointAll("joined a live cluster");
+			} catch (RuntimeException e) {
+				logger.error("Could not write this pod's own copy of the persistent boundaries after"
+						+ " joining the cluster — it holds no local copy of rows that are not"
+						+ " written again: {}", e.getMessage(), e);
+			}
+		}, "boundary-persistence-join-snapshot");
+		t.setDaemon(true);
+		t.start();
 	}
 }

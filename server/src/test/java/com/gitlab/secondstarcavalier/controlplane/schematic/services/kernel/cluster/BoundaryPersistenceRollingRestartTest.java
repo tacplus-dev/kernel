@@ -13,6 +13,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,7 +29,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * never overwrite state the live cluster already holds.
  *
  * <p>This is the easiest way for durable boundaries to destroy data, and it has
- * two independent guards, one per test below.
+ * two independent guards, one per test below. A third test covers the matching
+ * WRITE-side obligation: a pod that took its state from peers has to put that
+ * state on its own disk, or the rows nobody writes again are durable on no pod
+ * at all.
  *
  * <ol>
  *   <li>The cold-start gate. {@code ClusterServer} rehydrates only when the pod
@@ -108,6 +113,64 @@ class BoundaryPersistenceRollingRestartTest {
 		assertEquals(4, cursors.getCursors("scotty").getCyclesCompleted(),
 				"and must not disturb an entry it has never heard of");
 		assertEquals(2, cursors.proto().getCursorsCount());
+	}
+
+	/**
+	 * The gap the join snapshot closes. A pod that joined a live cluster holds
+	 * every row in memory and NONE of them on its own disk: only a subsequent
+	 * mutation writes one. After a rolling restart every pod is in that state,
+	 * so the next simultaneous cold start loses exactly the rows that are quiet
+	 * — which, for durable state, is most of them.
+	 *
+	 * <p>The fixture writes into the map directly, the way replication delivers
+	 * a row: no mutation goes through the persistent wrapper, so nothing has
+	 * appended anything. That is precisely the pod this is about.
+	 */
+	@Test
+	void aPodThatJoinedPeersWritesEveryBoundaryToItsOwnDisk(@TempDir Path volume) throws Exception {
+		persistence = BoundaryPersistence.at(volume.toString());
+		HazelcastInstance hz = start(isolatedConfig());
+		HazelcastManager manager = new HazelcastManager(hz, persistence);
+		new ScottyagentMap(manager);
+
+		String mapName = persistence.files().keySet().stream()
+				.filter(n -> n.endsWith(":services.scottyagent.Scottyagent.Cursors"))
+				.findFirst()
+				.orElseThrow();
+		Path log = persistence.files().get(mapName);
+
+		// Rows arrive from peers, not through any write this pod served.
+		com.hazelcast.map.IMap<String, com.google.protobuf.Message> raw = hz.getMap(mapName);
+		for (int i = 0; i < 5; i++) {
+			raw.put("user-" + i, cursor("user-" + i, i));
+		}
+		assertEquals(0, Files.exists(log) ? Files.size(log) : 0,
+				"nothing this pod did was a write, so its disk holds nothing yet");
+
+		persistence.checkpointAll("test: joined a live cluster");
+
+		long deadline = System.currentTimeMillis() + 30_000;
+		while (System.currentTimeMillis() < deadline && countLines(log) < 5) {
+			Thread.sleep(50);
+		}
+		assertEquals(5, countLines(log), "every row of every boundary, on this pod's own volume");
+
+		// And it is a real recovery set, not just bytes: a cold start off this
+		// volume alone brings all five back.
+		tearDown();
+		persistence = BoundaryPersistence.at(volume.toString());
+		HazelcastInstance cold = start(isolatedConfig());
+		ScottyagentMap after = new ScottyagentMap(new HazelcastManager(cold, persistence));
+		persistence.rehydrate();
+		assertEquals(5, after.proto().getCursorsCount());
+		assertEquals(3, after.getCursors("user-3").getCyclesCompleted());
+	}
+
+	private static long countLines(Path p) throws Exception {
+		if (!Files.exists(p)) {
+			return 0;
+		}
+		return Files.readAllLines(p, StandardCharsets.UTF_8).stream().filter(l -> !l.isBlank()).count();
 	}
 
 	private HazelcastInstance start(Config config) {

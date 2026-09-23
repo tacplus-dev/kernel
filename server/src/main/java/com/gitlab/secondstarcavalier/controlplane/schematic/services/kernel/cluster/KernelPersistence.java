@@ -26,13 +26,14 @@ import org.slf4j.LoggerFactory;
  *
  * <p>This is kernel's own half of the durable store, not the whole of it.
  * Kernel is the durable store for the CLUSTER: every state boundary any
- * service's proto flags {@code (spec.persistence) = true} is snapshotted to the
- * same volume, one file per boundary, by {@link
+ * service's proto flags {@code (spec.persistence) = true} is written to the
+ * same volume, one redo log per boundary, by {@link
  * com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.BoundaryPersistence
- * BoundaryPersistence}. The two stores share this volume, the atomic-write
- * helper and the fail-closed rules below; they are separate only because
- * kernel's own state is a single typed object with a generated store, and a
- * service boundary is an arbitrary keyed map.
+ * BoundaryPersistence}. The two stores share this volume and the fail-closed
+ * rules below; they are separate because kernel's own state is a single typed
+ * object with a generated store, small enough to rewrite whole on every
+ * change, and a service boundary is an arbitrary keyed map that can be declared
+ * in the millions and therefore has to be appended to instead.
  *
  * <p>{@link #load()} is called once at boot to rehydrate Hazelcast-backed state;
  * {@link #save()} is invoked after every state mutation that must survive a

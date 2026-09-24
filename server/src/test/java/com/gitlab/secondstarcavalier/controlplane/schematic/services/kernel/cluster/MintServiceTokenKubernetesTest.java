@@ -85,7 +85,6 @@ class MintServiceTokenKubernetesTest {
                 null,            // persistState
                 verifier,
                 KERNEL_AUDIENCE,
-                null,            // opaConfigWriter
                 null);           // webauthnRelyingParty (fail closed)
     }
 

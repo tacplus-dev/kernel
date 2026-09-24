@@ -145,7 +145,6 @@ class DeviceWebauthnLinkTest {
 				null,            // persistState
 				null,            // kubernetesTokenVerifier
 				KERNEL_AUDIENCE,
-				null,           // opaConfigWriter
 				RELYING_PARTY);
 		personalIdentity = new PersonalIdentityServiceImpl(principalMap, null);
 		passkey = Passkey.generate();

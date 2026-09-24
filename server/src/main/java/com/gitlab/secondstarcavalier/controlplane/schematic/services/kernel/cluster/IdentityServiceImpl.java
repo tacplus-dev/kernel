@@ -27,7 +27,6 @@ import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.mode
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.clients.vservices.userentitlements.OpaEvalGrpcClient;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.vservices.proxypolicy.Proxypolicy;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.common.credentials.Credentials;
-import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.opa.Opa;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.ConfigMap;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
@@ -381,8 +380,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * unknown credential, which is indistinguishable from a real refusal.
 	 */
 	private final PrincipalMap principalMap;
-	@Nullable
-	private final java.util.function.Consumer<Opa.Config> opaConfigWriter;
 	/**
 	 * The WebAuthn relying party both device flows check an assertion against —
 	 * §3's link proof and §5's approval. Never null: an absent configuration
@@ -414,7 +411,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			Runnable persistState,
 			@Nullable KubernetesTokenVerifier kubernetesTokenVerifier,
 			@Nullable String kubernetesTokenAudience,
-			@Nullable java.util.function.Consumer<Opa.Config> opaConfigWriter,
 			@Nullable WebauthnProof.RelyingParty webauthnRelyingParty) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
@@ -443,7 +439,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		this.kubernetesTokenVerifier =
 				kubernetesTokenVerifier != null ? kubernetesTokenVerifier : new UnwiredKubernetesTokenVerifier();
 		this.kubernetesTokenAudience = kubernetesTokenAudience != null ? kubernetesTokenAudience : "";
-		this.opaConfigWriter = opaConfigWriter;
 		this.webauthnRelyingParty = webauthnRelyingParty != null
 				? webauthnRelyingParty
 				: WebauthnProof.RelyingParty.NONE;
@@ -4323,40 +4318,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		logger.info("RevokeGrant: grant_id={}, caller={}, subject={}, delegate={}, revoked_at_ms={}",
 				grantId, rawCallerSub, grant.getSubject(), grant.getDelegateName(), revokedAtMs);
-	}
-
-	// ========================================================================
-	// UpdateOpaConfig RPC (operator-triggered live config push, opa only)
-	// ========================================================================
-
-	/**
-	 * Overwrites opa's live config-state root with the given config, so an
-	 * authorized operator can push a changed opa config into an already-running
-	 * cluster without waiting for a kernel roll. auth_services: ["operator"] on
-	 * the RPC restricts callers to the operator service; no further caller check
-	 * is needed here.
-	 *
-	 * <p>The push is transient. Kernel's {@code installConfigHolder} overwrites
-	 * every ConfigState root from the bundle on every start, so whatever is
-	 * pushed here survives only until the next kernel restart, when the bundle's
-	 * {@code opa_config} wins again. The durable way to change opa's config is
-	 * to change the bundle; operator re-pushes its own bundle-derived config on
-	 * each reconcile, which is what keeps this path consistent with the bundle.
-	 */
-	@Override
-	public void updateOpaConfig(Caller caller, Kernel.UpdateOpaConfigRequest request) throws ProtoException {
-		try {
-			if (opaConfigWriter == null) {
-				throw new StatusException(Status.UNIMPLEMENTED, "this kernel has no writable opa config state");
-			}
-			opaConfigWriter.accept(request.getConfig().getOpaConfig());
-			logger.info("UpdateOpaConfig: opa config-state root overwritten");
-		} catch (StatusException e) {
-			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
-		} catch (Exception e) {
-			logger.error("UpdateOpaConfig failed", e);
-			throw new ProtoException(ProtoException.INTERNAL, "push opa config failed: " + e.getMessage(), e);
-		}
 	}
 
 	/**

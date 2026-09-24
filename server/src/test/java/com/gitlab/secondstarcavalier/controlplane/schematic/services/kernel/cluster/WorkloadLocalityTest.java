@@ -131,7 +131,6 @@ class WorkloadLocalityTest {
 				null,            // persistState (no disk snapshot in-test)
 				null,            // kubernetesTokenVerifier
 				null,            // kubernetesTokenAudience
-				null,            // opaConfigWriter
 				null);           // webauthnRelyingParty (fail closed)
 
 		authorizer = new Authorizer(new LocalJwkSource(() -> verifyingKeys));

@@ -20,15 +20,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  *
  * <p>The bundle wins, per root and unconditionally: config is code, so the
  * git-committed bundle is the single source of truth and a changed bundle value
- * must become live on the next kernel restart, for every service. A config
- * edited live outside the bundle — an OPA policy pushed over
- * {@code UpdateOpaConfig}, say — is transient by definition and is reverted by
- * the next install. Both directions are asserted here, against the generated
- * {@code BackendServers.installServices} that does the work.
+ * must become live on the next kernel restart, for every service. The bundle is
+ * the only writer; anything written into a root out of band is transient by
+ * definition and is reverted by the next install. Both directions are asserted
+ * here, against the generated {@code BackendServers.installServices} that does
+ * the work.
  */
 class ConfigStateSeedBundleWinsTest {
 
-	/** The policy an operator pushed live, after the cluster was already up. */
+	/** A policy written into the root out of band, after the cluster was up. */
 	private static final Opa.Config LIVE_OPA_CONFIG = Opa.Config.newBuilder()
 			.setEntitlementsPolicy(Opalib.OpaPolicy.newBuilder()
 					.setEntryPoint("schematic/authz/live")
@@ -73,11 +73,11 @@ class ConfigStateSeedBundleWinsTest {
 		assertEquals(BUNDLE_GATEWAY_CONFIG, servers.getGatewayConfigStateMap().getConfig());
 	}
 
-	/** Restart: a live-pushed config is reverted to the bundle's. */
+	/** Restart: a config written out of band is reverted to the bundle's. */
 	@Test
 	void populatedRootIsOverwrittenByTheBundleOnReinstall() throws Exception {
 		servers.installServices(BUNDLE);
-		// Operator pushes a policy over the seeded default while the cluster runs.
+		// A policy lands over the seeded default while the cluster runs.
 		servers.getOpaConfigStateMap().putConfig(LIVE_OPA_CONFIG);
 
 		// The restarting member re-runs the install with the same bundle.

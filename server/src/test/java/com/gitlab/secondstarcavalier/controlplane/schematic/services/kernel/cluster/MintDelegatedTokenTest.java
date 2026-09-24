@@ -101,7 +101,6 @@ class MintDelegatedTokenTest {
                 null,            // persistState
                 null,            // kubernetesTokenVerifier
                 KERNEL_AUDIENCE,
-                null,            // opaConfigWriter
                 null);           // webauthnRelyingParty (fail closed)
     }
 

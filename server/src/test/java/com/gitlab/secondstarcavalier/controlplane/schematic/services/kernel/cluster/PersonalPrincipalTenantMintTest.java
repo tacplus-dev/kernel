@@ -103,7 +103,6 @@ class PersonalPrincipalTenantMintTest {
 				null,            // persistState
 				null,            // kubernetesTokenVerifier
 				"schematic-kernel",
-				null,            // opaConfigWriter
 				null);           // webauthnRelyingParty (fail closed)
 	}
 

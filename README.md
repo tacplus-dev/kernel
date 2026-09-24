@@ -238,10 +238,8 @@ the single source of truth (config-as-code): a changed bundle value always
 becomes live on the next kernel restart or roll, for every service, with no
 create-only exception.
 
-A config edited live outside the bundle — an OPA policy pushed over
-`UpdateOpaConfig`, for instance — is therefore transient: it applies immediately
-but is overwritten from the bundle the next time kernel restarts. To change a
-config durably, change the bundle and roll kernel.
+The bundle is the only writer. Kernel exposes no live config-push RPC: a config
+change is a bundle change plus a deploy, the same for every service.
 
 ## Persistence
 

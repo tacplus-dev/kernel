@@ -912,17 +912,6 @@ public class ClusterServer {
 					this::persistKernelState,
 					kubernetesTokenVerifier,
 					kubernetesTokenAudience,
-					// UpdateOpaConfig's single write path: an unconditional put into opa's
-					// config-state root, so an authorized operator can push a live config
-					// change without a kernel roll. Transient — installConfigHolder
-					// overwrites this root from the bundle on the next start.
-					opaConfig -> {
-						try {
-							backendServers.services().getOpaConfigStateMap().putConfig(opaConfig);
-						} catch (Exception e) {
-							throw new RuntimeException("putConfig failed", e);
-						}
-					},
 					webauthnRelyingParty());
 
 			Mint mintWrapper = new Mint(identityService, kernelAuthorizer) {
@@ -1184,8 +1173,8 @@ public class ClusterServer {
 	 * bundle carries is overwritten, whether or not it already holds a config.
 	 * Config is code, so the git-committed bundle is the single source of truth —
 	 * a changed bundle value always becomes live on the next restart or roll, and
-	 * a config edited live outside the bundle (a push over {@code UpdateOpaConfig},
-	 * say) is transient and is reverted here.
+	 * the bundle is the only writer: a config change is a bundle change plus a
+	 * deploy, for every service alike.
 	 */
 	private void installConfigHolder(Kernel.Config config) {
 		if (!config.hasConfigs()) {

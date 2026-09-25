@@ -1,5 +1,13 @@
 # Kernel honors `(spec.persistence)` for every boundary, not just its own
 
+**SUPERSEDED 2026-09-25** by
+`looper/schematic/decisions/kernel-no-durability-user-data-to-stratum-2026-09-25.md`. Jody:
+"We introduced durability into kernel to deal with Let's Encrypt certs. This was a mistake.
+Kernel should not have durability." The generic half of this decision (everything below except
+kernel's own `KernelDiskState` identity snapshot) is reversed; kernel goes back to in-memory
+coordination only, and product state that was made durable here moves to stratum records
+instead. Left below for historical record of why the generic layer existed.
+
 Slice owner: schematic looper (kernel), 2026-09-23.
 Authority: `looper/schematic/decisions/kernel-state-persistence-honored-2026-09-23.md`,
 items 1, 2, 4, 5, 6. Item 3 (tacplus fails generation when a target cannot honor

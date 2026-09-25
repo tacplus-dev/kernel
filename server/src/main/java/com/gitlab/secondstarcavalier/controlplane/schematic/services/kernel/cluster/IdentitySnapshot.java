@@ -15,7 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * KernelPersistence wraps the tacplus-generated diskstore UC1 helpers for
+ * IdentitySnapshot wraps the tacplus-generated diskstore UC1 helpers for
  * kernel's OWN whole-state snapshot ({@code KernelDiskState}) — signing keys,
  * the public verifying set, the cluster CA + per-service intermediate CAs, the
  * tenant/project tree, workload revocations, standing delegation grants, and
@@ -24,16 +24,10 @@ import org.slf4j.LoggerFactory;
  * membership, service health, localities, FQDN, trusted CAs from Config) is
  * deliberately NOT snapshotted.
  *
- * <p>This is kernel's own half of the durable store, not the whole of it.
- * Kernel is the durable store for the CLUSTER: every state boundary any
- * service's proto flags {@code (spec.persistence) = true} is written to the
- * same volume, one redo log per boundary, by {@link
- * com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.BoundaryPersistence
- * BoundaryPersistence}. The two stores share this volume and the fail-closed
- * rules below; they are separate because kernel's own state is a single typed
- * object with a generated store, small enough to rewrite whole on every
- * change, and a service boundary is an arbitrary keyed map that can be declared
- * in the millions and therefore has to be appended to instead.
+ * <p>This is the ONLY thing kernel writes to disk. Kernel does no durability
+ * for service state and holds no user data: every other boundary is in-memory
+ * coordination, rebuilt from config seeding and from peers on every start, and
+ * durable data belongs in stratum records.
  *
  * <p>{@link #load()} is called once at boot to rehydrate Hazelcast-backed state;
  * {@link #save()} is invoked after every state mutation that must survive a
@@ -47,9 +41,9 @@ import org.slf4j.LoggerFactory;
  * read throws, so the kernel refuses to boot instead of coming up as a cold
  * start with every revocation and grant silently dropped.
  */
-public final class KernelPersistence {
+public final class IdentitySnapshot {
 
-    private static final Logger logger = LoggerFactory.getLogger(KernelPersistence.class);
+    private static final Logger logger = LoggerFactory.getLogger(IdentitySnapshot.class);
 
     /** UC1 diskstore namespace for the singleton kernel snapshot. */
     private static final String NS = "/";
@@ -75,7 +69,7 @@ public final class KernelPersistence {
      * @param principalStateReader current PrincipalState: the registered personal
      *                             principals and the `people` tenant's user rows
      */
-    public KernelPersistence(
+    public IdentitySnapshot(
             String persistenceDir,
             KeyRotator keyRotator,
             Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,

@@ -42,17 +42,6 @@ public final class InMemoryManager implements Manager {
 	}
 
 	@Override
-	public <K, V> IMap<K, V> getConvergentMap(String name, boolean persistent) {
-		return map(name);
-	}
-
-	@Override
-	public <K, V> IMap<K, V> getConvergentMap(
-			String name, boolean persistent, com.google.protobuf.Message defaultInstance) {
-		return map(name);
-	}
-
-	@Override
 	public <K, V> IMap<K, V> getReplicatedMap(String name) {
 		return map(name);
 	}

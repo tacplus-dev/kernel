@@ -618,7 +618,7 @@ class MintDelegatedTokenTest {
         revokeAs(before, DELEGATE_NAME, GRANT_ID);
 
         // What persistState.run() writes.
-        KernelPersistence persistence = new KernelPersistence(
+        IdentitySnapshot persistence = new IdentitySnapshot(
                 dir.toString(), null, null, null, null, null, () -> List.copyOf(grants), null);
         persistence.save();
 

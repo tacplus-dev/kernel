@@ -1,12 +1,16 @@
 # Kernel
 
-Kernel is the distributed backend database for the control plane. It provides
-clustered state management over gRPC, built on Hazelcast, with persistence,
+Kernel is the distributed coordination store for the control plane. It provides
+clustered, in-memory state management over gRPC, built on Hazelcast, with
 security, real-time diagnostics, and a built-in token exchange service.
 
-Every kernel instance runs as a Hazelcast cluster node, a gRPC server, a
-persistence manager, and a security enforcer. Microservices connect to kernel
-to read and write distributed state via auto-generated gRPC clients.
+Every kernel instance runs as a Hazelcast cluster node, a gRPC server, and a
+security enforcer. Microservices connect to kernel to read and write
+distributed state via auto-generated gRPC clients.
+
+Kernel holds **no durable data and no user data**. Durable data belongs in
+stratum records. The one exception is kernel's own identity snapshot — see
+[Persistence](#persistence).
 
 ## Why "Kernel"
 
@@ -31,7 +35,7 @@ internal code name used everywhere else.
                     │    ├── ServiceHealthState                     │
                     │    └── ... (external service state roots)     │
                     │                                               │
-                    │  Persistence (per-boundary disk snapshots)    │
+                    │  Identity snapshot (kernel's own state only)   │
                     │  Background publishers (metrics, health)      │
                     │  TokenExchangerService (built-in RPC)         │
                     └───────────────────────────────────────────────┘
@@ -143,7 +147,6 @@ boundaries:
 **Per-node collections** (keyed by node_id, TTL 120s):
 - `node_metrics` — Memory (heap, GC), CPU (load, uptime), disk usage
 - `grpc_stats` — Active connections, total RPCs, active streams, rate limiting
-- `persistence_status` — On-disk snapshot size, last snapshot timestamp
 - `network_stats` — Listen address, cluster connections, bytes sent/received
 - `thread_info` — Thread counts, peak, daemon, deadlocked
 - `token_cache_stats` — Cache hit/miss/eviction counts
@@ -243,52 +246,30 @@ change is a bundle change plus a deploy, the same for every service.
 
 ## Persistence
 
-Kernel is the durable store for the whole cluster. Every state boundary marked
-`(spec.persistence) = true` — in ANY service's proto, not just kernel's own —
-is written to the kernel `data` volume and restored on a cold start. Services
-do NOT persist their own state. A boundary WITHOUT the flag is ephemeral: it
-lives in Hazelcast memory, survives a single pod restart through partition
-backups, and is gone once every pod has restarted.
+**Kernel does no durability for service state, and holds no user data.** Every
+state boundary — kernel's own and every other service's — is in-memory
+coordination state. It lives in Hazelcast, survives a single pod restart
+through partition backups, is rebuilt from config seeding and from peers when a
+pod rejoins, and is gone once every pod has gone down together. That is by
+design: durable data belongs in **stratum records**, not in kernel state.
 
-- **Kernel's own state** — one atomic `KernelDiskState` snapshot
-  (`_root/kernel_disk_state.snapshot`), written by `KernelPersistence`: signing
-  keys, the public verifying set, the CA tree, the tenant/project tree,
-  workload revocations, standing grants and personal principals.
-- **Every other flagged boundary** — one **redo log** per boundary under
-  `_root/boundaries/<map name>.log`, written by `BoundaryPersistence` through
-  the chassis `RedoLog`. Per boundary rather than one blob because the flagged
-  set includes collections whose declared maxima run to the millions; one blob
-  would rewrite the whole fleet's state on every write. A mutation **appends
-  one record for the one key it touched** — O(1) whatever the boundary holds —
-  carrying a `PersistenceEntry` whose value is wrapped in an `Any`, so the log
-  names the proto type it holds. Periodically the log is **checkpointed**: it
-  is rebuilt as the boundary's current state and swapped in by one atomic
-  rename, which coalesces the history and truncates it. The trigger is
-  size-based — past 4MiB and past twice the size the last checkpoint left — so
-  the amortized cost per write stays O(1) and the log stays within twice the
-  live state.
+The one thing kernel writes to disk is its **own identity snapshot** — one
+atomic `KernelDiskState` object (`_root/kernel_disk_state.snapshot`), written by
+`IdentitySnapshot`: signing keys, the public verifying set, the CA tree, the
+tenant/project tree, workload revocations, standing grants, tenant-user links
+and personal principals. It is written on change, synchronously, and a write
+that does not land throws so the RPC fails rather than acking a revocation that
+exists only in memory. It is replayed at boot; every restore leg is additive or
+subordinate to the config bundle, so a pod rejoining live peers cannot
+un-revoke or roll back what the cluster did while it was down. A snapshot that
+exists but cannot be parsed fails the boot rather than coming up with identity
+silently emptied.
 
-Both are written **on change, synchronously, on the node serving the write**.
-A write whose record does not land throws, so the RPC fails rather than acking
-data that exists only in memory. The other nodes keep their own logs current
-from the boundary's Hazelcast entry listener, so every node holds a complete
-set.
+The kernel `data` volume therefore holds only that snapshot and the Ratis
+fenced-lock tree.
 
-**Replay is cold-start only.** A node that boots and finds no reachable
-Hazelcast peer is forming the cluster and replays its logs; a node that joins
-live peers takes its state from them and never reads its own files. A rolling
-restart must not let a node resurrect what it held when it went down. A log
-that exists but cannot be parsed fails the boot rather than coming up with a
-service's state silently emptied — the one tolerated damage is an unterminated
-final line, which is a crash between an append and its fsync and therefore a
-record no caller was ever acked for.
-
-**A node that joined peers still writes its own full copy.** Taking state from
-peers puts nothing on that node's disk, so a row that never mutates again
-would be durable on no node at all after a rolling restart. Once its
-partitions are safe, a joining node checkpoints every boundary in the
-background — off the readiness path — and logs one line per boundary with the
-row count written, which is what a rolling deploy is verified against.
+`(spec.persistence)` is not honored for kernel state boundaries — tacplus
+refuses the annotation on one, because durable data belongs in stratum records.
 
 ## Consistency Model
 
@@ -316,8 +297,8 @@ validation on incoming requests.
 Sentinel is a separate frontend service that provides a web-based admin
 dashboard for kernel. It has an empty backend state (`SentinelState`) and
 reads `ClusterState` via a security policy RO grant. Its `GetDashboard` RPC
-returns cluster info, health, node metrics, gRPC stats, persistence status,
-network stats, and map stats in a single call.
+returns cluster info, health, node metrics, gRPC stats, network stats, and
+map stats in a single call.
 
 ## External Service State Roots
 

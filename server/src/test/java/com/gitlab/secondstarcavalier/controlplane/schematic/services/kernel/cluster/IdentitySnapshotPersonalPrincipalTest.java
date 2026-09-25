@@ -18,17 +18,17 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 /**
  * Proves a registered person survives a full cluster restart: the row is seeded
  * into the live {@link PrincipalMap}, written to the kernel disk snapshot by
- * {@link KernelPersistence#save()}, and restored — field-identical — into a
+ * {@link IdentitySnapshot#save()}, and restored — field-identical — into a
  * FRESH, empty {@code PrincipalMap} by
  * {@link ClusterServer#restorePersonalPrincipals}, which is the boot path
  * {@code ClusterServer}'s constructor calls.
  *
- * <p>Same shape as {@code KernelPersistenceGrantTest} plus the restart half of
+ * <p>Same shape as {@code IdentitySnapshotGrantTest} plus the restart half of
  * {@code MintDelegatedTokenTest.revocationSurvivesARestart} — the real
- * KernelPersistence over a temp dir and the real static restore entry point, not
+ * IdentitySnapshot over a temp dir and the real static restore entry point, not
  * a copy of either.
  */
-class KernelPersistencePersonalPrincipalTest {
+class IdentitySnapshotPersonalPrincipalTest {
 
 	private static Kernel.PersonalPrincipal principal(String principalId) {
 		return Kernel.PersonalPrincipal.newBuilder()
@@ -61,7 +61,7 @@ class KernelPersistencePersonalPrincipalTest {
 	void personalPrincipalSurvivesSaveAndLoad(@TempDir Path dir) {
 		Kernel.PersonalPrincipal expected = principal("p-alice");
 
-		KernelPersistence p = new KernelPersistence(
+		IdentitySnapshot p = new IdentitySnapshot(
 				dir.toString(), null, null, null, null, null, null,
 				() -> Kernel.PrincipalState.newBuilder().addPersonalPrincipals(expected).build());
 		p.save();
@@ -85,7 +85,7 @@ class KernelPersistencePersonalPrincipalTest {
 		before.putPersonalPrincipals("p-alice", alice);
 		before.putPersonalPrincipals("p-bob", bob);
 
-		KernelPersistence persistence = new KernelPersistence(
+		IdentitySnapshot persistence = new IdentitySnapshot(
 				dir.toString(), null, null, null, null, null, null,
 				() -> {
 					try {
@@ -121,7 +121,7 @@ class KernelPersistencePersonalPrincipalTest {
 	/** An existing snapshot written before this field existed still loads. */
 	@Test
 	void snapshotWithoutPersonalPrincipalsStillLoads(@TempDir Path dir) {
-		KernelPersistence p = new KernelPersistence(
+		IdentitySnapshot p = new IdentitySnapshot(
 				dir.toString(), null, null, null, null, null, List::of, null);
 		p.save();
 

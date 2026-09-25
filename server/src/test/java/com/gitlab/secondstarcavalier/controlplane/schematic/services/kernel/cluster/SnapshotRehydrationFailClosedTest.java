@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Rehydration fails closed, at the severity {@code KernelPersistence.load()}
+ * Rehydration fails closed, at the severity {@code IdentitySnapshot.load()}
  * already uses for an unreadable snapshot.
  *
  * <p>{@code load()} refuses to boot when a snapshot exists but cannot be read.

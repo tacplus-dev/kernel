@@ -52,9 +52,7 @@ class StateServerAuthorizationTest {
 			message FixtureState {
 			  option (spec.service_state) = {name: "FixtureState", label: ["fixtures"]};
 
-			  FixtureSetting setting = 1 [
-			    (spec.persistence) = true
-			  ];
+			  FixtureSetting setting = 1;
 			}
 			""";
 

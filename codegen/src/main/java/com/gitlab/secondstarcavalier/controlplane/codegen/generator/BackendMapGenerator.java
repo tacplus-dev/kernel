@@ -52,10 +52,10 @@ public class BackendMapGenerator {
         StringBuilder ctor = new StringBuilder();
         ctor.append("\n    public ").append(className).append("(Manager manager) {\n");
         for (SharedBoundary b : info.getSingletons()) {
-            ctor.append(mapAccessor(b, outerClassName, ctx));
+            ctor.append(mapAccessor(b));
         }
         for (SharedBoundary b : info.getCollections()) {
-            ctor.append(mapAccessor(b, outerClassName, ctx));
+            ctor.append(mapAccessor(b));
         }
         for (SharedBoundary b : info.getQueues()) {
             ctor.append("        this.").append(b.getFieldCamel()).append("Queue = manager.getQueue(CLASS_NAME + \":").append(b.getMapName()).append("\");\n");
@@ -220,25 +220,10 @@ public class BackendMapGenerator {
         return vars;
     }
 
-    /**
-     * The manager call that binds one map boundary.
-     *
-     * <p>A convergent boundary passes its {@code (spec.persistence)} flag AND
-     * its value type: kernel's persistence loads a boundary file at boot,
-     * before any value has been seen, so it cannot infer the type from the
-     * map's contents. A replicated boundary has no persistence leg and takes
-     * the plain accessor.
-     */
-    private static String mapAccessor(SharedBoundary b, String outerClassName, GeneratorContext ctx) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("        this.").append(b.getFieldCamel()).append("Map = manager.");
-        if (b.isReplicated()) {
-            sb.append("getReplicatedMap(CLASS_NAME + \":").append(b.getMapName()).append("\");\n");
-            return sb.toString();
-        }
-        sb.append("getConvergentMap(CLASS_NAME + \":").append(b.getMapName()).append("\", ")
-          .append(b.isPersistent()).append(", ")
-          .append(ctx.getQualifiedType(outerClassName, b)).append(".getDefaultInstance());\n");
-        return sb.toString();
+    /** The manager call that binds one map boundary. */
+    private static String mapAccessor(SharedBoundary b) {
+        String getter = b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
+        return "        this." + b.getFieldCamel() + "Map = manager." + getter
+                + "(CLASS_NAME + \":" + b.getMapName() + "\");\n";
     }
 }

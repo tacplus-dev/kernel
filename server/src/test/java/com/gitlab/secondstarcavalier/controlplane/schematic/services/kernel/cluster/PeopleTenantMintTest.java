@@ -212,7 +212,7 @@ class PeopleTenantMintTest {
 		createPerson(Kernel.PeopleIdpProvider.PEOPLE_IDP_PROVIDER_APPLE, APPLE_SUB);
 		Kernel.Person live = principalMap.getPeople("apple." + APPLE_SUB);
 
-		KernelPersistence persistence = new KernelPersistence(
+		IdentitySnapshot persistence = new IdentitySnapshot(
 				dir.toString(), null, null, null, null, null, null,
 				() -> {
 					try {

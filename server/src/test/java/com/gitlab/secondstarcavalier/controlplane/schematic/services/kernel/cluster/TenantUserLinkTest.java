@@ -284,7 +284,7 @@ class TenantUserLinkTest {
 		Kernel.CreateTenantUserLinkResponse resp = link(NONCE, NONCE);
 		Kernel.TenantUserLinks live = principalMap.getTenantUserLinks(resp.getAUserKey());
 
-		KernelPersistence persistence = new KernelPersistence(
+		IdentitySnapshot persistence = new IdentitySnapshot(
 				dir.toString(), null, null, null, null, null, null,
 				() -> {
 					try {

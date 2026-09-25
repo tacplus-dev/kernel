@@ -23,54 +23,33 @@ import java.util.Objects;
  * <p>
  * All boundaries are convergent. Locks are always no-ops.
  *
- * <p>A boundary its proto flags {@code (spec.persistence) = true} is registered
- * with {@link BoundaryPersistence} and handed back wrapped in a {@link
- * PersistentMap}, so every write to it appends a record to its boundary's redo
- * log before the write is acked. An unflagged boundary is handed back unwrapped
- * and stays purely in memory.
+ * <p>Every boundary is memory-only. Kernel does no durability for service
+ * state: it is in-memory coordination, rebuilt from config seeding and from
+ * peers on every start, and durable data belongs in stratum records. The only
+ * thing kernel writes to disk is its own identity snapshot, which is not a map
+ * boundary and does not come through here.
  */
 public class HazelcastManager implements Manager {
 
 	private final HazelcastInstance hazelcast;
-	private final BoundaryPersistence persistence;
+	/** Every convergent boundary this manager has handed out, for cluster map stats. */
+	private final MapRegistry mapRegistry = new MapRegistry();
 
 	public HazelcastManager(HazelcastInstance hazelcast) {
-		this(hazelcast, null);
+		this.hazelcast = Objects.requireNonNull(hazelcast, "hazelcast");
 	}
 
-	public HazelcastManager(HazelcastInstance hazelcast, BoundaryPersistence persistence) {
-		this.hazelcast = Objects.requireNonNull(hazelcast, "hazelcast");
-		this.persistence = persistence;
+	/** The convergent boundaries handed out so far; read by ClusterStatePublisher. */
+	public MapRegistry getMapRegistry() {
+		return mapRegistry;
 	}
 
 	@Override
 	public <K, V> IMap<K, V> getConvergentMap(String name) {
-		return getConvergentMap(name, false, null);
-	}
-
-	@Override
-	public <K, V> IMap<K, V> getConvergentMap(String name, boolean persistent) {
-		return getConvergentMap(name, persistent, null);
-	}
-
-	@Override
-	public <K, V> IMap<K, V> getConvergentMap(
-			String name, boolean persistent, com.google.protobuf.Message defaultInstance) {
 		String mapName = Objects.requireNonNull(name, "name");
-		com.hazelcast.map.IMap<K, V> hzMap = hazelcast.getMap(mapName);
-		IMap<K, V> base = new HazelcastMap<>(hzMap);
-		if (!persistent || persistence == null) {
-			return base;
-		}
-		persistence.register(
-				mapName, hzMap, base, defaultInstance, ConsistencyType.CONSISTENCY_CONVERGENT);
-		if (!persistence.isEnabled() || defaultInstance == null) {
-			// Registered for cluster stats, but there is nothing to write to:
-			// no persistence directory, or a caller that did not name the value
-			// type (the two-argument overload, kept for hand-written callers).
-			return base;
-		}
-		return new PersistentMap<>(base, persistence, mapName);
+		IMap<K, V> map = new HazelcastMap<>(hazelcast.getMap(mapName));
+		mapRegistry.register(mapName, map, ConsistencyType.CONSISTENCY_CONVERGENT);
+		return map;
 	}
 
 	@Override

@@ -55,7 +55,7 @@ class TenantNamespaceRehydrationTest {
 
 	/** The real boot path: snapshot the live maps, then restore into fresh ones. */
 	private static ConfigMap restart(ConfigMap before, Path dir) throws Exception {
-		KernelPersistence persistence = new KernelPersistence(
+		IdentitySnapshot persistence = new IdentitySnapshot(
 				dir.toString(), null, null, null,
 				() -> {
 					try {

@@ -138,16 +138,11 @@ public class BackendServiceServerGenerator {
 		ctor.append("\n    public ").append(className)
 				.append("(Manager manager, SecurityAuthenticator authenticator) {\n");
 		ctor.append("        this.authenticator = authenticator;\n");
-		// The persistence flag and the value type are passed here exactly as
-		// they are in the generated <Backend>Map. Both resolve to ONE Hazelcast
-		// map, and the state-service server is the path every cross-service
-		// write takes — dropping the flag here left every flagged boundary
-		// outside kernel's own writable but never written to disk.
 		for (SharedBoundary b : singletons) {
-			ctor.append(mapAccessor(b, outerClassName, ctx));
+			ctor.append(mapAccessor(b));
 		}
 		for (SharedBoundary b : collections) {
-			ctor.append(mapAccessor(b, outerClassName, ctx));
+			ctor.append(mapAccessor(b));
 		}
 		for (SharedBoundary b : queues) {
 			ctor.append("        this.").append(b.getFieldCamel()).append("Queue = manager.getQueue(CLASS_NAME + \":")
@@ -604,18 +599,11 @@ public class BackendServiceServerGenerator {
 	/**
 	 * The manager call that binds one map boundary. Mirrors
 	 * {@code BackendMapGenerator.mapAccessor}: the two generated classes share a
-	 * Hazelcast map and must therefore agree on its persistence and value type.
+	 * Hazelcast map and must bind it the same way.
 	 */
-	private static String mapAccessor(SharedBoundary b, String outerClassName, GeneratorContext ctx) {
-		StringBuilder sb = new StringBuilder();
-		sb.append("        this.").append(b.getFieldCamel()).append("Map = manager.");
-		if (b.isReplicated()) {
-			sb.append("getReplicatedMap(CLASS_NAME + \":").append(b.getMapName()).append("\");\n");
-			return sb.toString();
-		}
-		sb.append("getConvergentMap(CLASS_NAME + \":").append(b.getMapName()).append("\", ")
-				.append(b.isPersistent()).append(", ")
-				.append(ctx.getQualifiedType(outerClassName, b)).append(".getDefaultInstance());\n");
-		return sb.toString();
+	private static String mapAccessor(SharedBoundary b) {
+		String getter = b.isReplicated() ? "getReplicatedMap" : "getConvergentMap";
+		return "        this." + b.getFieldCamel() + "Map = manager." + getter
+				+ "(CLASS_NAME + \":" + b.getMapName() + "\");\n";
 	}
 }

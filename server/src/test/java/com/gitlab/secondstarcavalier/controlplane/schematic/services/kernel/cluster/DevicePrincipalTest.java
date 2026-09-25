@@ -135,7 +135,7 @@ class DevicePrincipalTest {
 	 * Registration creates a real row holding the presented credential, and that
 	 * row survives a restart — the snapshot path, not just the live map, because
 	 * a person who de-registers on the first kernel restart is not registered.
-	 * Same round trip {@code KernelPersistencePersonalPrincipalTest} pins, driven
+	 * Same round trip {@code IdentitySnapshotPersonalPrincipalTest} pins, driven
 	 * here by the RPC rather than a hand-seeded row.
 	 */
 	@Test
@@ -156,7 +156,7 @@ class DevicePrincipalTest {
 		assertEquals(0, stored.getRevokedAtMs());
 
 		// --- snapshot -> restart -> fresh empty map ---
-		KernelPersistence persistence = new KernelPersistence(
+		IdentitySnapshot persistence = new IdentitySnapshot(
 				dir.toString(), null, null, null, null, null, null,
 				() -> {
 					try {

@@ -9,7 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster.ClusterServer;
-import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.BoundaryPersistence;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.logger.LogbackConfigurator;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Helpers;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
@@ -55,25 +54,14 @@ public class Bootstrap {
 				config.getListener(),
 				config.getClusterName());
 
-		// Kernel is the cluster's durable store. Every state boundary flagged
-		// (spec.persistence) = true — from any service's proto — is snapshotted
-		// per boundary onto the kernel `data` volume and rehydrated on a cold
-		// start; unflagged boundaries stay in Hazelcast memory only. A node
-		// configured without a persistence directory gets the registry-only
-		// store, which keeps cluster stats working and persists nothing: it is
-		// for local runs, and a flagged boundary on such a node is NOT durable.
-		String persistenceDir = config.getPersistenceDir();
-		BoundaryPersistence persistence;
-		if (persistenceDir == null || persistenceDir.isEmpty()) {
-			logger.warn("No persistence_dir configured — (spec.persistence) boundaries will NOT be durable");
-			persistence = BoundaryPersistence.disabled();
-		} else {
-			persistence = BoundaryPersistence.at(persistenceDir);
-		}
-
+		// Kernel does no durability for service state: Hazelcast is in-memory
+		// coordination, every boundary is config-seeded, rebuildable from peers,
+		// or ephemeral, and durable data belongs in stratum records. The
+		// `data` volume holds only kernel's OWN identity snapshot
+		// (KernelDiskState) and the Ratis fenced-lock tree.
 		ClusterServer server;
 		try {
-			server = new ClusterServer(config, persistence);
+			server = new ClusterServer(config);
 		} catch (Exception e) {
 			logger.error("Failed to initialize ClusterServer — shutting down", e);
 			System.exit(1);

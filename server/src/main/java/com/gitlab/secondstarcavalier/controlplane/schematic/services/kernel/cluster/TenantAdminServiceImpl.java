@@ -46,7 +46,7 @@ import org.slf4j.LoggerFactory;
  * {@link Caller} is consulted only for the SetTenantConfig self-lockout guard.
  *
  * <p>After every mutating RPC the handler invokes {@code persistHook} so the
- * kernel writes a fresh disk snapshot (see {@link KernelPersistence}).
+ * kernel writes a fresh disk snapshot (see {@link IdentitySnapshot}).
  */
 public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     private static final Logger logger = LoggerFactory.getLogger(TenantAdminServiceImpl.class);

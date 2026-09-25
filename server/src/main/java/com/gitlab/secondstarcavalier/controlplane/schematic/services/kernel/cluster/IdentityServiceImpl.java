@@ -194,7 +194,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * carries {@code (spec.assert_max_size) = 65536}. It is repeated here because
 	 * {@code PrincipalMap.putPersonalPrincipals} validates the ROW it is handed
 	 * and nothing validates the collection on the way in: the cap is only checked
-	 * by {@code Helpers.validateKernelDiskState}, inside {@code KernelPersistence.save()},
+	 * by {@code Helpers.validateKernelDiskState}, inside {@code IdentitySnapshot.save()},
 	 * which logs and swallows. Over the cap without this check, registration would
 	 * appear to succeed and every subsequent snapshot — signing keys, CAs, tenants,
 	 * grants and all — would be silently lost. Refuse the registration instead.

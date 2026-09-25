@@ -334,7 +334,7 @@ public class ProtoDescriptorParser {
      * Handles fields with annotations spanning multiple lines, e.g.:
      *   repeated jwk.Jwk keys = 1 [
      *     (spec.consistency) = CONSISTENCY_CONVERGENT,
-     *     (spec.persistence) = true
+     *     (spec.eviction_ttl_seconds) = 300
      *   ];
      * becomes a single line.
      */

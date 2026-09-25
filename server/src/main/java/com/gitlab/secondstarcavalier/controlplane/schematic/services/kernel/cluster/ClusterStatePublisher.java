@@ -2,7 +2,6 @@
 package com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.cluster;
 
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.MapRegistry;
-import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.BoundaryPersistence;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.common.hazelcast.Hazelcast;
 
@@ -40,7 +39,7 @@ public class ClusterStatePublisher {
 
 	private final HazelcastInstance hazelcast;
 	private final ClusterMap clusterStateMap;
-	private final BoundaryPersistence persistence;
+	private final MapRegistry mapRegistry;
 	private final Kernel.Config config;
 	private final int grpcPort;
 	private final RateLimitInterceptor rateLimiter;
@@ -53,7 +52,7 @@ public class ClusterStatePublisher {
 	public ClusterStatePublisher(
 			HazelcastInstance hazelcast,
 			ClusterMap clusterStateMap,
-			BoundaryPersistence persistence,
+			MapRegistry mapRegistry,
 			Kernel.Config config,
 			int grpcPort,
 			RateLimitInterceptor rateLimiter,
@@ -61,7 +60,7 @@ public class ClusterStatePublisher {
 			RegistryReader registryReader) {
 		this.hazelcast = hazelcast;
 		this.clusterStateMap = clusterStateMap;
-		this.persistence = persistence;
+		this.mapRegistry = mapRegistry;
 		this.config = config;
 		this.grpcPort = grpcPort;
 		this.rateLimiter = rateLimiter;
@@ -128,7 +127,6 @@ public class ClusterStatePublisher {
 		publishClusterHealth();
 		publishNodeMetrics(nodeId);
 		publishGrpcStats(nodeId);
-		publishPersistenceStatus(nodeId);
 		publishNetworkStats(nodeId);
 		publishThreadInfo(nodeId);
 		publishTokenCacheStats(nodeId);
@@ -238,11 +236,6 @@ public class ClusterStatePublisher {
 					.setTotalBytes(dir.getTotalSpace())
 					.setUsableBytes(dir.getUsableSpace())
 					.setUsedBytes(dir.getTotalSpace() - dir.getUsableSpace());
-			// On-disk size of the per-boundary redo logs, archives included.
-			long snapshotBytes = persistence.getSnapshotSizeBytes();
-			if (snapshotBytes >= 0) {
-				disk.setPersistenceSizeBytes(snapshotBytes);
-			}
 		}
 
 		clusterStateMap.putNodeMetrics(
@@ -270,25 +263,6 @@ public class ClusterStatePublisher {
 				.setTimestampMs(System.currentTimeMillis());
 
 		clusterStateMap.putGrpcStats(nodeId, builder.build());
-	}
-
-	// ---- Persistence Status (per-node) ----
-
-	private void publishPersistenceStatus(String nodeId) {
-		clusterStateMap.putPersistenceStatus(
-				nodeId,
-				Hazelcast.AdminPersistenceStatus.newBuilder()
-						.setNodeId(nodeId)
-						.setEnabled(persistence.isEnabled())
-						.setPersistenceDir(config.getPersistenceDir())
-						// AdminPersistenceStatus's names are literal again: the
-						// per-boundary stores ARE redo logs, so this is their
-						// total on-disk size and the time of the last record
-						// written to one.
-						.setRedoLogSizeBytes(Math.max(0, persistence.getSnapshotSizeBytes()))
-						.setLastDumpTimeMs(persistence.getLastSnapshotTimestamp())
-						.setTimestampMs(System.currentTimeMillis())
-						.build());
 	}
 
 	// ---- Network Stats (per-node) ----
@@ -434,7 +408,6 @@ public class ClusterStatePublisher {
 	}
 
 	private void publishMapStats() {
-		MapRegistry mapRegistry = persistence.getRegistry();
 		long now = System.currentTimeMillis();
 
 		for (Map.Entry<String, MapRegistry.MapInfo> entry : mapRegistry.all().entrySet()) {

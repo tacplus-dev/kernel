@@ -19,12 +19,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Failure-path contract for {@link KernelPersistence}: a write that does not
+ * Failure-path contract for {@link IdentitySnapshot}: a write that does not
  * land must throw (so the mutating RPC that triggered it reports failure rather
  * than acking a revocation only held in memory), and a snapshot that exists but
  * cannot be read must throw rather than being mistaken for a cold start.
  */
-class KernelPersistenceFailureTest {
+class IdentitySnapshotFailureTest {
 
 	/** {@code <base>/_root/kernel_disk_state.snapshot} — the UC1 root-namespace store file. */
 	private static Path snapshotFile(Path base) {
@@ -39,8 +39,8 @@ class KernelPersistenceFailureTest {
 				.build();
 	}
 
-	private static KernelPersistence persistence(Path dir) {
-		return new KernelPersistence(
+	private static IdentitySnapshot persistence(Path dir) {
+		return new IdentitySnapshot(
 				dir.toString(), null, null, null, null, () -> List.of(revocation()), null, null);
 	}
 
@@ -67,7 +67,7 @@ class KernelPersistenceFailureTest {
 	/** Sanity: the happy path still round-trips, so the failure tests mean something. */
 	@Test
 	void writtenSnapshotLoadsBack(@TempDir Path dir) {
-		KernelPersistence p = persistence(dir);
+		IdentitySnapshot p = persistence(dir);
 		p.save();
 
 		Kernel.KernelDiskState loaded = p.load();
@@ -79,7 +79,7 @@ class KernelPersistenceFailureTest {
 	/** A corrupt snapshot fails loudly rather than silently un-revoking everything. */
 	@Test
 	void corruptSnapshotThrowsInsteadOfColdStarting(@TempDir Path dir) throws IOException {
-		KernelPersistence p = persistence(dir);
+		IdentitySnapshot p = persistence(dir);
 		p.save();
 		Files.write(snapshotFile(dir), "}{ not json".getBytes(StandardCharsets.UTF_8));
 
@@ -89,7 +89,7 @@ class KernelPersistenceFailureTest {
 	/** Same for a half-written snapshot (interrupted write / torn file). */
 	@Test
 	void truncatedSnapshotThrowsInsteadOfColdStarting(@TempDir Path dir) throws IOException {
-		KernelPersistence p = persistence(dir);
+		IdentitySnapshot p = persistence(dir);
 		p.save();
 
 		Path file = snapshotFile(dir);

@@ -17,10 +17,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * Round-trips standing delegation grants through the kernel disk snapshot:
- * {@link KernelPersistence#save()} must write {@code KernelDiskState.grants}
- * and {@link KernelPersistence#load()} must return them intact.
+ * {@link IdentitySnapshot#save()} must write {@code KernelDiskState.grants}
+ * and {@link IdentitySnapshot#load()} must return them intact.
  */
-class KernelPersistenceGrantTest {
+class IdentitySnapshotGrantTest {
 
 	private static Kernel.Grant grant() {
 		return Kernel.Grant.newBuilder()
@@ -45,7 +45,7 @@ class KernelPersistenceGrantTest {
 	void grantSurvivesSaveAndLoad(@TempDir Path dir) {
 		Kernel.Grant expected = grant();
 
-		KernelPersistence p = new KernelPersistence(
+		IdentitySnapshot p = new IdentitySnapshot(
 				dir.toString(), null, null, null, null, null, () -> List.of(expected), null);
 		p.save();
 
@@ -57,12 +57,12 @@ class KernelPersistenceGrantTest {
 
 	@Test
 	void coldStartHasNoGrants(@TempDir Path dir) {
-		assertNull(new KernelPersistence(dir.toString(), null, null, null, null, null, List::of, null).load());
+		assertNull(new IdentitySnapshot(dir.toString(), null, null, null, null, null, List::of, null).load());
 	}
 
 	@Test
 	void snapshotWithoutGrantsStillLoads(@TempDir Path dir) {
-		KernelPersistence p = new KernelPersistence(
+		IdentitySnapshot p = new IdentitySnapshot(
 				dir.toString(), null, null, null, null, null, List::of, null);
 		p.save();
 

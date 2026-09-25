@@ -6,7 +6,6 @@ import static com.gitlab.secondstarcavalier.controlplane.schematic.services.kern
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.MetaData;
 
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.HazelcastManager;
-import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.graphs.hazelcast.BoundaryPersistence;
 // StateServer is in this package
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.x509.ImmutableCertChain;
 import com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.sys.tokenrequest.Tokenrequest;
@@ -76,11 +75,13 @@ import org.slf4j.LoggerFactory;
  * <p>Kernel is the cluster TRUST ROOT: it mints all tokens (via the
  * {@link IdentityServiceImpl} {@code Mint} handler with the dual-key
  * {@link KeyRotator}), signs X.509 certs, owns tenancy (the
- * {@link TenantAdminServiceImpl} {@code TenantAdmin} handler), and is the
- * cluster's DURABLE STORE: its own state goes to the diskstore as one atomic
- * snapshot ({@link KernelPersistence}), and every state boundary any service's
- * proto flags {@code (spec.persistence) = true} gets its own redo log, written
- * by {@link BoundaryPersistence}. Services do not persist their own state.
+ * {@link TenantAdminServiceImpl} {@code TenantAdmin} handler).
+ *
+ * <p>Kernel does NO durability for service state and holds no user data. Every
+ * boundary is in-memory coordination, rebuilt from config seeding and from
+ * peers on every start; durable data belongs in stratum records. The one thing
+ * kernel writes to disk is its OWN identity snapshot ({@link IdentitySnapshot}
+ * — signing keys, CAs, the tenant tree, grants, links, principals).
  */
 public class ClusterServer {
 
@@ -203,14 +204,6 @@ public class ClusterServer {
 
 	private final int grpcPort;
 	private final HazelcastInstance hazelcast;
-	private final BoundaryPersistence persistence;
-
-	/**
-	 * How long the post-join copy waits for this member's partitions to settle.
-	 * Generous: it blocks nothing, and a partially-migrated copy is the one
-	 * outcome worth avoiding.
-	 */
-	private static final long JOIN_SNAPSHOT_SAFE_TIMEOUT_MINUTES = 10;
 	private final BackendServers backendServers;
 	private final JwkVerifyingKeysViewServer jwkViewServer;
 	private final ClusterStatePublisher clusterPublisher;
@@ -219,7 +212,7 @@ public class ClusterServer {
 	private final Server healthProbeServer;
 	private final Server grpcServer;
 	private final KeyRotator keyRotator;
-	private final KernelPersistence kernelPersistence;
+	private final IdentitySnapshot identitySnapshot;
 	private final ImmutableCertChain signingCa;
 	private final RatisFencedLock fencedLock;
 	/**
@@ -229,16 +222,11 @@ public class ClusterServer {
 	private LocalJwkSource kernelJwkSource;
 
 	/**
-	 * @param config      the kernel configuration
-	 * @param persistence the durable store for {@code (spec.persistence)} boundaries
+	 * @param config the kernel configuration
 	 */
-	public ClusterServer(
-			Kernel.Config config,
-			BoundaryPersistence persistence) {
+	public ClusterServer(Kernel.Config config) {
 
 		Kernel.Config cfg = Helpers.configDefaults(config).build();
-
-		this.persistence = persistence;
 
 		this.grpcPort = cfg.getListener().getPort();
 		int hzPort = cfg.getHazelcastListener().getPort();
@@ -277,13 +265,6 @@ public class ClusterServer {
 
 		hzConfig.getRestConfig().setEnabled(false);
 
-		// The cold-start decision below is taken off two cluster-shared maps, and
-		// this pod's StatefulSet ordinal has to travel with its member so every
-		// sibling elects the same state origin. Both are declared before the
-		// instance starts because neither can be added to a running member.
-		StateBearingLedger.configure(hzConfig);
-		StateBearingLedger.publishOrdinal(hzConfig, StateBearingLedger.ordinalOf(hostname));
-
 		SerializerRegistry.register(hzConfig);
 		this.hazelcast = com.hazelcast.core.Hazelcast.newHazelcastInstance(hzConfig);
 
@@ -315,54 +296,12 @@ public class ClusterServer {
 			this.healthProbeServer = null;
 		}
 
-		int memberCount = hazelcast.getCluster().getMembers().size();
-
 		// 3. Create backend servers. Kernel coordinates state in-memory via
-		// Hazelcast and is the cluster's durable store on top of it. Its OWN
-		// state is one atomic disk snapshot (KernelDiskState) written by
-		// KernelPersistence; every boundary flagged (spec.persistence) = true —
-		// from ANY service's proto, not just kernel's own — gets its own redo
-		// log, appended to by BoundaryPersistence on each write and replayed
-		// below on a cold start. Unflagged boundaries are config-seeded or
-		// ephemeral.
-		HazelcastManager manager = new HazelcastManager(hazelcast, persistence);
+		// Hazelcast and writes none of it to disk: every boundary is
+		// config-seeded, rebuildable from peers, or ephemeral. Durable data is
+		// stratum's, not kernel's.
+		HazelcastManager manager = new HazelcastManager(hazelcast);
 		this.backendServers = new BackendServers(manager);
-
-		// The join-time checkpoint below may only write a file smaller than the
-		// one already on this volume when some member of the cluster has proved
-		// it holds the state. Wired before anything can call it.
-		persistence.setStateBearingGate(() -> StateBearingLedger.clusterBearsState(hazelcast));
-
-		// Constructing the backend servers is what registers every persistent
-		// boundary with the store (each generated map binds its boundary in its
-		// constructor), so rehydration can only run once they exist — and must
-		// run before the Config-seeded installs below, which are the operator's
-		// current truth and legitimately win over anything on disk.
-		//
-		// It is also why the cold-start decision is taken HERE rather than right
-		// after the Hazelcast instance came up: the decision now asks this pod's
-		// volume how many rows it holds, and the boundaries it would ask about do
-		// not exist until the line above ran. Nothing touches a boundary in
-		// between, so the decision is still made before any state is read or
-		// written — which is the property the old placement was protecting.
-		boolean coldStart = isColdStart(hazelcast, persistence);
-		if (coldStart) {
-			logger.info("Cold start: no peer of this cluster bears boundary state and this pod is its"
-					+ " cohort's state origin — replaying persistent boundaries from disk");
-			int replayed = persistence.rehydrate();
-			// TRUE only if this pod actually put rows back. A cohort whose volumes
-			// are all empty has no state-bearing member, and saying otherwise
-			// would hand the checkpoint guard below the proof it exists to demand.
-			StateBearingLedger.settle(hazelcast, replayed > 0);
-		} else {
-			logger.info(
-					"Joined a cluster of {} members — taking boundary state from peers, NOT from the local log",
-					memberCount);
-			snapshotJoinedStateInBackground(hazelcast, persistence);
-			// A pod holding a state-bearing cluster's rows in memory IS a durable
-			// copy for the restart that happens next — stratum's serving-peer rule.
-			StateBearingLedger.settle(hazelcast, StateBearingLedger.clusterBearsState(hazelcast));
-		}
 
 		// All boundaries are convergent — quorum is always available
 		backendServers.services().setQuorumAvailable(true);
@@ -418,7 +357,7 @@ public class ClusterServer {
 		// KeyRotator: kernel's dual-key (EdDSA + ES256) signing authority. The
 		// publisher/remover/reader operate on the IdentityState verifying_keys
 		// boundary; onKeysChanged persists a fresh disk snapshot (the snapshot is
-		// taken lazily via the kernelPersistence field, assigned just below).
+		// taken lazily via the identitySnapshot field, assigned just below).
 		// Retention must outlast every token signed with the key, so it is
 		// derived from the rotation interval and BOTH mint ceilings rather than
 		// set to max_token_lifetime alone — see KeyRotator.retentionSecondsFor.
@@ -453,13 +392,13 @@ public class ClusterServer {
 		// Standing delegation grants (item 6, piece B): a live in-memory store
 		// seeded from Config.grants at boot, mirroring how delegates (below) are
 		// seeded. This is what MintDelegatedToken looks grants up by id against,
-		// and what finally gives KernelPersistence's grantsReader (below) real
+		// and what finally gives IdentitySnapshot's grantsReader (below) real
 		// data instead of the former List::of stub.
 		final var liveGrants = new java.util.concurrent.CopyOnWriteArrayList<>(cfg.getGrantsList());
 
-		// KernelPersistence builds the KernelDiskState snapshot from the rotator's
+		// IdentitySnapshot builds the KernelDiskState snapshot from the rotator's
 		// signing-key records plus the live boundary maps.
-		this.kernelPersistence = new KernelPersistence(
+		this.identitySnapshot = new IdentitySnapshot(
 				cfg.getPersistenceDir(),
 				keyRotator,
 				() -> {
@@ -512,18 +451,13 @@ public class ClusterServer {
 		// public verifying set + Ca + ConfigState + revocations are restored into
 		// their boundary maps). An absent snapshot returns null.
 		//
-		// Gated on the same cold-start test as the generic boundaries above, and
-		// for the same reason: a pod rejoining live peers already has the
-		// cluster's keys, CAs and revocations from them, and replaying its own
-		// older snapshot over that state would un-revoke workloads and grants
-		// the cluster has since revoked. The signing-key restore into the local
-		// KeyRotator is the one leg that is per-pod rather than cluster-wide, so
-		// it reads an empty list on a rejoin and picks the cluster's keys up
-		// through the boundary map.
-		Kernel.KernelDiskState snapshot = coldStart ? kernelPersistence.load() : null;
-		if (!coldStart) {
-			logger.info("Rejoined a live cluster — kernel's own disk snapshot is NOT replayed over peer state");
-		}
+		// Replayed on every boot, rejoin included. Every restore leg below is
+		// additive or config-subordinate — revocations only ever SET
+		// revoked_at_ms on a live grant that has none, expired verifying keys
+		// are dropped, and the tenant/project tree is reseeded from the bundle
+		// on every boot regardless — so a pod that rejoins live peers cannot
+		// un-revoke or roll back what the cluster did while it was down.
+		Kernel.KernelDiskState snapshot = identitySnapshot.load();
 		rehydrateFromSnapshot(snapshot, identityState, caState, workloadState, kernelConfigMap);
 		restorePersonalPrincipals(snapshot, principalState);
 		restorePeople(snapshot, principalState);
@@ -635,7 +569,7 @@ public class ClusterServer {
 		this.clusterPublisher = new ClusterStatePublisher(
 				hazelcast,
 				backendServers.services().getClusterMap(),
-				persistence,
+				manager.getMapRegistry(),
 				cfg,
 				grpcPort,
 				rateLimiter,
@@ -909,7 +843,7 @@ public class ClusterServer {
 					kernelConfigMap,
 					workloadState,
 					principalState,
-					this::persistKernelState,
+					this::saveIdentitySnapshot,
 					kubernetesTokenVerifier,
 					kubernetesTokenAudience,
 					webauthnRelyingParty());
@@ -1011,7 +945,7 @@ public class ClusterServer {
 			// check (target_namespace_field) declaratively per the generated
 			// wrapper. Mutating writes trigger a fresh disk snapshot.
 			var tenantAdminImpl = new TenantAdminServiceImpl(
-					kernelConfigMap, () -> spiffeTrustDomain, this::persistKernelState);
+					kernelConfigMap, () -> spiffeTrustDomain, this::saveIdentitySnapshot);
 			var tenantAdminWrapper = new TenantAdmin(tenantAdminImpl, kernelAuthorizer);
 			serverBuilder.addService(tenantAdminWrapper);
 			logger.info("TenantAdminService registered on gRPC server");
@@ -1029,7 +963,7 @@ public class ClusterServer {
 			// /people/<pid> caller this RPC exists for. See the item's decision doc.
 			var personalIdentityImpl = new PersonalIdentityServiceImpl(
 					backendServers.services().getPrincipalMap(),
-					this::persistKernelState);
+					this::saveIdentitySnapshot);
 			var personalIdentityWrapper = new PersonalIdentity(personalIdentityImpl, kernelAuthorizer);
 			personalIdentityWrapper.setAuthenticateFunc((PersonalIdentity.Authenticator) targetNamespace ->
 					com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer
@@ -1198,20 +1132,20 @@ public class ClusterServer {
 	 *
 	 * <p>Safe to call from any thread. The rotator only invokes it from
 	 * {@code start()} onward, which is {@link #start()}, i.e. after construction;
-	 * the guard mirrors {@link #persistKernelState}'s.
+	 * the guard mirrors {@link #saveIdentitySnapshot}'s.
 	 */
 	private void onSigningKeysChanged() {
-		persistKernelState();
+		saveIdentitySnapshot();
 		LocalJwkSource source = kernelJwkSource;
 		if (source != null) {
 			source.refreshNow();
 		}
 	}
 
-	/** Persists the kernel disk snapshot; safe to call from any thread. */
-	private void persistKernelState() {
-		if (kernelPersistence != null) {
-			kernelPersistence.save();
+	/** Writes kernel's identity snapshot to disk; safe to call from any thread. */
+	private void saveIdentitySnapshot() {
+		if (identitySnapshot != null) {
+			identitySnapshot.save();
 		}
 	}
 
@@ -1273,7 +1207,7 @@ public class ClusterServer {
 	 * exercise the real boot path rather than a copy of it (same reason as
 	 * {@link #restoreGrantRevocations}).
 	 *
-	 * <p>Fails closed, like {@link KernelPersistence#load()}: a row that cannot be
+	 * <p>Fails closed, like {@link IdentitySnapshot#load()}: a row that cannot be
 	 * applied aborts the restore and the node refuses to boot. Continuing would
 	 * bring the kernel up with an arbitrary prefix of the registered people —
 	 * someone who registered is simply gone, and silently.
@@ -1497,7 +1431,7 @@ public class ClusterServer {
 			}
 			logger.info("Rehydrated kernel state from disk snapshot");
 		} catch (Exception e) {
-			// Fail closed, at the severity KernelPersistence.load() already uses
+			// Fail closed, at the severity IdentitySnapshot.load() already uses
 			// for an unreadable snapshot. One bad tenant, CA or revocation row
 			// used to abort the rest of the loop and let the node come up with an
 			// arbitrary prefix of the snapshot applied — revocations restored but
@@ -1531,7 +1465,6 @@ public class ClusterServer {
 		grpcServer.shutdown();
 		jwkViewServer.close();
 		backendServers.services().close();
-		persistence.close();
 		try {
 			fencedLock.close();
 		} catch (java.io.IOException e) {
@@ -1583,81 +1516,5 @@ public class ClusterServer {
 
 		token.sign(signingKey);
 		return token.getBase64();
-	}
-
-
-	/**
-	 * Whether this node is forming the cluster rather than joining one — the one
-	 * condition under which a snapshot on local disk may be replayed.
-	 *
-	 * <p>This used to be {@code getMembers().size() <= 1}, on the reasoning that
-	 * Hazelcast completes its join before {@code newHazelcastInstance} returns,
-	 * so a lone member is a node forming the cluster. That reasoning holds only
-	 * for a start that is STAGGERED. {@code kubectl scale statefulset kernel
-	 * 0 -> 3} with {@code podManagementPolicy: Parallel} starts three pods at
-	 * once; each of them sees a cluster of three, each concludes it joined peers
-	 * that hold state, and not one of them replays its own log — after which each
-	 * writes its empty memory back over its own boundary files. A member count
-	 * cannot answer "does any peer HOLD state"; it answers "is anyone else
-	 * there", and those are different questions whenever the answer matters.
-	 *
-	 * <p>{@link StateBearingLedger} makes the fact explicit instead: a member
-	 * that has rehydrated, or that is serving a cluster which bears state, says
-	 * so in a cluster-shared map, and this pod is a cold start unless a PEER has
-	 * said it. When nobody has — the simultaneous-start case — the cohort elects
-	 * one pod to replay its volume and the rest wait for it. Blocks for as long
-	 * as that takes; see {@code StateBearingLedger.ORIGIN_TIMEOUT}.
-	 */
-	static boolean isColdStart(HazelcastInstance hazelcast, BoundaryPersistence persistence) {
-		return StateBearingLedger.awaitColdStartDecision(hazelcast, persistence.diskRowCount());
-	}
-
-	/**
-	 * Writes this pod's own full copy of every persistent boundary, after it took
-	 * their state from peers.
-	 *
-	 * <p>Joining a cluster puts nothing on the local volume. Only a subsequent
-	 * mutation writes a row here, so a row that is never written again is absent
-	 * from THIS pod's disk for as long as it runs — and the first simultaneous
-	 * cold restart after a rolling deploy would lose exactly the quiet rows, on
-	 * every pod at once, which is the gap the whole feature exists to close.
-	 *
-	 * <p>It waits for this member's partitions to settle first. Rows arrive here
-	 * by partition migration, and migration fires no entry events, so a copy
-	 * taken before the member is safe would silently omit whatever had not
-	 * migrated yet and nothing later would notice.
-	 *
-	 * <p>On its own daemon thread, and nothing waits on it: readiness must not
-	 * depend on serializing every boundary, and until this pod goes down the
-	 * live cluster is still the source of truth. {@code checkpointAll} logs one
-	 * line per boundary with the row count it wrote, which is what a rolling
-	 * restart is verified against.
-	 */
-	private static void snapshotJoinedStateInBackground(
-			HazelcastInstance hazelcast, BoundaryPersistence persistence) {
-		if (persistence == null || !persistence.isEnabled()) {
-			return;
-		}
-		Thread t = new Thread(() -> {
-			try {
-				if (!hazelcast.getPartitionService().forceLocalMemberToBeSafe(
-						JOIN_SNAPSHOT_SAFE_TIMEOUT_MINUTES, java.util.concurrent.TimeUnit.MINUTES)) {
-					// Migration is still moving after ten minutes. Write anyway —
-					// a copy short some still-migrating rows is strictly better
-					// than none — but say so, because the per-boundary row counts
-					// below may then be under the cluster's.
-					logger.warn("This member's partitions were still migrating after {} minutes; writing"
-							+ " this pod's copy of the persistent boundaries anyway, possibly incomplete",
-							JOIN_SNAPSHOT_SAFE_TIMEOUT_MINUTES);
-				}
-				persistence.checkpointAll("joined a live cluster");
-			} catch (RuntimeException e) {
-				logger.error("Could not write this pod's own copy of the persistent boundaries after"
-						+ " joining the cluster — it holds no local copy of rows that are not"
-						+ " written again: {}", e.getMessage(), e);
-			}
-		}, "boundary-persistence-join-snapshot");
-		t.setDaemon(true);
-		t.start();
 	}
 }

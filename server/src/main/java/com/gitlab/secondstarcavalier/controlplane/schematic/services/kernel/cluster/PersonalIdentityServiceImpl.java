@@ -65,16 +65,16 @@ public class PersonalIdentityServiceImpl implements PersonalIdentity.PersonalIde
 	private static final int MAX_LIVE_APPROVALS_PER_PERSON = 16;
 
 	private final PrincipalMap principalMap;
-	private final Runnable persistState;
+	private final Runnable writeIdentitySnapshot;
 
 	/**
 	 * @param principalMap kernel PrincipalState accessor (personal_principals, keyed by principal_id)
-	 * @param persistState fires the disk snapshot after a write; nullable, for tests that
-	 *                     assert on the live map rather than on durability
+	 * @param writeIdentitySnapshot writes the kernel identity snapshot to disk after a write;
+	 *                              nullable, for tests that assert on the live map instead
 	 */
-	public PersonalIdentityServiceImpl(PrincipalMap principalMap, Runnable persistState) {
+	public PersonalIdentityServiceImpl(PrincipalMap principalMap, Runnable writeIdentitySnapshot) {
 		this.principalMap = principalMap;
-		this.persistState = persistState;
+		this.writeIdentitySnapshot = writeIdentitySnapshot;
 		logger.info("PersonalIdentityServiceImpl initialised");
 	}
 
@@ -154,8 +154,8 @@ public class PersonalIdentityServiceImpl implements PersonalIdentity.PersonalIde
 			// right outcome, and the owner's own claim has already stopped.
 			markRevoked(peerKey, ownerNamespace, ownerSubject, revokedAtMs);
 		}
-		if (persistState != null) {
-			persistState.run();
+		if (writeIdentitySnapshot != null) {
+			writeIdentitySnapshot.run();
 		}
 		logger.info("Unlinked tenant users: {} -x- {}", ownerKey, peerKey);
 		return Kernel.RevokeTenantUserLinkResponse.newBuilder()

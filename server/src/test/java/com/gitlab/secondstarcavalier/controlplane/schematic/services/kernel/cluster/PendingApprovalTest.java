@@ -124,7 +124,7 @@ class PendingApprovalTest {
 				new ConfigMap(new InMemoryManager()),
 				new WorkloadMap(new InMemoryManager()),
 				principalMap,
-				null,            // persistState
+				null,            // writeIdentitySnapshot
 				null,            // kubernetesTokenVerifier
 				KERNEL_AUDIENCE,
 				RELYING_PARTY);

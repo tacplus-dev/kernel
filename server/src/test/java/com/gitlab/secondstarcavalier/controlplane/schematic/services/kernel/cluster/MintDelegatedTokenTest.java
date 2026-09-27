@@ -98,7 +98,7 @@ class MintDelegatedTokenTest {
                 null,            // configMap
                 new WorkloadMap(new InMemoryManager()),
                 new PrincipalMap(new InMemoryManager()),
-                null,            // persistState
+                null,            // writeIdentitySnapshot
                 null,            // kubernetesTokenVerifier
                 KERNEL_AUDIENCE,
                 null);           // webauthnRelyingParty (fail closed)
@@ -603,7 +603,7 @@ class MintDelegatedTokenTest {
 
     /**
      * The restart proof: revoke over the RPC, snapshot the live store the way
-     * {@code persistState} does, then rebuild the boot state exactly as
+     * {@code writeIdentitySnapshot} does, then rebuild the boot state exactly as
      * ClusterServer does — seed the catalog from Config.grants (which knows
      * nothing of the revocation) and replay the snapshot's revocations over it.
      * A revocation that did not survive would resurrect the delegation here.
@@ -617,7 +617,7 @@ class MintDelegatedTokenTest {
 
         revokeAs(before, DELEGATE_NAME, GRANT_ID);
 
-        // What persistState.run() writes.
+        // What writeIdentitySnapshot.run() writes.
         IdentitySnapshot persistence = new IdentitySnapshot(
                 dir.toString(), null, null, null, null, null, () -> List.copyOf(grants), null);
         persistence.save();

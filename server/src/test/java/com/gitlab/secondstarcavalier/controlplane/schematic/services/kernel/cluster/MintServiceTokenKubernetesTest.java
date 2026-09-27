@@ -82,7 +82,7 @@ class MintServiceTokenKubernetesTest {
                 null,            // configMap
                 new WorkloadMap(new InMemoryManager()),
                 new PrincipalMap(new InMemoryManager()),
-                null,            // persistState
+                null,            // writeIdentitySnapshot
                 verifier,
                 KERNEL_AUDIENCE,
                 null);           // webauthnRelyingParty (fail closed)

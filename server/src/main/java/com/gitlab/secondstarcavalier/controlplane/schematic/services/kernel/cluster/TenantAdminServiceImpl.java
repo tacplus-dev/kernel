@@ -45,8 +45,8 @@ import org.slf4j.LoggerFactory;
  * re-derive or re-check the caller's namespace for authorization. The
  * {@link Caller} is consulted only for the SetTenantConfig self-lockout guard.
  *
- * <p>After every mutating RPC the handler invokes {@code persistHook} so the
- * kernel writes a fresh disk snapshot (see {@link IdentitySnapshot}).
+ * <p>After every mutating RPC the handler invokes {@code writeIdentitySnapshot}
+ * so the kernel writes a fresh identity snapshot (see {@link IdentitySnapshot}).
  */
 public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     private static final Logger logger = LoggerFactory.getLogger(TenantAdminServiceImpl.class);
@@ -75,20 +75,20 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
 
     private final ConfigMap configMap;
     private final Supplier<String> trustDomainReader;
-    private final Runnable persistHook;
+    private final Runnable writeIdentitySnapshot;
 
     /**
-     * @param configMap          kernel ConfigState accessor (tenants / tenant_configs / project_configs)
-     * @param trustDomainReader  SPIFFE trust domain supplier (authorization root namespace is "/")
-     * @param persistHook        invoked after every mutating RPC so the kernel persists a new disk snapshot
+     * @param configMap              kernel ConfigState accessor (tenants / tenant_configs / project_configs)
+     * @param trustDomainReader      SPIFFE trust domain supplier (authorization root namespace is "/")
+     * @param writeIdentitySnapshot  invoked after every mutating RPC so the kernel writes a new identity snapshot
      */
     public TenantAdminServiceImpl(
             ConfigMap configMap,
             Supplier<String> trustDomainReader,
-            Runnable persistHook) {
+            Runnable writeIdentitySnapshot) {
         this.configMap = configMap;
         this.trustDomainReader = trustDomainReader;
-        this.persistHook = persistHook != null ? persistHook : () -> {};
+        this.writeIdentitySnapshot = writeIdentitySnapshot != null ? writeIdentitySnapshot : () -> {};
         logger.info("TenantAdminServiceImpl initialised");
     }
 
@@ -140,7 +140,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         // SetTenantConfig.
         putEmptyProject(ns + "/default");
 
-        persistHook.run();
+        writeIdentitySnapshot.run();
         logger.info("CreateTenant ns={} leaf={}", ns, leaf);
         return tenant;
     }
@@ -169,7 +169,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         for (String projectNs : childProjectKeys(ns)) {
             configMap.deleteProjectConfigs(projectNs);
         }
-        persistHook.run();
+        writeIdentitySnapshot.run();
         logger.info("DeleteTenant ns={}", ns);
         return Kernel.DeleteTenantResponse.getDefaultInstance();
     }
@@ -296,7 +296,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
                 .setConfig(newConfig)
                 .build();
         configMap.putTenantConfigs(ns, entry);
-        persistHook.run();
+        writeIdentitySnapshot.run();
         logger.info("SetTenantConfig ns={} cred_pairs={}", ns, credPairs.size());
         return newConfig;
     }
@@ -329,7 +329,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
                 .setConfig(request.getConfig())
                 .build();
         configMap.putProjectConfigs(ns, entry);
-        persistHook.run();
+        writeIdentitySnapshot.run();
         logger.info("SetProjectConfig ns={}", ns);
         return request.getConfig();
     }
@@ -359,7 +359,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
             throw new ProtoException(ProtoException.NOT_FOUND, "no project at " + ns);
         }
         configMap.deleteProjectConfigs(ns);
-        persistHook.run();
+        writeIdentitySnapshot.run();
         logger.info("DeleteProject ns={}", ns);
         return Kernel.DeleteProjectResponse.getDefaultInstance();
     }

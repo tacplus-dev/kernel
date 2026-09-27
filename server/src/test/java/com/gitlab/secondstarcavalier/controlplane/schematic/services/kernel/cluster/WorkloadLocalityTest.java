@@ -128,7 +128,7 @@ class WorkloadLocalityTest {
 				null,            // configMap
 				workloadMap,
 				new PrincipalMap(new InMemoryManager()),
-				null,            // persistState (no disk snapshot in-test)
+				null,            // writeIdentitySnapshot (no disk snapshot in-test)
 				null,            // kubernetesTokenVerifier
 				null,            // kubernetesTokenAudience
 				null);           // webauthnRelyingParty (fail closed)

@@ -371,7 +371,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * snapshot reads WorkloadState.revocations, but nothing else on this path
 	 * triggers a snapshot.
 	 */
-	private final Runnable persistState;
+	private final Runnable writeIdentitySnapshot;
 	/**
 	 * PrincipalState boundary access — the personal-principal registry that
 	 * {@code CreatePersonalPrincipal} writes and the {@code AUTH_BROKER_KIND_DEVICE}
@@ -408,7 +408,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			ConfigMap configMap,
 			WorkloadMap workloadMap,
 			PrincipalMap principalMap,
-			Runnable persistState,
+			Runnable writeIdentitySnapshot,
 			@Nullable KubernetesTokenVerifier kubernetesTokenVerifier,
 			@Nullable String kubernetesTokenAudience,
 			@Nullable WebauthnProof.RelyingParty webauthnRelyingParty) {
@@ -433,7 +433,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				"workloadMap is required — workload revocation must be recorded and enforced");
 		this.principalMap = java.util.Objects.requireNonNull(principalMap,
 				"principalMap is required — the personal-principal registry backs device login");
-		this.persistState = persistState != null ? persistState : () -> { };
+		this.writeIdentitySnapshot = writeIdentitySnapshot != null ? writeIdentitySnapshot : () -> { };
 		// Default to the fail-closed UNIMPLEMENTED verifier so an un-wired kernel
 		// never silently accepts a kubernetes_token.
 		this.kubernetesTokenVerifier =
@@ -866,8 +866,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		}
 		// The registry's durability is the disk snapshot, and nothing else on this
 		// path triggers one — the same reason CreatePersonalPrincipal fires it.
-		if (persistState != null) {
-			persistState.run();
+		if (writeIdentitySnapshot != null) {
+			writeIdentitySnapshot.run();
 		}
 		logger.info("Created person: user_id={} provider={}", userId, provider.name());
 	}
@@ -960,8 +960,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		}
 		// The registry's durability is the disk snapshot, and nothing else on this
 		// path triggers one — the same reason findOrCreatePerson fires it.
-		if (persistState != null) {
-			persistState.run();
+		if (writeIdentitySnapshot != null) {
+			writeIdentitySnapshot.run();
 		}
 		logger.info("Linked tenant users: {} <-> {}", a.key(), b.key());
 		return Kernel.CreateTenantUserLinkResponse.newBuilder()
@@ -4225,7 +4225,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			throw new StatusException(Status.INTERNAL,
 					"failed to record revocation for " + targetSpiffeId + ": " + e.getMessage());
 		}
-		persistState.run();
+		writeIdentitySnapshot.run();
 
 		logger.info("WorkloadRevoke: caller={}, target={}", callerSub, targetSpiffeId);
 	}
@@ -4257,8 +4257,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 *
 	 * <p>The record is MARKED ({@code revoked_at_ms}), never deleted, so the
 	 * delegation that existed and the moment it was withdrawn stay auditable.
-	 * The write goes to the live grants store and is then persisted through the
-	 * same {@code persistState} hook {@code RevokeWorkload} uses, so the
+	 * The write goes to the live grants store and then into the identity snapshot
+	 * through the same hook {@code RevokeWorkload} uses, so the
 	 * revocation survives a kernel restart.
 	 *
 	 * <p>From that moment {@link #doMintDelegatedToken} refuses to mint from the
@@ -4314,7 +4314,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			throw new StatusException(Status.INTERNAL,
 					"failed to record revocation for grant " + grantId + ": " + e.getMessage());
 		}
-		persistState.run();
+		writeIdentitySnapshot.run();
 
 		logger.info("RevokeGrant: grant_id={}, caller={}, subject={}, delegate={}, revoked_at_ms={}",
 				grantId, rawCallerSub, grant.getSubject(), grant.getDelegateName(), revokedAtMs);
@@ -4975,7 +4975,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		principalMap.putPersonalPrincipals(principalId, principal);
 		// The registry's durability is the disk snapshot, and nothing else on this
 		// path triggers one — the same reason RevokeWorkload fires it.
-		persistState.run();
+		writeIdentitySnapshot.run();
 
 		logger.info("Registered personal principal: principal_id={} credential={} platform_synced={}",
 				principalId, credentialId, request.getPlatformSynced());

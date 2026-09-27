@@ -276,7 +276,7 @@ class ClientProofHardeningTest {
 				tenantConfigs,
 				new WorkloadMap(new InMemoryManager()),
 				new PrincipalMap(new InMemoryManager()),
-				null,            // persistState
+				null,            // writeIdentitySnapshot
 				null,            // kubernetesTokenVerifier
 				null,            // kubernetesTokenAudience
 				null);           // webauthnRelyingParty (fail closed)

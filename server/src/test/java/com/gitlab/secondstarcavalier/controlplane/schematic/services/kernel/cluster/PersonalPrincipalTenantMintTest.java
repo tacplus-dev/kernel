@@ -100,7 +100,7 @@ class PersonalPrincipalTenantMintTest {
 				null,            // configMap
 				new WorkloadMap(new InMemoryManager()),
 				principalMap,
-				null,            // persistState
+				null,            // writeIdentitySnapshot
 				null,            // kubernetesTokenVerifier
 				"schematic-kernel",
 				null);           // webauthnRelyingParty (fail closed)

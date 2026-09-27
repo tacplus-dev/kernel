@@ -356,7 +356,7 @@ public class ClusterServer {
 
 		// KeyRotator: kernel's dual-key (EdDSA + ES256) signing authority. The
 		// publisher/remover/reader operate on the IdentityState verifying_keys
-		// boundary; onKeysChanged persists a fresh disk snapshot (the snapshot is
+		// boundary; onKeysChanged writes a fresh identity snapshot (the snapshot is
 		// taken lazily via the identitySnapshot field, assigned just below).
 		// Retention must outlast every token signed with the key, so it is
 		// derived from the rotation interval and BOTH mint ceilings rather than
@@ -446,7 +446,7 @@ public class ClusterServer {
 					}
 				});
 
-		// Load the persisted snapshot and rehydrate Hazelcast-backed state before
+		// Load the identity snapshot from disk and rehydrate Hazelcast-backed state before
 		// the rotator starts (signing_keys are restored into the rotator; the
 		// public verifying set + Ca + ConfigState + revocations are restored into
 		// their boundary maps). An absent snapshot returns null.
@@ -830,8 +830,8 @@ public class ClusterServer {
 						try {
 							caState.putServiceCas(serviceName, certPair);
 							// service_cas are currently rebuilt on demand at startup, not
-							// rehydrated from disk, so keep cert minting off the persistence
-							// hot path.
+							// rehydrated from disk, so keep cert minting off the identity
+							// snapshot hot path.
 						} catch (Exception e) {
 							throw new RuntimeException("putServiceCas failed", e);
 						}
@@ -921,8 +921,8 @@ public class ClusterServer {
 						try {
 							caState.putServiceCas(serviceName, certPair);
 							// service_cas are currently rebuilt on demand at startup, not
-							// rehydrated from disk, so keep cert minting off the persistence
-							// hot path.
+							// rehydrated from disk, so keep cert minting off the identity
+							// snapshot hot path.
 						} catch (Exception e) {
 							throw new RuntimeException("putServiceCas failed", e);
 						}
@@ -979,6 +979,9 @@ public class ClusterServer {
 			// lock membership tracks cluster membership rather than a second topology.
 			int ratisPort = cfg.getRatisListener().getPort();
 			var ratisGroup = RaftGroup.valueOf(RatisFencedLock.GROUP_ID, ratisPeers(members, ratisPort));
+			// The Raft log, under kernel's on-disk directory (Config.persistence_dir).
+			// Raft-log durability is what makes a fence token monotonic; it is not the
+			// generic state durability kernel does not do.
 			var ratisStorage = new java.io.File(cfg.getPersistenceDir(), "fencedlock");
 			try {
 				this.fencedLock = RatisFencedLock.start(
@@ -1121,7 +1124,7 @@ public class ClusterServer {
 	}
 
 	/**
-	 * The KeyRotator's key-change hook: persists a fresh disk snapshot and pushes
+	 * The KeyRotator's key-change hook: writes a fresh identity snapshot and pushes
 	 * the new key set to the kernel's own Authorizer at once.
 	 *
 	 * <p>Without the second half the Authorizer stayed up to LocalJwkSource's
@@ -1156,7 +1159,7 @@ public class ClusterServer {
 	 * separately into the KeyRotator. A null snapshot (cold start) is a no-op.
 	 */
 	/**
-	 * Re-applies persisted grant revocations onto the boot-seeded live grants.
+	 * Re-applies the identity snapshot's grant revocations onto the boot-seeded live grants.
 	 *
 	 * <p>Config.grants remains the source of truth for WHICH grants exist — the
 	 * catalog is seeded from config at every boot, so a grant added to config
@@ -1380,7 +1383,7 @@ public class ClusterServer {
 			}
 			// NOTE: service_cas are NOT rehydrated here yet. X509CertChain.id now
 			// carries the service-name key, so this can become a normal restore path
-			// once kernel persistence is wired to replay service_cas.
+			// once the identity snapshot is wired to replay service_cas.
 			if (snapshot.getServiceCasCount() > 0) {
 				logger.info("Skipping rehydrate of {} service_cas (re-created on next X509Mint)",
 						snapshot.getServiceCasCount());

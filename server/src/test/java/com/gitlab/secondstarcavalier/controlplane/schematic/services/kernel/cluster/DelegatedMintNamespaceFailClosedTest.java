@@ -94,7 +94,7 @@ class DelegatedMintNamespaceFailClosedTest {
 				null,            // configMap
 				new WorkloadMap(new InMemoryManager()),
 				new PrincipalMap(new InMemoryManager()),
-				null,            // persistState
+				null,            // writeIdentitySnapshot
 				null,            // kubernetesTokenVerifier
 				KERNEL_AUDIENCE,
 				null);           // webauthnRelyingParty (fail closed)

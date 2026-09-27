@@ -171,7 +171,8 @@ public class Bootstrap {
 				|| config.getNodeCount() != 0
 				|| config.hasTls()
 				|| config.getPartitionCount() != 0
-				|| !config.getPersistenceDir().isEmpty()
-				|| config.getPersistenceFormatValue() != 0;
+				// Config.persistence_dir is kernel's one on-disk directory (identity
+				// snapshot + FencedLock Raft log); kernel does no other durability.
+				|| !config.getPersistenceDir().isEmpty();
 	}
 }

@@ -58,8 +58,8 @@ public final class IdentitySnapshot {
     private final Supplier<Kernel.PrincipalState> principalStateReader;
 
     /**
-     * @param persistenceDir       the kernel persistence directory (Config.persistence_dir); the
-     *                             diskstore base path
+     * @param diskDir              the kernel disk directory (Config.persistence_dir — kernel's
+     *                             one on-disk artifact is this snapshot); the diskstore base path
      * @param keyRotator           source of the active signing-key records
      * @param verifyingKeysReader  current public verifying keys (Identity.verifying_keys)
      * @param caReader             current Ca state (ca_certs + service_cas)
@@ -70,7 +70,7 @@ public final class IdentitySnapshot {
      *                             principals and the `people` tenant's user rows
      */
     public IdentitySnapshot(
-            String persistenceDir,
+            String diskDir,
             KeyRotator keyRotator,
             Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
             Supplier<Kernel.Ca> caReader,
@@ -79,7 +79,7 @@ public final class IdentitySnapshot {
             Supplier<List<Kernel.Grant>> grantsReader,
             Supplier<Kernel.PrincipalState> principalStateReader) {
         this.base = Paths.get(
-                (persistenceDir != null && !persistenceDir.isEmpty()) ? persistenceDir : "/var/lib/kernel");
+                (diskDir != null && !diskDir.isEmpty()) ? diskDir : "/var/lib/kernel");
         this.keyRotator = keyRotator;
         this.verifyingKeysReader = verifyingKeysReader;
         this.caReader = caReader;
@@ -90,7 +90,7 @@ public final class IdentitySnapshot {
     }
 
     /**
-     * Loads the persisted kernel snapshot, or {@code null} if none exists yet
+     * Loads the kernel identity snapshot from disk, or {@code null} if none exists yet
      * (first boot).
      *
      * <p>Only a genuinely absent snapshot is a cold start: {@code
@@ -184,9 +184,9 @@ public final class IdentitySnapshot {
             }
 
             DiskStores.saveKernelDiskState(base, NS, b.build(), Snapshot.Opts.defaults());
-            logger.debug("Persisted kernel disk snapshot to {}", base);
+            logger.debug("Wrote kernel identity snapshot to {}", base);
         } catch (RuntimeException e) {
-            logger.error("Failed to persist kernel disk snapshot to {}: {}", base, e.getMessage(), e);
+            logger.error("Failed to write kernel identity snapshot to {}: {}", base, e.getMessage(), e);
             throw e;
         }
     }

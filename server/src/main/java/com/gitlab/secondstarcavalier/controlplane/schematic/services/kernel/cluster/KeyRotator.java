@@ -37,8 +37,8 @@ import org.slf4j.LoggerFactory;
  *       by the Mint handler for {@code MintExternalToken}.</li>
  * </ul>
  *
- * <p>On start the rotator restores any persisted keys handed to it from the
- * kernel disk snapshot ({@link #restore}); for any algorithm without a restored
+ * <p>On start the rotator restores any keys handed to it from the kernel
+ * identity snapshot ({@link #restore}); for any algorithm without a restored
  * key it generates a fresh pair. Both active public JWKs are (re)published into
  * the {@code verifying_keys} boundary so every node can verify tokens this node
  * signs.
@@ -47,7 +47,7 @@ import org.slf4j.LoggerFactory;
  * {@code keyRetentionSeconds} (≥ max token lifetime) are evicted so tokens
  * signed by a rotated key stay verifiable until they expire. After any key
  * change the rotator invokes {@code onKeysChanged} so the kernel writes a fresh
- * disk snapshot — persistence is the snapshot, NOT a per-key file.
+ * identity snapshot — the snapshot is the whole of it, NOT a per-key file.
  *
  * <p><b>Every published JWK carries an {@code exp}.</b> {@code verifying_keys}
  * is an {@code epoch_expiration} boundary: the generated state map turns a
@@ -60,8 +60,8 @@ import org.slf4j.LoggerFactory;
  * makes expiry the state store's job and independent of this node's schedule.
  *
  * <p>{@link #sweepVerifyingKeys} is the backstop for the two cases the TTL
- * cannot cover: keys persisted before {@code exp} was set (no TTL at all), and
- * a set that has outgrown what kernel can persist or publish. It runs on start
+ * cannot cover: keys snapshotted before {@code exp} was set (no TTL at all), and
+ * a set that has outgrown what kernel can snapshot or publish. It runs on start
  * as well as on rotation.
  */
 public class KeyRotator {
@@ -172,7 +172,7 @@ public class KeyRotator {
      * @param keyPublisher            writes a JWK to the verifying_keys boundary
      * @param keyRemover              removes a JWK by kid from verifying_keys
      * @param keyReader               reads current verifying_keys
-     * @param onKeysChanged           invoked after any key change so the kernel persists a new disk snapshot
+     * @param onKeysChanged           invoked after any key change so the kernel writes a new identity snapshot
      */
     public KeyRotator(
             long rotationIntervalSeconds,
@@ -198,7 +198,7 @@ public class KeyRotator {
     }
 
     /**
-     * Restores persisted signing keys from the kernel disk snapshot. Each record
+     * Restores signing keys from the kernel identity snapshot. Each record
      * is matched to its algorithm by the JWK {@code alg}. Must be called (with
      * the snapshot's records, possibly empty) before {@link #start}.
      */
@@ -209,14 +209,14 @@ public class KeyRotator {
         for (Kernel.SigningKeyRecord record : records) {
             SigAlg alg = algOf(record.getJwk().getAlg());
             if (alg == null) {
-                logger.warn("Ignoring persisted signing key with unknown alg={}", record.getJwk().getAlg());
+                logger.warn("Ignoring snapshotted signing key with unknown alg={}", record.getJwk().getAlg());
                 continue;
             }
             ActiveKey k = active.get(alg);
             k.signingKey = ImmutableKey.from(record.getKey());
             k.kid = record.getKey().getId();
             k.jwk = record.getJwk();
-            logger.info("Restored persisted signing key: alg={}, kid={}", alg.alg, k.kid);
+            logger.info("Restored signing key from identity snapshot: alg={}, kid={}", alg.alg, k.kid);
         }
     }
 
@@ -368,7 +368,7 @@ public class KeyRotator {
      * {@code keyRetentionSeconds} since creation can no longer be carrying a
      * live token, because retention is ≥ the maximum token lifetime kernel will
      * mint. Then by COUNT: if the set is still over {@link #MAX_VERIFYING_KEYS}
-     * — more than kernel can persist or publish — the oldest survivors go until
+     * — more than kernel can snapshot or publish — the oldest survivors go until
      * it fits, since those are the keys whose tokens expire soonest.
      *
      * <p>This node's own active keys are never evicted, by either rule: it is

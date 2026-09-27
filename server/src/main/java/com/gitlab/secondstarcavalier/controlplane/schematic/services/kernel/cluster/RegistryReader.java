@@ -34,6 +34,9 @@ public class RegistryReader {
 			String stateRoot,
 			String boundary,
 			String consistency,
+			// The registry's (spec.persistence) flag, carried verbatim for admin
+			// reporting. On a kernel boundary it marks membership in the identity
+			// snapshot; kernel does no other durability.
 			boolean persistence,
 			boolean collection,
 			String typeFqn,

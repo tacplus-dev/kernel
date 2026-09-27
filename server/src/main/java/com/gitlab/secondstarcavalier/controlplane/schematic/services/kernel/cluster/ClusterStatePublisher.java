@@ -228,11 +228,16 @@ public class ClusterStatePublisher {
 			cpu.setSystemCpuLoad(sunOs.getCpuLoad());
 		}
 
+		// Kernel's on-disk directory holds exactly two things: the identity
+		// snapshot (KernelDiskState) and the FencedLock Raft log. Kernel does no
+		// other durability — durable data is stratum's. The field names below come
+		// from hazelcast.AdminDiskMetrics in platform/proto and still read
+		// "persistence"; the directory they describe is this one.
 		var disk = Hazelcast.AdminDiskMetrics.newBuilder();
-		String persistenceDir = config.getPersistenceDir();
-		if (!persistenceDir.isEmpty()) {
-			File dir = new File(persistenceDir);
-			disk.setPersistenceDir(persistenceDir)
+		String diskDir = config.getPersistenceDir();
+		if (!diskDir.isEmpty()) {
+			File dir = new File(diskDir);
+			disk.setPersistenceDir(diskDir)
 					.setTotalBytes(dir.getTotalSpace())
 					.setUsableBytes(dir.getUsableSpace())
 					.setUsedBytes(dir.getTotalSpace() - dir.getUsableSpace());
@@ -439,6 +444,9 @@ public class ClusterStatePublisher {
 								.setQualifiedName(qualifiedName)
 								.setStateRoot(stateRoot)
 								.setConsistency(info != null ? info.consistency() : "")
+								// The registry's boundary flag, reported as-is. For a kernel
+								// boundary it means "this boundary is in the identity snapshot";
+								// kernel does no other durability.
 								.setPersistence(info != null && info.persistence())
 								.setSize(hzMap.size())
 								.setOwnedEntryCount(local.getOwnedEntryCount())

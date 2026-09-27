@@ -230,14 +230,12 @@ public class ClusterStatePublisher {
 
 		// Kernel's on-disk directory holds exactly two things: the identity
 		// snapshot (KernelDiskState) and the FencedLock Raft log. Kernel does no
-		// other durability — durable data is stratum's. The field names below come
-		// from hazelcast.AdminDiskMetrics in platform/proto and still read
-		// "persistence"; the directory they describe is this one.
+		// other durability — durable data is stratum's.
 		var disk = Hazelcast.AdminDiskMetrics.newBuilder();
-		String diskDir = config.getPersistenceDir();
+		String diskDir = config.getDiskDir();
 		if (!diskDir.isEmpty()) {
 			File dir = new File(diskDir);
-			disk.setPersistenceDir(diskDir)
+			disk.setDiskDir(diskDir)
 					.setTotalBytes(dir.getTotalSpace())
 					.setUsableBytes(dir.getUsableSpace())
 					.setUsedBytes(dir.getTotalSpace() - dir.getUsableSpace());

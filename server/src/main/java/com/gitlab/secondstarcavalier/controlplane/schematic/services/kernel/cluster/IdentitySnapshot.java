@@ -58,7 +58,7 @@ public final class IdentitySnapshot {
     private final Supplier<Kernel.PrincipalState> principalStateReader;
 
     /**
-     * @param diskDir              the kernel disk directory (Config.persistence_dir — kernel's
+     * @param diskDir              the kernel disk directory (Config.disk_dir — kernel's
      *                             one on-disk artifact is this snapshot); the diskstore base path
      * @param keyRotator           source of the active signing-key records
      * @param verifyingKeysReader  current public verifying keys (Identity.verifying_keys)

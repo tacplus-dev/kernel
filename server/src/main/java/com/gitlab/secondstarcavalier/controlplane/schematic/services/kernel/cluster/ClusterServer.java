@@ -399,7 +399,7 @@ public class ClusterServer {
 		// IdentitySnapshot builds the KernelDiskState snapshot from the rotator's
 		// signing-key records plus the live boundary maps.
 		this.identitySnapshot = new IdentitySnapshot(
-				cfg.getPersistenceDir(),
+				cfg.getDiskDir(),
 				keyRotator,
 				() -> {
 					try {
@@ -979,10 +979,10 @@ public class ClusterServer {
 			// lock membership tracks cluster membership rather than a second topology.
 			int ratisPort = cfg.getRatisListener().getPort();
 			var ratisGroup = RaftGroup.valueOf(RatisFencedLock.GROUP_ID, ratisPeers(members, ratisPort));
-			// The Raft log, under kernel's on-disk directory (Config.persistence_dir).
+			// The Raft log, under kernel's on-disk directory (Config.disk_dir).
 			// Raft-log durability is what makes a fence token monotonic; it is not the
 			// generic state durability kernel does not do.
-			var ratisStorage = new java.io.File(cfg.getPersistenceDir(), "fencedlock");
+			var ratisStorage = new java.io.File(cfg.getDiskDir(), "fencedlock");
 			try {
 				this.fencedLock = RatisFencedLock.start(
 						selfRatisPeerId(members, ratisPort), ratisGroup, ratisStorage);

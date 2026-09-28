@@ -6,38 +6,38 @@ Merging the specialist security review with the correctness pass. Checking agent
 Security specialist context was lost after the timeout. Verifying the highest-confidence items from the earlier pass so the report is complete.
 
 ✗ Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ Permission denied and could not request permission from user
 
 ✗ Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ Permission denied and could not request permission from user
 
 ✗ Read SelfAuthenticatingRpcSkipTest.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/test/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/authz/SelfAuthenticatingRpcSk
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/test/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/authz/SelfAuthenticatingRpcSk
   │ ipTest.java
   └ Permission denied and could not request permission from user
 
 ✗ Search (grep)
   │ "getDnsNames|addDnsNames|certRequest" in **/IdentityServiceImpl.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ Permission denied and could not request permission from user
 
 ✗ Search (grep)
   │ "registerMethodAuth|RPC_FLAG|auth_disabled|CliTokenBroker" in **/*.{java,proto}
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel)
   └ Permission denied and could not request permission from user
 
 ✗ Re-read key finding line ranges (shell)
-  │ sed -n '2515,2585p' /Users/jody/workspace/gitlab/secondstarcavalier/schematic/platform/service
-  │ s/kernel/server/src/main/java/com/gitlab/secondstarcavalier/controlplane/schematic/services/ke
+  │ sed -n '2515,2585p' /Users/jody/workspace/gitlab/seabeam/schematic/platform/service
+  │ s/kernel/server/src/main/java/com/gitlab/seabeam/controlplane/schematic/services/ke
   │ rnel/cluster/IdentityServiceImpl.java; echo '---'; sed -n '155,175p' /Users/jody/workspace/git
-  │ lab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/com/gitlab/seco
+  │ lab/seabeam/schematic/platform/services/kernel/server/src/main/java/com/gitlab/seco
   │ ndstarcavalier/controlplane/schematic/services/kernel/cluster/TenantAdminServiceImpl.java; …
   └ Permission denied and could not request permission from user
 

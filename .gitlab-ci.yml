@@ -16,7 +16,7 @@ compute-image:
       fi
       MAJOR="$(echo "$TACPLUS_VER" | cut -d. -f1)"
       MINOR="$(echo "$TACPLUS_VER" | cut -d. -f2)"
-      REPO="secondstarcavalier/schematic/tacplus/tacplus-${MAJOR}-${MINOR}"
+      REPO="seabeam/schematic/tacplus/tacplus-${MAJOR}-${MINOR}"
       IMAGE="${CI_REGISTRY}/${REPO}:latest"
       echo "TACPLUS_IMAGE=${IMAGE}" > tacplus.env
       echo "Using tacplus image: ${IMAGE}"
@@ -27,7 +27,7 @@ compute-image:
 variables:
   DOCKER_TLS_CERTDIR: ""
   MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
-  TACPLUS_PROJECT_PATH: "secondstarcavalier/schematic/tacplus"
+  TACPLUS_PROJECT_PATH: "seabeam/schematic/tacplus"
 
 .parse-version: &parse-version
   - |
@@ -60,7 +60,7 @@ variables:
     RESTPART="${V#*-}"
     PROTO_BRANCH="${RESTPART%.*}"
     PROTO_TAG=$(git ls-remote --tags --refs \
-      "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/secondstarcavalier/schematic/platform/proto.git" \
+      "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/seabeam/schematic/platform/proto.git" \
       "refs/tags/v${PROTO_MAJOR}.${PROTO_MINOR}.${PROTO_PATCH}-${PROTO_BRANCH}.*" \
       | sed -n "s|.*refs/tags/v${PROTO_MAJOR}\\.${PROTO_MINOR}\\.${PROTO_PATCH}-${PROTO_BRANCH}\\.\\([0-9][0-9]*\\)$|\\1 v${PROTO_MAJOR}.${PROTO_MINOR}.${PROTO_PATCH}-${PROTO_BRANCH}.\\1|p" \
       | sort -n \
@@ -68,11 +68,11 @@ variables:
       | awk '{print $2}')
     if [ -n "$PROTO_TAG" ]; then
       echo "Resolved proto tag: $PROTO_TAG"
-      PROTO_CACHE_DIR="/root/.tacplus/cache/proto/gitlab.com-secondstarcavalier-controlplane-schematic-proto"
+      PROTO_CACHE_DIR="/root/.tacplus/cache/proto/gitlab.com-seabeam-controlplane-schematic-proto"
       rm -rf "$PROTO_CACHE_DIR"
       mkdir -p "$(dirname "$PROTO_CACHE_DIR")"
       git clone --depth 1 --branch "$PROTO_TAG" \
-        "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/secondstarcavalier/schematic/platform/proto.git" \
+        "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/seabeam/schematic/platform/proto.git" \
         "$PROTO_CACHE_DIR"
       tacplus build --tag "$PROTO_TAG"
     else
@@ -98,7 +98,7 @@ build:
     - mvn -pl server -am -Dtacplus.skip=true package
     - |
       javap -classpath server/target/kernel.jar \
-        com.gitlab.secondstarcavalier.controlplane.schematic.services.kernel.model.types.services.kernel.MintGrpc \
+        com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.kernel.MintGrpc \
         | grep -q 'getMintX509CertMethod'
   artifacts:
     paths:
@@ -183,7 +183,7 @@ compute-validate-image:
       fi
       MAJOR="$(echo "$TACPLUS_VER" | cut -d. -f1)"
       MINOR="$(echo "$TACPLUS_VER" | cut -d. -f2)"
-      REPO="secondstarcavalier/schematic/tacplus/tacplus-${MAJOR}-${MINOR}"
+      REPO="seabeam/schematic/tacplus/tacplus-${MAJOR}-${MINOR}"
       echo "TACPLUS_IMAGE=${CI_REGISTRY}/${REPO}:latest" > tacplus.env
       echo "Using tacplus image: ${CI_REGISTRY}/${REPO}:latest" 
   artifacts:

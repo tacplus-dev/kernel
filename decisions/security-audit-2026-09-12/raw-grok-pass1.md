@@ -10,12 +10,12 @@ Launching a dedicated security review and starting a parallel correctness/qualit
 
 / Search (glob)
   │ "**/*.{java,kt,proto,ts,js}" in
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/codegen/src
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/codegen/src
   └ 42 files found
 
 / Search (glob)
   │ "**/*.{java,kt,proto}" in
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src
   └ 96 files found
 
 Security review is running. I’ll inspect token, identity, and state-machine paths for correctness and pattern drift.
@@ -24,381 +24,381 @@ Security review is running. I’ll inspect token, identity, and state-machine pa
 
 / Search (grep)
   │ "TODO|FIXME|HACK|XXX" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/codegen/src)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/codegen/src)
   └ No matches found
 
 / Search (grep)
   │ "synchronized|volatile|Atomic|Concurrent" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 52 lines found
 
 / Search (grep)
   │ "catch\s*\(" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 6 lines found
 
 / Search (grep)
   │ "TODO|FIXME|HACK|XXX" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src)
   └ 2 lines found
 
 ● Read TokenExchangeServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/TokenExchangeServiceI
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/TokenExchangeServiceI
   │ mpl.java
   └ L1:200 (68 lines read)
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L1:150 (150 lines read)
 
 / Search (grep)
   │ "catch\s*\([^)]+\)\s*\{\s*\}" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ No matches found
 
 / Search (grep)
   │ "printStackTrace|e\.getMessage\(\)|swallow|ignore" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 113 lines found
 
 / Search (grep)
   │ "catch\s*\([^)]+\)\s*\{[^}]*log\.(debug|warn|info|error)" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ No matches found
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L150:400 (251 lines read)
 
 / Search (grep)
   │ "namespace|chroot|tenant" in **/IdentityServiceImpl.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 83 lines found
 
 / Search (grep)
   │ "catch \(IllegalArgumentException ignored\)" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 17 lines found
 
 / Search (grep)
   │ "fail.?open|fail.?closed|if \(.* == null\)" in **/IdentityServiceImpl.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 39 lines found
 
 / Search (grep)
   │ "catch" in **/StateServer.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 19 lines found
 
 / Search (grep)
   │ "catch" in **/KernelPersistence.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 25 lines found
 
 / Search (grep)
   │ "catch" in **/CliTokenBrokerServiceImpl.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 32 lines found
 
 / Search (grep)
   │ "catch" in **/TenantAdminServiceImpl.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ No matches found
 
 ● Count lines in cluster Java files (shell)
   │ wc -l
-  │ /Users/jody/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/ma
-  │ in/java/com/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/*.java
+  │ /Users/jody/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/ma
+  │ in/java/com/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/*.java
   └ 26 lines…
 
 ● Read KernelPersistence.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/KernelPersistence.jav
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/KernelPersistence.jav
   │ a
   └ 161 lines read
 
 ● Read CliTokenBrokerServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/CliTokenBrokerService
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/CliTokenBrokerService
   │ Impl.java
   └ 353 lines read
 
 ● Read RateLimitInterceptor.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/RateLimitInterceptor.
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/RateLimitInterceptor.
   │ java
   └ 444 lines read
 
 ● Read FencedLockStateMachine.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/fencedlock/FencedLockStateMac
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/fencedlock/FencedLockStateMac
   │ hine.java
   └ 102 lines read
 
 ● Read KeyRotator.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/KeyRotator.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/KeyRotator.java
   └ 1 line read
 
 ● Read RegistryAuthExemptions.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/codegen/src/main/java/c
-  │ om/gitlab/secondstarcavalier/controlplane/codegen/RegistryAuthExemptions.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/codegen/src/main/java/c
+  │ om/gitlab/seabeam/controlplane/codegen/RegistryAuthExemptions.java
   └ 100 lines read
 
 ● Read SecurityPolicyParser.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/codegen/src/main/java/c
-  │ om/gitlab/secondstarcavalier/controlplane/codegen/SecurityPolicyParser.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/codegen/src/main/java/c
+  │ om/gitlab/seabeam/controlplane/codegen/SecurityPolicyParser.java
   └ 112 lines read
 
 ● Read TenantAdminServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/TenantAdminServiceImp
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/TenantAdminServiceImp
   │ l.java
   └ L1:250 (250 lines read)
 
 ● Read TenantAdminServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/TenantAdminServiceImp
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/TenantAdminServiceImp
   │ l.java
   └ L250:641 (392 lines read)
 
 ● Read KeyRotator.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/KeyRotator.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/KeyRotator.java
   └ L1:250 (249 lines read)
 
 / Search (grep)
   │ "persistHook|persistState" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 22 lines found
 
 / Search (grep)
   │ "substring\(0,\s*8\)" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel)
   └ 19 lines found
 
 ● Read TlsCertServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/TlsCertServiceImpl.ja
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/TlsCertServiceImpl.ja
   │ va
   └ L1:220 (220 lines read)
 
 ● Read SecurityAuthenticatorGenerator.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/codegen/src/main/java/c
-  │ om/gitlab/secondstarcavalier/controlplane/codegen/generator/SecurityAuthenticatorGenerator.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/codegen/src/main/java/c
+  │ om/gitlab/seabeam/controlplane/codegen/generator/SecurityAuthenticatorGenerator.java
   └ L1:200 (200 lines read)
 
 ● Read PersonalIdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/PersonalIdentityServi
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/PersonalIdentityServi
   │ ceImpl.java
   └ 111 lines read
 
 / Search (grep)
   │ "^\t(public |private |static |@Override)" in **/IdentityServiceImpl.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 151 lines found
 
 ● Read BackendStoreServerGenerator.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/codegen/src/main/java/c
-  │ om/gitlab/secondstarcavalier/controlplane/codegen/generator/BackendStoreServerGenerator.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/codegen/src/main/java/c
+  │ om/gitlab/seabeam/controlplane/codegen/generator/BackendStoreServerGenerator.java
   └ L1:150 (104 lines read)
 
 ● Read TlsCertServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/TlsCertServiceImpl.ja
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/TlsCertServiceImpl.ja
   │ va
   └ L220:416 (197 lines read)
 
 / Search (grep)
   │ "bypass|NO_AUTH|self.?auth|TlsCert" in **/ClusterServer.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 36 lines found
 
 / Search (grep)
   │ "mintUserTokenInternal" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src)
   └ 6 lines found
 
 ● Read CliTokenBrokerServiceImplTest.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/test/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/CliTokenBrokerService
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/test/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/CliTokenBrokerService
   │ ImplTest.java
   └ L1:100 (99 lines read)
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L400:750 (351 lines read)
 
 / Search (grep)
   │ "createPersonalPrincipal|assertNotRevoked|assertGrantStillActive" in **/IdentityServiceImpl.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 11 lines found
 
 / Search (grep)
   │ "Tokenrequest\.TokenMintResponse mintUserTokenInternal" in **/IdentityServiceImpl.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 1 line found
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L2420:2550 (131 lines read)
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L2920:3100 (181 lines read)
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L3200:3350 (151 lines read)
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L3580:3729 (150 lines read)
 
 ● Read ClusterServer.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/ClusterServer.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/ClusterServer.java
   └ L1:200 (199 lines read)
 
 ● Read TokenReviewKubernetesTokenVerifier.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/TokenReviewKubernetes
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/TokenReviewKubernetes
   │ TokenVerifier.java
   └ 363 lines read
 
 ● Read FencedLockOp.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/fencedlock/FencedLockOp.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/fencedlock/FencedLockOp.java
   └ 57 lines read
 
 / Search (grep)
   │ "serviceCaWriter|persistKernelState|callerInterceptor|RAW_AUTH" in **/ClusterServer.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main)
   └ 8 lines found
 
 ● Read ClusterServer.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/ClusterServer.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/ClusterServer.java
   └ L500:650 (151 lines read)
 
 ● Read KeyRotator.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/KeyRotator.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/KeyRotator.java
   └ L250:482 (233 lines read)
 
 ● Read ClusterServer.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/ClusterServer.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/ClusterServer.java
   └ L980:1100 (121 lines read)
 
 ● Read RatisFencedLock.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/fencedlock/RatisFencedLock.ja
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/fencedlock/RatisFencedLock.ja
   │ va
   └ 164 lines read
 
 ● Read ClusterServer.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/ClusterServer.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/ClusterServer.java
   └ L820:920 (101 lines read)
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L1550:1750 (201 lines read)
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L1880:2100 (221 lines read)
 
 ● Read StoreServerAuthorizationTest.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/codegen/src/test/java/c
-  │ om/gitlab/secondstarcavalier/controlplane/codegen/StoreServerAuthorizationTest.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/codegen/src/test/java/c
+  │ om/gitlab/seabeam/controlplane/codegen/StoreServerAuthorizationTest.java
   └ L1:80 (80 lines read)
 
 ● Read LocalJwkSource.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/LocalJwkSource.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/LocalJwkSource.java
   └ 68 lines read
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L732:920 (188 lines read)
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L2580:2750 (171 lines read)
 
 ● Read TemplateEngine.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/codegen/src/main/java/c
-  │ om/gitlab/secondstarcavalier/controlplane/codegen/generator/TemplateEngine.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/codegen/src/main/java/c
+  │ om/gitlab/seabeam/controlplane/codegen/generator/TemplateEngine.java
   └ 49 lines read
 
 ● Read ProtoDescriptorParser.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/codegen/src/main/java/c
-  │ om/gitlab/secondstarcavalier/controlplane/codegen/ProtoDescriptorParser.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/codegen/src/main/java/c
+  │ om/gitlab/seabeam/controlplane/codegen/ProtoDescriptorParser.java
   └ L1:120 (120 lines read)
 
 ● Read HazelcastMap.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/graphs/hazelcast/HazelcastMap
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/graphs/hazelcast/HazelcastMap
   │ .java
   └ L1:80 (80 lines read)
 
 ● Read FencedLockServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/FencedLockServiceImpl
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/FencedLockServiceImpl
   │ .java
   └ 52 lines read
 
 / Search (grep)
   │ "auth_disabled|NO_AUTH|skip" in **/ProtoDescriptorParser.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/codegen/src)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel/codegen/src)
   └ 31 lines found
 
 ● Read SpiffeIds.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/SpiffeIds.java
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/SpiffeIds.java
   └ 81 lines read
 
 ● Read TenantAdminSelfLockoutTest.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/test/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/TenantAdminSelfLockou
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/test/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/TenantAdminSelfLockou
   │ tTest.java
   └ L1:80 (80 lines read)
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L2280:2420 (141 lines read)
 
 / Search (grep)
   │ "limit <= 0" in **/*.java
-  │ (~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel)
+  │ (~/workspace/gitlab/seabeam/schematic/platform/services/kernel)
   └ 1 line found
 
 ✔ Todo completed 2 items
@@ -413,14 +413,14 @@ Security review is still running on `server/src` and `codegen/src`. Correctness/
 ✔ Todo completed security-review
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L1735:1820 (86 lines read)
 
 ● Read IdentityServiceImpl.java
-  │ ~/workspace/gitlab/secondstarcavalier/schematic/platform/services/kernel/server/src/main/java/co
-  │ m/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
+  │ ~/workspace/gitlab/seabeam/schematic/platform/services/kernel/server/src/main/java/co
+  │ m/gitlab/seabeam/controlplane/schematic/services/kernel/cluster/IdentityServiceImpl.j
   │ ava
   └ L3480:3575 (96 lines read)
 

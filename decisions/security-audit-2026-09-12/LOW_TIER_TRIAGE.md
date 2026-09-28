@@ -9,8 +9,8 @@ fixed by that work, and tool claims that turned out not to be bugs, are listed i
 Descriptions are my own reading of the code, not the tools' wording.
 
 Paths are relative to
-`server/src/main/java/com/gitlab/secondstarcavalier/controlplane/schematic/services/kernel/` and
-`codegen/src/main/java/com/gitlab/secondstarcavalier/controlplane/codegen/` unless noted.
+`server/src/main/java/com/gitlab/seabeam/controlplane/schematic/services/kernel/` and
+`codegen/src/main/java/com/gitlab/seabeam/controlplane/codegen/` unless noted.
 
 27 genuine items, grouped into 4 file-disjoint batches for parallel dispatch (see
 [Batches](#dispatch-batches)). Within each batch items are ordered most- to least-worth-fixing.

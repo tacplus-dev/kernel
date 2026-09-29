@@ -1,18 +1,36 @@
 
     /**
-     * The {{FIELD_PASCAL}} snapshot one scope may see: its own entries only, with
-     * the scope prefix stripped off the keys. Payloads are returned untouched.
-     * A root (/system) scope owns every key and strips nothing, so this is the
-     * whole map exactly as it was before namespace scoping existed.
+     * The {{FIELD_PASCAL}} snapshot one scope may see: its own entries, with the
+     * scope prefix stripped off the keys, plus — on a fleet-wide root — the system
+     * entries it has not shadowed. Payloads are returned untouched. A root
+     * (/system) scope owns every key and strips nothing, so this is the whole map
+     * exactly as it was before namespace scoping existed.
      */
     private {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse build{{FIELD_PASCAL}}Snapshot(NamespaceScope scope) {
         {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.newBuilder();
         for (java.util.Map.Entry<String, {{QUALIFIED_TYPE}}> e : {{FIELD_CAMEL}}Map.entrySet()) {
             if (scope.owns(e.getKey())) {
                 resp.putEntries(scope.unscope(e.getKey()), e.getValue());
+            } else if (readsSystem{{FIELD_PASCAL}}(scope, e.getKey())) {
+                resp.putEntries(e.getKey(), e.getValue());
             }
         }
         return resp.build();
+    }
+
+    /**
+     * Whether {@code storedKey}, which {@code scope} does not own, is a system
+     * entry it reads: the root is fleet-wide, and the caller has no entry of its
+     * own under the same name (its own always shadows the system one).
+     */
+    private boolean readsSystem{{FIELD_PASCAL}}(NamespaceScope scope, String storedKey) {
+        return FLEET_WIDE_READ && scope.readsSystemEntry(storedKey)
+            && !{{FIELD_CAMEL}}Map.containsKey(scope.scope(storedKey));
+    }
+
+    /** The stored key a read of the caller-named {@code key} resolves to. */
+    private String readKey{{FIELD_PASCAL}}(NamespaceScope scope, String key) {
+        return readsSystem{{FIELD_PASCAL}}(scope, key) ? key : scope.scope(key);
     }
 
     private void pollCollection{{FIELD_PASCAL}}() {

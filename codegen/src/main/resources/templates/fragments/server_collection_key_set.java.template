@@ -9,6 +9,8 @@
             for (String key : {{FIELD_CAMEL}}Map.keySet()) {
                 if (scope.owns(key)) {
                     resp.addKeys(scope.unscope(key));
+                } else if (readsSystem{{FIELD_PASCAL}}(scope, key)) {
+                    resp.addKeys(key);
                 }
             }
             responseObserver.onNext(resp.build());

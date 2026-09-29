@@ -76,6 +76,28 @@ class StateServerAuthorizationTest {
 	}
 
 	/**
+	 * A root whose policy grants every service is fleet-wide: tenant callers read
+	 * its system entries. Any root that names its callers stays a plain chroot.
+	 */
+	@Test
+	void onlyARootGrantingEveryServiceIsFleetWide(@TempDir Path tmp) throws IOException {
+		assertTrue(generateStateServer(tmp.resolve("named"), List.of(FIXTURE_POLICY))
+				.contains("private static final boolean FLEET_WIDE_READ = false;"));
+
+		List<AccessPolicy> grantingEveryone = List.of(
+				new AccessPolicy("FixtureState", "fixtures", List.of("*"), List.of("service:fixtures"),
+						List.of(), Map.of(), false, false),
+				new AccessPolicy("FixtureState", "fixtures", List.of("service:fixtures"), List.of("*"),
+						List.of(), Map.of(), false, false));
+		for (int i = 0; i < grantingEveryone.size(); i++) {
+			AccessPolicy everyone = grantingEveryone.get(i);
+			assertTrue(generateStateServer(tmp.resolve("everyone-" + i), List.of(everyone))
+					.contains("private static final boolean FLEET_WIDE_READ = true;"),
+					"a policy granting \"*\" must generate a fleet-wide server: " + everyone);
+		}
+	}
+
+	/**
 	 * Fail-closed: a state root with no policy fails generation rather than
 	 * emitting a server that authorizes nothing. A build warning is what let this
 	 * gap ship — {@code grpcconfig.ServiceConfigState} was generated with

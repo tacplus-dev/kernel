@@ -116,6 +116,28 @@ class NamespaceScopeTest {
 		assertFalse(acmeCorp.owns(acme.scope("k")));
 	}
 
+	/**
+	 * On a fleet-wide root a confined caller also reads the system entries. A
+	 * system entry is a key with no "/" — every key a confined scope stores
+	 * contains the "/" its prefix ends in, so none of them, of any tenant, passes.
+	 */
+	@Test
+	void aConfinedScopeReadsOnlyKeysNoConfinedScopeCanWrite() throws Exception {
+		NamespaceScope acme = as("/tenants/acme", NamespaceScope::current);
+		NamespaceScope beta = as("/tenants/beta", NamespaceScope::current);
+
+		assertTrue(acme.readsSystemEntry("eventbus@i-1"));
+		assertTrue(acme.readsSystemEntry("SINGLETON"));
+		assertFalse(acme.readsSystemEntry(beta.scope("eventbus@i-1")));
+		assertFalse(acme.readsSystemEntry(beta.scope("")));
+		// A root-written key with a "/" is not read: fail closed.
+		assertFalse(acme.readsSystemEntry("/tenants/drpepper"));
+
+		// Root already owns everything; a namespace-less caller reads nothing.
+		assertFalse(NamespaceScope.root().readsSystemEntry("eventbus@i-1"));
+		assertFalse(as("", NamespaceScope::current).readsSystemEntry("eventbus@i-1"));
+	}
+
 	@Test
 	void scopesAreEqualByPrefixSoWatchersCanBeGrouped() throws Exception {
 		// The poller groups watchers by scope to build one snapshot per scope.

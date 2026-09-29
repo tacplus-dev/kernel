@@ -40,6 +40,12 @@ public class {{CLASS_NAME}}
     private static final String CLASS_NAME = {{BACKEND_MAP_CLASS_NAME}}.class.getName();
     /** Policy key for this state root: "<proto package>.<state root>". */
     private static final String GRAPH = "{{GRAPH}}";
+    /**
+     * Whether this root is fleet-wide: its policy grants every service, so a
+     * confined caller's reads see the system entries as well as its own
+     * ({@link NamespaceScope#readsSystemEntry}). Writes stay chrooted either way.
+     */
+    private static final boolean FLEET_WIDE_READ = {{FLEET_WIDE_READ}};
 {{LEADER_CONSTANTS}}
     private final ScheduledExecutorService scheduler =
         Executors.newSingleThreadScheduledExecutor(r -> {

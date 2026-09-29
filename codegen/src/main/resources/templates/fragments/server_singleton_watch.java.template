@@ -11,7 +11,7 @@
         // Captured here: the poller runs on the scheduler thread, off the Context.
         NamespaceScope scope = NamespaceScope.current();
         try {
-            {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(scope.scope(Singleton.SINGLETON_KEY));
+            {{QUALIFIED_TYPE}} value = read{{FIELD_PASCAL}}(scope);
             if (value != null) {
                 responseObserver.onNext(value);
             }

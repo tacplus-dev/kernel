@@ -11,7 +11,7 @@
             } else {
                 size = 0;
                 for (String key : {{FIELD_CAMEL}}Map.keySet()) {
-                    if (scope.owns(key)) {
+                    if (scope.owns(key) || readsSystem{{FIELD_PASCAL}}(scope, key)) {
                         size++;
                     }
                 }

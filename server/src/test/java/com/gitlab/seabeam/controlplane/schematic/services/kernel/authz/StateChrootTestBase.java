@@ -109,6 +109,15 @@ abstract class StateChrootTestBase {
 	 * so the fixture cannot be more permissive than a real token.
 	 */
 	String tokenFor(String subject, String serviceName) {
+		return tokenFor(subject, serviceName, null);
+	}
+
+	/**
+	 * {@link #tokenFor(String, String)} plus the {@code instance_id} claim a real
+	 * service token carries, which instance-keyed writes (ServiceHealth) require.
+	 * A null {@code instanceId} leaves the claim out.
+	 */
+	String tokenFor(String subject, String serviceName, String instanceId) {
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		long now = Instant.now().getEpochSecond();
 		TokenWrapper t = TokenWrapper.create()
@@ -121,6 +130,9 @@ abstract class StateChrootTestBase {
 		t.setSubType("service");
 		t.setServiceName(serviceName);
 		t.setNamespace(Spiffe.namespaceFromSpiffe(subject));
+		if (instanceId != null) {
+			t.setInstanceId(instanceId);
+		}
 		t.sign(signingKey);
 		return t.getBase64();
 	}

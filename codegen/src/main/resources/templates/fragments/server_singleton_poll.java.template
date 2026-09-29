@@ -1,12 +1,23 @@
 
+    /**
+     * The {{FIELD_PASCAL}} value one scope reads: its own, or — on a fleet-wide
+     * root, when it has none — the system value.
+     */
+    private {{QUALIFIED_TYPE}} read{{FIELD_PASCAL}}(NamespaceScope scope) {
+        {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(scope.scope(Singleton.SINGLETON_KEY));
+        if (value == null && FLEET_WIDE_READ && scope.readsSystemEntry(Singleton.SINGLETON_KEY)) {
+            value = {{FIELD_CAMEL}}Map.get(Singleton.SINGLETON_KEY);
+        }
+        return value;
+    }
+
     private void pollSingleton{{FIELD_PASCAL}}() {
         try {
             // Each watcher sees the singleton at its own scoped key; watchers
             // sharing a scope share the read.
             java.util.Map<NamespaceScope, {{QUALIFIED_TYPE}}> values = new java.util.HashMap<>();
             for (WatcherEntry<{{QUALIFIED_TYPE}}> entry : {{FIELD_CAMEL}}Watchers) {
-                {{QUALIFIED_TYPE}} current = values.computeIfAbsent(entry.scope,
-                    s -> {{FIELD_CAMEL}}Map.get(s.scope(Singleton.SINGLETON_KEY)));
+                {{QUALIFIED_TYPE}} current = values.computeIfAbsent(entry.scope, this::read{{FIELD_PASCAL}});
                 if (current == null) {
                     continue;
                 }

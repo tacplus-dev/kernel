@@ -4,8 +4,7 @@
             StreamObserver<{{QUALIFIED_TYPE}}> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
-            {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(
-                NamespaceScope.current().scope(Singleton.SINGLETON_KEY));
+            {{QUALIFIED_TYPE}} value = read{{FIELD_PASCAL}}(NamespaceScope.current());
             responseObserver.onNext(value == null ? {{QUALIFIED_TYPE}}.getDefaultInstance() : value);
             responseObserver.onCompleted();
         } catch (ProtoException e) {

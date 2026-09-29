@@ -494,6 +494,7 @@ public class BackendServiceServerGenerator {
 		mainVars.put("CLASS_NAME", className);
 		mainVars.put("SERVICE_PREFIX", servicePrefix);
 		mainVars.put("GRAPH", graphKey(svc, ctx));
+		mainVars.put("FLEET_WIDE_READ", String.valueOf(fleetWideRead(svc, ctx)));
 		mainVars.put("GRPC_BASE", grpcBase);
 		mainVars.put("BACKEND_MAP_CLASS_NAME", info.getClassName());
 		mainVars.put("LEADER_CONSTANTS", hasLeaders
@@ -549,6 +550,28 @@ public class BackendServiceServerGenerator {
 				+ "\" — refusing to generate an unauthorized state service server."
 				+ " Expected a securityPolicies entry in codegen-config.json"
 				+ " (or an InfraStatePolicies entry, for a state root in an infra proto).");
+	}
+
+	/**
+	 * Whether a state root is fleet-wide: its policy grants every service
+	 * ({@code *} in rw or ro, matched as SecurityAuthenticator matches it). Such a
+	 * root holds state that is the same for every namespace — service discovery
+	 * ({@code kernel.ServiceHealth}) and the shared runtime config
+	 * ({@code grpcconfig.ServiceConfigState}) — so a tenant-owned caller must read
+	 * its system entries, not an empty chroot.
+	 */
+	private static boolean fleetWideRead(BackendServiceInfo svc, GeneratorContext ctx) {
+		String key = graphKey(svc, ctx);
+		for (AccessPolicy policy : ctx.getSecurityPolicies()) {
+			if (key.equals(policy.graphKey())) {
+				return grantsEveryService(policy.rw()) || grantsEveryService(policy.ro());
+			}
+		}
+		return false;
+	}
+
+	private static boolean grantsEveryService(List<String> subjects) {
+		return subjects.contains("*") || subjects.contains("service:*");
 	}
 
 	private static Map<String, String> boundaryVars(SharedBoundary b, String outerClassName,

@@ -4,7 +4,7 @@
             StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
-            String key = NamespaceScope.current().scope(request.getKey());
+            String key = readKey{{FIELD_PASCAL}}(NamespaceScope.current(), request.getKey());
             boolean exists = {{FIELD_CAMEL}}Map.containsKey(key);
             {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.newBuilder();
             resp.setFound(exists);

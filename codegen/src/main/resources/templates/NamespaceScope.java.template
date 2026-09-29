@@ -116,6 +116,23 @@ public final class NamespaceScope {
         return prefix.isEmpty() ? storedKey : storedKey.substring(prefix.length());
     }
 
+    /**
+     * Whether a stored key is a <b>system entry</b> this confined scope also reads
+     * on a fleet-wide state root — one whose policy grants every service, such as
+     * service discovery ({@code kernel.ServiceHealth}) or the shared runtime config
+     * ({@code grpcconfig.ServiceConfigState}).
+     *
+     * <p>A system entry is a stored key containing no {@code /}. Every confined
+     * prefix ends in {@code /}, so every key a confined caller writes contains one:
+     * a key without it can only have come from a root writer, and another tenant's
+     * entry can never pass. A root-written key that does contain {@code /} is not
+     * read — fail closed. A root scope already owns every key, and a scope with no
+     * namespace reads nothing.
+     */
+    public boolean readsSystemEntry(String storedKey) {
+        return prefix != null && !prefix.isEmpty() && storedKey.indexOf('/') < 0;
+    }
+
     private void requireNamespace() {
         if (prefix == null) {
             throw new IllegalStateException("caller token carries no namespace: no key is in scope");

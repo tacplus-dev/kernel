@@ -4,7 +4,8 @@
             StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse> responseObserver) {
         try {
             checkAccess("{{FIELD_NAME}}", SecurityAuthenticator.OperationType.READ);
-            {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(NamespaceScope.current().scope(request.getKey()));
+            {{QUALIFIED_TYPE}} value = {{FIELD_CAMEL}}Map.get(
+                readKey{{FIELD_PASCAL}}(NamespaceScope.current(), request.getKey()));
             {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.newBuilder();
             if (value != null) {
                 resp.setValue(value).setFound(true);

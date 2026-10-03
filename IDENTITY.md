@@ -144,7 +144,7 @@ The shape, as `kernel.UserMint` implements it (token-management decision item 7)
 - The RPC lives on a C2S service block of its own. A service declares exactly one caller surface — tacplus refuses `(spec.service_c2s)` and `(spec.service_s2s)` on the same service — so the S2S `kernel.Mint` keeps the service-called mints and the C2S block carries the client-called ones. Both are served by the same `IdentityServiceImpl`.
 - It is marked `RPC_FLAG_AUTH_ANY_USER`, so the gateway verifies the caller's token (signature, expiry, `aud: kernel`, `sub_type: user`) and proxies the call straight to kernel.
 - Kernel extracts the user's identity from that bearer token, validates it, and mints against the caller's own authority.
-- tacplus emits the gateway route — gRPC `/kernel.UserMint/<Rpc>` and REST `/api/v1/kernel/UserMint/<Rpc>` — from the annotation alone.
+- tacplus emits the gateway route — gRPC `/kernel.UserMint/<Rpc>` and REST `/kernel/UserMint/<Rpc>` — from the annotation alone.
 
 **Still on the old shape:** the C2S *token exchange* (`gateway.Mint/MintToken`, and `MintX509Cert` beside it) is still hand-written proxy code in `platform/services/gateway/src/mint.rs`. It is not a leftover that can simply be deleted: gateway's OIDC discovery document advertises `<issuer>/gateway/TokenMint` as the `token_endpoint`, and kernel's own `kernel.Mint/MintToken` is proxy-routable over gRPC but carries no REST path (it is a self-authenticating S2S method, so tacplus emits an auth-only proxy entry with no HTTP route). Moving the exchange onto the shape above means declaring it C2S on kernel first; until then the front stays.
 

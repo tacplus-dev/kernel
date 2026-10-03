@@ -710,11 +710,12 @@ public class ClusterServer {
 				}
 			}
 
-			// Token issuer derived from the cluster FQDN.
+			// Token issuer is the bare fleet origin, matching the gateway's
+			// OIDC discovery issuer.
 			String fqdn = cfg.getFqdn();
 			final String tokenIssuer;
 			if (fqdn != null && !fqdn.isEmpty()) {
-				tokenIssuer = "https://" + fqdn + Helpers.REST_ROOT_PATH;
+				tokenIssuer = "https://" + fqdn;
 				try {
 					identityState.putFqdn(Kernel.IdentityFqdn.newBuilder().setFqdn(fqdn).build());
 				} catch (Exception e) {

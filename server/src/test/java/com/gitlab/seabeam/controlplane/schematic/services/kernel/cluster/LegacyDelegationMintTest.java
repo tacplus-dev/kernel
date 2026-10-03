@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <p>{@code kernel.Mint/MintToken} is declared {@code auth_disabled}/self-authenticating,
  * and {@code doTokenMint} used to route a request with an EMPTY {@code input_token} and a
  * caller-supplied {@code subject} into {@code delegationMint}: any registered delegate —
- * not just the {@code oauth}/{@code saml} brokers {@code MintUserToken} is restricted to —
+ * not just the auth brokers {@code MintUserToken} is restricted to —
  * could mint a user token with an arbitrary {@code sub} and arbitrary claims, with no OPA
  * entitlement resolution at all. That arm is removed; {@code MintToken} is now the exchange
  * RPC its proto contract says it is, and on-behalf-of minting goes through

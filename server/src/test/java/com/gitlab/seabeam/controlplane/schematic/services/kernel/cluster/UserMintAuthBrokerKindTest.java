@@ -37,8 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * MintUserToken enforces {@code Delegate.auth_broker_kinds} — which classes of
  * user-authentication proof a delegate is trusted to attest.
  *
- * <p>This replaced the hardcoded {@code auth_services: ["oauth", "saml"]}
- * allowlist on the RPC. That literal was the only thing standing between "any
+ * <p>This replaced the hardcoded {@code auth_services} broker allowlist on
+ * the RPC. That literal was the only thing standing between "any
  * registered delegate" and "may assert who a human is"; the RPC now accepts
  * {@code ["*"]}, so the whole boundary lives in the handler and every case
  * below is load-bearing rather than belt-and-braces.
@@ -147,7 +147,7 @@ class UserMintAuthBrokerKindTest {
 	}
 
 	/**
-	 * Regression pin: the migrated oauth/saml delegate keeps working exactly as
+	 * Regression pin: the migrated oauth delegate keeps working exactly as
 	 * before. If this ever fails, this task broke IdP login rather than
 	 * containing it.
 	 */

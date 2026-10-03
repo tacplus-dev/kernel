@@ -2635,7 +2635,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// input_token. The former delegation arm — empty input_token plus a
 		// caller-supplied subject and claims — is gone: it let any registered
 		// delegate mint a user token for an arbitrary subject with none of
-		// MintUserToken's restrictions (oauth/saml brokers only, OPA entitlement
+		// MintUserToken's restrictions (auth-broker delegates only, OPA entitlement
 		// resolution). On-behalf-of minting is MintUserToken only.
 		if (request.getInputToken().isEmpty()) {
 			throw new StatusException(Status.INVALID_ARGUMENT,

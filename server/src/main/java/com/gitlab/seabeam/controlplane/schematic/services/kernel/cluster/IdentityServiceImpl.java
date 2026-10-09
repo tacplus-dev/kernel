@@ -189,6 +189,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	/** Maximum lifetime of an externally-minted token (MintExternalToken). */
 	private static final long EXTERNAL_TOKEN_MAX_TTL_SECONDS = 300;
 
+	/** Maximum lifetime of a service's own external token (MintExternalServiceToken). */
+	static final long EXTERNAL_SERVICE_TOKEN_MAX_TTL_SECONDS = 600;
+
 	/**
 	 * The registry's own ceiling — {@code PrincipalState.personal_principals}
 	 * carries {@code (spec.assert_max_size) = 65536}. It is repeated here because
@@ -4708,6 +4711,130 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			}
 			default -> com.google.gson.JsonNull.INSTANCE;
 		};
+	}
+
+	// ========================================================================
+	// MintExternalServiceToken RPC (a service's OWN identity for an off-cluster audience)
+	// ========================================================================
+
+	@Override
+	public Tokenrequest.TokenMintResponse mintExternalServiceToken(Caller caller,
+			Tokenrequest.MintExternalServiceTokenRequest request) throws ProtoException {
+		try {
+			return doMintExternalServiceToken(request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("MintExternalServiceToken failed", e);
+			throw new ProtoException(ProtoException.INTERNAL, "external service token mint failed: " + e.getMessage(), e);
+		}
+	}
+
+	/**
+	 * Mints a NEW ES256 token bearing the caller's own identity for an external
+	 * audience. The credential is the caller's kernel-signed service token; sub
+	 * comes from it, never from the request. aud must exactly match an entry in
+	 * the caller Delegate's {@code external_audiences}. Never calls OPA.
+	 */
+	private Tokenrequest.TokenMintResponse doMintExternalServiceToken(
+			Tokenrequest.MintExternalServiceTokenRequest request) throws StatusException {
+		if (request.getInputToken().isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "input_token is required");
+		}
+		if (request.getAud().isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "aud is required");
+		}
+
+		TokenWrapper inputToken;
+		try {
+			inputToken = TokenWrapper.parse(request.getInputToken());
+		} catch (Exception e) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "invalid input_token: " + e.getMessage());
+		}
+
+		String kid = inputToken.getKid();
+		if (kid.isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "input_token missing kid header");
+		}
+		if (!isPlausibleKid(kid)) {
+			throw new StatusException(Status.UNAUTHENTICATED, "input_token signed with unknown key: " + kid);
+		}
+		JwkOuterClass.Jwk matchingKey = null;
+		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+			if (kid.equals(jwk.getKid())) {
+				matchingKey = jwk;
+				break;
+			}
+		}
+		if (matchingKey == null) {
+			throw new StatusException(Status.UNAUTHENTICATED, "input_token signed with unknown key: " + kid);
+		}
+		try {
+			inputToken.verify(ImmutableJwk.from(matchingKey));
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED, "input_token verification failed: " + e.getMessage());
+		}
+
+		// Users go through MintExternalToken; this path is a service's own identity.
+		if (!SUB_TYPE_SERVICE.equals(inputToken.getSubType())) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"MintExternalServiceToken requires a service token; users mint external tokens via MintExternalToken");
+		}
+
+		String subject = inputToken.getSubject();
+		assertNotRevoked(workloadMap, subject, "workload");
+
+		Kernel.Delegate delegate = findDelegateBySubject(subject);
+		if (delegate == null) {
+			throw new StatusException(Status.PERMISSION_DENIED, "no delegate registered for " + subject);
+		}
+		if (!delegate.getExternalAudiencesList().contains(request.getAud())) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"delegate " + delegate.getName() + " is not allowed external audience " + request.getAud());
+		}
+
+		long now = Instant.now().getEpochSecond();
+		long maxExp = now + EXTERNAL_SERVICE_TOKEN_MAX_TTL_SECONDS;
+		long exp;
+		if (request.getExp() == 0) {
+			exp = maxExp;
+		} else {
+			exp = request.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > maxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds external service token ceiling " + maxExp);
+			}
+		}
+		// The derived token never outlives the credential presented for it.
+		exp = Math.min(exp, inputToken.getExpiration());
+
+		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ES256);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active ES256 signing key");
+		}
+
+		TokenWrapper externalToken = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(subject)
+				.setAudience(request.getAud())
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+		externalToken.setTokenUse(TOKEN_USE_EXTERNAL);
+		// TokenWrapper.sign refuses a token with no namespace; carry the verified
+		// caller's own, which kernel stamped when it minted the input token.
+		externalToken.setNamespace(inputToken.getNamespace());
+		externalToken.sign(signingKey);
+
+		logger.info("external service token minted: sub={}, aud={}, exp={}", subject, request.getAud(), exp);
+
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setAccessToken(externalToken.getProto())
+				.build();
 	}
 
 	// ========================================================================

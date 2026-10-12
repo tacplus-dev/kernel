@@ -986,7 +986,7 @@ public class ClusterServer {
 			var ratisStorage = new java.io.File(cfg.getDiskDir(), "fencedlock");
 			try {
 				this.fencedLock = RatisFencedLock.start(
-						selfRatisPeerId(members, ratisPort), ratisGroup, ratisStorage);
+						selfRatisPeerId(members, ratisPort, hostname), ratisGroup, ratisStorage);
 			} catch (java.io.IOException e) {
 				throw new IllegalStateException("failed to start the FencedLock Ratis peer", e);
 			}
@@ -1016,13 +1016,28 @@ public class ClusterServer {
 	}
 
 	/**
-	 * selfRatisPeerId picks which of the configured members this process is, by
-	 * resolving each member's host and asking whether the address is one of this
-	 * machine's own. Hazelcast identifies itself from the same member list the
-	 * same way; deriving it rather than configuring it keeps a node from being
-	 * told it is a peer it is not.
+	 * selfRatisPeerId picks which of the configured members this process is.
+	 *
+	 * <p>A member whose host is this node's hostname, or whose first DNS label
+	 * is (StatefulSet pod {@code kernel-1} is member {@code kernel-1.kernel}),
+	 * is this node, decided by name alone. DNS cannot decide it on a rolling
+	 * restart: the replaced pod comes back on a new IP while kube-dns keeps
+	 * serving the old one for up to its cache TTL, so the new process resolved
+	 * its own member to an address that was not its own, found no member, and
+	 * exited — once per pod, every rolling restart.
+	 *
+	 * <p>Without a name match it falls back to resolving each member's host and
+	 * asking whether the address is one of this machine's own, the way
+	 * Hazelcast identifies itself from the same member list. Deriving it rather
+	 * than configuring it keeps a node from being told it is a peer it is not.
 	 */
-	private static org.apache.ratis.protocol.RaftPeerId selfRatisPeerId(List<com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.host.HostOuterClass.Host> members, int port) {
+	static org.apache.ratis.protocol.RaftPeerId selfRatisPeerId(List<com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.host.HostOuterClass.Host> members, int port, String hostname) {
+		for (var member : members) {
+			String host = Objects.requireNonNull(member.getHost(), "member.host");
+			if (!hostname.isEmpty() && (host.equals(hostname) || host.startsWith(hostname + "."))) {
+				return org.apache.ratis.protocol.RaftPeerId.valueOf(host + ":" + port);
+			}
+		}
 		for (var member : members) {
 			String host = Objects.requireNonNull(member.getHost(), "member.host");
 			try {

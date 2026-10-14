@@ -272,9 +272,10 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 	static ExternalSigningSelection externalSigningKeyForRequest(
 			KeyRotator keyRotator,
-			KeyOuterClass.KeyType requestedKeyType) throws ProtoException {
+			KeyOuterClass.KeyType requestedKeyType,
+			long tokenExp) throws ProtoException {
 		KeyRotator.SigAlg signingAlg = externalSigningAlgForKeyType(requestedKeyType);
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(signingAlg);
+		ImmutableKey signingKey = keyRotator.reserve(signingAlg, tokenExp);
 		if (signingKey == null) {
 			throw ProtoException.newErrGeneral(null,
 					"no active signing key for requested_signing_key_type "
@@ -1720,11 +1721,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		Entitlements.TokenEntitlements expanded = expandEntitlements(opaResult);
 
 		// Mint the token.
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
-		if (signingKey == null) {
-			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
-		}
-
 		long now = Instant.now().getEpochSecond();
 		// Long-lived token: an Offline Token (OT) when offline_access is requested
 		// (months), otherwise a refresh token (RT). The OT is exempt from the
@@ -1744,6 +1740,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			}
 		} else {
 			exp = now + longLivedDefault;
+		}
+
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
 		}
 
 		TokenWrapper newToken = TokenWrapper.create()
@@ -1941,13 +1942,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		Entitlements.TokenEntitlements fresh = expandEntitlements(opaResult);
 		Entitlements.TokenEntitlements scoped = intersectAuthorizedScope(fresh, grant.getAuthorizedScope());
 
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
+		long now = Instant.now().getEpochSecond();
+		long exp = now + defaultTokenExpirySeconds;
+
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
 		if (signingKey == null) {
 			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
 		}
-
-		long now = Instant.now().getEpochSecond();
-		long exp = now + defaultTokenExpirySeconds;
 
 		TokenWrapper newToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
@@ -2150,13 +2151,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		Entitlements.TokenEntitlements scoped = request.hasScope()
 				? intersectAuthorizedScope(fresh, request.getScope()) : fresh;
 
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
+		long now = Instant.now().getEpochSecond();
+		long exp = now + offlineTokenLifetimeSeconds;
+
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
 		if (signingKey == null) {
 			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
 		}
-
-		long now = Instant.now().getEpochSecond();
-		long exp = now + offlineTokenLifetimeSeconds;
 
 		TokenWrapper newToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
@@ -2686,11 +2687,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			Map<String, Object> extraClaims)
 			throws StatusException {
 
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
-		if (signingKey == null) {
-			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
-		}
-
 		long now = Instant.now().getEpochSecond();
 		long maxExp = now + maxTokenLifetimeSeconds;
 		long exp;
@@ -2706,6 +2702,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			}
 		} else {
 			exp = now + defaultTokenExpirySeconds;
+		}
+
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
 		}
 
 		TokenWrapper newToken = TokenWrapper.create()
@@ -2859,12 +2860,12 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		// Bootstrap tokens are exchanged for real refresh+access pairs (workload bootstrap).
 		if (TOKEN_USE_BOOTSTRAP.equals(tokenUse)) {
-			ImmutableKey bsSigningKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
+			long bsNow = Instant.now().getEpochSecond();
+			long bsExp = bsNow + defaultTokenExpirySeconds;
+			ImmutableKey bsSigningKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, bsExp);
 			if (bsSigningKey == null) {
 				throw new StatusException(Status.UNAVAILABLE, "no active signing key");
 			}
-			long bsNow = Instant.now().getEpochSecond();
-			long bsExp = bsNow + defaultTokenExpirySeconds;
 			return exchangeBootstrapToRefresh(inputToken, bsSigningKey, bsNow, bsExp);
 		}
 
@@ -2877,18 +2878,18 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				throw new StatusException(Status.INVALID_ARGUMENT,
 						"offline tokens cannot mint service-specific tokens; exchange for an access token first");
 			}
-			ImmutableKey otSigningKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
-			if (otSigningKey == null) {
-				throw new StatusException(Status.UNAVAILABLE, "no active signing key");
-			}
 			long otNow = Instant.now().getEpochSecond();
 			if (request.getOfflineAccess()) {
-				return renewOfflineToken(inputToken, otSigningKey, otNow, request);
+				return renewOfflineToken(inputToken, otNow, request);
 			}
 			// Data plane: OT → AT (mintAccessFromRefresh stamps AT.parent_jti = OT.jti).
 			// The AT is scoped to the requested (or default) project — this is the
 			// project-switch path for offline-token holders.
 			long otAccessExp = otNow + defaultTokenExpirySeconds;
+			ImmutableKey otSigningKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, otAccessExp);
+			if (otSigningKey == null) {
+				throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+			}
 			Entitlements.TokenEntitlements accessEntitlements =
 					resolveCurrentAccessEntitlements(inputToken);
 			TokenOuterClass.Token at = mintAccessFromRefresh(
@@ -2913,11 +2914,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			return resp.build();
 		}
 
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
-		if (signingKey == null) {
-			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
-		}
-
 		long now = Instant.now().getEpochSecond();
 		long maxExp = now + maxTokenLifetimeSeconds;
 		long exp;
@@ -2940,6 +2936,12 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// applies against the user token it derives from. verify() above has already
 		// established the input token carries a live exp.
 		exp = Math.min(exp, inputToken.getExpiration());
+
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+
 		String subject = inputToken.getSubject();
 
 		Kernel.Delegate delegate = findDelegateBySubject(subject);
@@ -3219,11 +3221,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				resolveEntitlementsViaOpa(claims, request.getTraceId());
 		Entitlements.TokenEntitlements expanded = expandEntitlements(opaResult);
 
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
-		if (signingKey == null) {
-			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
-		}
-
 		long now = Instant.now().getEpochSecond();
 		long maxExp = now + maxTokenLifetimeSeconds;
 		long exp;
@@ -3239,6 +3236,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				throw new StatusException(Status.INVALID_ARGUMENT,
 						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
 			}
+		}
+
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
 		}
 
 		// Step 7: sub and azp are preserved from the presented token — the tenant
@@ -3478,7 +3480,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * lineage rules, only AT/ST chain to a parent).
 	 */
 	private Tokenrequest.TokenMintResponse renewOfflineToken(TokenWrapper oldOt,
-			ImmutableKey signingKey, long now, Tokenrequest.TokenMintRequest request)
+			long now, Tokenrequest.TokenMintRequest request)
 			throws StatusException {
 		long maxExp = now + offlineTokenLifetimeSeconds;
 		long exp;
@@ -3495,6 +3497,12 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		} else {
 			exp = now + offlineTokenLifetimeSeconds;
 		}
+		long accessExp = now + defaultTokenExpirySeconds;
+
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, Math.max(exp, accessExp));
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
 
 		TokenWrapper freshOt = TokenWrapper.from(oldOt.getProto().toBuilder()
 				.setSignature("")
@@ -3508,7 +3516,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		freshOt.sign(signingKey);
 
 		// Also hand back a fresh short-lived AT for immediate data-plane use.
-		long accessExp = now + defaultTokenExpirySeconds;
 		TokenOuterClass.Token at = mintAccessFromRefresh(freshOt, signingKey, now, accessExp,
 				null, resolveCurrentAccessEntitlements(freshOt));
 
@@ -4053,11 +4060,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		assertNotRevoked(workloadMap, childSub, "workload");
 
 		// Mint bootstrap token (short-lived).
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
-		if (signingKey == null) {
-			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
-		}
-
 		long now = Instant.now().getEpochSecond();
 		long bootstrapExp;
 		if (request.getExp() > 0) {
@@ -4071,6 +4073,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			}
 		} else {
 			bootstrapExp = now + 60; // default 60s
+		}
+
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, bootstrapExp);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
 		}
 
 		TokenWrapper bootstrapToken = TokenWrapper.create()
@@ -4620,7 +4627,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		// TokenWrapper.sign auto-derives the JWT alg from the requested key family.
 		ExternalSigningSelection signingSelection =
-				externalSigningKeyForRequest(keyRotator, request.getRequestedSigningKeyType());
+				externalSigningKeyForRequest(keyRotator, request.getRequestedSigningKeyType(), exp);
 		externalToken.sign(signingSelection.signingKey());
 
 		var authType = opaResult.getAuthType();
@@ -4812,7 +4819,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// The derived token never outlives the credential presented for it.
 		exp = Math.min(exp, inputToken.getExpiration());
 
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ES256);
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ES256, exp);
 		if (signingKey == null) {
 			throw new StatusException(Status.UNAVAILABLE, "no active ES256 signing key");
 		}
@@ -4912,11 +4919,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					"cred_pair proof verification failed: " + replayRefusal);
 		}
 
-		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
-		if (signingKey == null) {
-			throw new ProtoException(ProtoException.UNAVAILABLE, "no active signing key");
-		}
-
 		// The C2S token is a short-lived access token, so it takes the same
 		// max-token-lifetime ceiling (not the offline one) every other
 		// short-lived mint path in this class applies, with the same
@@ -4944,6 +4946,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			}
 		} else {
 			exp = Math.min(now + DEFAULT_TOKEN_TTL_SECONDS, maxExp);
+		}
+
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
+		if (signingKey == null) {
+			throw new ProtoException(ProtoException.UNAVAILABLE, "no active signing key");
 		}
 
 		// Mint a C2S token carrying the cred_pair's entitlements + namespace.

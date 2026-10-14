@@ -1508,13 +1508,13 @@ public class ClusterServer {
 	 */
 	private static String mintSelfToken(KeyRotator keyRotator, String tokenIssuer,
 			String audience, Supplier<String> trustDomainReader) throws Exception {
+		long now = java.time.Instant.now().getEpochSecond();
+		long exp = now + 3600; // 1 hour
 		com.gitlab.seabeam.controlplane.schematic.services.kernel.model.chassis.key.ImmutableKey signingKey =
-				keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
+				keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
 		if (signingKey == null) {
 			throw new IllegalStateException("no active signing key for self-mint");
 		}
-		long now = java.time.Instant.now().getEpochSecond();
-		long exp = now + 3600; // 1 hour
 
 		String spiffeId = SpiffeIds.build(trustDomainReader.get(), "kernel");
 

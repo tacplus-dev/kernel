@@ -56,7 +56,7 @@ class ExternalSigningKeyTypeTest {
 
 		ProtoException err = assertThrows(ProtoException.class,
 				() -> IdentityServiceImpl.externalSigningKeyForRequest(
-						keyRotator, KeyOuterClass.KeyType.KEY_TYPE_EC));
+						keyRotator, KeyOuterClass.KeyType.KEY_TYPE_EC, 0));
 
 		assertTrue(err.getMessage().contains("KEY_TYPE_EC"));
 		assertTrue(err.getMessage().contains("ES256"));

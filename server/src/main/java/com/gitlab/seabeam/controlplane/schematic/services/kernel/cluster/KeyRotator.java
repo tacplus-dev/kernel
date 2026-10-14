@@ -11,7 +11,7 @@ import java.security.KeyPairGenerator;
 import java.security.PublicKey;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
-import java.time.Instant;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.EnumMap;
@@ -43,26 +43,27 @@ import org.slf4j.LoggerFactory;
  * the {@code verifying_keys} boundary so every node can verify tokens this node
  * signs.
  *
- * <p>Periodically both keys rotate. Public keys older than
- * {@code keyRetentionSeconds} (≥ max token lifetime) are evicted so tokens
- * signed by a rotated key stay verifiable until they expire. After any key
- * change the rotator invokes {@code onKeysChanged} so the kernel writes a fresh
- * identity snapshot — the snapshot is the whole of it, NOT a per-key file.
+ * <p>Periodically both keys rotate. After any key change the rotator invokes
+ * {@code onKeysChanged} so the kernel writes a fresh identity snapshot — the
+ * snapshot is the whole of it, NOT a per-key file.
  *
- * <p><b>Every published JWK carries an {@code exp}.</b> {@code verifying_keys}
- * is an {@code epoch_expiration} boundary: the generated state map turns a
- * non-zero {@code Jwk.exp} into a TTL and evicts the entry itself. A key
- * published without one is immortal, and the set is shared by the whole
- * cluster — so a key abandoned by a node that restarted (a cold start mints a
- * fresh pair and never looks at the old one again) would otherwise stay in the
- * set forever, with only the retention sweep inside {@link #rotate} to remove
- * it and only after a full rotation interval has elapsed. Setting {@code exp}
- * makes expiry the state store's job and independent of this node's schedule.
+ * <p><b>A key is kept exactly until the last token it signed expires, plus
+ * clock skew</b> (decisions/d-keyrotator-retirement). Its published JWK
+ * {@code exp} tracks its USE, not its birth: a new key is published with
+ * {@code exp = created + EXTEND_STEP_SECONDS}, and every signer obtains the
+ * key through {@link #reserve}, which first publishes a later {@code exp} if
+ * the token would outlive the current one. {@code verifying_keys} is an
+ * {@code epoch_expiration} boundary, so the state store evicts each entry at
+ * its {@code exp} — including a key abandoned by a node that restarted, which
+ * nothing reserves again and which therefore leaves one step after its last
+ * use. Only a locally active key is ever reserved, so a superseded key is
+ * never extended either.
  *
- * <p>{@link #sweepVerifyingKeys} is the backstop for the two cases the TTL
- * cannot cover: keys snapshotted before {@code exp} was set (no TTL at all), and
- * a set that has outgrown what kernel can snapshot or publish. It runs on start
- * as well as on rotation.
+ * <p>{@link #sweepVerifyingKeys} is the backstop for what the TTL does not
+ * cover: a missed TTL, keys published before {@code exp} was set (kept until
+ * {@code created + keyRetentionSeconds}, the rule they were published under),
+ * and a set that has outgrown what kernel can snapshot or publish. It runs on
+ * start as well as on rotation.
  */
 public class KeyRotator {
 
@@ -73,16 +74,14 @@ public class KeyRotator {
      *
      * <p>Kernel keeps ONE active signing key per algorithm PER REPLICA (the
      * private keys live in each node's own disk snapshot and are never
-     * shared), and a rotated public key is retained for
-     * {@code keyRetentionSeconds} so tokens it signed stay verifiable. The
-     * steady-state size of the set is therefore
+     * shared), and a public key stays published until the last token it
+     * signed expires. The worst case is an EdDSA key that signed an offline
+     * token (90 days) every rotation; ES256 keys sign only ≤ 600 s WIF
+     * assertions and leave about a step after their last use. With the
+     * shipped defaults (rotation 604800s — weekly) the steady-state bound is
      *
-     *   replicas × algorithms × (retention / rotation + 1)
-     *
-     * and with the shipped defaults (rotation 604800s — weekly, retention
-     * 604800 + 7776000 = 8380800s) that is
-     *
-     *   3 × 2 × (8380800 / 604800 + 1) = 3 × 2 × 14 = 84 keys
+     *   replicas × (ceil(offline / rotation) + 1) + replicas × 2
+     *   = 3 × 14 + 3 × 2 = 48 keys
      *
      * against a set published as a {@code jwk.Jwks}, whose {@code keys} field
      * is capped at 128 by {@code sys/jwk.proto} — a shared, do-not-modify
@@ -90,11 +89,10 @@ public class KeyRotator {
      * kernel-owned caps ({@code Identity.verifying_keys} and
      * {@code KernelDiskState.verifying_keys}) are set to match it.
      *
-     * <p>84 ≤ 128, so at the shipped defaults the TTL rule is the one that
+     * <p>48 ≤ 128, so at the shipped defaults the TTL rule is the one that
      * binds and no key is evicted while tokens it signed are still live. This
-     * is why rotation is weekly and not daily: daily rotation gave
-     * 3 × 2 × (7862400 / 86400 + 1) = 552 keys, and the count rule then
-     * evicted still-needed keys around day 21.
+     * is why rotation is weekly and not daily: daily rotation lets offline
+     * tokens pin 3 × (90 + 1) = 273 EdDSA keys.
      *
      * <p>The count rule remains as a backstop for configurations that do not
      * fit — a larger replica count, or a longer
@@ -133,6 +131,17 @@ public class KeyRotator {
                 + Math.max(maxTokenLifetimeSeconds, offlineTokenLifetimeSeconds);
     }
 
+    /**
+     * How far a key's published {@code exp} runs ahead of its use. A new key is
+     * published with {@code exp = created + EXTEND_STEP_SECONDS}, and
+     * {@link #reserve} rounds every extension up to a whole step, so a key under
+     * steady load costs at most about one {@code verifying_keys} write per step.
+     */
+    static final long EXTEND_STEP_SECONDS = 3600;
+
+    /** Clock-skew allowance past a token's {@code exp}, matching {@code TokenWrapper.verify}. */
+    static final long CLOCK_SKEW_SECONDS = 60;
+
     /** Signing algorithms kernel maintains. */
     public enum SigAlg {
         ED25519("EdDSA", KeyOuterClass.KeyType.KEY_TYPE_OKP, "Ed25519"),
@@ -162,13 +171,14 @@ public class KeyRotator {
     private final Consumer<String> keyRemover;
     private final Supplier<List<JwkOuterClass.Jwk>> keyReader;
     private final Runnable onKeysChanged;
+    private final Clock clock;
     private final ScheduledExecutorService scheduler;
 
     private final EnumMap<SigAlg, ActiveKey> active = new EnumMap<>(SigAlg.class);
 
     /**
      * @param rotationIntervalSeconds interval between key rotations
-     * @param keyRetentionSeconds     how long to retain old keys after rotation (must be ≥ max token lifetime)
+     * @param keyRetentionSeconds     how long a key published without an {@code exp} is kept after creation (must be ≥ rotation + max token lifetime)
      * @param keyPublisher            writes a JWK to the verifying_keys boundary
      * @param keyRemover              removes a JWK by kid from verifying_keys
      * @param keyReader               reads current verifying_keys
@@ -181,6 +191,19 @@ public class KeyRotator {
             Consumer<String> keyRemover,
             Supplier<List<JwkOuterClass.Jwk>> keyReader,
             Runnable onKeysChanged) {
+        this(rotationIntervalSeconds, keyRetentionSeconds, keyPublisher, keyRemover, keyReader,
+                onKeysChanged, Clock.systemUTC());
+    }
+
+    KeyRotator(
+            long rotationIntervalSeconds,
+            long keyRetentionSeconds,
+            Consumer<JwkOuterClass.Jwk> keyPublisher,
+            Consumer<String> keyRemover,
+            Supplier<List<JwkOuterClass.Jwk>> keyReader,
+            Runnable onKeysChanged,
+            Clock clock) {
+        this.clock = clock;
         this.rotationIntervalSeconds = rotationIntervalSeconds;
         this.keyRetentionSeconds = keyRetentionSeconds;
         this.keyPublisher = keyPublisher;
@@ -291,9 +314,46 @@ public class KeyRotator {
         return active.get(alg).kid;
     }
 
-    /** Active private signing key for the given algorithm. */
+    /**
+     * Active private signing key for the given algorithm. Does NOT extend the
+     * key's published lifetime — anything that signs a token uses
+     * {@link #reserve} instead.
+     */
     public ImmutableKey getActiveSigningKey(SigAlg alg) {
         return active.get(alg).signingKey;
+    }
+
+    /**
+     * Returns the active signing key for {@code alg} with its published
+     * {@code exp} covering a token that expires at {@code tokenExp}.
+     *
+     * <p>If {@code tokenExp + CLOCK_SKEW_SECONDS} is past the key's published
+     * {@code exp}, the same JWK is first republished with that time rounded up
+     * to a whole {@link #EXTEND_STEP_SECONDS}, synchronously, and the snapshot
+     * is rewritten so a restart does not republish the shorter one. Only then
+     * is the key handed out. A failed publish throws and nothing is handed out:
+     * a token is never signed by a key whose published lifetime does not cover
+     * it.
+     *
+     * <p>Synchronized with {@link #rotate} so the key returned is the one whose
+     * {@code exp} was extended, never one rotated in between.
+     *
+     * @return the signing key, or {@code null} if there is no active key for {@code alg}
+     */
+    public synchronized ImmutableKey reserve(SigAlg alg, long tokenExp) {
+        ActiveKey k = active.get(alg);
+        if (k.signingKey == null) {
+            return null;
+        }
+        long needed = tokenExp + CLOCK_SKEW_SECONDS;
+        if (needed > retiresAt(k.jwk)) {
+            long exp = Math.ceilDiv(needed, EXTEND_STEP_SECONDS) * EXTEND_STEP_SECONDS;
+            JwkOuterClass.Jwk extended = k.jwk.toBuilder().setExp(exp).build();
+            keyPublisher.accept(extended);
+            k.jwk = extended;
+            onKeysChanged.run();
+        }
+        return k.signingKey;
     }
 
     /** Active public JWK for the given algorithm (carries the {@code alg}). */
@@ -331,24 +391,33 @@ public class KeyRotator {
     /**
      * Publishes any active JWK that is missing from verifying_keys. Handles the
      * case where Hazelcast state was wiped while a key survived in the snapshot.
+     *
+     * <p>A restored key that IS still published may carry a later {@code exp}
+     * there than in the snapshot ({@link #reserve} extended it after the
+     * snapshot was taken). That later {@code exp} is adopted, never overwritten:
+     * republishing the snapshot's would cut off tokens the key has signed since.
      */
     private void ensureJwksPublished() {
         List<JwkOuterClass.Jwk> current = keyReader.get();
         for (SigAlg a : SigAlg.values()) {
-            JwkOuterClass.Jwk jwk = active.get(a).jwk;
+            ActiveKey k = active.get(a);
+            JwkOuterClass.Jwk jwk = k.jwk;
             if (jwk == null) {
                 continue;
             }
             String kid = jwk.getKid();
-            boolean found = current.stream().anyMatch(k -> kid.equals(k.getKid()));
-            if (!found) {
+            JwkOuterClass.Jwk published = current.stream()
+                    .filter(p -> kid.equals(p.getKid())).findFirst().orElse(null);
+            if (published == null) {
                 keyPublisher.accept(jwk);
                 logger.info("Re-injected signing JWK into verifying_keys on boot: alg={}, kid={}", a.alg, kid);
+            } else if (published.getExp() > jwk.getExp()) {
+                k.jwk = jwk.toBuilder().setExp(published.getExp()).build();
             }
         }
     }
 
-    private void rotate() throws Exception {
+    synchronized void rotate() throws Exception {
         logger.info("Rotating signing keys (EdDSA kid={}, ES256 kid={})",
                 active.get(SigAlg.ED25519).kid, active.get(SigAlg.ES256).kid);
 
@@ -364,20 +433,22 @@ public class KeyRotator {
     /**
      * Evicts keys the cluster no longer needs from the shared verifying set.
      *
-     * <p>Two rules, in order. First by AGE: a key past
-     * {@code keyRetentionSeconds} since creation can no longer be carrying a
-     * live token, because retention is ≥ the maximum token lifetime kernel will
-     * mint. Then by COUNT: if the set is still over {@link #MAX_VERIFYING_KEYS}
+     * <p>Two rules, in order. First by AGE: a key past its {@code exp} can no
+     * longer be carrying a live token, because {@link #reserve} published an
+     * {@code exp} past every token it signed — this is the backstop for a missed
+     * TTL. A key with no {@code exp} (published before {@code exp} existed)
+     * keeps the rule it was published under: gone {@code keyRetentionSeconds}
+     * after creation. Then by COUNT: if the set is still over {@link #MAX_VERIFYING_KEYS}
      * — more than kernel can snapshot or publish — the oldest survivors go until
      * it fits, since those are the keys whose tokens expire soonest.
      *
      * <p>This node's own active keys are never evicted, by either rule: it is
      * still signing with them. Another node's active key is not distinguishable
      * from here, but cannot be reached by the age rule either — that node
-     * rotates it long before retention elapses.
+     * reserves it ahead of every token it signs.
      */
     private void sweepVerifyingKeys() {
-        long cutoff = Instant.now().getEpochSecond() - keyRetentionSeconds;
+        long now = clock.instant().getEpochSecond();
 
         // Candidates for eviction, newest last. This node's own active keys are
         // excluded outright and are not candidates under either rule.
@@ -388,8 +459,9 @@ public class KeyRotator {
                 live++;
                 continue;
             }
-            if (jwk.getCreated() > 0 && jwk.getCreated() < cutoff) {
-                logger.info("Removing expired signing key: kid={}, created={}", jwk.getKid(), jwk.getCreated());
+            if ((jwk.getExp() > 0 || jwk.getCreated() > 0) && retiresAt(jwk) < now) {
+                logger.info("Removing expired signing key: kid={}, created={}, exp={}",
+                        jwk.getKid(), jwk.getCreated(), jwk.getExp());
                 keyRemover.accept(jwk.getKid());
                 continue;
             }
@@ -415,6 +487,14 @@ public class KeyRotator {
         }
     }
 
+    /**
+     * When a published key stops being needed: its {@code exp}, or for a key
+     * published before {@code exp} existed, {@code created + keyRetentionSeconds}.
+     */
+    private long retiresAt(JwkOuterClass.Jwk jwk) {
+        return jwk.getExp() > 0 ? jwk.getExp() : jwk.getCreated() + keyRetentionSeconds;
+    }
+
     private boolean isLocallyActive(String kid) {
         for (SigAlg a : SigAlg.values()) {
             if (kid.equals(active.get(a).kid)) {
@@ -427,7 +507,7 @@ public class KeyRotator {
     /** Generates a fresh key pair for the given algorithm and publishes its JWK. */
     private void generateKey(SigAlg alg) throws Exception {
         String kid = UUID.randomUUID().toString();
-        long now = Instant.now().getEpochSecond();
+        long now = clock.instant().getEpochSecond();
 
         KeyPair keyPair;
         JwkOuterClass.Jwk.Builder jwkBuilder = JwkOuterClass.Jwk.newBuilder()
@@ -440,10 +520,10 @@ public class KeyRotator {
                 // exp is what bounds the shared verifying set. verifying_keys is
                 // an epoch_expiration boundary, so the state store evicts this
                 // entry on its own at exp — no sweep, no schedule, and it still
-                // happens for a key this node abandons by restarting. Same
-                // horizon the age sweep uses: retention is ≥ the longest token
-                // kernel will mint with this key.
-                .setExp(now + keyRetentionSeconds);
+                // happens for a key this node abandons by restarting. One step:
+                // the key has signed nothing yet, and reserve() moves exp out
+                // ahead of every token it does sign.
+                .setExp(now + EXTEND_STEP_SECONDS);
 
         if (alg == SigAlg.ED25519) {
             KeyPairGenerator kpg = KeyPairGenerator.getInstance("Ed25519");

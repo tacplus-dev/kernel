@@ -63,7 +63,7 @@ class VerifyingKeysGrowthTest {
 		assertEquals(2, shared.size(), "one active key per algorithm");
 		for (JwkOuterClass.Jwk jwk : shared.values()) {
 			assertTrue(jwk.getCreated() > 0, "created must be stamped: " + jwk.getKid());
-			assertEquals(jwk.getCreated() + RETENTION_SECONDS, jwk.getExp(),
+			assertEquals(jwk.getCreated() + KeyRotator.EXTEND_STEP_SECONDS, jwk.getExp(),
 					"exp is what lets the state store evict the key on its own");
 		}
 	}

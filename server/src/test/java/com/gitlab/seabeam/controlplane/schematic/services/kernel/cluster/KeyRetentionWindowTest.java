@@ -107,18 +107,20 @@ class KeyRetentionWindowTest {
 	/**
 	 * The published JWK's own {@code exp} is what the state store evicts on, so
 	 * it — not just the sweep — has to outlast the last token the key signs.
+	 * Signing goes through {@link KeyRotator#reserve}, which moves it out first.
 	 */
 	@Test
 	void publishedKeyExpiryOutlastsTheLastTokenItCanSign() {
-		replica().start();
+		KeyRotator rotator = replica();
+		rotator.start();
 
-		assertEquals(2, shared.size(), "one active key per algorithm");
-		for (JwkOuterClass.Jwk jwk : shared.values()) {
-			long lastTokenSignedAt = jwk.getCreated() + ROTATION_SECONDS;
-			long lastTokenExpiresAt = lastTokenSignedAt + OFFLINE_TOKEN_LIFETIME;
-			assertTrue(jwk.getExp() >= lastTokenExpiresAt,
+		for (KeyRotator.SigAlg alg : KeyRotator.SigAlg.values()) {
+			long offlineTokenExp = Instant.now().getEpochSecond() + OFFLINE_TOKEN_LIFETIME;
+			rotator.reserve(alg, offlineTokenExp);
+			JwkOuterClass.Jwk jwk = shared.get(rotator.getActiveKeyId(alg));
+			assertTrue(jwk.getExp() >= offlineTokenExp,
 					"key " + jwk.getKid() + " expires at " + jwk.getExp()
-							+ ", before a token it signed expires at " + lastTokenExpiresAt);
+							+ ", before a token it signed expires at " + offlineTokenExp);
 		}
 	}
 

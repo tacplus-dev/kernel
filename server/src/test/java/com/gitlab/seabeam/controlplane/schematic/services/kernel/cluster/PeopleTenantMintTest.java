@@ -187,6 +187,37 @@ class PeopleTenantMintTest {
 				principalMap.getPeople("google." + GOOGLE_SUB).getProvider());
 	}
 
+	/**
+	 * The sign-ups kill switch refuses the create half: a pair nobody has seen
+	 * gets no row while it is on, and gets one as soon as it is off again.
+	 */
+	@Test
+	void whileSignupsArePausedAFirstLoginCreatesNoPerson() throws Exception {
+		svc.setPeopleSignupsPaused(() -> true);
+
+		IdentityServiceImpl.StatusException refused = assertThrows(IdentityServiceImpl.StatusException.class,
+				() -> createPerson(Kernel.PeopleIdpProvider.PEOPLE_IDP_PROVIDER_APPLE, APPLE_SUB));
+		assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, refused.toGrpcStatus().getCode());
+		assertPeopleRegistryEmpty();
+
+		svc.setPeopleSignupsPaused(() -> false);
+		createPerson(Kernel.PeopleIdpProvider.PEOPLE_IDP_PROVIDER_APPLE, APPLE_SUB);
+		assertEquals(1, principalMap.proto().getPeopleCount());
+	}
+
+	/** ...and only the create half: someone who already has a row signs in as before. */
+	@Test
+	void whileSignupsArePausedAReturningPersonStillSignsIn() throws Exception {
+		createPerson(Kernel.PeopleIdpProvider.PEOPLE_IDP_PROVIDER_GOOGLE, GOOGLE_SUB);
+		Kernel.Person before = principalMap.getPeople("google." + GOOGLE_SUB);
+		svc.setPeopleSignupsPaused(() -> true);
+
+		createPerson(Kernel.PeopleIdpProvider.PEOPLE_IDP_PROVIDER_GOOGLE, GOOGLE_SUB);
+
+		assertEquals(1, principalMap.proto().getPeopleCount());
+		assertEquals(before, principalMap.getPeople("google." + GOOGLE_SUB));
+	}
+
 	/** A disabled person cannot simply sign back in; the mark is what stops them. */
 	@Test
 	void aDisabledPersonIsRefused() throws Exception {

@@ -300,6 +300,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	private final Object personRegistryLock = new Object();
 
 	/**
+	 * The effective {@code Config.people_signups_paused}, read on every first
+	 * login; see {@link #findOrCreatePerson}. Off until kernel wires in the
+	 * runtime override ({@code ConfigOverrides}).
+	 */
+	private volatile java.util.function.BooleanSupplier peopleSignupsPaused = () -> false;
+
+	/**
 	 * Serializes the link registry's read-modify-write; see
 	 * {@link #doCreateTenantUserLink}.
 	 *
@@ -446,6 +453,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		this.webauthnRelyingParty = webauthnRelyingParty != null
 				? webauthnRelyingParty
 				: WebauthnProof.RelyingParty.NONE;
+	}
+
+	/** Wires the sign-ups kill switch; see {@link #findOrCreatePerson}. */
+	void setPeopleSignupsPaused(java.util.function.BooleanSupplier peopleSignupsPaused) {
+		this.peopleSignupsPaused = peopleSignupsPaused;
 	}
 
 	// ========================================================================
@@ -823,6 +835,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * Returns the person keyed by {@code userId}, creating the row on first
 	 * sight. Call under {@link #personRegistryLock}.
 	 *
+	 * <p>While {@code people_signups_paused} is in effect a pair with no row is
+	 * refused rather than created; a person who already has one is unaffected.
+	 *
 	 * <p>A disabled person mints nothing: the row is marked, never deleted (the
 	 * same audit rule {@code PersonalPrincipal.disabled_at_ms} states), so the
 	 * only thing that keeps a disabled person from signing straight back in is
@@ -853,6 +868,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				throw new StatusException(Status.PERMISSION_DENIED, "person is disabled");
 			}
 			return;
+		}
+		// The sign-ups kill switch refuses the create half only: everyone with a
+		// row signed in above, and a pair kernel has never seen mints nothing.
+		if (peopleSignupsPaused.getAsBoolean()) {
+			throw new StatusException(Status.PERMISSION_DENIED, "sign-ups are paused: no new person is created");
 		}
 		if (registry.getPeopleCount() >= MAX_PEOPLE) {
 			throw new StatusException(Status.RESOURCE_EXHAUSTED, "people registry is full");

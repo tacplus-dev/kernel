@@ -215,6 +215,8 @@ public class ClusterServer {
 	private final IdentitySnapshot identitySnapshot;
 	private final ImmutableCertChain signingCa;
 	private final RatisFencedLock fencedLock;
+	/** The runtime write path for a service's Config; see {@link ConfigOverrides}. */
+	private final ConfigOverrides configOverrides;
 	/**
 	 * The kernel Authorizer's key source, assigned during construction (below the
 	 * KeyRotator) and refreshed by {@link #onSigningKeysChanged}.
@@ -342,7 +344,11 @@ public class ClusterServer {
 		// Install trusted CAs from Config into TrustedCaState
 		installTrustedCas(cfg.getTrustedCasList());
 
-		// Install Config.configs into ConfigHolder boundary maps
+		// Install Config.configs into ConfigHolder boundary maps, with the runtime
+		// override (if one is in place) already merged in.
+		this.configOverrides = new ConfigOverrides(cfg, java.nio.file.Path.of(cfg.getConfigOverridePath()),
+				services -> logger.info("config override: installed {} service config(s)",
+						backendServers.services().installServices(services)));
 		installConfigHolder(cfg);
 
 		// ClusterState SetLogLevel handler
@@ -848,6 +854,7 @@ public class ClusterServer {
 					kubernetesTokenVerifier,
 					kubernetesTokenAudience,
 					webauthnRelyingParty());
+			identityService.setPeopleSignupsPaused(configOverrides::peopleSignupsPaused);
 
 			Mint mintWrapper = new Mint(identityService, kernelAuthorizer) {
 				@Override
@@ -1128,15 +1135,19 @@ public class ClusterServer {
 	 * a changed bundle value always becomes live on the next restart or roll, and
 	 * the bundle is the only writer: a config change is a bundle change plus a
 	 * deploy, for every service alike.
+	 *
+	 * <p>The one exception is the runtime {@code ConfigOverride} the kill switches
+	 * write ({@link ConfigOverrides}): its named fields are merged over the bundle
+	 * here, and again whenever its file changes.
 	 */
 	private void installConfigHolder(Kernel.Config config) {
 		if (!config.hasConfigs()) {
 			logger.info("No configs in Config — config state maps unchanged");
 			return;
 		}
-		int installed = backendServers.services().installServices(config.getConfigs());
+		int installed = backendServers.services().installServices(configOverrides.bootConfigs());
 		logger.info("Installed {} config(s) into per-service config state maps "
-				+ "(bundle wins; every seeded root overwritten)", installed);
+				+ "(bundle wins, under any runtime ConfigOverride; every seeded root overwritten)", installed);
 	}
 
 	/**
@@ -1469,6 +1480,7 @@ public class ClusterServer {
 		if (keyRotator != null) {
 			keyRotator.start();
 		}
+		configOverrides.start();
 		logger.info("gRPC server started on port {}", grpcPort);
 	}
 
@@ -1477,6 +1489,7 @@ public class ClusterServer {
 			keyRotator.stop();
 		}
 		clusterPublisher.stop();
+		configOverrides.stop();
 		healthManager.enterTerminalState();
 		if (healthProbeServer != null) {
 			healthProbeServer.shutdown();

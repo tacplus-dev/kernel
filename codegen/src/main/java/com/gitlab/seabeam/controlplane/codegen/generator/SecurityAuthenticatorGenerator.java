@@ -30,7 +30,7 @@ public class SecurityAuthenticatorGenerator {
         List<String> noAuthEntries = ctx.getNoAuthServiceNames();
 
         Map<String, String> vars = new LinkedHashMap<>();
-        vars.put("HEADER", GeneratorContext.header("security_authenticator"));
+        vars.put("HEADER", ctx.header("security_authenticator"));
         vars.put("PACKAGE", pkg);
         vars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());
         vars.put("TOKEN_PACKAGE", ctx.getTokenPackage());
@@ -51,7 +51,7 @@ public class SecurityAuthenticatorGenerator {
         // NamespaceScope reads SecurityAuthenticator.CALLER_NAMESPACE_KEY and is
         // emitted alongside it, once per build, in the same package.
         Map<String, String> scopeVars = new LinkedHashMap<>();
-        scopeVars.put("HEADER", GeneratorContext.header("namespace_scope"));
+        scopeVars.put("HEADER", ctx.header("namespace_scope"));
         scopeVars.put("PACKAGE", pkg);
         scopeVars.put("SPIFFE_PACKAGE", ctx.getSpiffePackage());
         Files.writeString(dir.resolve("NamespaceScope.java"),
@@ -72,7 +72,7 @@ public class SecurityAuthenticatorGenerator {
         String serviceEntitlementsInit = buildServiceEntitlementsInit(ctx.getServiceRPCMappings());
 
         Map<String, String> vars = new LinkedHashMap<>();
-        vars.put("HEADER", GeneratorContext.header("security_interceptor"));
+        vars.put("HEADER", ctx.header("security_interceptor"));
         vars.put("PACKAGE", pkg);
         vars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());
         vars.put("TOKEN_PACKAGE", ctx.getTokenPackage());

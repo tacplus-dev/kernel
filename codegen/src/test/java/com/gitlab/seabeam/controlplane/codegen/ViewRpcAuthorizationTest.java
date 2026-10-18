@@ -133,7 +133,7 @@ class ViewRpcAuthorizationTest {
 		assertEquals(1, info.getViews().size(), "the fixture view must be discovered");
 
 		GeneratorContext ctx = new GeneratorContext("com.example.backend", "com.example",
-				"com.example.graphs", "", tmp.resolve("out"), protoDir, parser, List.of(FIXTURE_POLICY));
+				"com.example.graphs", "", tmp.resolve("out"), protoDir, parser, List.of(FIXTURE_POLICY), "Copyright test");
 		BackendServiceServerGenerator.generate(svc, info, ctx);
 
 		return Files.readString(tmp.resolve("out/src/main/java/com/example/backend/services/fixtures/"

@@ -29,7 +29,7 @@ public class BackendStoreServerGenerator {
         String qualifiedValueType = outerClassName + "." + store.getValueTypeName();
 
         Map<String, String> vars = new LinkedHashMap<>();
-        vars.put("HEADER", GeneratorContext.header(store.getProtoFile()));
+        vars.put("HEADER", ctx.header(store.getProtoFile()));
         vars.put("PACKAGE", pkg);
         vars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
         vars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());

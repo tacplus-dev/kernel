@@ -123,7 +123,7 @@ class StoreServerAuthorizationTest {
 		assertEquals(1, stores.size(), "the keyed fixture store must be discovered");
 
 		GeneratorContext ctx = new GeneratorContext("com.example.backend", "com.example",
-				"com.example.graphs", "", tmp.resolve("out"), protoDir, parser, policies);
+				"com.example.graphs", "", tmp.resolve("out"), protoDir, parser, policies, "Copyright test");
 		BackendStoreServerGenerator.generate(stores.get(0), ctx);
 
 		return Files.readString(generatedFile(tmp));

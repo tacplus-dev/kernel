@@ -103,7 +103,7 @@ public class SerializableWrapperGenerator {
         }
 
         Map<String, String> vars = new LinkedHashMap<>();
-        vars.put("HEADER", GeneratorContext.header("serialization"));
+        vars.put("HEADER", ctx.header("serialization"));
         vars.put("PACKAGE", serializerPkg);
         vars.put("IMPORT_LINE", importLine);
         vars.put("CLASS_NAME", serializerClassName);
@@ -128,7 +128,7 @@ public class SerializableWrapperGenerator {
         }
 
         Map<String, String> vars = new LinkedHashMap<>();
-        vars.put("HEADER", GeneratorContext.header("serialization"));
+        vars.put("HEADER", ctx.header("serialization"));
         vars.put("PACKAGE", rootPkg);
         vars.put("REGISTRATIONS", registrations.toString());
 

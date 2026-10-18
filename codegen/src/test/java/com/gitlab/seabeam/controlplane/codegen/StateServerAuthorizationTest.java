@@ -174,7 +174,7 @@ class StateServerAuthorizationTest {
 		SharedBackendInfo info = BoundaryAnalyzer.analyze(svc, parser);
 
 		GeneratorContext ctx = new GeneratorContext("com.example.backend", "com.example",
-				"com.example.graphs", "", tmp.resolve("out"), protoDir, parser, policies);
+				"com.example.graphs", "", tmp.resolve("out"), protoDir, parser, policies, "Copyright test");
 		BackendServiceServerGenerator.generate(svc, info, ctx);
 
 		return Files.readString(generatedFile(tmp));

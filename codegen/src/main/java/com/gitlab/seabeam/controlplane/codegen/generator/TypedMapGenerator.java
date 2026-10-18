@@ -42,7 +42,7 @@ public class TypedMapGenerator {
         String templateName = isCollection ? "TypedMapCollection.java.template" : "TypedMapSingleton.java.template";
 
         Map<String, String> vars = new LinkedHashMap<>();
-        vars.put("HEADER", GeneratorContext.header(svc.getProtoFile()));
+        vars.put("HEADER", ctx.header(svc.getProtoFile()));
         vars.put("PACKAGE", pkg);
         vars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
         vars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());
@@ -68,7 +68,7 @@ public class TypedMapGenerator {
         String className = b.getTypeName() + "Queue";
 
         Map<String, String> vars = new LinkedHashMap<>();
-        vars.put("HEADER", GeneratorContext.header(svc.getProtoFile()));
+        vars.put("HEADER", ctx.header(svc.getProtoFile()));
         vars.put("PACKAGE", pkg);
         vars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
         vars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());
@@ -94,7 +94,7 @@ public class TypedMapGenerator {
         String className = b.getTypeName() + "Topic";
 
         Map<String, String> vars = new LinkedHashMap<>();
-        vars.put("HEADER", GeneratorContext.header(svc.getProtoFile()));
+        vars.put("HEADER", ctx.header(svc.getProtoFile()));
         vars.put("PACKAGE", pkg);
         vars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
         vars.put("ERRORS_PACKAGE", ctx.getErrorsPackage());

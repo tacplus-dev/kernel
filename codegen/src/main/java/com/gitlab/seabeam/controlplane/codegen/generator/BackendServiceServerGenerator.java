@@ -482,7 +482,7 @@ public class BackendServiceServerGenerator {
 
 		// Render main template
 		Map<String, String> mainVars = new LinkedHashMap<>();
-		mainVars.put("HEADER", GeneratorContext.header(svc.getProtoFile()));
+		mainVars.put("HEADER", ctx.header(svc.getProtoFile()));
 		mainVars.put("PACKAGE", pkg);
 		mainVars.put("CROSS_IMPORTS", crossSb.toString());
 		mainVars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());

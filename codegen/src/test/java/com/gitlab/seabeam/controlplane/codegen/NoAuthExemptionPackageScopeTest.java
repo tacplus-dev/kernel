@@ -169,7 +169,7 @@ class NoAuthExemptionPackageScopeTest {
 		parser.parseAll();
 		return new GeneratorContext("com.example.backend", "com.example",
 				"com.example.graphs", "", tmp.resolve("out"), protoDir, parser,
-				List.of(), Map.of(), List.of("kernel"));
+				List.of(), Map.of(), List.of("kernel"), "Copyright test");
 	}
 
 	private static Path layout(Path tmp) throws IOException {

@@ -70,7 +70,7 @@ public class EpochExpirationHelperGenerator {
 		String pkg = ctx.getJavaPackageBase();
 
 		StringBuilder sb = new StringBuilder();
-		sb.append(GeneratorContext.header("epoch_expiration"));
+		sb.append(ctx.header("epoch_expiration"));
 		sb.append("package ").append(pkg).append(";\n\n");
 		sb.append("import com.google.protobuf.MessageLite;\n\n");
 

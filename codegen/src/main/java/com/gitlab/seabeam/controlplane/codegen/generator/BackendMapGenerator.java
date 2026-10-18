@@ -161,7 +161,7 @@ public class BackendMapGenerator {
 
         // Render main template
         Map<String, String> mainVars = new LinkedHashMap<>();
-        mainVars.put("HEADER", GeneratorContext.header(svc.getProtoFile()));
+        mainVars.put("HEADER", ctx.header(svc.getProtoFile()));
         mainVars.put("PACKAGE", pkg);
         mainVars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
         mainVars.put("EXTRA_IMPORTS", extraImports.toString());

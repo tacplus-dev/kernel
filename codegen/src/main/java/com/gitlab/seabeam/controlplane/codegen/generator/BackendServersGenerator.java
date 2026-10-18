@@ -326,7 +326,7 @@ public class BackendServersGenerator {
 		}
 
 		Map<String, String> vars = new LinkedHashMap<>();
-		vars.put("HEADER", GeneratorContext.header("servicetypestate/registry"));
+		vars.put("HEADER", ctx.header("servicetypestate/registry"));
 		vars.put("PACKAGE", pkg);
 		vars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
 		vars.put("AUTHENTICATOR_PACKAGE", ctx.getJavaPackageBase());
@@ -389,7 +389,7 @@ public class BackendServersGenerator {
 		rootQuorum.append("    }\n");
 
 		Map<String, String> vars = new LinkedHashMap<>();
-		vars.put("HEADER", GeneratorContext.header("backend_servers"));
+		vars.put("HEADER", ctx.header("backend_servers"));
 		vars.put("PACKAGE", pkg);
 		vars.put("INTERFACES_PACKAGE", ctx.getInterfacesPackage());
 		vars.put("AUTHENTICATOR_PACKAGE", ctx.getJavaPackageBase());

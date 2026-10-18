@@ -69,7 +69,7 @@ public class ViewServerGenerator {
             String protoFqn = ctx.getTypesPackageBase() + ".types.sys." + spec.grpcSubPkg() + "." + spec.protoOuter();
 
             Map<String, String> vars = new LinkedHashMap<>();
-            vars.put("HEADER", GeneratorContext.header("view_server"));
+            vars.put("HEADER", ctx.header("view_server"));
             vars.put("PACKAGE", pkg);
             vars.put("CLASS_NAME", spec.className());
             vars.put("VIEW_NAME", viewName);

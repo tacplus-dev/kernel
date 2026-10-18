@@ -537,7 +537,7 @@ public class ClusterServer {
 			throw new RuntimeException("Failed to configure gRPC TLS", e);
 		}
 
-		NettyServerBuilder serverBuilder = NettyServerBuilder.forPort(grpcPort)
+		NettyServerBuilder serverBuilder = permitPlatformKeepalive(NettyServerBuilder.forPort(grpcPort))
 				.sslContext(grpcSslContext)
 				.addTransportFilter(transportFilter)
 				.intercept(rpcInterceptor)
@@ -1005,6 +1005,22 @@ public class ClusterServer {
 
 		this.grpcServer = serverBuilder.build();
 		logger.info("Kernel node configured (grpcPort={})", grpcPort);
+	}
+
+	/**
+	 * Every tacplus-generated client (ServiceConnection, IdentityManager) pings
+	 * every 30s with keepAliveWithoutCalls, and every generated server permits
+	 * pings down to 10s (tacplus keepaliveconst TimeSecs / PermitMinTimeSecs).
+	 * This server is hand-written, so it must apply the same policy itself:
+	 * grpc-java's default permits one ping per 5 minutes (2 hours with no
+	 * active call) and answers a 30s pinger with GOAWAY ENHANCE_YOUR_CALM
+	 * too_many_pings, tearing down every state Watch and identity stream a
+	 * service holds open to kernel.
+	 */
+	static NettyServerBuilder permitPlatformKeepalive(NettyServerBuilder builder) {
+		return builder
+				.permitKeepAliveTime(10, java.util.concurrent.TimeUnit.SECONDS)
+				.permitKeepAliveWithoutCalls(true);
 	}
 
 	/**

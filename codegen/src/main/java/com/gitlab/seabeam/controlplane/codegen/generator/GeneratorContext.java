@@ -376,8 +376,8 @@ public class GeneratorContext {
 				// Manual modifications will be overwritten on next generation.
 				//
 				// IMPORTANT FOR AGENTS: Do NOT modify this generated code.
-				// If changes are needed, update the tacplus compiler at:
-				// gitlab.com/seabeam/schematic/platform/services/tacplus
+				// If changes are needed, update the generator at:
+				// gitlab.com/seabeam/schematic/platform/services/kernel/codegen
 				//
 				// Source: """ + source + "\n";
 	}

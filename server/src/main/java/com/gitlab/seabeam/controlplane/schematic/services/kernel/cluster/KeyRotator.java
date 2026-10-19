@@ -261,8 +261,8 @@ public class KeyRotator {
 
     /**
      * Starts the rotator. Generates a fresh key for any algorithm without a
-     * restored key, ensures both active JWKs are published, then schedules
-     * periodic rotation.
+     * restored key or whose restored key has expired, ensures both active
+     * JWKs are published, then schedules periodic rotation.
      */
     public void start() {
         try {
@@ -273,7 +273,7 @@ public class KeyRotator {
                     changed = true;
                 }
             }
-            ensureJwksPublished();
+            changed |= ensureJwksPublished();
             // Sweep on start, not only on rotation: rotation is a day away by
             // default, and a node that just cold-started has abandoned its
             // previous keys into the shared set. Keys published before exp was
@@ -322,9 +322,16 @@ public class KeyRotator {
     /**
      * Re-publishes both current signing JWKs to the verifying_keys boundary.
      * Called after a Hazelcast cluster topology change so newly-merged nodes
-     * can validate tokens this node has issued.
+     * can validate tokens this node has issued. An active key past its
+     * {@code exp} (between two sweeps) is retired by {@link #sweepExpired}
+     * first rather than republished.
      */
-    public void republishCurrentKeys() {
+    public synchronized void republishCurrentKeys() {
+        try {
+            sweepExpired();
+        } catch (Exception e) {
+            logger.error("Expired signing key sweep failed", e);
+        }
         for (SigAlg a : SigAlg.values()) {
             JwkOuterClass.Jwk jwk = active.get(a).jwk;
             if (jwk != null) {
@@ -422,8 +429,16 @@ public class KeyRotator {
      * there than in the snapshot ({@link #reserve} extended it after the
      * snapshot was taken). That later {@code exp} is adopted, never overwritten:
      * republishing the snapshot's would cut off tokens the key has signed since.
+     *
+     * <p>A restored key whose {@code exp}, after that, has passed is retired as
+     * {@link #sweepExpired} retires one, never republished: no live token used
+     * it, and the boundary rejects {@code exp <= now}.
+     *
+     * @return whether a restored key was replaced
      */
-    private void ensureJwksPublished() {
+    private boolean ensureJwksPublished() throws Exception {
+        long now = clock.instant().getEpochSecond();
+        boolean replaced = false;
         List<JwkOuterClass.Jwk> current = keyReader.get();
         for (SigAlg a : SigAlg.values()) {
             ActiveKey k = active.get(a);
@@ -434,13 +449,20 @@ public class KeyRotator {
             String kid = jwk.getKid();
             JwkOuterClass.Jwk published = current.stream()
                     .filter(p -> kid.equals(p.getKid())).findFirst().orElse(null);
-            if (published == null) {
-                keyPublisher.accept(jwk);
-                logger.info("Re-injected signing JWK into verifying_keys on boot: alg={}, kid={}", a.alg, kid);
-            } else if (published.getExp() > jwk.getExp()) {
+            if (published != null && published.getExp() > jwk.getExp()) {
                 k.jwk = jwk.toBuilder().setExp(published.getExp()).build();
             }
+            if (retiresAt(k.jwk) <= now) {
+                logger.info("Retiring expired restored signing key: alg={}, kid={}, exp={}",
+                        a.alg, kid, k.jwk.getExp());
+                generateKey(a);
+                replaced = true;
+            } else if (published == null) {
+                keyPublisher.accept(jwk);
+                logger.info("Re-injected signing JWK into verifying_keys on boot: alg={}, kid={}", a.alg, kid);
+            }
         }
+        return replaced;
     }
 
     synchronized void rotate() throws Exception {

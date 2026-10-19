@@ -63,7 +63,11 @@ import org.slf4j.LoggerFactory;
  * cover: a missed TTL, keys published before {@code exp} was set (kept until
  * {@code created + keyRetentionSeconds}, the rule they were published under),
  * and a set that has outgrown what kernel can snapshot or publish. It runs on
- * start as well as on rotation.
+ * start, on rotation, and every {@link #SWEEP_INTERVAL_SECONDS} via
+ * {@link #sweepExpired}, which also retires an active key nothing has
+ * reserved past its {@code exp} and rewrites the snapshot once any key it
+ * held has expired. The generated snapshot loader rejects a JWK with
+ * {@code exp <= now}, so no expired key may sit on disk longer than that.
  */
 public class KeyRotator {
 
@@ -142,6 +146,15 @@ public class KeyRotator {
     /** Clock-skew allowance past a token's {@code exp}, matching {@code TokenWrapper.verify}. */
     static final long CLOCK_SKEW_SECONDS = 60;
 
+    /**
+     * How often {@link #sweepExpired} runs, and so the longest an expired key
+     * stays in {@code verifying_keys} or the disk snapshot. A restart inside
+     * that window still reads the expired key off disk, so it is kept to a
+     * minute: 1/60 of each {@link #EXTEND_STEP_SECONDS}. A sweep with nothing
+     * expired reads the verifying set and writes nothing.
+     */
+    static final long SWEEP_INTERVAL_SECONDS = 60;
+
     /** Signing algorithms kernel maintains. */
     public enum SigAlg {
         ED25519("EdDSA", KeyOuterClass.KeyType.KEY_TYPE_OKP, "Ed25519"),
@@ -175,6 +188,9 @@ public class KeyRotator {
     private final ScheduledExecutorService scheduler;
 
     private final EnumMap<SigAlg, ActiveKey> active = new EnumMap<>(SigAlg.class);
+
+    /** The earliest {@link #retiresAt} among the keys the last sweep left in place. */
+    private long nextRetirement = Long.MAX_VALUE;
 
     /**
      * @param rotationIntervalSeconds interval between key rotations
@@ -263,8 +279,7 @@ public class KeyRotator {
             // previous keys into the shared set. Keys published before exp was
             // set carry no TTL and would otherwise sit there until a rotation
             // happened to run.
-            sweepVerifyingKeys();
-            if (changed) {
+            if (sweepVerifyingKeys() || changed) {
                 onKeysChanged.run();
             }
         } catch (Exception e) {
@@ -282,6 +297,17 @@ public class KeyRotator {
                 },
                 rotationIntervalSeconds,
                 rotationIntervalSeconds,
+                TimeUnit.SECONDS);
+        scheduler.scheduleAtFixedRate(
+                () -> {
+                    try {
+                        sweepExpired();
+                    } catch (Exception e) {
+                        logger.error("Expired signing key sweep failed", e);
+                    }
+                },
+                SWEEP_INTERVAL_SECONDS,
+                SWEEP_INTERVAL_SECONDS,
                 TimeUnit.SECONDS);
 
         logger.info("KeyRotator started: rotation every {}s, key retention {}s, EdDSA kid={}, ES256 kid={}",
@@ -431,6 +457,44 @@ public class KeyRotator {
     }
 
     /**
+     * Retires every key whose {@code exp} has passed, from the verifying set
+     * and from the disk snapshot.
+     *
+     * <p>An active key past its {@code exp} has no live token — {@link #reserve}
+     * keeps {@code exp} past every token it signs — so it is replaced by a
+     * fresh one and then swept like any other. A reserved key's {@code exp} is
+     * still ahead, so it stays.
+     *
+     * <p>The snapshot is rewritten when this sweep removed or replaced a key, or
+     * when a key the previous sweep saw has reached its {@code exp}: the state
+     * store's TTL drops such a key on its own, but the snapshot written before
+     * still holds it until something writes a new one.
+     */
+    synchronized void sweepExpired() throws Exception {
+        long now = clock.instant().getEpochSecond();
+        boolean changed = nextRetirement <= now;
+        for (SigAlg a : SigAlg.values()) {
+            JwkOuterClass.Jwk jwk = active.get(a).jwk;
+            if (retiresAt(jwk) <= now) {
+                logger.info("Retiring expired active signing key: alg={}, kid={}, exp={}",
+                        a.alg, jwk.getKid(), jwk.getExp());
+                generateKey(a);
+                changed = true;
+            }
+        }
+        changed |= sweepVerifyingKeys();
+        if (changed) {
+            try {
+                onKeysChanged.run();
+            } catch (RuntimeException e) {
+                // The snapshot on disk still holds the expired key: retry next sweep.
+                nextRetirement = now;
+                throw e;
+            }
+        }
+    }
+
+    /**
      * Evicts keys the cluster no longer needs from the shared verifying set.
      *
      * <p>Two rules, in order. First by AGE: a key past its {@code exp} can no
@@ -446,32 +510,45 @@ public class KeyRotator {
      * still signing with them. Another node's active key is not distinguishable
      * from here, but cannot be reached by the age rule either — that node
      * reserves it ahead of every token it signs.
+     *
+     * @return whether any key was removed
      */
-    private void sweepVerifyingKeys() {
+    private boolean sweepVerifyingKeys() {
         long now = clock.instant().getEpochSecond();
+        long earliest = Long.MAX_VALUE;
 
         // Candidates for eviction, newest last. This node's own active keys are
         // excluded outright and are not candidates under either rule.
         List<JwkOuterClass.Jwk> candidates = new ArrayList<>();
         int live = 0;
+        boolean removed = false;
         for (JwkOuterClass.Jwk jwk : keyReader.get()) {
+            boolean dated = jwk.getExp() > 0 || jwk.getCreated() > 0;
             if (isLocallyActive(jwk.getKid())) {
                 live++;
+                if (dated) {
+                    earliest = Math.min(earliest, retiresAt(jwk));
+                }
                 continue;
             }
-            if ((jwk.getExp() > 0 || jwk.getCreated() > 0) && retiresAt(jwk) < now) {
+            if (dated && retiresAt(jwk) <= now) {
                 logger.info("Removing expired signing key: kid={}, created={}, exp={}",
                         jwk.getKid(), jwk.getCreated(), jwk.getExp());
                 keyRemover.accept(jwk.getKid());
+                removed = true;
                 continue;
+            }
+            if (dated) {
+                earliest = Math.min(earliest, retiresAt(jwk));
             }
             candidates.add(jwk);
             live++;
         }
+        nextRetirement = earliest;
 
         int excess = Math.min(live - MAX_VERIFYING_KEYS, candidates.size());
         if (excess <= 0) {
-            return;
+            return removed;
         }
         // Oldest first; a key with no created stamp sorts oldest of all.
         candidates.sort(java.util.Comparator.comparingLong(
@@ -485,6 +562,7 @@ public class KeyRotator {
             logger.warn("Evicting over-bound signing key: kid={}, created={}", jwk.getKid(), jwk.getCreated());
             keyRemover.accept(jwk.getKid());
         }
+        return true;
     }
 
     /**

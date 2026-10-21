@@ -728,10 +728,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				// broker routed the call, it did not attest the identity.
 				return mintDevicePersonalToken(request, callerSub);
 			default:
-				// EMAIL_LINK / PERSONAL_LINK each require kernel to verify
-				// request.proof_token itself, which is not implemented. UNSPECIFIED
-				// is the zero value and names no proof at all. Refuse rather than
-				// mint on an unverified proof.
+				// PERSONAL_LINK requires kernel to verify request.proof_token
+				// itself, which is not implemented. EMAIL_LINK is mail link, which
+				// was removed from SeaBeam (2026-10-20); tacplus still defines the
+				// value. UNSPECIFIED is the zero value and names no proof at all.
+				// Refuse rather than mint on an unverified proof.
 				throw new StatusException(Status.PERMISSION_DENIED,
 						"broker kind " + brokerKind.name() + " is not supported by MintUserToken");
 		}

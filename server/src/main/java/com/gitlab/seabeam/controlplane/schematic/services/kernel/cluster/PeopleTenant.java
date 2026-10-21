@@ -31,9 +31,7 @@ import org.slf4j.LoggerFactory;
  *   <li><b>Its IdP set is fixed.</b> Apple and Google, and only those. A
  *       deployment supplies client credentials; the issuer URL comes from
  *       {@link #issuerUrl} here, so there is no configuration that could point
- *       the tenant at a third issuer. The one way in that is not an IdP is
- *       an emailed sign-in link, which kernel issues and spends itself
- *       ({@code PEOPLE_IDP_PROVIDER_MAIL_LINK}); it has no issuer.</li>
+ *       the tenant at a third issuer.</li>
  *   <li><b>It has no admin.</b> Nothing seeds a cred_pair into its
  *       TenantConfig, and {@code TenantAdmin.SetTenantConfig} refuses the
  *       namespace, so no token is ever entitled to administer it.</li>
@@ -95,15 +93,11 @@ final class PeopleTenant {
 		return null;
 	}
 
-	/** The token name of a provider ({@code apple}, {@code google}, {@code mail}). */
+	/** The token name of a provider ({@code apple}, {@code google}). */
 	static String providerToken(Kernel.PeopleIdpProvider provider) {
 		return switch (provider) {
 			case PEOPLE_IDP_PROVIDER_APPLE -> "apple";
 			case PEOPLE_IDP_PROVIDER_GOOGLE -> "google";
-			// A mail-link person's subject is an address, whose '@' the segment
-			// grammar refuses, so userId always takes the opaque branch for it and
-			// no address ever appears in a SPIFFE id.
-			case PEOPLE_IDP_PROVIDER_MAIL_LINK -> "mail";
 			default -> throw new IllegalArgumentException("no token for " + provider);
 		};
 	}

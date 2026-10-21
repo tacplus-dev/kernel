@@ -44,8 +44,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * below is load-bearing rather than belt-and-braces.
  *
  * <p>The checks are two, deliberately: a delegate must LIST the kind it is
- * presenting, and the kind must be one kernel can actually verify.
- * PERSONAL_LINK is an enum value whose proof verification is not written yet, so a delegate configured for one must not mint through the IdP
+ * presenting, and the kind must be one kernel can actually verify. DEVICE,
+ * EMAIL_LINK and PERSONAL_LINK are enum values whose proof verification is not
+ * written yet, so a delegate configured for one must not mint through the IdP
  * path just because its list is non-empty.
  */
 class UserMintAuthBrokerKindTest {
@@ -200,22 +201,23 @@ class UserMintAuthBrokerKindTest {
 	}
 
 	/**
-	 * The second check, isolated. This delegate DOES list PERSONAL_LINK, so the
-	 * containment check passes and only the switch can refuse it. PERSONAL_LINK
-	 * requires kernel to verify request.proof_token itself, which is not written
-	 * — minting here would issue a user token on a proof nobody checked.
+	 * The second check, isolated. This delegate DOES list EMAIL_LINK, so the
+	 * containment check passes and only the switch can refuse it. EMAIL_LINK
+	 * requires kernel to verify request.proof_token itself, which is a later Goal
+	 * B item and is not written — minting here would issue a user token on a
+	 * proof nobody checked.
 	 *
-	 * <p>This case was DEVICE until device-proof verification landed
-	 * ({@code DevicePrincipalMintTest}), then EMAIL_LINK until kernel-issued
-	 * sign-in links did ({@code SignInLinkTest}), so the only kind that still
-	 * exercises the unimplemented arm is PERSONAL_LINK.
+	 * <p>This case was DEVICE until device-proof verification landed; DEVICE now
+	 * has a real verification arm ({@code DevicePrincipalMintTest}), so the only
+	 * kinds that still exercise the unimplemented arm are EMAIL_LINK and
+	 * PERSONAL_LINK.
 	 */
 	@Test
 	void kindWithNoVerificationIsRefusedEvenWhenDeclared() {
-		IdentityServiceImpl svc = newService(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_PERSONAL_LINK);
+		IdentityServiceImpl svc = newService(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_EMAIL_LINK);
 
 		ProtoException ex = assertThrows(ProtoException.class,
-				() -> mintUser(svc, Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_PERSONAL_LINK));
+				() -> mintUser(svc, Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_EMAIL_LINK));
 
 		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
 		assertTrue(ex.getMessage().contains("not supported"),

@@ -855,7 +855,6 @@ public class ClusterServer {
 					kubernetesTokenAudience,
 					webauthnRelyingParty());
 			identityService.setPeopleSignupsPaused(configOverrides::peopleSignupsPaused);
-			identityService.setSignInLinks(hazelcast.getMap("sign-in-links"));
 
 			Mint mintWrapper = new Mint(identityService, kernelAuthorizer) {
 				@Override

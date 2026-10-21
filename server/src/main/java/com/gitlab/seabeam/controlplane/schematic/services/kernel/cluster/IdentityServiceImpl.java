@@ -300,6 +300,29 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	private final Object personRegistryLock = new Object();
 
 	/**
+	 * Live sign-in links: SHA-256 (hex) of the token → what it signs in. A
+	 * Hazelcast map, unlike the node-local guards in this file, because a link is
+	 * issued on one kernel node and spent on whichever node the later mint lands
+	 * on, and spending it must be one atomic {@code remove} across the cluster:
+	 * that is what makes it single-use. Entries carry the map's own TTL, so an
+	 * unspent link leaves nothing behind. Null until {@link #setSignInLinks};
+	 * both RPCs that touch it refuse while it is (fail closed).
+	 */
+	private volatile com.hazelcast.map.IMap<String, SignInLinkEntry> signInLinks;
+
+	/** What a sign-in link signs in: the lowercased address, until expiresAtMs. */
+	static final class SignInLinkEntry implements java.io.Serializable {
+		private static final long serialVersionUID = 1L;
+		final String email;
+		final long expiresAtMs;
+
+		SignInLinkEntry(String email, long expiresAtMs) {
+			this.email = email;
+			this.expiresAtMs = expiresAtMs;
+		}
+	}
+
+	/**
 	 * The effective {@code Config.people_signups_paused}, read on every first
 	 * login; see {@link #findOrCreatePerson}. Off until kernel wires in the
 	 * runtime override ({@code ConfigOverrides}).
@@ -458,6 +481,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	/** Wires the sign-ups kill switch; see {@link #findOrCreatePerson}. */
 	void setPeopleSignupsPaused(java.util.function.BooleanSupplier peopleSignupsPaused) {
 		this.peopleSignupsPaused = peopleSignupsPaused;
+	}
+
+	/** Wires the cluster-wide sign-in link map; see {@link #doCreateSignInLink}. */
+	void setSignInLinks(com.hazelcast.map.IMap<String, SignInLinkEntry> signInLinks) {
+		this.signInLinks = signInLinks;
 	}
 
 	// ========================================================================
@@ -727,9 +755,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				// credential list, so nothing here rests on the broker's word: the
 				// broker routed the call, it did not attest the identity.
 				return mintDevicePersonalToken(request, callerSub);
+			case AUTH_BROKER_KIND_EMAIL_LINK:
+				// Kernel issued the link (CreateSignInLink) and spends it itself; the
+				// broker relays the token and attests nothing.
+				return mintMailLinkPersonToken(request, callerSub);
 			default:
-				// EMAIL_LINK / PERSONAL_LINK each require kernel to verify
-				// request.proof_token itself, which is not implemented. UNSPECIFIED
+				// PERSONAL_LINK requires kernel to verify request.proof_token
+				// itself, which is not implemented. UNSPECIFIED
 				// is the zero value and names no proof at all. Refuse rather than
 				// mint on an unverified proof.
 				throw new StatusException(Status.PERMISSION_DENIED,
@@ -829,6 +861,103 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		return mintUserTokenInternal(subject, claims, request.getExp(), request.getTraceId(),
 				callerSub, request.getOfflineAccess(), PeopleTenant.NAMESPACE);
+	}
+
+	/**
+	 * Mint.CreateSignInLink: 32 random bytes for an emailed sign-in link. Only
+	 * the SHA-256 is kept, so the map — and anything that reads or snapshots it —
+	 * cannot be turned back into a link; the token itself is returned once and
+	 * exists after that only in the mail.
+	 */
+	@Override
+	public Kernel.CreateSignInLinkResponse createSignInLink(Caller caller,
+			Kernel.CreateSignInLinkRequest request) throws ProtoException {
+		try {
+			return doCreateSignInLink(request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		}
+	}
+
+	private Kernel.CreateSignInLinkResponse doCreateSignInLink(Kernel.CreateSignInLinkRequest request)
+			throws StatusException {
+		String callerSub = verifiedCallerToken("CreateSignInLink").getSubject();
+		requireBrokerDelegate(callerSub, Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_EMAIL_LINK);
+		com.hazelcast.map.IMap<String, SignInLinkEntry> links = requireSignInLinks();
+
+		long ttlSeconds = com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.kernel
+				.Helpers.SIGN_IN_LINK_TTL_SECONDS;
+		byte[] raw = new byte[32];
+		CODE_RANDOM.nextBytes(raw);
+		String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+		String email = request.getEmail().toLowerCase(java.util.Locale.ROOT);
+		links.put(sha256Hex(token),
+				new SignInLinkEntry(email, System.currentTimeMillis() + ttlSeconds * 1000),
+				ttlSeconds, java.util.concurrent.TimeUnit.SECONDS);
+		// Neither the token nor the address: a link is a credential, and the
+		// address is the person.
+		logger.info("CreateSignInLink: issued a link for {}, ttl={}s", callerSub, ttlSeconds);
+		return Kernel.CreateSignInLinkResponse.newBuilder()
+				.setToken(token)
+				.setExpiresInSeconds(ttlSeconds)
+				.build();
+	}
+
+	/**
+	 * The {@code AUTH_BROKER_KIND_EMAIL_LINK} arm: spends the link named by
+	 * {@code request.proof_token} and mints the people-tenant person keyed on its
+	 * address.
+	 *
+	 * <p>The spend is {@code remove}, one atomic operation on the cluster map, so
+	 * of two concurrent mints with one token — on one node or two — exactly one
+	 * gets the entry. Unknown, spent and expired are one answer, so a caller
+	 * cannot tell which. The entry is gone either way: an expired one the TTL had
+	 * not yet dropped is consumed here rather than left to be tried again.
+	 *
+	 * <p>As on the device arm, {@code request.subject} and {@code request.claims}
+	 * are ignored: the broker attests nothing here. The claims OPA sees are the
+	 * address, synthesized from the link kernel issued, and the namespace is
+	 * stamped {@code /tenants/people}.
+	 */
+	private Tokenrequest.TokenMintResponse mintMailLinkPersonToken(
+			Tokenrequest.MintUserTokenRequest request, String callerSub) throws StatusException {
+		com.hazelcast.map.IMap<String, SignInLinkEntry> links = requireSignInLinks();
+		String token = request.getProofToken();
+		SignInLinkEntry link = token.isEmpty() ? null : links.remove(sha256Hex(token));
+		if (link == null || link.expiresAtMs <= System.currentTimeMillis()) {
+			throw new StatusException(Status.UNAUTHENTICATED, "sign-in link is unknown, used or expired");
+		}
+
+		Kernel.PeopleIdpProvider provider = Kernel.PeopleIdpProvider.PEOPLE_IDP_PROVIDER_MAIL_LINK;
+		String userId = PeopleTenant.userId(provider, link.email);
+		String subject = Spiffe.userSpiffeId(trustDomainReader.get(), PeopleTenant.NAMESPACE, userId);
+		synchronized (personRegistryLock) {
+			findOrCreatePerson(userId, provider, link.email);
+		}
+
+		Struct claims = Struct.newBuilder()
+				.putFields("email", Value.newBuilder().setStringValue(link.email).build())
+				.putFields("email_verified", Value.newBuilder().setBoolValue(true).build())
+				.build();
+		return mintUserTokenInternal(subject, claims, request.getExp(), request.getTraceId(),
+				callerSub, request.getOfflineAccess(), PeopleTenant.NAMESPACE);
+	}
+
+	private com.hazelcast.map.IMap<String, SignInLinkEntry> requireSignInLinks() throws StatusException {
+		com.hazelcast.map.IMap<String, SignInLinkEntry> links = signInLinks;
+		if (links == null) {
+			throw new StatusException(Status.UNAVAILABLE, "sign-in links are not wired on this kernel");
+		}
+		return links;
+	}
+
+	private static String sha256Hex(String s) {
+		try {
+			return java.util.HexFormat.of().formatHex(
+					MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8)));
+		} catch (java.security.NoSuchAlgorithmException e) {
+			throw new IllegalStateException("SHA-256 is required of every JVM", e);
+		}
 	}
 
 	/**

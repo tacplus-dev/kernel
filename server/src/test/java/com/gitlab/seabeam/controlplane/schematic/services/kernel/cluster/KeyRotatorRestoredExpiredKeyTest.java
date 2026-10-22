@@ -191,6 +191,28 @@ class KeyRotatorRestoredExpiredKeyTest {
 	}
 
 	/**
+	 * ClusterServer opens the gRPC server before KeyRotator.start(), so a Mint
+	 * can reserve() a restored key first. An expired one is retired exactly as
+	 * start() would retire it, never extended and signed with.
+	 */
+	@Test
+	void reserveBeforeStartNeverExtendsAnExpiredRestoredKey() throws Exception {
+		List<Kernel.SigningKeyRecord> records = expiredRecords();
+		KeyRotator r = rotator(() -> {});
+		r.restore(records);
+
+		for (KeyRotator.SigAlg a : KeyRotator.SigAlg.values()) {
+			String oldKid = kidOf(records, a);
+
+			assertNotEquals(oldKid, r.reserve(a, clock.epoch() + 600).getProto().getId(),
+					a.alg + " signed with its expired key");
+			assertNotEquals(oldKid, r.getActiveKeyId(a));
+			// Extending it would have published it with a later exp.
+			assertFalse(isPublished(oldKid), a.alg + " expired key republished with a later exp");
+		}
+	}
+
+	/**
 	 * A topology change republishes this node's active keys. One past its exp
 	 * (between two sweeps) is retired, not republished.
 	 */

@@ -368,6 +368,10 @@ public class KeyRotator {
      * a token is never signed by a key whose published lifetime does not cover
      * it.
      *
+     * <p>An active key already past its {@code exp} is never extended: it is
+     * retired through {@link #ensureJwksPublished} first, exactly as
+     * {@link #start} retires an expired restored key.
+     *
      * <p>Synchronized with {@link #rotate} so the key returned is the one whose
      * {@code exp} was extended, never one rotated in between.
      *
@@ -377,6 +381,17 @@ public class KeyRotator {
         ActiveKey k = active.get(alg);
         if (k.signingKey == null) {
             return null;
+        }
+        // A restored key reserved before start() (ClusterServer serves first)
+        // is past its exp: it is retired as start() retires it, never extended.
+        if (retiresAt(k.jwk) <= clock.instant().getEpochSecond()) {
+            try {
+                if (ensureJwksPublished()) {
+                    onKeysChanged.run();
+                }
+            } catch (Exception e) {
+                throw new IllegalStateException("failed to retire expired signing key", e);
+            }
         }
         long needed = tokenExp + CLOCK_SKEW_SECONDS;
         if (needed > retiresAt(k.jwk)) {

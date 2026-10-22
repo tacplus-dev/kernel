@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Seabeam LLC. All rights reserved.
 package com.gitlab.seabeam.controlplane.schematic.services.kernel.cluster;
 
-import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.chassis.diskstore.DiskStoreException;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.jwk.JwkOuterClass;
 import org.junit.jupiter.api.Test;
@@ -21,13 +20,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Dev incident 2026-10-19: kernel-2 refused to boot because its disk snapshot
  * held a JWK whose {@code exp} had passed ~8 h earlier, and the generated
- * loader rejects {@code exp <= now}. An expired key must leave both the
+ * loader then rejected {@code exp <= now}. It now loads such a snapshot and
+ * leaves retiring the key to its owner. An expired key must leave both the
  * shared {@code verifying_keys} set and the disk snapshot within one
  * {@link KeyRotator#SWEEP_INTERVAL_SECONDS}.
  */
@@ -206,10 +205,10 @@ class KeyRotatorExpiredKeysTest {
 	}
 
 	/**
-	 * End to end through the generated disk store, against the wall clock the
-	 * generated loader validates with: the snapshot written before a key
-	 * expired fails to load exactly as kernel-2 did, and the one written by
-	 * the sweep after it loads and holds no JWK with exp <= now.
+	 * End to end through the generated disk store, against the wall clock: the
+	 * snapshot written before a key expired still holds it once its exp has
+	 * passed (the generated loader skips time-relative checks at rest), and the
+	 * one written by the sweep after it holds no JWK with exp <= now.
 	 */
 	@Test
 	void snapshotAfterTheSweepHoldsNoExpiredKey(@TempDir Path dir) throws Exception {
@@ -221,8 +220,11 @@ class KeyRotatorExpiredKeysTest {
 				dir.toString(), r, () -> new ArrayList<>(shared.values()), null, null, null, null, null);
 		r.start();                        // writes keys that expire at realNow - STEP
 
-		DiskStoreException e = assertThrows(DiskStoreException.class, snapshot[0]::load);
-		assertTrue(e.getMessage().contains("field exp must be a future epoch timestamp"), e.getMessage());
+		Kernel.KernelDiskState stale = snapshot[0].load();
+		assertEquals(2, stale.getSigningKeysCount());
+		for (Kernel.SigningKeyRecord rec : stale.getSigningKeysList()) {
+			assertTrue(rec.getJwk().getExp() <= realNow, "snapshot before the sweep holds " + rec.getJwk().getKid());
+		}
 
 		clock.set(realNow);
 		r.sweepExpired();

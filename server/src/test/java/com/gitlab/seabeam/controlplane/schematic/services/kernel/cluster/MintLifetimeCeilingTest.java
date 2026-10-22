@@ -94,7 +94,7 @@ class MintLifetimeCeilingTest {
 
 	private IdentityServiceImpl identityServiceOver(ConfigMap tenantConfigs) {
 		return new IdentityServiceImpl(
-				DEFAULT_EXPIRY_SECONDS, MAX_LIFETIME_SECONDS, MAX_LIFETIME_SECONDS,
+				DEFAULT_EXPIRY_SECONDS, 86_400, MAX_LIFETIME_SECONDS, MAX_LIFETIME_SECONDS,
 				keyRotator,
 				() -> verifyingKeys,
 				List::of,        // delegates

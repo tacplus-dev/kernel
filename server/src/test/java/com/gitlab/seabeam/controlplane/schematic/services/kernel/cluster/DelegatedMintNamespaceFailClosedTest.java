@@ -77,7 +77,7 @@ class DelegatedMintNamespaceFailClosedTest {
 				.setCreatedAtMs(Instant.now().toEpochMilli())
 				.build());
 		return new IdentityServiceImpl(
-				3600, 86_400, 86_400,
+				3600, 86_400, 86_400, 86_400,
 				keyRotator,
 				() -> verifyingKeys,
 				() -> delegates,

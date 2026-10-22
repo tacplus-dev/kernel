@@ -166,6 +166,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	private static final String CLAIM_GRANT_ID = "gid";
 
 
+	private static final long DEFAULT_REFRESH_TOKEN_LIFETIME_SECONDS = 86400; // 24 hours
 	private static final long DEFAULT_MAX_TOKEN_LIFETIME_SECONDS = 2592000; // 30 days
 	private static final long DEFAULT_OFFLINE_TOKEN_LIFETIME_SECONDS = 7776000; // 90 days
 
@@ -335,6 +336,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	static final Object PENDING_APPROVAL_LOCK = new Object();
 
 	private final long defaultTokenExpirySeconds;
+	private final long refreshTokenLifetimeSeconds;
 	private final long maxTokenLifetimeSeconds;
 	private final long offlineTokenLifetimeSeconds;
 	private final KeyRotator keyRotator;
@@ -401,6 +403,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
+			long refreshTokenLifetimeSeconds,
 			long maxTokenLifetimeSeconds,
 			long offlineTokenLifetimeSeconds,
 			KeyRotator keyRotator,
@@ -424,6 +427,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			@Nullable String kubernetesTokenAudience,
 			@Nullable WebauthnProof.RelyingParty webauthnRelyingParty) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
+		this.refreshTokenLifetimeSeconds = refreshTokenLifetimeSeconds > 0 ? refreshTokenLifetimeSeconds : DEFAULT_REFRESH_TOKEN_LIFETIME_SECONDS;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
 		this.offlineTokenLifetimeSeconds = offlineTokenLifetimeSeconds > 0 ? offlineTokenLifetimeSeconds : DEFAULT_OFFLINE_TOKEN_LIFETIME_SECONDS;
 		this.keyRotator = keyRotator;
@@ -1746,7 +1750,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// Long-lived token: an Offline Token (OT) when offline_access is requested
 		// (months), otherwise a refresh token (RT). The OT is exempt from the
 		// short-lived max_token_lifetime ceiling and uses the offline ceiling.
-		long longLivedDefault = offlineAccess ? offlineTokenLifetimeSeconds : defaultTokenExpirySeconds;
+		long longLivedDefault = offlineAccess ? offlineTokenLifetimeSeconds : refreshTokenLifetimeSeconds;
 		long maxExp = now + (offlineAccess ? offlineTokenLifetimeSeconds : maxTokenLifetimeSeconds);
 		long exp;
 		if (requestedExp > 0) {

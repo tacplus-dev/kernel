@@ -107,7 +107,7 @@ class PendingApprovalTest {
 				Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE));
 		principalMap = new PrincipalMap(new InMemoryManager());
 		svc = new IdentityServiceImpl(
-				3600, 86_400, 86_400,
+				3600, 86_400, 86_400, 86_400,
 				keyRotator,
 				() -> verifyingKeys,
 				() -> delegates,

@@ -59,7 +59,7 @@ class MintExternalServiceTokenTest {
 				.build());
 
 		identityService = new IdentityServiceImpl(
-				DEFAULT_EXPIRY_SECONDS, MAX_LIFETIME_SECONDS, MAX_LIFETIME_SECONDS,
+				DEFAULT_EXPIRY_SECONDS, 86_400, MAX_LIFETIME_SECONDS, MAX_LIFETIME_SECONDS,
 				keyRotator,
 				() -> verifyingKeys,
 				() -> delegates,

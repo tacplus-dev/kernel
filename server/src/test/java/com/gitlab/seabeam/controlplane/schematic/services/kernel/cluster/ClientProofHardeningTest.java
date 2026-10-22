@@ -259,7 +259,7 @@ class ClientProofHardeningTest {
 
 	private IdentityServiceImpl identityServiceOver(ConfigMap tenantConfigs) {
 		return new IdentityServiceImpl(
-				3600, MAX_LIFETIME_SECONDS, MAX_LIFETIME_SECONDS,
+				3600, 86_400, MAX_LIFETIME_SECONDS, MAX_LIFETIME_SECONDS,
 				keyRotator,
 				() -> verifyingKeys,
 				List::of,        // delegates

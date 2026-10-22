@@ -2914,7 +2914,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			// Data plane: OT → AT (mintAccessFromRefresh stamps AT.parent_jti = OT.jti).
 			// The AT is scoped to the requested (or default) project — this is the
 			// project-switch path for offline-token holders.
-			long otAccessExp = otNow + accessTokenLifetimeSeconds;
+			// The AT never outlives the OT it came from.
+			long otAccessExp = Math.min(inputToken.getExpiration(), otNow + accessTokenLifetimeSeconds);
 			ImmutableKey otSigningKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, otAccessExp);
 			if (otSigningKey == null) {
 				throw new StatusException(Status.UNAVAILABLE, "no active signing key");
@@ -3270,6 +3271,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
 			}
 		}
+		// The tenant token never outlives the personal token presented for it.
+		exp = Math.min(exp, inputToken.getExpiration());
 
 		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
 		if (signingKey == null) {
@@ -3530,7 +3533,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		} else {
 			exp = now + offlineTokenLifetimeSeconds;
 		}
-		long accessExp = now + accessTokenLifetimeSeconds;
+		// The AT never outlives the fresh OT it came from.
+		long accessExp = Math.min(exp, now + accessTokenLifetimeSeconds);
 
 		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, Math.max(exp, accessExp));
 		if (signingKey == null) {

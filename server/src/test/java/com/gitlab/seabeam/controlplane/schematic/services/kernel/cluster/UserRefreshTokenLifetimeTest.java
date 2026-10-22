@@ -219,6 +219,36 @@ class UserRefreshTokenLifetimeTest {
 		assertExpiresAt(now + ACCESS_LIFETIME_SECONDS, renewed.getAccessToken().getBase64());
 	}
 
+	@Test
+	void offlineTokenExchangeNeverOutlivesTheOfflineToken() throws Exception {
+		IdentityServiceImpl svc = newService();
+		long now = Instant.now().getEpochSecond();
+		long offlineExp = now + 300;
+		String offlineToken = mintCallbackTokens(svc, offlineExp, true).getRefreshToken().getBase64();
+
+		Tokenrequest.TokenMintResponse exchanged = svc.mintToken(CALLER,
+				Tokenrequest.TokenMintRequest.newBuilder().setInputToken(offlineToken).build());
+
+		assertExpiresAt(offlineExp, exchanged.getAccessToken().getBase64());
+	}
+
+	@Test
+	void offlineTokenRenewalAccessTokenNeverOutlivesTheRenewedOfflineToken() throws Exception {
+		IdentityServiceImpl svc = newService();
+		String offlineToken = mintCallbackTokens(svc, 0, true).getRefreshToken().getBase64();
+		long now = Instant.now().getEpochSecond();
+		long renewedExp = now + 300;
+
+		Tokenrequest.TokenMintResponse renewed = svc.mintToken(CALLER,
+				Tokenrequest.TokenMintRequest.newBuilder()
+						.setInputToken(offlineToken)
+						.setOfflineAccess(true)
+						.setExp(renewedExp)
+						.build());
+
+		assertExpiresAt(renewedExp, renewed.getAccessToken().getBase64());
+	}
+
 	private static void assertExpiresAt(long expected, String token) {
 		long exp = TokenWrapper.parse(token).getExpiration();
 		assertTrue(Math.abs(exp - expected) <= SKEW_SECONDS,

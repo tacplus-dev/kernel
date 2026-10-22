@@ -417,6 +417,21 @@ class PersonalPrincipalTenantMintTest {
 				"tenant token exp should be now + 900s, was now + " + (exp - now) + "s");
 	}
 
+	/**
+	 * The tenant token never outlives the personal token presented for it: a
+	 * personal token with 5 minutes left cannot buy a 15-minute tenant token.
+	 */
+	@Test
+	void theTenantTokenNeverOutlivesThePersonalToken() throws Exception {
+		seed(PRINCIPAL_ID, membership(TENANT_A, false));
+		long personalExp = Instant.now().getEpochSecond() + 300;
+
+		long exp = TokenWrapper.parse(mint(personToken(PRINCIPAL_ID, personalExp), TENANT_A)
+				.getAccessToken().getBase64()).getExpiration();
+
+		assertEquals(personalExp, exp);
+	}
+
 	// ------------------------------------------------------------------
 	// Fixture
 	// ------------------------------------------------------------------
@@ -464,6 +479,10 @@ class PersonalPrincipalTenantMintTest {
 	 * {@code AUTH_BROKER_KIND_DEVICE} mint arm produces.
 	 */
 	private String personToken(String principalId) {
+		return personToken(principalId, Instant.now().getEpochSecond() + 3600);
+	}
+
+	private String personToken(String principalId, long exp) {
 		String namespace = "/" + Spiffe.PEOPLE_SEGMENT + "/" + principalId;
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		long now = Instant.now().getEpochSecond();
@@ -472,7 +491,7 @@ class PersonalPrincipalTenantMintTest {
 				.setSubject(personSubject(principalId))
 				.setAudience("kernel")
 				.setIssuedAt(now)
-				.setExpiration(now + 3600)
+				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 		t.setSubType("user");
 		t.setAzp("personal-runtime");

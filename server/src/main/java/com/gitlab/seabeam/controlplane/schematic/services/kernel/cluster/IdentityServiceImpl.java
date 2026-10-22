@@ -2914,7 +2914,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			// Data plane: OT → AT (mintAccessFromRefresh stamps AT.parent_jti = OT.jti).
 			// The AT is scoped to the requested (or default) project — this is the
 			// project-switch path for offline-token holders.
-			long otAccessExp = otNow + defaultTokenExpirySeconds;
+			long otAccessExp = otNow + accessTokenLifetimeSeconds;
 			ImmutableKey otSigningKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, otAccessExp);
 			if (otSigningKey == null) {
 				throw new StatusException(Status.UNAVAILABLE, "no active signing key");
@@ -3258,7 +3258,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		long maxExp = now + maxTokenLifetimeSeconds;
 		long exp;
 		if (request.getExp() == 0) {
-			exp = now + defaultTokenExpirySeconds;
+			exp = now + accessTokenLifetimeSeconds;
 		} else {
 			exp = request.getExp();
 			if (exp <= now) {
@@ -3530,7 +3530,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		} else {
 			exp = now + offlineTokenLifetimeSeconds;
 		}
-		long accessExp = now + defaultTokenExpirySeconds;
+		long accessExp = now + accessTokenLifetimeSeconds;
 
 		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, Math.max(exp, accessExp));
 		if (signingKey == null) {

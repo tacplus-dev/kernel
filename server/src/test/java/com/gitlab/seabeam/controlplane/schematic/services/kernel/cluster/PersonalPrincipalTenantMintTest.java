@@ -400,6 +400,23 @@ class PersonalPrincipalTenantMintTest {
 		assertEquals(ProtoException.INVALID_ARGUMENT, ex.getCode());
 	}
 
+	/**
+	 * The tenant token is a user access token, so it lives
+	 * {@code access_token_lifetime_seconds} (900 here), not the 1 h
+	 * {@code default_token_expiry_seconds}.
+	 */
+	@Test
+	void theTenantTokenLivesForTheAccessLifetimeNotTheDefault() throws Exception {
+		seed(PRINCIPAL_ID, membership(TENANT_A, false));
+		long now = Instant.now().getEpochSecond();
+
+		long exp = TokenWrapper.parse(mint(personToken(PRINCIPAL_ID), TENANT_A)
+				.getAccessToken().getBase64()).getExpiration();
+
+		assertTrue(Math.abs(exp - (now + 900)) <= 5,
+				"tenant token exp should be now + 900s, was now + " + (exp - now) + "s");
+	}
+
 	// ------------------------------------------------------------------
 	// Fixture
 	// ------------------------------------------------------------------

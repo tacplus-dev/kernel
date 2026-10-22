@@ -36,9 +36,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * exchange is capped at the presented token's own exp), so whatever lifetime it
  * is born with is the whole web session.
  *
- * <p>The user access token — the callback's and every one a refresh exchange
- * mints from that refresh token — lives {@code access_token_lifetime_seconds}
- * (15 min by default), never past the refresh token it came from.
+ * <p>The user access token — the callback's, every one a refresh exchange
+ * mints from that refresh token, and every one an offline token's exchange or
+ * renewal returns — lives {@code access_token_lifetime_seconds} (15 min by
+ * default), never past the refresh token it came from.
  */
 class UserRefreshTokenLifetimeTest {
 
@@ -116,6 +117,12 @@ class UserRefreshTokenLifetimeTest {
 
 	/** As above, with the broker asking for an explicit refresh-token exp (0 = default). */
 	private Tokenrequest.TokenMintResponse mintCallbackTokens(IdentityServiceImpl svc, long exp) throws Exception {
+		return mintCallbackTokens(svc, exp, false);
+	}
+
+	/** As above; {@code offlineAccess} asks for an offline token (OT) instead of a refresh token. */
+	private Tokenrequest.TokenMintResponse mintCallbackTokens(IdentityServiceImpl svc, long exp,
+			boolean offlineAccess) throws Exception {
 		io.grpc.Context ctx = io.grpc.Context.current()
 				.withValue(ClusterServer.RAW_AUTH_TOKEN_KEY, delegateToken());
 		io.grpc.Context previous = ctx.attach();
@@ -124,6 +131,7 @@ class UserRefreshTokenLifetimeTest {
 					.setSubject("alice-idp-sub")
 					.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
 					.setExp(exp)
+					.setOfflineAccess(offlineAccess)
 					.setClaims(Struct.newBuilder()
 							.putFields("origin_iss", Value.newBuilder()
 									.setStringValue("https://accounts.google.com").build())
@@ -182,6 +190,33 @@ class UserRefreshTokenLifetimeTest {
 
 		assertExpiresAt(refreshExp, resp.getAccessToken().getBase64());
 		assertExpiresAt(refreshExp, exchanged.getAccessToken().getBase64());
+	}
+
+	@Test
+	void offlineTokenExchangeMintsAnAccessTokenForTheAccessLifetime() throws Exception {
+		IdentityServiceImpl svc = newService();
+		String offlineToken = mintCallbackTokens(svc, 0, true).getRefreshToken().getBase64();
+		long now = Instant.now().getEpochSecond();
+
+		Tokenrequest.TokenMintResponse exchanged = svc.mintToken(CALLER,
+				Tokenrequest.TokenMintRequest.newBuilder().setInputToken(offlineToken).build());
+
+		assertExpiresAt(now + ACCESS_LIFETIME_SECONDS, exchanged.getAccessToken().getBase64());
+	}
+
+	@Test
+	void offlineTokenRenewalReturnsAnAccessTokenForTheAccessLifetime() throws Exception {
+		IdentityServiceImpl svc = newService();
+		String offlineToken = mintCallbackTokens(svc, 0, true).getRefreshToken().getBase64();
+		long now = Instant.now().getEpochSecond();
+
+		Tokenrequest.TokenMintResponse renewed = svc.mintToken(CALLER,
+				Tokenrequest.TokenMintRequest.newBuilder()
+						.setInputToken(offlineToken)
+						.setOfflineAccess(true)
+						.build());
+
+		assertExpiresAt(now + ACCESS_LIFETIME_SECONDS, renewed.getAccessToken().getBase64());
 	}
 
 	private static void assertExpiresAt(long expected, String token) {

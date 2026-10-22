@@ -101,7 +101,7 @@ class PeopleTenantMintTest {
 		principalMap = new PrincipalMap(new InMemoryManager());
 		configMap = new ConfigMap(new InMemoryManager());
 		svc = new IdentityServiceImpl(
-				3600, 86_400, 86_400, 86_400,
+				3600, 900, 86_400, 86_400, 86_400,
 				keyRotator,
 				() -> verifyingKeys,
 				() -> delegates,

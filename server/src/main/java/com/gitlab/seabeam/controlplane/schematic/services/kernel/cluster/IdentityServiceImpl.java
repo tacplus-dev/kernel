@@ -166,6 +166,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	private static final String CLAIM_GRANT_ID = "gid";
 
 
+	private static final long DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 900; // 15 minutes
 	private static final long DEFAULT_REFRESH_TOKEN_LIFETIME_SECONDS = 86400; // 24 hours
 	private static final long DEFAULT_MAX_TOKEN_LIFETIME_SECONDS = 2592000; // 30 days
 	private static final long DEFAULT_OFFLINE_TOKEN_LIFETIME_SECONDS = 7776000; // 90 days
@@ -336,6 +337,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	static final Object PENDING_APPROVAL_LOCK = new Object();
 
 	private final long defaultTokenExpirySeconds;
+	private final long accessTokenLifetimeSeconds;
 	private final long refreshTokenLifetimeSeconds;
 	private final long maxTokenLifetimeSeconds;
 	private final long offlineTokenLifetimeSeconds;
@@ -403,6 +405,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 	public IdentityServiceImpl(
 			long defaultTokenExpirySeconds,
+			long accessTokenLifetimeSeconds,
 			long refreshTokenLifetimeSeconds,
 			long maxTokenLifetimeSeconds,
 			long offlineTokenLifetimeSeconds,
@@ -427,6 +430,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			@Nullable String kubernetesTokenAudience,
 			@Nullable WebauthnProof.RelyingParty webauthnRelyingParty) {
 		this.defaultTokenExpirySeconds = defaultTokenExpirySeconds > 0 ? defaultTokenExpirySeconds : 3600;
+		this.accessTokenLifetimeSeconds = accessTokenLifetimeSeconds > 0 ? accessTokenLifetimeSeconds : DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS;
 		this.refreshTokenLifetimeSeconds = refreshTokenLifetimeSeconds > 0 ? refreshTokenLifetimeSeconds : DEFAULT_REFRESH_TOKEN_LIFETIME_SECONDS;
 		this.maxTokenLifetimeSeconds = maxTokenLifetimeSeconds > 0 ? maxTokenLifetimeSeconds : DEFAULT_MAX_TOKEN_LIFETIME_SECONDS;
 		this.offlineTokenLifetimeSeconds = offlineTokenLifetimeSeconds > 0 ? offlineTokenLifetimeSeconds : DEFAULT_OFFLINE_TOKEN_LIFETIME_SECONDS;
@@ -1831,7 +1835,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		// The access token is always short-lived and never outlives its parent.
 		// A long-lived OT must not be mirrored into a long-lived AT.
-		long accessExp = Math.min(exp, now + defaultTokenExpirySeconds);
+		long accessExp = Math.min(exp, now + accessTokenLifetimeSeconds);
 		TokenOuterClass.Token accessProto = mintAccessFromRefresh(
 				newToken, signingKey, now, accessExp, null, expanded);
 		return Tokenrequest.TokenMintResponse.newBuilder()
@@ -2943,7 +2947,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		long maxExp = now + maxTokenLifetimeSeconds;
 		long exp;
 		if (request.getExp() == 0) {
-			exp = now + defaultTokenExpirySeconds;
+			// A user's refresh → access exchange mints a user access token; every
+			// other exchange (service/workload refresh, access → service) keeps the
+			// default.
+			boolean userAccess = isRefresh && SUB_TYPE_USER.equals(inputToken.getSubType());
+			exp = now + (userAccess ? accessTokenLifetimeSeconds : defaultTokenExpirySeconds);
 		} else {
 			exp = request.getExp();
 			if (exp <= now) {

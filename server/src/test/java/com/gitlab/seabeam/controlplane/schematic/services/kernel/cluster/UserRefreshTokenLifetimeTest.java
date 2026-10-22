@@ -32,9 +32,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The refresh token a broker's IdP login mints (oauth's callback →
  * MintUserToken, no requested exp) lives for {@code refresh_token_lifetime_seconds}
  * — 24 h by default — not for {@code default_token_expiry_seconds}, which is the
- * 1 h access-token default. A refresh never extends a refresh token (an exchange
- * is capped at the presented token's own exp), so whatever lifetime it is born
- * with is the whole web session.
+ * 1 h service/workload default. A refresh never extends a refresh token (an
+ * exchange is capped at the presented token's own exp), so whatever lifetime it
+ * is born with is the whole web session.
+ *
+ * <p>The user access token — the callback's and every one a refresh exchange
+ * mints from that refresh token — lives {@code access_token_lifetime_seconds}
+ * (15 min by default), never past the refresh token it came from.
  */
 class UserRefreshTokenLifetimeTest {
 
@@ -43,6 +47,7 @@ class UserRefreshTokenLifetimeTest {
 	private static final String TENANT_NAMESPACE = "/tenants/acme";
 	private static final Caller CALLER = new Caller("", "test-req");
 	private static final long DEFAULT_EXPIRY_SECONDS = 3600;
+	private static final long ACCESS_LIFETIME_SECONDS = 900;
 	private static final long REFRESH_LIFETIME_SECONDS = 86_400;
 	/** Tolerance for the second boundary between the test's `now` and the impl's. */
 	private static final long SKEW_SECONDS = 5;
@@ -63,7 +68,8 @@ class UserRefreshTokenLifetimeTest {
 				.addAuthBrokerKinds(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
 				.build());
 		return new IdentityServiceImpl(
-				DEFAULT_EXPIRY_SECONDS, REFRESH_LIFETIME_SECONDS, 30L * 86_400, 90L * 86_400,
+				DEFAULT_EXPIRY_SECONDS, ACCESS_LIFETIME_SECONDS, REFRESH_LIFETIME_SECONDS,
+				30L * 86_400, 90L * 86_400,
 				keyRotator,
 				() -> verifyingKeys,
 				() -> delegates,
@@ -105,6 +111,11 @@ class UserRefreshTokenLifetimeTest {
 
 	/** What oauth's mint_callback_tokens sends: IdP broker kind, no exp. */
 	private Tokenrequest.TokenMintResponse mintCallbackTokens(IdentityServiceImpl svc) throws Exception {
+		return mintCallbackTokens(svc, 0);
+	}
+
+	/** As above, with the broker asking for an explicit refresh-token exp (0 = default). */
+	private Tokenrequest.TokenMintResponse mintCallbackTokens(IdentityServiceImpl svc, long exp) throws Exception {
 		io.grpc.Context ctx = io.grpc.Context.current()
 				.withValue(ClusterServer.RAW_AUTH_TOKEN_KEY, delegateToken());
 		io.grpc.Context previous = ctx.attach();
@@ -112,6 +123,7 @@ class UserRefreshTokenLifetimeTest {
 			return svc.mintUserToken(CALLER, Tokenrequest.MintUserTokenRequest.newBuilder()
 					.setSubject("alice-idp-sub")
 					.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
+					.setExp(exp)
 					.setClaims(Struct.newBuilder()
 							.putFields("origin_iss", Value.newBuilder()
 									.setStringValue("https://accounts.google.com").build())
@@ -133,10 +145,50 @@ class UserRefreshTokenLifetimeTest {
 		assertTrue(Math.abs(refreshExp - (now + REFRESH_LIFETIME_SECONDS)) <= SKEW_SECONDS,
 				"refresh token exp should be now + " + REFRESH_LIFETIME_SECONDS
 						+ "s, was now + " + (refreshExp - now) + "s");
-		long accessExp = TokenWrapper.parse(resp.getAccessToken().getBase64()).getExpiration();
-		assertTrue(Math.abs(accessExp - (now + DEFAULT_EXPIRY_SECONDS)) <= SKEW_SECONDS,
-				"access token exp should stay now + " + DEFAULT_EXPIRY_SECONDS
-						+ "s, was now + " + (accessExp - now) + "s");
+	}
+
+	@Test
+	void callbackAccessTokenLivesForTheAccessLifetimeNotTheDefault() throws Exception {
+		IdentityServiceImpl svc = newService();
+		long now = Instant.now().getEpochSecond();
+
+		Tokenrequest.TokenMintResponse resp = mintCallbackTokens(svc);
+
+		assertExpiresAt(now + ACCESS_LIFETIME_SECONDS, resp.getAccessToken().getBase64());
+	}
+
+	@Test
+	void userRefreshExchangeMintsAnAccessTokenForTheAccessLifetime() throws Exception {
+		IdentityServiceImpl svc = newService();
+		String refreshToken = mintCallbackTokens(svc).getRefreshToken().getBase64();
+		long now = Instant.now().getEpochSecond();
+
+		Tokenrequest.TokenMintResponse exchanged = svc.mintToken(CALLER,
+				Tokenrequest.TokenMintRequest.newBuilder().setInputToken(refreshToken).build());
+
+		assertExpiresAt(now + ACCESS_LIFETIME_SECONDS, exchanged.getAccessToken().getBase64());
+	}
+
+	@Test
+	void userAccessTokenNeverOutlivesItsRefreshToken() throws Exception {
+		IdentityServiceImpl svc = newService();
+		long now = Instant.now().getEpochSecond();
+		long refreshExp = now + 300;
+
+		Tokenrequest.TokenMintResponse resp = mintCallbackTokens(svc, refreshExp);
+		Tokenrequest.TokenMintResponse exchanged = svc.mintToken(CALLER,
+				Tokenrequest.TokenMintRequest.newBuilder()
+						.setInputToken(resp.getRefreshToken().getBase64()).build());
+
+		assertExpiresAt(refreshExp, resp.getAccessToken().getBase64());
+		assertExpiresAt(refreshExp, exchanged.getAccessToken().getBase64());
+	}
+
+	private static void assertExpiresAt(long expected, String token) {
+		long exp = TokenWrapper.parse(token).getExpiration();
+		assertTrue(Math.abs(exp - expected) <= SKEW_SECONDS,
+				"access token exp should be " + expected + ", was " + exp
+						+ " (" + (exp - expected) + "s off)");
 	}
 
 	/** Returns a canned EntitlementEvalResult; the channel throws if ever used. */

@@ -274,7 +274,7 @@ public class KeyRotator {
                 }
             }
             changed |= ensureJwksPublished();
-            // Sweep on start, not only on rotation: rotation is a day away by
+            // Sweep on start, not only on rotation: rotation is a week away by
             // default, and a node that just cold-started has abandoned its
             // previous keys into the shared set. Keys published before exp was
             // set carry no TTL and would otherwise sit there until a rotation

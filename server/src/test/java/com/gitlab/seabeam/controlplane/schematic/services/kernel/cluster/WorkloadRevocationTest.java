@@ -105,7 +105,7 @@ class WorkloadRevocationTest {
 		OpaEvalGrpcClient opaClient = new OpaEvalGrpcClient(opaChannel, () -> "test-token");
 
 		IdentityServiceImpl identityService = new IdentityServiceImpl(
-				3600, 86_400, 86_400, 86_400,
+				3600, 900, 86_400, 86_400, 86_400,
 				keyRotator,
 				() -> verifyingKeys,
 				List::of,        // delegates

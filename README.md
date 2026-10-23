@@ -8,7 +8,9 @@ Copied **wholesale** on 2026-10-23 from `gitlab.com/seabeam/schematic`
 (`platform/services/kernel` at commit `674733ad`; `proto/services/kernel.proto`,
 `proto/common/hazelcast.proto`, `proto/common/credentials.proto` and `proto/dependencies.yaml`
 from `platform/proto` at `ca7c322` on branch `big8-p1-messaging`). Build outputs, logs and the launcher binary
-were not copied.
+were not copied. `platform/services/kernel` was its own git repository inside schematic, so its
+full history (405 commits, origin `gitlab.com/seabeam/schematic/platform/services/kernel`) came with
+it; this repo's history is that history plus the copy commit.
 
 Jody, 2026-10-23: *"We will copy kernel over to its github home and only make changes to it. we will
 keep these as ships in the night for now. For the new stuff we want to do it the right way."*

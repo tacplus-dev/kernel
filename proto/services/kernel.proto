@@ -18,6 +18,7 @@ import "sys/tokenrequest.proto";
 import "common/hazelcast.proto";
 import "common/credentials.proto";
 import "sys/healthreport.proto";
+import "sys/servicehealth.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
@@ -1177,22 +1178,11 @@ message AdminConfigDump {
 // ============================================================================
 // Service Health State
 // ============================================================================
-
-// ServiceHealth is a state root for service instance health.
-// All microservices have RW access. The server enforces per-instance write
-// isolation via the token's instance_id claim (instance_keyed annotation).
-message ServiceHealth {
-  option (spec.service_state) = {label: ["kernel"], export: true};
-
-  // instances holds health data for each running service instance.
-  // Keyed by "service_id@instance_id" (composed by server from token claims).
-  // Entries TTL-expire in 30s if not refreshed, ensuring stale instances
-  // are removed when a process dies.
-  repeated healthreport.ServiceInstanceHealth instances = 1 [
-    (spec.instance_keyed) = true,
-    (spec.assert_max_size) = 256
-  ];
-}
+//
+// ServiceHealth is part of the sys contract: tacplus declares it in
+// sys/servicehealth.proto (routing label "kernel"); kernel hosts it but does
+// not declare it. Every service reports into it through its generated
+// ServiceManager without importing this file.
 
 // ============================================================================
 // Workload Identity State

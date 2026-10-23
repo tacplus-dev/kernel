@@ -17,8 +17,6 @@ import "sys/cloudvendor.proto";
 import "sys/tokenrequest.proto";
 import "common/hazelcast.proto";
 import "common/credentials.proto";
-import "sys/healthreport.proto";
-import "sys/minter.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";

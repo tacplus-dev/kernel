@@ -1,0 +1,65 @@
+// Copyright (c) 2026 Seabeam LLC. All rights reserved.
+
+// Package userentitlements defines the OPA evaluation interface for
+// user entitlement resolution. Given the caller's IDP claims,
+// the policy returns expanded per-service RPC entitlements (TokenEntitlements).
+//
+// Previously embedded in the oauth service — now accessible to any service
+// via opa's auto-generated S2S eval RPC.
+
+syntax = "proto3";
+
+package userentitlements;
+
+import "sys/spec.proto";
+import "generated/entitlements.proto";
+import "google/protobuf/struct.proto";
+
+// EntitlementEvalInput is the input to the entitlements OPA policy.
+// tacplus generates a typed EvalEntitlement RPC on opa from this message.
+message EntitlementEvalInput {
+  option (spec.opa_eval) = {
+    entry_point: "data.entitlements.eval"
+    result: "EntitlementEvalResult"
+  };
+
+  // claims are the IDP-provided identity claims (e.g. email, groups, roles).
+  // Uses google.protobuf.Struct to preserve native JSON types (arrays, objects, booleans).
+  google.protobuf.Struct claims = 1;
+
+  // namespace is the caller's project namespace (e.g. "/tenants/drpepper").
+  // OPA dispatches on it to run that project's policy. Empty = cluster-root policy.
+  string namespace = 2;
+}
+
+// EntitlementEvalResult is the output of the entitlements OPA policy.
+// The policy returns a TokenEntitlements directly — kernel embeds it in the
+// JWT service_entitlements claim without any further expansion.
+message EntitlementEvalResult {
+  // token_entitlements holds the per-service RPC grants returned by OPA.
+  entitlements.TokenEntitlements token_entitlements = 1;
+
+  // all_entitlements grants unrestricted access to all services and RPCs.
+  // When true, kernel sets service_entitlements={"all":true} in the JWT,
+  // and gateway bypasses per-service entitlement checks entirely.
+  // Intended for admin users only.
+  bool all_entitlements = 2;
+
+  // namespace is the tenant namespace the policy assigns to this caller, as a
+  // leading-slash absolute path (e.g. "/tenants/acme"). IDP+OPA live at the
+  // tenant level, so this is the tenant subtree the caller's issuer/claims map
+  // to. When empty, kernel falls back to the cluster-root namespace.
+  string namespace = 3;
+
+  // authorized_projects are the project leaf names within the tenant that this
+  // caller may obtain an access token for (e.g. ["prod", "staging"]). The
+  // minted AT is always scoped to exactly one of these; a project switch
+  // re-mints against this list without requiring re-login. Leaf segments,
+  // relative to `namespace`.
+  repeated string authorized_projects = 4 [(spec.assert_max_size) = 1024];
+
+  // default_project is the project the caller is scoped to immediately after
+  // login, when no explicit project is requested. Must be one of
+  // authorized_projects. Leaf segment, relative to `namespace`.
+  string default_project = 5;
+}

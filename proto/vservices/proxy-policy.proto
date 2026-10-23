@@ -1,0 +1,88 @@
+// Copyright (c) 2026 Seabeam LLC. All rights reserved.
+
+// Package proxypolicy defines the OPA evaluation interface for proxy request
+// policy enforcement. Given the caller's JWT claims and opaque routing metadata,
+// the policy returns a permit/deny decision, a resolved destination URL, optional
+// token mutation parameters, and the credential format to use.
+//
+// Kernel calls opa with the caller's claims and metadata before minting an
+// external token via ExternalTokenMint. The OPA result drives both the allow/deny
+// decision and the shape of the minted token — replacing the old schematic_proxy
+// claim approach with a fully policy-driven, per-destination token mutation model.
+
+syntax = "proto3";
+
+package proxypolicy;
+
+import "sys/spec.proto";
+import "sys/token.proto";
+import "google/protobuf/struct.proto";
+
+option (spec.vservice) = {name: "proxypolicy"};
+
+// ProxyPolicyEvalInput is the input to the proxy policy OPA evaluation.
+// tacplus generates a typed EvalProxyPolicy RPC on opa from this message.
+// Kernel calls this before minting an external token — the caller's JWT payload
+// and opaque routing metadata are the inputs the policy uses to decide.
+message ProxyPolicyEvalInput {
+  option (spec.opa_eval) = {
+    entry_point: "data.proxypolicy.eval"
+    result: "ProxyPolicyEvalResult"
+  };
+
+  // claims are the caller's JWT payload claims (e.g. sub, email, groups,
+  // service_entitlements). Uses google.protobuf.Struct to preserve native
+  // JSON types (arrays, objects, booleans).
+  google.protobuf.Struct claims = 1;
+
+  // metadata is the opaque string from the schematicctl listener config,
+  // forwarded verbatim by the proxy. The policy uses it to determine which
+  // upstream is being targeted (e.g. by mapping to a known URL or label)
+  // and whether the caller is permitted to reach it.
+  string metadata = 2 [(spec.assert_max_size) = 2048];
+}
+
+// ProxyPolicyEvalResult is the output of the proxy policy OPA evaluation.
+// Kernel reads this result and either rejects the request (allow = false) or
+// mints an external token incorporating the specified mutations.
+message ProxyPolicyEvalResult {
+  // allow indicates whether the request is permitted.
+  // When false, kernel rejects the ExternalTokenMint call with PERMISSION_DENIED.
+  bool allow = 1;
+
+  // url, if non-empty, is the resolved destination URL for the upstream request.
+  // Kernel returns this to the proxy in ExternalTokenMintResponse so the proxy
+  // forwards to the correct destination. Empty means the proxy uses its own
+  // DEFAULT_API_ENDPOINT for the service.
+  string url = 2 [(spec.assert_url) = URL_SCHEME_HTTP_OR_HTTPS, (spec.assert_max_size) = 2048];
+
+  // reason explains the denial. Returned to the proxy in the denial status.
+  // Empty when allow = true.
+  string reason = 3 [(spec.assert_max_size) = 512];
+
+  // append_aud contains zero or more audience values to append to the minted
+  // external token's aud claim. The caller's original aud is always preserved —
+  // OPA may only add audiences, never replace or remove the original.
+  // Most policies leave this empty. Set it when the upstream requires a specific
+  // audience value (e.g. an OIDC client ID) in addition to
+  // the caller's existing aud.
+  repeated string append_aud = 4 [(spec.assert_max_size) = 8];
+
+  // extra_claims contains additional JWT claims to inject into the minted token.
+  // Kernel merges these into the token payload alongside the standard claims.
+  // Existing claims on the caller's token are never removed — only additions
+  // are permitted to prevent privilege escalation via claim stripping.
+  google.protobuf.Struct extra_claims = 5;
+
+  // auth_type determines the credential format kernel returns to the proxy.
+  // TOKEN_TYPE_JWT (default): kernel returns a signed JWT in the response.
+  // Unset is treated as TOKEN_TYPE_JWT.
+  token.TokenType auth_type = 6;
+
+  // token_use sets the token_use claim on the minted external token.
+  // Must be TOKEN_USE_EXTERNAL or TOKEN_USE_UNSPECIFIED (both result in
+  // TOKEN_USE_EXTERNAL being stamped). Kernel rejects any other value to
+  // ensure external tokens can never be replayed against internal services.
+  // Policies should set this explicitly to TOKEN_USE_EXTERNAL to document intent.
+  token.TokenUse token_use = 7;
+}

@@ -1,0 +1,7 @@
+# Managed by tacplus — do not edit IDs manually.
+global: https://github.com/tacplus-dev/registry.git
+services:
+    - name: kernel
+      id: 8
+      repo: git@gitlab.com:seabeam/schematic/platform/proto.git
+      visibility: private

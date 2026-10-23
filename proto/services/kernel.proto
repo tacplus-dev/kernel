@@ -1,0 +1,2337 @@
+// Copyright (c) 2026 Seabeam LLC. All rights reserved.
+//
+// Kernel configuration, cluster state, and token exchange definitions.
+// Admin and Hazelcast types are defined in common/hazelcast.proto.
+
+syntax = "proto3";
+
+package kernel;
+
+import "sys/spec.proto";
+import "sys/host.proto";
+import "sys/logger.proto";
+import "sys/key.proto";
+import "sys/jwk.proto";
+import "sys/x509.proto";
+import "sys/cloudvendor.proto";
+import "sys/tokenrequest.proto";
+import "common/hazelcast.proto";
+import "common/credentials.proto";
+import "sys/healthreport.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+import "generated/services.proto";
+import "generated/entitlements.proto";
+import "generated/services_config.proto";
+import "generated/tenant_config.proto";
+
+// config_store: kernel hosts every service's auto-injected <Service>ConfigState
+// (PLAN.md:205 — service config is kernel-held). Declared explicitly so routing
+// never depends on which store sorts first.
+option (spec.service) = {store: true, config_store: true};
+
+// Import OPA entitlement evaluation for C2S token minting.
+// Kernel calls OPA to resolve IDP claims → TokenEntitlements
+// during MintUserToken (C2S delegation). S2S minting never uses OPA.
+option (spec.opa_import) = {source: "userentitlements.EntitlementEvalInput", service: "opa"};
+
+// Import OPA proxy policy evaluation for external token minting.
+// Kernel calls OPA with the caller's claims and dst_url before minting
+// an external token via Mint.MintExternalToken. The policy decides permit/deny,
+// URL rewrite, aud override, extra claims, and credential format.
+option (spec.opa_import) = {source: "proxypolicy.ProxyPolicyEvalInput", service: "opa"};
+
+// Data must exist on at least 3 nodes (1 primary + 2 backups).
+// Hazelcast backupCount = min(MIN_DATA_COPIES - 1, clusterSize - 1).
+option (spec.int_const) = {name: "MIN_DATA_COPIES", value: 3};
+
+// SIGNING_KEY_FILE is the filename written under disk_dir for the active
+// signing key. Each kernel instance writes its own key independently.
+option (spec.string_const) = {name: "SIGNING_KEY_FILE", value: "signing_key.json"};
+
+
+// ============================================================================
+// Kernel Configuration
+// ============================================================================
+
+// Config is the complete configuration for a Kernel node.
+// Schematic assembles this config and delivers it as a single file.
+// Kernel reads the file at boot. Hot-reloadable fields (delegates,
+// entitlements, rate limits, token lifetimes) can be updated by
+// re-reading the file on signal; topology and TLS changes require restart.
+message Config {
+
+  // --- Cluster topology (immutable after boot) ---
+
+  // cluster_name is the logical name for this cluster.
+  // All nodes in the same cluster must use the same name.
+  string cluster_name = 1 [(spec.assert_required) = true];
+
+  // listener is the gRPC bind address for the Kernel server. Default port 5000.
+  host.Host listener = 2 [(spec.assert_required) = true, (spec.default_host) = {host: "0.0.0.0", port: 5000}];
+
+  // members is the list of cluster member addresses for discovery (e.g. host=10.0.0.1, port=9443).
+  // At least one member must be specified for the node to join the cluster.
+  repeated host.Host members = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 32];
+
+  // node_count is the expected number of nodes in the cluster.
+  // Used for partition planning and quorum calculations.
+  // Must be at least 1.
+  int32 node_count = 4 [(spec.assert_gt) = 0];
+
+  // partition_count is the number of partitions to distribute data across.
+  // More partitions enable finer-grained distribution but increase metadata overhead.
+  // Default: 271 (prime number for better distribution).
+  // Must be greater than 0.
+  int32 partition_count = 5 [(spec.assert_gt) = 0, (spec.default_int) = 271];
+
+  // network configures cluster networking (timeouts, heartbeats, etc.).
+  hazelcast.NetworkConfig network = 6 [(spec.assert_required) = true];
+
+  // logger configures logging for the Kernel server.
+  logger.LoggerConfig logger = 7 [(spec.assert_required) = true];
+
+  // disk_dir is kernel's one on-disk directory. It holds exactly two artifacts:
+  // the identity snapshot (KernelDiskState) and the FencedLock Raft log under
+  // <disk_dir>/fencedlock. Kernel does no other durability and holds no user
+  // data; durable data is stratum's.
+  // Default: "data/kernel".
+  string disk_dir = 8 [(spec.default_string) = "data/kernel"];
+
+  reserved 9;
+  reserved "persistence_format";
+
+  // hazelcast_listener is the bind address for Hazelcast cluster communication. Default port 5001.
+  host.Host hazelcast_listener = 10 [(spec.default_host) = {host: "0.0.0.0", port: 5001}];
+
+  // --- Node TLS & PKI (immutable after boot) ---
+
+  // tls is the node's X.509 certificate and private key, used for
+  // gRPC server TLS and Hazelcast mTLS.
+  x509.X509CertChain tls = 11 [(spec.assert_required) = true];
+
+  // cluster_ca holds the cluster root CA certificate(s) for populating
+  // Ca.ca_certs on startup and for Hazelcast mTLS trust.
+  // These are the trust anchors for all cert chain validation in the cluster.
+  repeated x509.X509Cert cluster_ca = 12 [(spec.assert_max_size) = 16];
+
+  // signing_ca is the node's intermediate CA chain issued by schematic,
+  // used by X509Mint to sign service certificates. The chain is:
+  //   node intermediate (pathlen:0) → cluster intermediate → root CA.
+  // The private key is included (for signing) but never leaves the node.
+  x509.X509CertChain signing_ca = 13;
+
+  // --- Reloadable configuration ---
+
+  // trusted_cas lists the trusted CA certificates for TLS verification.
+  repeated x509.X509Cert trusted_cas = 14 [(spec.assert_max_size) = 16];
+
+  // rate_limit configures rate limiting for unary read RPCs to detect polling.
+  hazelcast.RateLimitConfig rate_limit = 15 [(spec.assert_required) = true];
+
+  // configs holds per-service configurations. On each config load,
+  // each entry is written to the corresponding service config state boundary.
+  services_config.Services configs = 16 [(spec.assert_required) = true];
+
+  // delegates hold credentials for services that can request tokens.
+  // Each delegate identifies a service and its authorized target services.
+  repeated Delegate delegates = 17 [(spec.assert_max_size) = 128];
+
+  // fqdn is the fully qualified domain name for this cluster
+  // (e.g. "api.example.com"). Published to Identity state for
+  // services like letsencrypt. No default — must be set for production.
+  string fqdn = 20 [(spec.assert_fqdn) = true];
+
+  // issuer is the full issuer URL for tokens minted by this cluster.
+  // For local development, computed as https://<fqdn>:<port> (port omitted if 443).
+  // For production behind a load balancer, set explicitly (e.g. "https://api.example.com").
+  string issuer = 21;
+
+  // --- Token / cert lifetimes (reloadable) ---
+
+  // key_rotation_interval_seconds is how often the exchanger rotates
+  // its own signing keys. Default: 7 days. Each replica's keys stay published
+  // until the last token they signed expires (90-day offline tokens), and the
+  // shared verifying-key set is capped at 128: three replicas rotating daily
+  // would need ~273, weekly needs ~48 (kernel KeyRotator.MAX_VERIFYING_KEYS).
+  int64 key_rotation_interval_seconds = 22 [(spec.default_int) = 604800];
+
+  // default_token_expiry_seconds is the default lifetime for issued
+  // access tokens when the request does not specify an expiry. Default: 1 hour.
+  int64 default_token_expiry_seconds = 23 [(spec.default_int) = 3600];
+
+  // ca_cert_lifetime_seconds is the lifetime for node CA certificates.
+  // Default: 31536000 (1 year). Node CA certs are regenerated on restart.
+  int64 ca_cert_lifetime_seconds = 24 [
+    (spec.default_int) = 31536000,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+
+  // access_token_lifetime_seconds is the default lifetime for user access tokens
+  // minted via MintToken. Default: 900 (15 minutes).
+  int64 access_token_lifetime_seconds = 25 [
+    (spec.default_int) = 900,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+
+  // refresh_token_lifetime_seconds is the default lifetime for user refresh tokens
+  // minted via MintToken. Default: 86400 (24 hours).
+  int64 refresh_token_lifetime_seconds = 26 [
+    (spec.default_int) = 86400,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+
+  // tls_cert_lifetime_seconds is the lifetime for auto-TLS service certificates.
+  // Kernel sends a renewal request at half-life. Default: 86400 (24 hours).
+  int64 tls_cert_lifetime_seconds = 27 [
+    (spec.default_int) = 86400,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+
+  // max_token_lifetime_seconds is the maximum lifetime kernel will allow for
+  // any minted token. Requests with exp beyond now + this value are rejected.
+  // Delegates control their own exp policy within this ceiling.
+  // Default: 2592000 (30 days).
+  int64 max_token_lifetime_seconds = 28 [
+    (spec.default_int) = 2592000,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+
+  // offline_token_lifetime_seconds is the default lifetime for Offline Tokens
+  // (OT) — the long-lived, identity-only tokens persisted on disk by the
+  // schematic daemon and renewed before half-life. Months, not hours.
+  // Default: 7776000 (90 days). Exempt from max_token_lifetime_seconds, which
+  // caps short-lived access/service tokens.
+  int64 offline_token_lifetime_seconds = 31 [
+    (spec.default_int) = 7776000,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
+
+  // root_cred_pairs are the bootstrap admin credentials, rendered into this
+  // config by the operator from operator.yaml. Each is an ordinary C2S CredPair
+  // owned by the root namespace; kernel installs them into the root namespace's
+  // TenantConfig at boot (granting full entitlements) so a holder can sign a
+  // proof, exchange it via MintClientToken, and provision tenants/projects via
+  // TenantAdmin. Only the public half is carried here.
+  repeated credentials.CredPair root_cred_pairs = 32 [(spec.assert_max_size) = 64];
+
+  // spiffe_trust_domain is the SPIFFE URI authority: a globally unique instance
+  // name for this autonomous-system instance (need not be a DNS domain). It must
+  // not contain '/', a scheme, query, or fragment, and carries no path. Service
+  // identity is built by the generated sys/spiffe helper as:
+  //   spiffe://<spiffe_trust_domain>/system/<location_path...>/services/<service_label>
+  // If empty, SPIFFE IDs are not set on issued tokens or X509 URI SANs. Kernel
+  // copies this (with location_path) into the runtime grpcconfig.Config it seeds
+  // into ServiceConfigState, so every service shares one trust domain.
+  string spiffe_trust_domain = 33 [(spec.assert_max_size) = 256, (spec.default_string) = "local.dev"];
+
+  // location_path is this deployment's topology path under /system — opaque,
+  // tag-delimited, slash-separated segments, arity not fixed (e.g.
+  // "aws/123456789012/us-east-1a/cluster-7/team-a"). Segments follow the SPIFFE
+  // segment grammar and must not be reserved tags. Supplied by the operator from
+  // runtime config (where the cluster runs); it is not a token claim. May be
+  // empty (no topology tiers).
+  string location_path = 34 [(spec.assert_max_size) = 256];
+
+  // health_probe_port is the plaintext gRPC port for k8s health probes.
+  // Kernel's hand-written bootstrap bypasses the generated ServiceManager,
+  // so this field must be on Kernel.Config (not only on Grpcconfig.Config).
+  // Default matches the platform-wide health probe port.
+  int32 health_probe_port = 35 [(spec.default_int) = 8444];
+
+  // grants seeds the standing delegation Grant catalog at boot, loaded into
+  // the live grants store the same way delegates (above) are — there is no
+  // runtime grant-creation RPC yet, so this is the only way a Grant exists
+  // today.
+  repeated Grant grants = 36 [(spec.assert_max_size) = 4096];
+
+  // ratis_listener is the bind address for the embedded Apache Ratis peer
+  // group that backs the FencedLock service. Kernel is the only service in the
+  // fleet that runs Ratis. Peers are derived from `members` above (same hosts,
+  // this port) so lock membership tracks cluster membership and there is no
+  // second topology to keep in sync. Default port 5002 — the next one after
+  // hazelcast_listener's 5001.
+  host.Host ratis_listener = 37 [(spec.default_host) = {host: "0.0.0.0", port: 5002}];
+
+  // people_idp_credentials are the OAuth client credentials for the RESERVED
+  // `people` tenant's two fixed identity providers (Sign in with Apple, Google
+  // Sign-In). Kernel seeds them into /tenants/people's TenantConfig.oauth at
+  // every boot, exactly as root_cred_pairs are seeded into the root namespace.
+  //
+  // Only the client credentials are configurable: each entry names a provider
+  // from the closed PeopleIdpProvider enum and kernel supplies the issuer URL
+  // from its own fixed table. "The `people` tenant's IdP set is fixed" is
+  // therefore a property of this type, not of an operator's discipline — there
+  // is no field a deployment could point at a third issuer.
+  repeated PeopleIdpCredential people_idp_credentials = 38 [(spec.assert_max_size) = 2];
+
+  // people_signups_paused refuses the CREATE half of the people tenant's
+  // find-or-create on first IdP login: a (provider, subject) pair kernel has
+  // no Person row for mints nothing, while everyone who already has a row
+  // signs in as before. It is the data gate's sign-ups kill switch. This is
+  // the boot value; a ConfigOverride (below) flips it without a kernel roll.
+  bool people_signups_paused = 39;
+
+  // config_override_path is the file every kernel polls for a ConfigOverride,
+  // the runtime write path for a service's Config. The operator mounts the
+  // optional ConfigMap kernel-config-override there; kernel only reads it. An
+  // absent file is no override.
+  string config_override_path = 40 [(spec.assert_max_size) = 1024, (spec.default_string) = "/config-override/override.json"];
+}
+
+// ConfigOverride is the runtime write path for a service's Config, and for
+// Config.people_signups_paused: the data gate's kill switches
+// (platform/ops/datagate/killswitch.sh) write it as ConfigMap
+// kernel-config-override, and every kernel polls it at
+// Config.config_override_path. On a change kernel takes the bundle's value,
+// replaces each field named in paths with this message's value for it, and
+// installs the result into the services named, through the same generated
+// installServices the bundle uses. No service and no kernel restarts.
+//
+// The bundle stays the base: a service no path names keeps its bundle Config,
+// and dropping a path (or the whole file) puts the bundle's value back. The
+// same merge runs at boot, so a kernel that restarts while an override is in
+// place never installs the bare bundle value in between.
+message ConfigOverride {
+  // flipped_by names who wrote this override: "jody", or "claude" for a Claude
+  // session acting as Jody. Kernel refuses an override that does not say.
+  string flipped_by = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 64];
+
+  // reason is the operator's note for the flip log.
+  string reason = 2 [(spec.assert_max_size) = 1024];
+
+  // flipped_at_ms is when the override was written, epoch ms.
+  int64 flipped_at_ms = 3;
+
+  // paths are FieldMask paths into this message. Each is either
+  // "configs.<service>_config.<field>[.<field>...]" or "people_signups_paused".
+  // The named field takes this message's value, whatever it is: an unset
+  // message field clears the bundle's, a repeated field replaces the bundle's
+  // list, false replaces true.
+  repeated string paths = 4 [(spec.assert_max_size) = 64];
+
+  // configs carries the values for the configs.* paths. Only the fields paths
+  // name are read.
+  services_config.Services configs = 5;
+
+  // people_signups_paused is the value for the "people_signups_paused" path.
+  bool people_signups_paused = 6;
+}
+
+// ============================================================================
+// Token Exchanger
+// ============================================================================
+
+// Identity holds the public verifying keys for kernel's token exchange service.
+// Kernel is the sole token authority — all tokens (S2S, U2S, refresh) and
+// X.509 certificates are signed by kernel's keys.
+//
+// Token exchange handles:
+//   1. Direct exchange: delegate presents cred_pair JWT or cloud proof → token/cert
+//   2. Delegation: broker (oauth, K8S) authenticates via header, mints on behalf
+//
+// Access: RW for kernel, RO for every service that declares a
+// (spec.state_imports) of kernel.Identity. Enforced at run time by the
+// generated SecurityAuthenticator.checkAccess on every state RPC — services
+// that only need to verify tokens read the public JWKS view instead.
+message Identity {
+  option (spec.service_state) = {label: ["kernel"], export: true, identity_snapshot: true};
+
+  // Verification keys — kernel's public keys, rotated periodically.
+  // Kernel holds the corresponding private keys internally.
+  // Used by SecurityInterceptor to validate tokens for cluster calls.
+  // Sized for the real fleet, not for one node: kernel keeps one active
+  // signing key per algorithm PER REPLICA (private keys live in each node's
+  // own disk snapshot and are never shared), and a rotated public key is
+  // retained for max_token_lifetime_seconds so the tokens it signed stay
+  // verifiable. With the shipped defaults that is
+  //   replicas(3) x algorithms(2) x (2592000s retention / 86400s rotation + 1)
+  //     = 3 x 2 x 31 = 186 keys.
+  // The cap is 128 rather than 186 because this set is published as a
+  // jwk.Jwks, whose keys field is capped at 128 by the shared, do-not-modify
+  // sys/jwk.proto; KeyRotator.MAX_VERIFYING_KEYS enforces the same 128 at run
+  // time and evicts oldest-first when the set would exceed it. The old 16 was
+  // sized for a single node and could not hold even a healthy 3-replica set.
+  repeated jwk.Jwk verifying_keys = 1 [
+    (spec.persistence) = true,
+    (spec.view_member) = "JwkVerifyingKeysView",
+    (spec.assert_max_size) = 128
+  ];
+
+  // fqdn is the cluster's public hostname, published from Config on
+  // each config load. Services (e.g. letsencrypt) watch this to discover
+  // the cluster FQDN without needing it in their own config.
+  IdentityFqdn fqdn = 2;
+}
+
+// IdentityFqdn wraps the cluster's FQDN for publication as a singleton
+// boundary in Identity state.
+message IdentityFqdn {
+  string fqdn = 1;
+}
+
+// SigningKeyRecord pairs a private signing key with its public JWK so the key
+// can be fully restored on restart without re-derivation. Carried inside
+// KernelDiskState (the UC1 disk snapshot), one record per active algorithm
+// (EdDSA / ES256).
+message SigningKeyRecord {
+  key.Key key = 1;
+  jwk.Jwk jwk = 2;
+}
+
+// TrustedCa stores trusted CA certificates for TLS verification.
+// Installed from Config.trusted_cas on each config load and delivered to
+// services inside ServiceConfigState; no service declares a state_import of
+// this root, so the state RPCs are RW/RO for kernel only.
+message TrustedCa {
+  option (spec.service_state) = {label: ["kernel"]};
+
+  repeated x509.X509Cert trusted_cas = 1 [(spec.assert_max_size) = 16];
+}
+
+// Mint is the platform's sole token authority and signing service, hosted by
+// kernel — the cluster trust root. Kernel signs all tokens (S2S, U2S, refresh,
+// external/WIF) and all X.509 certificates / workload identities. S2S-only
+// (gateway fronts the client-reachable methods as C2S); kernel makes no
+// off-cluster calls.
+//
+// This is the CLEAN consolidated surface (one service, was 4): the former
+// kernel.Mint / kernel.MintClient / kernel.ExternalTokenMint / kernel.TokenExchange
+// are unified here. azp is set ONCE at MintUserToken (azp = the broker's
+// identity) and preserved unchanged through every derived token (AT from RT,
+// ST from AT, and any re-mint/exchange via TokenMint).
+//
+// Tokens are signed Ed25519 (internal) except MintExternalToken, which signs
+// ES256 for WIF assertion verification (Anthropic WIF rejects EdDSA).
+service Mint {
+  option (spec.service_s2s) = {};
+  // Authoritative S2S token minter — bootstrap codegen targets this. Kernel is
+  // the cluster's sole JWT token authority (and cert authority, below).
+  option (spec.token_minter) = {};
+  // Kernel is also the SMB CA authority (SPIFFE plan D7): it mints the isolated
+  // per-SMB CA + member certs for spec.smb services via SmbCertService
+  // (implemented by SmbCertServiceImpl). Designation only — like token_minter,
+  // tacplus requires exactly one when any spec.smb service exists.
+  option (spec.smb_authority) = {};
+  // Kernel's own instances peer over Hazelcast (the black box), so kernel is
+  // itself an SMB member: it obtains an isolated per-SMB CA + member cert from
+  // its own authority (above) and uses them for Hazelcast peer mTLS. Generates
+  // the instance-side member-cert seam (Handler.newSmbCert).
+  option (spec.smb) = {};
+
+  // MintServiceToken — self-mint. An internal service exchanges its Kubernetes
+  // token / cloud proof (bootstrap) or a kernel-signed refresh/access token for a
+  // token bearing its OWN identity (sub = caller SPIFFE). Never calls OPA;
+  // S2S tokens are identity-only. Signs Ed25519.
+  // auth_disabled: the caller authenticates via credentials in the request body
+  // (kubernetes_token / cloud_proof / kernel-signed input_token), not a bearer header.
+  rpc MintServiceToken(tokenrequest.MintServiceTokenRequest) returns (tokenrequest.TokenMintResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, flags: [RPC_FLAG_SELF_AUTHENTICATES]};
+  }
+
+  // MintExternalServiceToken — a service's OWN identity for an off-cluster
+  // audience (WIF jwt-bearer assertion, e.g. aud = https://api.anthropic.com).
+  // The caller presents its kernel-signed service token in input_token; kernel
+  // verifies it, takes sub from it (never from the request), checks aud against
+  // the caller Delegate's external-audience allowlist, and mints a NEW token on
+  // every call. Never calls OPA. Signs ES256 (WIF rejects EdDSA).
+  // auth_disabled: the credential is input_token in the body, as MintServiceToken.
+  rpc MintExternalServiceToken(tokenrequest.MintExternalServiceTokenRequest)
+      returns (tokenrequest.TokenMintResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, flags: [RPC_FLAG_SELF_AUTHENTICATES]};
+  }
+
+  // MintUserToken — on-behalf-of (AZP). A broker presents the user's
+  // already-IDP-validated claims; kernel runs OPA EvalEntitlement on them, then
+  // signs a user token with sub = user and azp = the broker's identity (the
+  // broker attests the claims; kernel trusts azp). Signs Ed25519.
+  // auth_services: ["*"] because which delegates may attest a human login is
+  // per-delegate runtime config, not a compile-time literal here; the identity
+  // check that matters is Delegate.auth_broker_kinds containing the request's
+  // broker_kind, done inside the handler, exactly as doMintDelegatedToken
+  // checks grant.delegate_name. Empty auth_broker_kinds — the default — is
+  // refused, so this is a relocation of the former hardcoded broker allowlist,
+  // not a widening.
+  rpc MintUserToken(tokenrequest.MintUserTokenRequest) returns (tokenrequest.TokenMintResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+
+  // MintDelegatedToken — standing delegation (Grant) mint. A delegate presents
+  // its OWN kernel-issued S2S bearer token (verified identity) plus a Grant id
+  // it holds. Kernel looks up the Grant, confirms the caller's verified identity
+  // equals grant.delegate_name, replays grant.claims into OPA fresh via the same
+  // EvalEntitlement path MintUserToken uses, intersects the result with
+  // grant.authorized_scope, and mints a short-lived access-only token: sub =
+  // grant.subject, act = grant.delegate_name, azp = kernel (AZP_KERNEL — kernel
+  // mints this directly, not on a broker's attestation). No refresh/offline
+  // token is issued; the delegate re-mints per use from the same Grant id.
+  // auth_services: ["*"] because any registered delegate may hold a grant (not
+  // just oauth); the identity check that matters is grant.delegate_name,
+  // done inside the handler, exactly as doMintUserToken checks the caller
+  // against a Delegate today.
+  rpc MintDelegatedToken(tokenrequest.MintDelegatedTokenRequest)
+      returns (tokenrequest.MintDelegatedTokenResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+
+  // BrokerDelegateOfflineToken — runtime delegation, delegate half. The delegate
+  // presents its OWN kernel-issued S2S bearer token (verified identity) plus the
+  // code the user handed it. Kernel looks the code up, confirms the caller's
+  // verified identity equals the withheld token's act claim, burns the code
+  // single-use, and releases the Offline Token. The code alone is not
+  // sufficient — the redeeming identity is the security boundary.
+  // auth_services: ["*"] because any registered delegate may be handed a code
+  // (not just oauth); the identity check that matters is the withheld
+  // token's act claim, done inside the handler, exactly as doMintDelegatedToken
+  // checks grant.delegate_name today.
+  // Named Broker, not Redeem: "Redeem" is not in tacplus's closed verb registry
+  // and Broker is the registered canonical whose definition this matches —
+  // "coordinate a mediated exchange between two parties ... owns matching,
+  // relay, or completion semantics" — which is exactly the CliTokenBroker-shaped
+  // handoff the decision doc points at. The request/response message types keep
+  // their frozen Redeem* names.
+  rpc BrokerDelegateOfflineToken(tokenrequest.RedeemDelegateOfflineTokenRequest)
+      returns (tokenrequest.RedeemDelegateOfflineTokenResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+
+  // MintToken — exchange (RT→AT→ST). The caller presents a kernel-signed token;
+  // kernel VERIFIES it and mints the next tier per the 3-tier rules (a refresh
+  // can't directly mint a service token, etc.). service_auds mints AT + N ST in
+  // one call. azp is preserved from the presented token onto every issued
+  // token. Signs Ed25519. This IS the real exchange (replaces the former
+  // standalone TokenExchange service).
+  // auth_disabled: the token to exchange is carried in the request body.
+  rpc MintToken(tokenrequest.TokenMintRequest) returns (tokenrequest.TokenMintResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, flags: [RPC_FLAG_SELF_AUTHENTICATES]};
+  }
+
+  // MintExternalToken — WIF. A proxy presents the user token plus opaque routing
+  // metadata; kernel runs OPA EvalProxyPolicy, then mints an external token
+  // (token_use = EXTERNAL, azp = proxy) carrying the policy's aud/extra_claims,
+  // and returns the resolved dst_url. The PROXY — not kernel — performs the
+  // off-cluster api.anthropic.com exchange. Signs ES256 (WIF rejects EdDSA).
+  rpc MintExternalToken(tokenrequest.ExternalTokenMintRequest) returns (tokenrequest.ExternalTokenMintResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+
+  // MintClientToken — cred_pair bootstrap. A client (schematicctl, CI, admins)
+  // presents a JWT signed by its cred_pair private key; kernel verifies the
+  // signature against the cred_pair PUBLIC keys held in the per-namespace config
+  // (ConfigState below; the root namespace's config holds the root admin
+  // cred_pairs seeded from Config.root_cred_pairs), and mints a bearer token
+  // with the resolved SPIFFE subject. S2S here; the gateway fronts this as C2S so
+  // pre-tenant external clients (schematic CLI, CI pipelines) can reach it.
+  // auth_disabled: the request body carries its own proof (no bearer header).
+  rpc MintClientToken(tokenrequest.MintClientTokenRequest) returns (tokenrequest.TokenMintResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, flags: [RPC_FLAG_SELF_AUTHENTICATES]};
+  }
+
+  // CreatePersonalPrincipal — device-first registration (first launch). The
+  // device presents a JWT signed by the key it is registering; kernel verifies
+  // that signature against the public key carried in the SAME request, mints an
+  // opaque principal_id, and creates the PersonalPrincipal row holding that one
+  // credential. This is the bootstrap case MintClientToken does not have: there
+  // is no stored credential to look the key up by yet, so the key comes out of
+  // the request body and the only thing that proof establishes is possession of
+  // the private half — which is all the BODY needs to establish, because any
+  // person may create a personal principal (device-first, no signup). Who may
+  // carry that request to kernel is a separate question, answered below.
+  //
+  // Registration issues NO token. A registered device obtains one through
+  // MintUserToken with AUTH_BROKER_KIND_DEVICE, which is where the
+  // Delegate.auth_broker_kinds gate lives; minting here would route around it.
+  //
+  // NOT self-authenticating, and therefore NOT proxied to the outside. A device
+  // reaches this only through the personalauth broker, which calls it S2S:
+  // RPC_FLAG_SELF_AUTHENTICATES would make tacplus emit a NoAuth gateway proxy
+  // route, and an open route lets a client skip the broker entirely — which is
+  // where azp provenance, rate limiting and every future abuse control live.
+  // Dropping the flag deletes the route, so gateway's deny-by-default refuses
+  // the path; the generator enforces this, not a rule someone has to remember.
+  //
+  // auth_services: ["*"] rather than ["personalauth"] deliberately: who may
+  // broker a login is per-delegate config (Delegate.auth_broker_kinds), not a
+  // compile-time broker literal in kernel.proto. "*" says only "some
+  // authenticated S2S caller"; the handler requires that caller to be a
+  // delegate carrying AUTH_BROKER_KIND_DEVICE.
+  //
+  // The request body proof is unchanged and is a second, independent
+  // requirement: the caller must also hold the private half of the key it is
+  // registering, which is what makes the row worth writing.
+  rpc CreatePersonalPrincipal(CreatePersonalPrincipalRequest)
+      returns (CreatePersonalPrincipalResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+
+  // CreateTenantUserLink records that two tenant-user identities are the same human.
+  // Both sides are proved in ONE request: the caller is an IdP broker that has
+  // just verified BOTH id_tokens, and both carry the same `nonce` — the value
+  // the client generated once and sent into both logins. The shared nonce is
+  // the whole proof: without it a stolen token for one side could be replayed
+  // on its own to fabricate a link to somebody else's account.
+  //
+  // Neither side's namespace is taken from the request. The people side is
+  // derived from the verified issuer/subject, exactly as MintUserToken's people
+  // arm derives it; any other side's namespace comes from OPA, the same
+  // authority that names it at mint. A broker therefore cannot name a tenant it
+  // did not just authenticate a login into.
+  //
+  // A DEVICE SIDE (identity decision doc §3) replaces one of the two logins
+  // with a WebAuthn assertion — see TenantUserLinkSide.device_assertion. The
+  // proof is the same shape and the same strength, with the shared nonce
+  // replaced by a pair of bindings in opposite directions: the id_token's
+  // `nonce` is the device key's RFC 7638 thumbprint, and the assertion's
+  // challenge names that exact login. Kernel verifies the assertion itself, so
+  // a device side rests on no broker's word at all.
+  //
+  // auth_services: ["*"] for the same reason MintUserToken carries it — which
+  // delegates may attest a human login is per-delegate runtime config
+  // (Delegate.auth_broker_kinds), checked in the handler.
+  rpc CreateTenantUserLink(CreateTenantUserLinkRequest) returns (CreateTenantUserLinkResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+
+  // BrokerPendingApproval is the DEVICE-ONLY APPROVAL check (identity decision
+  // doc §5). tacplus's generated (spec.rpc).requires_device check calls it; no
+  // product implements it, and nothing else in the platform verifies an
+  // approval.
+  //
+  // A pending approval is PROPOSED by the person through
+  // PersonalIdentity.CreatePendingApproval — a browser or an agent proposes —
+  // and is consumed here by the one thing that counts: a WebAuthn assertion
+  // from a device linked to that person. A browser IdP session, a delegated
+  // agent token and a tenant admin all fail this, however completely they are
+  // the user.
+  //
+  // Verb Broker, not Authorize. This is the shape BrokerDelegateOfflineToken
+  // already has on this service — look one single-use record up by its opaque
+  // id, verify the presenter cryptographically, burn it, release the result.
+  // Authorize is defined as an authorization decision with NO state change, and
+  // this one burns.
+  //
+  // On Mint rather than on a service of its own because every service in the
+  // fleet already holds a generated kernel Mint client (kernel is the
+  // token_minter), so the generated check needs no new client, no new route and
+  // no new deployment wiring in any service that declares a requires_device RPC.
+  //
+  // auth_services: ["*"] because ANY service may declare a requires_device RPC,
+  // so any service may reach this. Nothing rests on the caller's word about the
+  // approval: the record names its own person, its own method and its own
+  // request hash, and the assertion is verified against the credential kernel
+  // stores. What a caller IS trusted for is reporting which of its own users it
+  // is serving (caller_namespace/caller_subject) — a service serving that
+  // request is already trusted with it.
+  rpc BrokerPendingApproval(BrokerPendingApprovalRequest)
+      returns (BrokerPendingApprovalResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+
+  // --------------------------------------------------------------------------
+  // PKI + workload identity — kernel is the cluster's signing authority for
+  // X.509 certificates / workload identities as well as JWT tokens. Cert
+  // signing uses the cluster CA keys (the `Ca` state below + the operator-issued
+  // signing chain), NOT the JWT signing keys.
+  // --------------------------------------------------------------------------
+
+  // MintX509Cert signs an X.509 certificate under a per-service intermediate CA.
+  // Authentication via bearer token in the Authorization header or input_token
+  // in the request body (for gateway-mediated calls). auth_disabled: handler
+  // validates authentication internally — accepts both bearer tokens and
+  // request body credentials.
+  //
+  // On each call, kernel:
+  //   1. Extracts the service SPIFFE identity from the token's sub claim.
+  //   2. Gets or creates an intermediate CA for that identity
+  //      (signed by root CA, pathlen:0).
+  //   3. Signs the caller-provided public key (cert_request.key) under the
+  //      intermediate CA, with the SPIFFE URI as a URI SAN.
+  //   4. Returns X509CertChain: leaf cert + intermediate CA cert in chain.
+  //
+  // The intermediate CA is unique per service, providing per-service trust
+  // isolation — only nodes of the same service verify each other.
+  rpc MintX509Cert(tokenrequest.X509MintRequest) returns (x509.X509CertChain) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, flags: [RPC_FLAG_SELF_AUTHENTICATES]};
+  }
+
+  // MintWorkload mints a child workload identity. Caller must be authenticated
+  // (bearer token). The child's SPIFFE ID is the caller's SPIFFE ID + "/" +
+  // workload_name. Kernel validates: caller is not terminal.
+  rpc MintWorkload(tokenrequest.WorkloadMintRequest) returns (tokenrequest.WorkloadMintResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+
+  // RevokeWorkload revokes a child workload's identity. Only the parent (or an
+  // ancestor in the SPIFFE path) can revoke. The revocation is recorded in
+  // WorkloadState and checked on refresh.
+  rpc RevokeWorkload(WorkloadRevokeRequest) returns (google.protobuf.Empty) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+
+  // RevokeGrant revokes a standing delegation (Grant) at runtime. Only a party
+  // to the grant may revoke it: the user it acts for (caller sub ==
+  // grant.subject) or the delegate holding it (caller identity ==
+  // grant.delegate_name) — both are withdrawing authority they already hold,
+  // so neither needs a broader authorization model, exactly as RevokeWorkload
+  // restricts revocation to the identity's own ancestor. The grant record is
+  // marked (revoked_at_ms), not deleted, and the write is persisted to the
+  // kernel disk snapshot so it survives a restart. Every mint from the grant
+  // and every exchange of a token already minted from it is denied from that
+  // moment on.
+  // auth_services: ["*"] for the same reason MintDelegatedToken uses it — any
+  // registered delegate may hold a grant; the identity check that matters is
+  // done inside the handler against the grant record itself.
+  rpc RevokeGrant(GrantRevokeRequest) returns (google.protobuf.Empty) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+}
+
+// UserMint is the user-facing half of the mint surface (token-management
+// decision item 7): a mint RPC whose caller is a PERSON holding their own
+// bearer token, not a service. It is a second service rather than two more
+// RPCs on Mint because a service declares exactly one caller surface —
+// tacplus's ValidateServiceSurfaces refuses (spec.service_c2s) and
+// (spec.service_s2s) on one service, and every downstream consumer (REST/proxy
+// route emission, the registry's auth_model, collection.TrustOf) reads that
+// single classification. Mint stays S2S and authoritative; this block carries
+// only the RPCs a client calls, and the gateway reaches them through its
+// ordinary generic C2S routing (package kernel, no hand-written front).
+//
+// Same physical service, same Java handler instance — only the declared
+// surface differs, exactly as PersonalIdentity and TenantAdmin already sit
+// alongside kernel's S2S services in this file.
+service UserMint {
+  option (spec.service_c2s) = {auth_entitled_users: true};
+
+  // MintDelegateOfflineToken — runtime delegation, user half. The USER calls
+  // this with their own bearer token to connect an agent (a Delegate) they own,
+  // replacing the redeploy that bootstrap-only Grant rows used to require.
+  // Kernel resolves the (delegate_name, delegate_namespace) pair, mints an
+  // Offline Token with sub = the calling user, act = delegate_name, and the
+  // user's fresh OPA entitlements intersected with the request's optional
+  // narrowing scope — and does NOT return it. The OT never transits the user's
+  // client: the response carries only a short-lived single-use code the user
+  // hands to the delegate, which redeems it S2S via
+  // Mint.BrokerDelegateOfflineToken.
+  //
+  // RPC_FLAG_AUTH_ANY_USER, not the service default of entitled users: any
+  // authenticated person may connect an agent of their own, and the authority
+  // that agent ends up with is not this call's to widen — the handler mints
+  // against the caller's OWN fresh OPA entitlements, narrowed further by the
+  // request's optional scope. A separate entitlement grant here would gate
+  // "may this person delegate at all", which is not a question the platform
+  // asks today; GetMyIdentity is annotated the same way for the same reason.
+  rpc MintDelegateOfflineToken(tokenrequest.MintDelegateOfflineTokenRequest)
+      returns (tokenrequest.MintDelegateOfflineTokenResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER, RPC_FLAG_MINTS_CREDENTIAL]
+    };
+  }
+}
+
+// ============================================================================
+// FencedLock — the platform's only distributed mutual-exclusion primitive
+// ============================================================================
+//
+// Kernel is the one service that embeds Apache Ratis; every other service that
+// needs a lock calls this s2s surface rather than running its own Raft group
+// (decisions/kernel-convergent-only-plus-fenced-lock-2026-08-31.md). This is
+// deliberately NOT a state boundary: kernel state is CONVERGENT-only, and
+// mutual exclusion is a different concern from how a map replicates — the
+// conflation of the two is what produced the unreal CONSISTENCY_ATOMIC mode
+// that was deleted before this was written.
+//
+// A fencing token is the Raft log index of the granting Acquire. It is
+// therefore strictly monotonic across the whole lock service, never reused,
+// and never decreases across leader changes. A resource owner stores the
+// highest token it has seen and rejects any write carrying a lower one: that,
+// not the lock itself, is what makes a paused/partitioned stale holder safe.
+// A lock with no fencing token only narrows the race window; it does not close
+// it.
+service FencedLock {
+  option (spec.service_s2s) = {};
+
+  // Acquire attempts to take the lock named by key on behalf of holder_id.
+  // Non-blocking: a key already held by a DIFFERENT holder returns
+  // granted = false rather than parking the call. Re-acquiring a key the same
+  // holder_id already holds is idempotent and returns the token it already
+  // has, so a retried Acquire after a lost response does not deadlock the
+  // holder against itself.
+  // auth_services: ["*"] — any service identity may take a lock; the key
+  // namespace is the caller's to partition (callers key by their own identity
+  // plus a discriminator), exactly as any service may mint its own token.
+  rpc Acquire(FencedLockAcquireRequest) returns (FencedLockAcquireResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+
+  // Release drops the lock named by key. The caller must present the
+  // fencing_token it was granted; a token that is not the current one releases
+  // nothing and returns ok = false. That is the stale-holder case — a holder
+  // that lost the lock (or never had it) must not be able to release the
+  // holder that has it now.
+  rpc Release(FencedLockReleaseRequest) returns (FencedLockReleaseResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
+  }
+}
+
+// FencedLockAcquireRequest names the lock and who is taking it.
+message FencedLockAcquireRequest {
+  // key is the lock's name. Opaque to kernel; callers partition the namespace
+  // themselves (e.g. "<caller spiffe>/scotty/<user>").
+  string key = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+  // holder_id identifies the acquiring party well enough to distinguish it
+  // from any other contender and to make a retried Acquire idempotent. Caller
+  // supplied; kernel compares it for equality and nothing else.
+  string holder_id = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+}
+
+// FencedLockAcquireResponse reports whether the lock was taken.
+message FencedLockAcquireResponse {
+  // granted is false when the key is currently held by a different holder_id.
+  bool granted = 1;
+  // fencing_token is the Raft log index of the granting Acquire, and is 0 when
+  // granted is false. Strictly increasing across every grant of every key.
+  int64 fencing_token = 2;
+}
+
+// FencedLockReleaseRequest drops a held lock.
+message FencedLockReleaseRequest {
+  string key = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+  // fencing_token must be the token the current holder was granted.
+  int64 fencing_token = 2 [(spec.assert_gt) = 0];
+}
+
+// FencedLockReleaseResponse reports whether the release took effect.
+message FencedLockReleaseResponse {
+  // ok is false when the key is unheld or held under a different token — the
+  // stale-holder case. It is not an error: a stale holder learning it no
+  // longer holds the lock is the expected outcome, not a failure to serve.
+  bool ok = 1;
+}
+
+// ============================================================================
+// CLI Token Broker — kernel-mediated nonce matching for CLI auth
+// ============================================================================
+//
+// Each oauth instance opens a BrokerStream on startup. The protocol:
+//   1. OAuth sends Register (instance_id) — identifies this stream
+//   2. CLI auth starts: OAuth sends RegisterNonce (nonce)
+//   3. Browser completes auth: OAuth sends CompleteNonce (nonce, subject, claims)
+//   4. Kernel matches nonces, mints token, sends TokenDelivery back to the
+//      oauth instance that registered the nonce
+//   5. OAuth delivers the token to the CLI over the Session bidi stream
+//
+// Nonce registry is in-memory. Kernel restarts clear it (CLI retries).
+service CliTokenBroker {
+  option (spec.service_s2s) = {};
+
+  rpc BrokerStream(stream CliTokenBrokerRequest) returns (stream CliTokenBrokerResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["oauth"]};
+  }
+}
+
+message CliTokenBrokerRequest {
+  oneof msg {
+    // register identifies this oauth instance. Must be the first message.
+    CliTokenBrokerRegister register = 1;
+    // register_nonce records a pending CLI session nonce.
+    CliTokenBrokerRegisterNonce register_nonce = 2;
+    // complete_nonce provides the authenticated user identity for a nonce.
+    CliTokenBrokerCompleteNonce complete_nonce = 3;
+  }
+}
+
+message CliTokenBrokerResponse {
+  oneof msg {
+    // token_delivery carries a minted token for a completed nonce.
+    CliTokenBrokerTokenDelivery token_delivery = 1;
+    // error signals a problem with a specific nonce.
+    CliTokenBrokerError error = 2;
+  }
+}
+
+// CliTokenBrokerRegister identifies an oauth instance on stream open.
+message CliTokenBrokerRegister {
+  string instance_id = 1 [(spec.assert_required) = true];
+}
+
+// CliTokenBrokerRegisterNonce records that a CLI session is waiting
+// for authentication on the sending oauth instance.
+message CliTokenBrokerRegisterNonce {
+  string nonce = 1 [(spec.assert_required) = true, (spec.assert_min_size) = 64, (spec.assert_max_size) = 128];
+  // offline_access requests an Offline Token (OT) for this CLI nonce. The
+  // broker stores this with the nonce so the eventual browser callback can
+  // mint the correct long-lived identity token even when it lands on another
+  // oauth instance.
+  bool offline_access = 2;
+}
+
+// CliTokenBrokerCompleteNonce provides the authenticated identity for a nonce.
+// Sent by any oauth instance after browser auth completes.
+message CliTokenBrokerCompleteNonce {
+  string nonce = 1 [(spec.assert_required) = true, (spec.assert_min_size) = 64, (spec.assert_max_size) = 128];
+  string subject = 2 [(spec.assert_required) = true];
+  google.protobuf.Struct claims = 3;
+}
+
+// CliTokenBrokerTokenDelivery carries a minted token back to the oauth
+// instance that registered the nonce.
+message CliTokenBrokerTokenDelivery {
+  string nonce = 1;
+  string refresh_token = 2;
+}
+
+// CliTokenBrokerError reports a failure for a specific nonce.
+message CliTokenBrokerError {
+  string nonce = 1;
+  string message = 2;
+}
+
+// ============================================================================
+// Delegate — S2S credential holders
+// ============================================================================
+
+// CloudIdentityMatcher configures which cloud identities a delegate accepts.
+// The delegate proves identity using a CloudIdentityProof; this config
+// tells kernel what to expect.
+message CloudIdentityMatcher {
+  // vendor identifies the cloud provider.
+  cloudvendor.CloudVendor vendor = 1 [(spec.assert_enum_defined) = true];
+
+  // expected_identity is the cloud identity to match against.
+  // AWS: IAM role ARN. GCP: service account email. Azure: managed identity client ID.
+  string expected_identity = 2 [(spec.assert_required) = true];
+}
+
+// KubernetesServiceAccountMatcher configures which Kubernetes service accounts
+// a delegate accepts. The workload proves identity with a projected
+// service-account token; this config tells kernel which (namespace, service
+// account) pairs map to this delegate. Repeated on Delegate so multiple SAs
+// (multi-namespace / migration) can map to one delegate.
+message KubernetesServiceAccountMatcher {
+  // kubernetes_namespace is the Kubernetes namespace of the service account.
+  // Named explicitly to avoid collision with the Schematic tenant namespace
+  // concept — this is the K8s namespace, not an authorization namespace.
+  string kubernetes_namespace = 1 [(spec.assert_required) = true];
+
+  // kubernetes_service_account is the Kubernetes ServiceAccount name.
+  string kubernetes_service_account = 2 [(spec.assert_required) = true];
+}
+
+// Delegate holds bootstrap matchers for a service or machine client that can request tokens.
+// Each delegate carries a name, which becomes the service path segment in the
+// issued token's SPIFFE URI, and the namespace that URI is rooted at:
+// spiffe://<trust-domain>/system/<location>/services/<delegate_name> for a
+// shared platform service, spiffe://<trust-domain>/tenants/<tenant>/services/<delegate_name>
+// for a tenant-owned instance (see tenant_namespace).
+// Authenticates via a projected Kubernetes service-account token or cloud identity.
+//
+// Two authorization models:
+//   - S2S (identity-only): tokens carry only the SPIFFE URI as sub.
+//     Receiving services enforce access via auth_services RE2 patterns
+//     that match against the caller's service path.
+//   - C2S (entitlement-based): OPA returns TokenEntitlements directly.
+//     Kernel embeds expanded per-service RPC lists in the user token.
+message Delegate {
+  // name is the delegate's service path — becomes the final service path segment
+  // in the SPIFFE URI. For workload children: parent/<child>.
+  //
+  // NOT unique on its own: a tenant-owned service has one delegate per tenant,
+  // all carrying the same name (the service path that auth_services patterns
+  // match on), distinguished only by tenant_namespace. The delegate's key is
+  // the (name, tenant_namespace) pair.
+  string name = 1 [(spec.assert_required) = true];
+
+  // tenant_namespace is the authorization namespace this delegate's minted
+  // identity is rooted at. Empty — the default, and what every shared platform
+  // service uses — means the /system root, so the minted subject is
+  // spiffe://<td>/system/services/<name>. A tenant-owned service instance sets
+  // the canonical tenant namespace /tenants/<tenant>, and the minted subject
+  // becomes spiffe://<td>/tenants/<tenant>/services/<name>, from which every
+  // token minted for it takes its namespace claim.
+  //
+  // This is the ONLY place a service's tenant is configured. Nothing a service
+  // sends can influence it: the tenant reaches the rest of the fleet solely as
+  // part of the SPIFFE subject kernel stamps here.
+  //
+  // Distinct from KubernetesServiceAccountMatcher.kubernetes_namespace, which
+  // is the K8s namespace the pod runs in, not an authorization namespace.
+  string tenant_namespace = 7 [(spec.assert_max_size) = 512];
+
+  repeated CloudIdentityMatcher cloud_identities = 3 [(spec.assert_max_size) = 8];
+
+  // kubernetes_service_accounts lists the Kubernetes (namespace, service
+  // account) pairs that authenticate as this delegate via a projected SA
+  // token.
+  repeated KubernetesServiceAccountMatcher kubernetes_service_accounts = 5
+      [(spec.assert_max_size) = 8];
+
+  // authorized_services lists services this delegate can request tokens for.
+  // Values are generated ServiceName enum entries matching service declarations.
+  // The delegate can always request a token for itself (sub=name).
+  // Use SERVICE_NAME_ANY to allow all services.
+  repeated services.ServiceName authorized_services = 4 [(spec.assert_max_size) = 64];
+
+  // custom_claims are static key-value pairs added to every access token
+  // minted for this delegate. Useful for identity claims (e.g. email).
+  // Standard JWT claims (sub, iss, aud, exp, iat, azp, nbf, jti, typ,
+  // parent_sub) are reserved and will be skipped.
+  map<string, string> custom_claims = 6 [(spec.assert_max_size) = 20];
+
+  // auth_broker_kinds declares which classes of user-authentication proof this
+  // delegate is trusted to broker into Mint.MintUserToken. EMPTY — the default,
+  // and every delegate in the fleet today — means this delegate is NOT an auth
+  // broker and MintUserToken refuses it. This replaces the former hardcoded
+  // auth_services broker allowlist on that RPC: who may attest a
+  // human login is per-delegate runtime config, not a compile-time literal in
+  // this file.
+  repeated tokenrequest.AuthBrokerKind auth_broker_kinds = 8 [(spec.assert_max_size) = 8];
+
+  // external_audiences lists the off-cluster audiences (e.g.
+  // "https://api.anthropic.com") this delegate may mint its OWN identity for
+  // via Mint.MintExternalServiceToken. Exact match. EMPTY — the default —
+  // means the delegate may mint no external service token.
+  repeated string external_audiences = 9 [(spec.assert_max_size) = 8];
+}
+
+// ============================================================================
+// Cluster State (cluster diagnostics, health, and metrics)
+// ============================================================================
+//
+// Cluster is a state root that exposes cluster diagnostics and
+// operational metrics. A background publisher in each node periodically
+// computes metrics from JVM/Hazelcast APIs and writes them to the maps.
+// Tacplus auto-generates Get/Set/Watch RPCs for each boundary.
+//
+// PATTERNS TO ADDRESS LATER:
+//
+// 1. Filtered queries: GetMapEntries needs key_prefix filter and limit.
+//    The auto-generated collection Get doesn't support ad-hoc filtering.
+//    Needs a hand-wrapped RPC or a new tacplus pattern for parameterized
+//    queries on collections.
+//
+// 2. Transient point-in-time queries: ListLocks returns a snapshot of
+//    lock state that changes too rapidly to publish to maps. Needs a
+//    hand-wrapped RPC. Same applies to thread deadlock detection —
+//    better as on-demand than periodic.
+//
+// 3. Publisher latency vs event-driven updates: Watch fires when maps
+//    update, but the publisher writes on a fixed interval. For membership
+//    changes, consider event-driven publishing (MembershipListener
+//    triggers immediate cluster_info/cluster_health write) alongside
+//    periodic publishing for metrics.
+//
+message Cluster {
+  option (spec.service_state) = {label: ["kernel"], export: true};
+
+  // --- Cluster-wide singletons (any node writes, convergent LWW) ---
+
+  // cluster_info captures cluster membership, state, and version.
+  // Updated on membership change events and periodically.
+  hazelcast.AdminClusterInfo cluster_info = 1;
+
+  // cluster_health captures partition safety, quorum, and migration state.
+  // Updated on membership change events and periodically.
+  hazelcast.AdminClusterHealth cluster_health = 2;
+
+  // --- Per-node collections (each node writes its own entry, keyed by node_id) ---
+
+  // node_metrics captures memory, CPU, and disk usage per node.
+  repeated hazelcast.AdminNodeMetrics node_metrics = 3 [
+    (spec.assert_max_size) = 32
+  ];
+
+  // grpc_stats captures gRPC connection and RPC statistics per node.
+  repeated hazelcast.AdminGrpcStats grpc_stats = 4 [
+    (spec.assert_max_size) = 32
+  ];
+
+  // persistence_status captures redo log and dump state per node.
+  repeated hazelcast.AdminPersistenceStatus persistence_status = 5 [
+    (spec.assert_max_size) = 32
+  ];
+
+  // network_stats captures network connections and traffic per node.
+  repeated hazelcast.AdminNetworkStats network_stats = 6 [
+    (spec.assert_max_size) = 32
+  ];
+
+  // thread_info captures JVM thread counts per node.
+  repeated hazelcast.AdminThreadInfo thread_info = 7 [
+    (spec.assert_max_size) = 32
+  ];
+
+  // token_cache_stats captures security token cache statistics per node.
+  repeated hazelcast.AdminTokenCacheStats token_cache_stats = 8 [
+    (spec.assert_max_size) = 32
+  ];
+
+  // map_stats captures per-map statistics. Keyed by map name.
+  // Each node publishes stats for maps it owns partitions of.
+  repeated hazelcast.AdminMapStats map_stats = 9 [
+    (spec.assert_max_size) = 1024
+  ];
+
+  // --- Commands ---
+
+  // set_log_level dynamically changes a logger's level without restart.
+  AdminSetLogLevelRequest set_log_level = 10 [(spec.command) = true];
+
+  // --- Private (no external RPCs — server reads/writes internally) ---
+
+  // config_dump holds the running configuration. Private because it
+  // contains secrets (cluster secret, keys, tokens).
+  AdminConfigDump config_dump = 11 [
+    (spec.private) = true
+  ];
+
+  // reload_config triggers a reload of the Config from the config file.
+  // Updates token exchange and per-service config state from the reloaded config.
+  // Topology and TLS changes require restart.
+  AdminReloadConfigRequest reload_config = 12 [
+    (spec.command) = true,
+    (spec.boundary_callers) = "orchestrator"
+  ];
+
+  // --- Configuration (published on boot / config reload for admin visibility) ---
+
+  // config is the running configuration (private — contains TLS keys and secrets).
+  Config config = 13 [
+    (spec.private) = true
+  ];
+
+  // --- Graph registry and service connections ---
+
+  // graph_registry contains metadata for all boundaries across all state roots.
+  // Published once at boot from the generated Registry. Keyed by qualified_name.
+  // Consumers use WatchGraphRegistry to discover all graphs in the system.
+  repeated hazelcast.AdminGraphInfo graph_registry = 15 [(spec.assert_max_size) = 1024];
+
+  // service_connections tracks which microservices are connected and what
+  // graphs they are accessing. Published periodically by the security
+  // interceptor based on authenticated peer identity. Keyed by "service_id@node_id".
+  repeated hazelcast.AdminServiceConnection service_connections = 16 [
+    (spec.assert_max_size) = 256
+  ];
+
+  // queue_stats captures per-queue statistics (depth, offer/consume rates).
+  // Published per-queue per-node. Keyed by qualified_name.
+  repeated hazelcast.AdminQueueStats queue_stats = 17 [
+    (spec.assert_max_size) = 1024
+  ];
+
+  // topic_stats captures per-topic statistics (publish rate, subscriber count).
+  // Published per-topic per-node. Keyed by qualified_name.
+  repeated hazelcast.AdminTopicStats topic_stats = 18 [
+    (spec.assert_max_size) = 1024
+  ];
+
+  // watch_health tracks active Watch streams and their consumer health.
+  // Published per-active-watch per-node. Keyed by watch_id.
+  repeated hazelcast.AdminWatchHealth watch_health = 19 [
+    (spec.assert_max_size) = 1024
+  ];
+
+  // mutation_rates captures per-boundary write throughput.
+  // Published per-boundary per-node. Keyed by qualified_name.
+  repeated hazelcast.AdminMutationRate mutation_rates = 20 [
+    (spec.assert_max_size) = 1024
+  ];
+}
+
+// ============================================================================
+// Admin — Log Level Control
+// ============================================================================
+
+// AdminSetLogLevelRequest dynamically changes a logger's level without restart.
+// Dispatched as a command via Cluster.set_log_level.
+message AdminSetLogLevelRequest {
+  // logger_name is the fully qualified logger name (e.g., "com.example.MyClass").
+  // Empty string targets the root logger.
+  string logger_name = 1;
+
+  // level is the desired log level (e.g., "DEBUG", "INFO", "WARN", "ERROR").
+  string level = 2 [(spec.assert_required) = true];
+}
+
+// AdminReloadConfigRequest triggers a reload of the Config from the config file.
+// Hot-reloadable fields (delegates, entitlements, rate limits, token lifetimes)
+// are applied immediately. Topology and TLS changes require restart.
+message AdminReloadConfigRequest {
+}
+
+// ============================================================================
+// Admin — Config Dump (private — contains secrets)
+// ============================================================================
+
+// AdminConfigDump holds the Hazelcast configuration for diagnostics.
+// Private because the Hazelcast config may contain internal cluster details.
+// Stored as a singleton in Cluster.config_dump.
+message AdminConfigDump {
+}
+
+// ============================================================================
+// Service Health State
+// ============================================================================
+
+// ServiceHealth is a state root for service instance health.
+// All microservices have RW access. The server enforces per-instance write
+// isolation via the token's instance_id claim (instance_keyed annotation).
+message ServiceHealth {
+  option (spec.service_state) = {label: ["kernel"], export: true};
+
+  // instances holds health data for each running service instance.
+  // Keyed by "service_id@instance_id" (composed by server from token claims).
+  // Entries TTL-expire in 30s if not refreshed, ensuring stale instances
+  // are removed when a process dies.
+  repeated healthreport.ServiceInstanceHealth instances = 1 [
+    (spec.instance_keyed) = true,
+    (spec.assert_max_size) = 256
+  ];
+}
+
+// ============================================================================
+// Workload Identity State
+// ============================================================================
+
+// WorkloadRevokeRequest revokes a child workload's identity by SPIFFE ID.
+// Only the parent (or an ancestor in the SPIFFE path) can revoke.
+message WorkloadRevokeRequest {
+  // spiffe_id is the child workload's full SPIFFE ID to revoke.
+  string spiffe_id = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+}
+
+// WorkloadLocality holds a parent's current locality token.
+// Children present this token on refresh to prove they can still reach
+// their parent. The parent rotates the token periodically and registers
+// it here. The same token is shared by all of the parent's children —
+// it proves reachability, not individual identity.
+message WorkloadLocality {
+  string spiffe_id = 1 [(spec.indexed) = true, (spec.assert_required) = true];
+  string locality_token = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 256];
+  int64 updated_at_ms = 3 [(spec.assert_ge) = 0];
+}
+
+// WorkloadRevocation records a revoked workload identity.
+// Kernel checks this on refresh — if the child's SPIFFE ID (or any
+// ancestor) appears here, refresh is denied.
+message WorkloadRevocation {
+  string spiffe_id = 1 [(spec.indexed) = true, (spec.assert_required) = true];
+  string revoked_by = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+  int64 revoked_at_ms = 3 [(spec.assert_ge) = 0];
+}
+
+// WorkloadState tracks workload identity lifecycle — localities and revocations.
+// Separate from ServiceHealth to keep health focused on operational status.
+// All services have RW (for locality registration); kernel enforces that a
+// service can only write its own locality entry (keyed by SPIFFE ID).
+message WorkloadState {
+  option (spec.service_state) = {label: ["kernel"], export: true};
+
+  // localities holds locality tokens for parent workloads.
+  // Parents update these periodically. Children present the token on
+  // refresh to prove they can still reach their parent.
+  // Keyed by the parent's SPIFFE ID.
+  repeated WorkloadLocality localities = 1 [
+    (spec.assert_max_size) = 1024
+  ];
+
+  // revocations holds revoked workload SPIFFE IDs.
+  // Kernel checks this on refresh — if the child's SPIFFE ID (or any
+  // ancestor) appears here, refresh is denied.
+  // Keyed by SPIFFE ID. TTL: 24h (longer than any token lifetime).
+  repeated WorkloadRevocation revocations = 2 [
+    (spec.assert_max_size) = 4096
+  ];
+}
+
+// ============================================================================
+// The reserved `people` tenant
+// ============================================================================
+//
+// A person is a user in the `people` tenant: /tenants/people/users/<u>. That
+// tenant is RESERVED, and this is the one deliberate special case in the
+// namespace tree, stated here rather than hidden: it has no admin, its IdP set
+// is fixed to the two providers below, and kernel creates it at boot instead of
+// an operator creating it through TenantAdmin (which refuses the name).
+// Everything else about it — its TenantConfig, its oauth slice, the SPIFFE
+// shape of its users — is an ordinary tenant.
+//
+// (Decision doc: identity-people-tenant-devices-private-2026-09-21 §1. It
+// supersedes the /people/<principal_id> root that PersonalPrincipal below still
+// uses; migrating the device path onto this shape is §3 work, not done here.)
+
+// PeopleIdpProvider is the CLOSED set of identity providers the `people` tenant
+// accepts. Closed is the point: "one provider identity = one person" only holds
+// if the provider half of a person's identity comes from a fixed vocabulary, so
+// the enum — not config — is what fixes the IdP set.
+enum PeopleIdpProvider {
+  PEOPLE_IDP_PROVIDER_UNSPECIFIED = 0;
+  // Sign in with Apple (issuer https://appleid.apple.com).
+  PEOPLE_IDP_PROVIDER_APPLE = 1;
+  // Google Sign-In (issuer https://accounts.google.com).
+  PEOPLE_IDP_PROVIDER_GOOGLE = 2;
+}
+
+// PeopleIdpCredential is one provider's OAuth client credentials, the only part
+// of the `people` tenant's IdP configuration a deployment supplies. Kernel adds
+// the issuer URL from its fixed table and writes the pair into
+// /tenants/people's oauth.OAuthTenantConfig, so oauth reads the `people`
+// tenant's providers through the same per-tenant config slice every other
+// tenant uses.
+message PeopleIdpCredential {
+  PeopleIdpProvider provider = 1 [(spec.assert_enum_defined) = true];
+  // client_id is the OAuth2 client identifier registered with the provider.
+  string client_id = 2 [(spec.assert_required) = true, (spec.assert_min_size) = 1];
+  // client_secret is the OAuth2 client secret; comes from the secrets overlay.
+  string client_secret = 3 [(spec.assert_required) = true, (spec.assert_min_size) = 1];
+}
+
+// Person is one human: a user row in the reserved `people` tenant, created the
+// first time an IdP token for its (provider, provider_subject) pair is seen and
+// found on every login after that, from any device or browser.
+//
+// One provider identity is one person. A human who signs in with both Apple and
+// Google is two Person rows until an explicit, both-sides-proven merge exists —
+// guessing they are the same human is how accounts get hijacked.
+message Person {
+  // user_id is the <u> in /tenants/people/users/<u>. It is DERIVED, not minted:
+  // "<provider>.<provider_subject>", with the provider drawn from the closed
+  // enum above (neither `apple` nor `google` contains a '.', so the first dot is
+  // an unambiguous delimiter). The provider's subject is already stable and
+  // unique within that provider, so there is no hash of our own to keep
+  // consistent, and the same human lands on the same row without a lookup
+  // table.
+  string user_id = 1 [
+    (spec.indexed) = true, (spec.assert_required) = true,
+    (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
+  // provider is which IdP proved this person.
+  PeopleIdpProvider provider = 2 [(spec.assert_enum_defined) = true];
+  // provider_subject is the IdP's own `sub` claim, verbatim. Never an email:
+  // an email is reassignable, and comparing them is how one human's rows become
+  // another's.
+  string provider_subject = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+  int64 created_at_ms = 4 [(spec.assert_ge) = 0];
+  // disabled_at_ms marks, never deletes — the same audit rule
+  // PersonalPrincipal.disabled_at_ms states.
+  int64 disabled_at_ms = 5 [(spec.assert_ge) = 0];
+}
+
+// ============================================================================
+// Principal State (personal principals and their tenant memberships)
+// ============================================================================
+
+// MembershipProofKind is HOW a person proved they belong to a tenant. It is
+// recorded per membership because a tenant configures which proofs it accepts
+// (login doc §1), and because revoking a proof kind must revoke exactly the
+// memberships that used it.
+enum MembershipProofKind {
+  MEMBERSHIP_PROOF_KIND_UNSPECIFIED = 0;
+  // The tenant's own IdP (Entra, Google Workspace, Keycloak, ...).
+  MEMBERSHIP_PROOF_KIND_TENANT_IDP = 1;
+  // 2026-10-20: MEMBERSHIP_PROOF_KIND_EMAIL_LINK (a link emailed to an address
+  // the tenant's admin authorized) was 2; mail link removed from SeaBeam.
+  reserved 2;
+  reserved "MEMBERSHIP_PROOF_KIND_EMAIL_LINK";
+  // The admin linked this personal principal directly; the device login alone
+  // suffices thereafter (login doc §2b proof 3).
+  MEMBERSHIP_PROOF_KIND_LINKED_PERSONAL_IDENTITY = 3;
+}
+
+// PersonalCredential is one key that authenticates a personal principal. It is
+// a KEY, not a device: a platform-synced key presented from a phone and from an
+// iPad is one credential presented twice, which is what makes those two devices
+// the same principal with no sign-in (login doc §2a).
+message PersonalCredential {
+  // credential_id is the kid the proof JWT carries; kernel resolves the key by it.
+  string credential_id = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+  // public_key is the public half. The private half never enters the cluster —
+  // the same rule credentials.CredPair states for cred pairs.
+  jwk.Jwk public_key = 2 [(spec.assert_required) = true];
+  // label is human-facing ("iPhone"), for the user's own credential list.
+  string label = 3 [(spec.assert_max_size) = 128];
+  // platform_synced records whether this key lives in a synced credential store
+  // (iCloud Keychain / Google passkey) or in device hardware only. It is what
+  // makes "lose this phone and your Scotty is gone" a truthful statement rather
+  // than a guess.
+  bool platform_synced = 4;
+  int64 created_at_ms = 5 [(spec.assert_ge) = 0];
+  // revoked_at_ms marks, never deletes — same audit rule as Grant.revoked_at_ms.
+  int64 revoked_at_ms = 6 [(spec.assert_ge) = 0];
+}
+
+// TenantMembership is one person's membership of one tenant. It is the record
+// that authorizes minting a /tenants/<t> token for this principal (see
+// Mint.MintToken's tenant_namespace): no live membership, no token.
+message TenantMembership {
+  // tenant_namespace is the canonical /tenants/<name> form, never a bare name.
+  string tenant_namespace = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+  MembershipProofKind proof_kind = 2 [(spec.assert_enum_defined) = true];
+  // customer designates this membership as customer-facing: the person deals
+  // with the tenant as an outside party, not as a worker inside it. It is a
+  // DESIGNATION ON THIS MEMBERSHIP, deliberately not a principal kind — the same
+  // person is a customer of one tenant and a member of another, and may be both
+  // of the same tenant over time. Mint intersects the requested service_auds
+  // with the tenant's customer-facing service list when this is set.
+  bool customer = 3;
+  // proof_reference is the opaque handle to what was proved (the tenant IdP
+  // subject, the redeemed link id). Opaque to kernel, never an email string —
+  // login doc §2 rules out comparing email strings, and nothing here does.
+  string proof_reference = 4 [(spec.assert_max_size) = 512];
+  int64 created_at_ms = 5 [(spec.assert_ge) = 0];
+  int64 expires_at_ms = 6 [(spec.assert_ge) = 0];
+  // revoked_at_ms marks, never deletes: a departure is a withdrawal that must
+  // remain visible in the audit trail (login doc §7 bullet 3).
+  int64 revoked_at_ms = 7 [(spec.assert_ge) = 0];
+}
+
+// PersonalPrincipal is one person. It is NOT a tenant: its namespace is
+// /people/<principal_id>, it has no Tenant record, no config slice, and no
+// operator-deployed instance.
+message PersonalPrincipal {
+  // principal_id is kernel-minted and opaque. Deliberately NOT derived from any
+  // key, so adding, rotating or revoking a credential never renames the person.
+  string principal_id = 1 [
+    (spec.indexed) = true, (spec.assert_required) = true,
+    (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
+  repeated PersonalCredential credentials = 2 [(spec.assert_max_size) = 16];
+  repeated TenantMembership memberships = 3 [(spec.assert_max_size) = 64];
+  int64 created_at_ms = 4 [(spec.assert_ge) = 0];
+  int64 disabled_at_ms = 5 [(spec.assert_ge) = 0];
+}
+
+// TenantUserLink is one edge out of a linked tenant user: which identity in
+// another tenant is the same human. Linking is GENERIC — any two tenants, not
+// `people` and one other. The first use is drpepper's `jody` linked to that
+// human's `people` row, but a contractor in two companies and a tenant
+// migrating IdPs are the same record.
+//
+// peer_namespace, not a peer user path, is what the token's `linked` claim
+// carries. The generated namespace backstop compares that claim against
+// (spec.store_namespace), which holds a NAMESPACE, so a user path would never
+// compare equal and a linked caller's read would never be accepted.
+message TenantUserLink {
+  // peer_namespace is the canonical /tenants/<t> the linked identity lives in.
+  string peer_namespace = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+  // peer_subject is the linked identity's `sub` as kernel mints it. Kernel
+  // keeps it because peer_namespace alone does not identify a human, and
+  // because a re-key has to find and rewrite the edge that names one user.
+  string peer_subject = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 1024];
+  int64 created_at_ms = 3 [(spec.assert_ge) = 0];
+  // revoked_at_ms is the unlink mark. Marks, never deletes — the same audit rule
+  // Grant.revoked_at_ms and PersonalCredential.revoked_at_ms state, and for the
+  // stronger reason here that a link is proved once by live credentials and
+  // nothing kernel holds can re-derive it: a deleted edge is indistinguishable
+  // from one that was never proved.
+  //
+  // A revoked edge contributes no `linked` claim at mint. Re-proving the same
+  // link clears the mark rather than adding a second edge, because the same two
+  // credentials presented again are the same fact.
+  int64 revoked_at_ms = 4 [(spec.assert_ge) = 0];
+}
+
+// TenantUserLinks is ONE tenant user's links.
+//
+// Keyed per user, and written on BOTH sides of every link, deliberately: this
+// is read on every user mint, so it must be one O(1) keyed lookup and not a
+// scan of every row for one that mentions the caller.
+message TenantUserLinks {
+  // user_key identifies the linked user as "<namespace>|<sub>" — the exact
+  // namespace and sub claims kernel mints for them. Deliberately the minted
+  // pair rather than a derived path: an ordinary tenant's `sub` is whatever its
+  // IdP broker supplies (an email, today) and is not required to be a SPIFFE
+  // id, so there is no path to derive. The namespace half is what keeps two
+  // tenants' identically-named users apart.
+  string user_key = 1 [
+    (spec.indexed) = true, (spec.assert_required) = true,
+    (spec.assert_min_size) = 1, (spec.assert_max_size) = 1024];
+  repeated TenantUserLink links = 2 [(spec.assert_max_size) = 64];
+}
+
+// PrincipalState is the personal-principal registry. label ["kernel"] and NO
+// export: the generated state RPCs are kernel-only, so no other service can
+// read the registry over the state plane. The one read surface anybody else
+// gets is PersonalIdentity.GetMyIdentity below, which returns the CALLER'S OWN
+// row and takes no principal argument.
+message PrincipalState {
+  option (spec.service_state) = {label: ["kernel"], identity_snapshot: true};
+
+  // personal_principals is keyed by PersonalPrincipal.principal_id.
+  repeated PersonalPrincipal personal_principals = 1 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 65536
+  ];
+
+  // people is the `people` tenant's user rows, keyed by Person.user_id. It
+  // lives in THIS boundary rather than one of its own because it is the same
+  // registry: kernel's record of which humans exist, kernel-only and unexported
+  // for the same reason personal_principals is. PersonalPrincipal is the
+  // superseded /people/<pid> shape and goes away with the device slice; Person
+  // is what remains.
+  repeated Person people = 2 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 65536
+  ];
+
+  // tenant_user_links is the link registry, keyed by TenantUserLinks.user_path.
+  // It lives in THIS boundary for the same reason people does: a link is
+  // identity, not user data, so it belongs in kernel's own registry of who
+  // exists — kernel-only and unexported.
+  repeated TenantUserLinks tenant_user_links = 3 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 65536
+  ];
+
+  // pending_approvals is the device-only-approval registry, keyed by
+  // PendingApproval.approval_id. It is in THIS boundary because an approval is
+  // identity — which human, holding which device, consented to which call — and
+  // because the verification path is kernel's own: a read from another service
+  // would put the platform's approval check behind a second service's
+  // availability.
+  //
+  // Deliberately WITHOUT (spec.persistence), and absent from KernelDiskState.
+  // It is the one collection here that is ephemeral on purpose; see the
+  // message's own comment for why losing one is harmless and losing a link is
+  // not.
+  repeated PendingApproval pending_approvals = 4 [
+    (spec.assert_max_size) = 65536
+  ];
+}
+
+// PersonalIdentity is the personal principal's own view of itself. It exists
+// because kernel state RPCs are service-only (checkAccess denies user tokens on
+// every policed graph), so a person cannot read their own registry row over the
+// state plane.
+service PersonalIdentity {
+  option (spec.service_c2s) = {auth_entitled_users: true};
+
+  // GetMyIdentity returns the CALLER'S memberships. It takes no principal
+  // argument by construction: the principal is resolved from the token's sub,
+  // so there is no field an attacker can point at somebody else.
+  rpc GetMyIdentity(GetMyIdentityRequest) returns (GetMyIdentityResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER]
+    };
+  }
+
+  // RevokeTenantUserLink is UNLINK. It takes no owner argument, for the same
+  // reason GetMyIdentity takes none: the owning side of the edge is the
+  // CALLER'S OWN namespace and sub, out of the verified token, so there is no
+  // field pointing at somebody else's link. The request names only the peer to
+  // unlink from.
+  //
+  // Either side may unlink, which is what makes "the person may unlink a
+  // device, from any linked device or via the people tenant flow" (identity
+  // decision doc §3) true without a second surface: a /people/<pid> device
+  // token unlinks its own person edge, and a /tenants/people person token
+  // unlinks any of its device edges.
+  //
+  // NO RE-PROOF IS REQUIRED. Linking demands both credentials at once because
+  // it GRANTS reach into another namespace; unlinking only withdraws it, and a
+  // device is most often unlinked precisely when it can no longer be presented
+  // (lost, stolen, wiped). Demanding the link-time proof to undo a link would
+  // mean a lost device can never be removed. Recorded as a product default in
+  // the slice's decision doc, not a silent choice.
+  rpc RevokeTenantUserLink(RevokeTenantUserLinkRequest) returns (RevokeTenantUserLinkResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER]
+    };
+  }
+
+  // CreatePendingApproval PROPOSES something that will need a device tap
+  // (identity decision doc §5). The caller is the person, or a tenant user
+  // linked to one, or an agent holding that person's delegated token — and
+  // proposing is ALL this does. The record it writes authorizes nothing until a
+  // device linked to that person signs it, which Mint.BrokerPendingApproval
+  // checks; that is why a proposer needs no privilege beyond being the user.
+  //
+  // It takes no principal argument, for the same reason GetMyIdentity takes
+  // none: the person is resolved from the caller's own verified claims, through
+  // the link registry, so there is no field pointing at somebody else's
+  // approval to create.
+  //
+  // What it pins is the EXACT request. rpc_method names one RPC and
+  // request_hash digests the exact request that will be made, so an approval
+  // for "transfer 5" cannot be spent on "transfer 5000": the generated check
+  // re-hashes the request it is about to serve, and a different hash is a
+  // different approval.
+  rpc CreatePendingApproval(CreatePendingApprovalRequest)
+      returns (CreatePendingApprovalResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER]
+    };
+  }
+}
+
+// RevokeTenantUserLinkRequest names the PEER to unlink from, and nothing else.
+// The owning side is the caller's own token — see the RPC comment.
+message RevokeTenantUserLinkRequest {
+  // peer_namespace is the canonical /tenants/<t> or /people/<pid> of the edge
+  // to revoke, as TenantUserLink.peer_namespace holds it.
+  string peer_namespace = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+  // peer_subject is that identity's `sub`, as TenantUserLink.peer_subject holds
+  // it. Both halves are required: peer_namespace alone would revoke every edge
+  // into a tenant, which is not what unlinking one device means.
+  string peer_subject = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 1024];
+}
+
+message RevokeTenantUserLinkResponse {
+  // revoked_at_ms is the mark written on BOTH directions of the edge. Zero
+  // never comes back: an edge that was already revoked returns the mark it
+  // already carried, so unlinking twice is the same fact, not an error.
+  int64 revoked_at_ms = 1 [(spec.assert_ge) = 0];
+}
+
+// GetMyIdentityRequest is deliberately empty: the principal is the token's sub.
+message GetMyIdentityRequest {}
+
+// GetMyIdentityResponse is the caller's own identity: who they are, and the
+// tenants they may act in — the routing map §6 item 8 asks for.
+//
+// Credentials are deliberately NOT returned. Nothing in this goal reads them,
+// and the credential-management surface (§6 item 7, device authorization) will
+// define its own view when it is designed; a speculative second copy of the
+// credential list here is the same drift risk §6.2 refuses for a membership
+// index. public_key is not the reason — CredPair.public_key already crosses an
+// external RPC verbatim in TenantAdmin.GetTenantConfig, and this tree redacts
+// only true secrets, via (spec.redact) — the reason is that no caller needs it.
+message GetMyIdentityResponse {
+  // principal_id echoes the caller's own PersonalPrincipal.principal_id. The
+  // token's sub carries it inside /people/<pid>; returning it explicitly saves
+  // every client parsing a namespace string to learn its own name.
+  string principal_id = 1 [(spec.assert_max_size) = 128];
+  // memberships are the caller's live tenant memberships. Bound matches
+  // PersonalPrincipal.memberships — the whole set always fits one response,
+  // which is why this is a Get and not a paged List.
+  repeated TenantMembership memberships = 2 [(spec.assert_max_size) = 64];
+}
+
+// CreatePersonalPrincipalRequest is a first-launch device registration. It
+// carries its own proof: proof_token is a JWT signed by the private half of
+// public_key, and the proof's kid becomes the new credential's credential_id.
+// The kid is the only source for it, so there is no second field that can
+// disagree with what was actually signed.
+message CreatePersonalPrincipalRequest {
+  // proof_token is the self-signed JWT, the same shape as
+  // MintClientTokenRequest.input_token.
+  string proof_token = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 8192];
+  // public_key is the public half of the key that signed proof_token, and is
+  // stored verbatim as the new PersonalCredential.public_key. Kernel verifies
+  // the proof against THIS key — a proof that does not verify registers
+  // nothing.
+  jwk.Jwk public_key = 2 [(spec.assert_required) = true];
+  // label is human-facing ("iPhone"), stored on the credential.
+  string label = 3 [(spec.assert_max_size) = 128];
+  // platform_synced records whether this key lives in a synced credential store
+  // (iCloud Keychain / Google passkey) or in device hardware only.
+  bool platform_synced = 4;
+}
+
+// CreatePersonalPrincipalResponse returns the kernel-minted principal id and
+// nothing else — deliberately no token. The device's next call is MintUserToken
+// with AUTH_BROKER_KIND_DEVICE, presenting a fresh proof signed by the same key.
+message CreatePersonalPrincipalResponse {
+  // principal_id is the new person's opaque, kernel-minted id. Its namespace is
+  // /people/<principal_id>.
+  string principal_id = 1 [(spec.assert_max_size) = 128];
+}
+
+// WebauthnAssertion is one WebAuthn (passkey) assertion, exactly as the
+// authenticator produced it — the four fields of an
+// AuthenticatorAssertionResponse, unaltered.
+//
+// NOTHING HERE IS PARSED BY A BROKER AND BELIEVED. Kernel recomputes the signed
+// bytes itself (authenticator_data || SHA-256(client_data_json)), reads the
+// challenge out of client_data_json itself, and verifies signature against the
+// credential's own public key itself. A broker that rewrote any of these four
+// fields produces a proof that fails, which is what keeps "compromising the
+// broker forges no identity" (personalauth.proto's header) true of this path
+// too.
+//
+// NO ATTESTATION OBJECT, DELIBERATELY. This is the desktop-passkey arm of the
+// identity decision doc's §3 — the one whose device proof is explicitly the
+// weaker one, because Windows/Linux have no App Attest / Play Integrity. The
+// public key therefore arrives as an ordinary jwk.Jwk (the platform's key type
+// everywhere else, including CreatePersonalPrincipal) and is trusted only as
+// far as the nonce binding makes it trustworthy: the IdP's id_token carries
+// that key's RFC 7638 thumbprint as its `nonce`, so a substituted key has no
+// matching login. App Attest and Play Integrity are named as follow-ons, not
+// stubbed: both need live verification against Apple's and Google's own
+// services, and a mocked verifier would be a device proof nobody could trust.
+message WebauthnAssertion {
+  // credential_id is the authenticator's credential id, base64url without
+  // padding. It becomes PersonalCredential.credential_id.
+  string credential_id = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 1024];
+  // authenticator_data is the raw authenticatorData the authenticator signed.
+  bytes authenticator_data = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 2048];
+  // client_data_json is the raw clientDataJSON the authenticator signed over
+  // the SHA-256 of. Kernel parses it for `type` and `challenge`; both are
+  // checked, and the challenge is what binds this assertion to one IdP login.
+  bytes client_data_json = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 4096];
+  // signature is the authenticator's signature over
+  // authenticator_data || SHA-256(client_data_json), in the encoding the key's
+  // algorithm defines (DER for ECDSA, raw for Ed25519, PKCS#1 v1.5 for RSA).
+  bytes signature = 4 [(spec.assert_required) = true, (spec.assert_max_size) = 2048];
+}
+
+// TenantUserLinkSide is one half of a link: either one IdP login the calling
+// broker has just verified, or one device that has just signed a WebAuthn
+// assertion. Exactly one of the two shapes is set.
+message TenantUserLinkSide {
+  // claims are the verified IdP claims, the same shape MintUserToken carries —
+  // the IdP's own iss/sub/nonce under origin_*, copied verbatim out of the
+  // id_token the broker verified. origin_iss, origin_sub and origin_nonce are
+  // all required ON AN IdP SIDE: a side with no nonce cannot be bound to the
+  // other side. Absent on a device side, which carries no login at all.
+  //
+  // NOT assert_required, because a device side has no claims to carry. The
+  // handler requires exactly one of (claims, device_assertion) per side and
+  // refuses a side that sets both or neither — a check a field-level assertion
+  // cannot express.
+  google.protobuf.Struct claims = 1;
+  // subject is the SPIFFE user id this login resolves to, as
+  // MintUserTokenRequest.subject carries it. Required for an ordinary tenant
+  // side, where it is what names the user; IGNORED on a `people` side, which
+  // derives its user id from the verified claims and takes nothing from the
+  // request, and IGNORED on a device side, which derives its principal from the
+  // credential the assertion is signed by.
+  string subject = 2 [(spec.assert_max_size) = 1024];
+
+  // ---- The device shape (identity decision doc §3, WebAuthn/passkey arm) ----
+
+  // device_assertion is a WebAuthn assertion signed by the device's passkey.
+  // Setting it makes this a DEVICE side: the peer side must then be a `people`
+  // side, and the two are bound by the pair of checks the §3 design names —
+  // the peer's id_token `nonce` is this key's RFC 7638 thumbprint, and this
+  // assertion's challenge names that exact login. Neither half alone is
+  // accepted and nothing can be replayed onto a different device.
+  WebauthnAssertion device_assertion = 3;
+  // device_public_key is the public half of the passkey, as a jwk.Jwk. Kernel
+  // verifies device_assertion against THIS key on a first link — the same
+  // bootstrap CreatePersonalPrincipal has, where the key must come out of the
+  // request because no stored credential exists yet — and against the STORED
+  // key on every link after that. The request's copy is never consulted again
+  // once the credential row exists.
+  jwk.Jwk device_public_key = 4;
+  // device_label is human-facing ("Jody's ThinkPad"), stored on the credential.
+  string device_label = 5 [(spec.assert_max_size) = 128];
+  // device_platform_synced records whether the passkey lives in a synced
+  // credential store (iCloud Keychain / Google passkey) or on this device only,
+  // exactly as CreatePersonalPrincipalRequest.platform_synced does.
+  bool device_platform_synced = 6;
+}
+
+message CreateTenantUserLinkRequest {
+  TenantUserLinkSide a = 1 [(spec.assert_required) = true];
+  TenantUserLinkSide b = 2 [(spec.assert_required) = true];
+  // trace_id is threaded into the OPA evaluations, as MintUserToken threads it.
+  string trace_id = 3 [(spec.assert_max_size) = 128];
+}
+
+message CreateTenantUserLinkResponse {
+  // The two linked identities, as the "<namespace>|<sub>" keys the registry
+  // holds them under. Returned so the caller can see what it actually linked —
+  // neither is echoed from the request.
+  string a_user_key = 1 [(spec.assert_max_size) = 1024];
+  string b_user_key = 2 [(spec.assert_max_size) = 1024];
+  int64 created_at_ms = 3 [(spec.assert_ge) = 0];
+}
+
+// ============================================================================
+// Device-only approvals (identity decision doc §5)
+// ============================================================================
+
+// PendingApproval is the platform's one approval primitive: who, which RPC, a
+// hash of the exact request, and an expiry.
+//
+// It exists because "the token is the user" is not enough for an RPC that is an
+// APPROVAL. A browser IdP session or a delegated agent token can BE the user
+// without a human touching hardware, so an approval needs a proof no session
+// and no delegate can produce: a signature by a key linked to that person's
+// devices. The record is what that signature is verified AGAINST, which is what
+// lets the generated (spec.rpc).requires_device check say WHAT was approved and
+// not merely that somebody tapped something.
+//
+// It lives in kernel, beside Person and TenantUserLink, because it is identity:
+// the proof that one human, holding one device, consented to one call. It is
+// generated against and never reimplemented per product.
+//
+// NOT SNAPSHOTTED TO DISK, and no (spec.persistence) — the one collection in
+// PrincipalState that is deliberately ephemeral. KernelDiskState's own rule is
+// that only state which must survive a restart is persisted; an approval lives
+// for minutes, and losing one fails CLOSED (the id is simply not found) with
+// the person proposing again at the cost of one more tap. TenantUserLink is
+// snapshotted precisely because losing IT fails silently instead.
+message PendingApproval {
+  // approval_id is kernel-minted and opaque. Never derived from the request: two
+  // people proposing the same call must not collide, and a derivable id would
+  // let anyone name somebody else's pending approval.
+  string approval_id = 1 [
+    (spec.indexed) = true, (spec.assert_required) = true,
+    (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
+  // person_user_key is WHO, in the form the link registry keys them by:
+  // "/tenants/people|<the person's SPIFFE sub>" (TenantUserLinks.user_key). The
+  // registry key rather than a bare user path because it is compared against the
+  // approving device's own link edges, and that is the form those hold.
+  string person_user_key = 2 [
+    (spec.assert_required) = true, (spec.assert_max_size) = 1024];
+  // rpc_method is WHICH RPC, as "pkg.Service/Method" — the qualified method key
+  // the platform already identifies an RPC by (the generated authorizer's
+  // _qualified_method_key; kernel's own rate limiter's per-method bucket), i.e.
+  // gRPC's full method name without its leading slash. Deliberately not a new
+  // naming scheme and not an entitlement grant name: the generated check has the
+  // gRPC method in hand and nothing else.
+  string rpc_method = 3 [
+    (spec.assert_required) = true, (spec.assert_min_size) = 1,
+    (spec.assert_max_size) = 256];
+  // request_hash is a SHA-256 over the EXACT request being approved. Kernel
+  // treats it as 32 opaque bytes and compares them for equality; WHAT is hashed,
+  // and how it is canonicalised, is the generator's contract — the same rule has
+  // to be applied by the proposer and by the generated check, in whatever
+  // languages each is written in. Kernel never re-derives it, so kernel can
+  // never silently disagree with either.
+  bytes request_hash = 4 [
+    (spec.assert_required) = true, (spec.assert_max_size) = 64];
+  int64 created_at_ms = 5 [(spec.assert_ge) = 0];
+  // expires_at_ms is kernel's, from a capped TTL, never the caller's number. An
+  // approval is consent to one call happening NOW; a long-lived one is a
+  // standing permission, which is the thing §5 exists to refuse.
+  int64 expires_at_ms = 6 [(spec.assert_ge) = 0];
+  // consumed_at_ms burns the approval single-use. Marked rather than deleted so
+  // a replay inside the window is refused as ALREADY USED rather than as an
+  // unknown id; the expiry sweep deletes it afterwards. Single-use because a
+  // guarded RPC need not be idempotent — a captured signature must not be able
+  // to make the same approved transfer twice.
+  int64 consumed_at_ms = 7 [(spec.assert_ge) = 0];
+}
+
+// CreatePendingApprovalRequest names WHAT is being proposed. It names no
+// person: the person is the caller's, resolved from the verified token.
+message CreatePendingApprovalRequest {
+  // rpc_method is the RPC that will be called, as PendingApproval.rpc_method
+  // holds it ("pkg.Service/Method").
+  string rpc_method = 1 [
+    (spec.assert_required) = true, (spec.assert_min_size) = 1,
+    (spec.assert_max_size) = 256];
+  // request_hash digests the exact request that will be made — see
+  // PendingApproval.request_hash for whose contract the hashing rule is.
+  bytes request_hash = 2 [
+    (spec.assert_required) = true, (spec.assert_max_size) = 64];
+  // ttl_seconds is a REQUEST, capped by kernel, and zero means kernel's default.
+  // A caller asking for a week gets the ceiling, not an error: the ceiling is
+  // what makes an approval a consent rather than a standing permission, and it
+  // is not a thing a client can be wrong about in a way worth failing over.
+  int64 ttl_seconds = 3 [(spec.assert_ge) = 0];
+}
+
+message CreatePendingApprovalResponse {
+  string approval_id = 1 [(spec.assert_max_size) = 128];
+  int64 expires_at_ms = 2 [(spec.assert_ge) = 0];
+  // challenge is the exact value the approving device's WebAuthn assertion must
+  // carry, base64url. Kernel computes it HERE so that no client re-implements
+  // the binding and no two implementations can disagree about it. It is a digest
+  // over the approval id, the method and the request hash, which is what makes
+  // the tap cover what is being approved rather than merely the fact that an
+  // approval exists.
+  string challenge = 3 [(spec.assert_max_size) = 128];
+}
+
+// BrokerPendingApprovalRequest is the generated requires_device check's call:
+// the approval it was handed, the live request it is about to serve, the user it
+// is serving, and the device signature that has to cover all of it.
+message BrokerPendingApprovalRequest {
+  string approval_id = 1 [
+    (spec.assert_required) = true, (spec.assert_min_size) = 1,
+    (spec.assert_max_size) = 128];
+  // rpc_method and request_hash are the LIVE values, computed by the check from
+  // the request in front of it — never echoed back out of the record. Both must
+  // equal what was approved, and both are inside the challenge the device
+  // signed, so a same-shaped-but-different request fails twice over.
+  string rpc_method = 2 [
+    (spec.assert_required) = true, (spec.assert_min_size) = 1,
+    (spec.assert_max_size) = 256];
+  bytes request_hash = 3 [
+    (spec.assert_required) = true, (spec.assert_max_size) = 64];
+  // caller_namespace and caller_subject are the `namespace` and `sub` claims of
+  // the USER the calling service is serving, out of the token it has already
+  // verified. Kernel resolves them to a person and requires that to be the
+  // person the approval names, so one person's approval can never be spent on
+  // another person's call.
+  string caller_namespace = 4 [
+    (spec.assert_required) = true, (spec.assert_max_size) = 512];
+  string caller_subject = 5 [
+    (spec.assert_required) = true, (spec.assert_max_size) = 1024];
+  // device_assertion is the tap: a WebAuthn assertion whose challenge is the one
+  // CreatePendingApprovalResponse returned. Kernel verifies it against the
+  // STORED credential — an approving device must already be registered and
+  // linked, so no key travels in this request at all.
+  WebauthnAssertion device_assertion = 6 [(spec.assert_required) = true];
+}
+
+message BrokerPendingApprovalResponse {
+  // consumed_at_ms is when this approval was burned. A second call with the same
+  // id is refused, so this value is returned exactly once.
+  int64 consumed_at_ms = 1 [(spec.assert_ge) = 0];
+  // person_user_key and device_namespace are WHO approved and WITH WHAT, for the
+  // guarded service's own audit record. Both are kernel's: the person off the
+  // record, the device off the credential the signature verified under.
+  string person_user_key = 2 [(spec.assert_max_size) = 1024];
+  string device_namespace = 3 [(spec.assert_max_size) = 512];
+}
+
+// ============================================================================
+// CA State (cluster-internal PKI)
+// ============================================================================
+
+// Ca holds the cluster's PKI trust anchors and per-service intermediate CAs.
+// The cluster root CA is generated by schematic; its private key never enters
+// the cluster. Each kernel node receives a signing chain (node intermediate
+// → cluster intermediate → root) from schematic's config and uses it for
+// X509Mint. Services trust the root CA cert(s) for chain validation.
+message Ca {
+  option (spec.service_state) = {label: ["kernel"], export: true};
+
+  // ca_certs holds the cluster root CA certificate(s). Populated from
+  // config at startup. During CA rolling, multiple roots
+  // coexist until the old root is retired by schematic.
+  repeated x509.X509Cert ca_certs = 1 [
+    (spec.assert_max_size) = 16
+  ];
+
+  // service_cas holds per-service intermediate CA key pairs.
+  // Created on first X509Mint call for a service, signed by the node's
+  // schematic-issued signing chain (pathlen:0). Keyed by service name.
+  repeated x509.X509CertChain service_cas = 2 [
+    (spec.assert_max_size) = 64
+  ];
+}
+
+
+// ============================================================================
+// Tenancy control plane — kernel is the tenant authority
+// ============================================================================
+//
+// The tenant/project tree and all mutable tenant-aware configuration. Kernel
+// (the cluster trust root) owns ConfigState on its own persistence and exports
+// each consuming service its per-tenant TenantConfig slice via tacplus-generated
+// scoped Watch bindings.
+//
+// Auth: ordinary C2S + the entitlement system. There is no separate cluster-admin
+// service — the namespace tree is uniform (ROOT "/" + tenants + projects). A single
+// TenantAdmin service hosts every lifecycle/config RPC; the generated
+// authorizer enforces the level-or-below rule declaratively per method via
+// target_namespace_field. A caller entitled at ROOT manages top-level tenants; a
+// tenant admin manages its own subtree.
+//
+// Tenant creation and config are two distinct operations:
+//   - CreateTenant (root/ancestor-privileged) establishes existence only.
+//   - SetTenantConfig (normally the tenant's own op) sets the config, including
+//     the tenant's cred_pair PUBLIC keys. The creating root, being at-or-above
+//     the new namespace, performs the INITIAL SetTenantConfig once to bootstrap
+//     the first cred_pair (chicken/egg). No private key is ever minted or
+//     returned here — holders generate their own keypairs off-cluster.
+
+// Constraints are the limits an ancestor places on a tenant. They live on the
+// Tenant record (set at CreateTenant), are mutable only by an ancestor, and are
+// immutable to the tenant itself — so the tenant genuinely cannot raise its own
+// limits. Validated on CreateTenant and SetTenantConfig.
+//
+// (The "min-admin-credential" rule — config must always contain >=1 cred_pair
+// entitled to administer the tenant — is NOT a field here: it is an always-on
+// invariant enforced in the SetTenantConfig validation path, satisfiable by
+// create-and-discard. It is not an ancestor toggle.)
+message Constraints {
+  // entitlements_ceiling is the maximum set of entitlements anyone inside this
+  // tenant may ever hold. Every cred_pair's entitlements ⊆ this; a sub-tenant's
+  // ceiling ⊆ this. Replaces the former standalone Tenant.entitlements field.
+  entitlements.TokenEntitlements entitlements_ceiling = 1;
+
+}
+
+// TenantStatus represents the lifecycle state of a tenant.
+enum TenantStatus {
+  TENANT_STATUS_UNSPECIFIED = 0;
+  TENANT_STATUS_ACTIVE      = 1;
+  TENANT_STATUS_SUSPENDED   = 2;
+}
+
+// Tenant is the core identity record for a tenant in the cluster.
+// `name` is unique, immutable, and becomes the tenant's SPIFFE segment:
+//   spiffe://<trust-domain>/tenants/<name>/...
+message Tenant {
+  string                    name        = 1 [(spec.indexed) = true, (spec.assert_required) = true, (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
+  TenantStatus              status      = 2;
+  // constraints is the ancestor-set limits (entitlements ceiling now; domain
+  // later). Set at creation; mutable only by an ancestor.
+  Constraints               constraints = 3;
+  google.protobuf.Timestamp created_at  = 4;
+  google.protobuf.Timestamp updated_at  = 5;
+}
+
+// TenantConfigEntry maps a tenant_name to its full TenantConfig (the tacplus
+// config slices: kernel cred_pairs, oauth IDP, opa policy). TenantAdmin RPCs
+// write these.
+message TenantConfigEntry {
+  string                     tenant_name = 1 [(spec.indexed) = true, (spec.assert_required) = true];
+  tenant_config.TenantConfig config      = 2;
+}
+
+// ProjectConfig is a project's configuration. EMPTY for now — its presence
+// records the project's existence. Per-project settings will be added later.
+// (IDP/OPA live at the tenant, not here.)
+message ProjectConfig {
+}
+
+// ProjectConfigEntry maps a full project namespace ("/tenant/project") to its
+// (currently empty) ProjectConfig. TenantAdmin writes these.
+message ProjectConfigEntry {
+  string        project_namespace = 1 [(spec.indexed) = true, (spec.assert_required) = true];
+  ProjectConfig config            = 2;
+}
+
+// ConfigState is the kernel-hosted persistence boundary for tenants/projects.
+// Kernel writes it and persists it; other services watch their per-tenant/
+// per-project config slice via the export: true wire.
+message ConfigState {
+  option (spec.service_state) = {label: ["kernel"], export: true, identity_snapshot: true};
+
+  // tenants is the list of all tenant records, keyed by tenant.name.
+  repeated Tenant tenants = 1 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 4096
+  ];
+
+  // tenant_configs stores each tenant's TenantConfig, keyed by tenant_name.
+  repeated TenantConfigEntry tenant_configs = 2 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 4096
+  ];
+
+  // project_configs records projects, keyed by the full project namespace
+  // ("/tenant/project"). ProjectConfig is empty for now (existence only).
+  repeated ProjectConfigEntry project_configs = 3 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 4096
+  ];
+}
+
+// ============================================================================
+// Standing delegation grants
+// ============================================================================
+
+// Grant is a standing delegation: a user authorizes a delegate (an intermediary
+// service, e.g. an agent acting on a schedule) to act on their behalf later,
+// asynchronously. Kernel
+// stores the GRANT, never a minted token — the delegate holds only `id`.
+//
+// On use the delegate presents its own S2S identity plus `id`; kernel replays
+// `claims` into OPA fresh (the same EntitlementEvalInput shape
+// `IdentityServiceImpl.buildClaimsStruct` already builds from a token payload),
+// intersects the result with `authorized_scope`, and mints a short-lived token
+// (sub=subject, act=delegate_name, azp=kernel — kernel mints Grant tokens
+// directly, so azp is always the closed-enum `kernel` value; the delegate name
+// goes on the `act` claim instead). Fresh OPA gives "cannot exceed the user's
+// current authority"; the recorded scope gives "the user downscoped it". Nothing
+// is snapshotted that can go stale except the claims themselves — which catches
+// policy changes, never IDP changes.
+//
+// This message is carried in KernelDiskState and mutated at runtime by
+// Mint.RevokeGrant (revoked_at_ms) only; there is no create/list RPC yet — the
+// catalog is still seeded from Config.grants at boot.
+//
+// PROVISIONAL: this field set is a prerequisite storage layer built ahead of,
+// not instead of, the design conversation with the maintainer. What is settled:
+// id, delegate_name, subject, authorized_scope, claims, created_at_ms,
+// expires_at_ms, revoked_at_ms. NOT settled: how the system learns a user's IDP
+// claims changed or the user was deleted — claim-provenance and epoch are still
+// open and may add fields here.
+message Grant {
+  // id is the opaque grant identifier the delegate holds and presents. Unique
+  // across the cluster.
+  string id = 1 [(spec.indexed) = true, (spec.assert_required) = true];
+
+  // delegate_name is the Delegate.name of the intermediary holding this grant.
+  // It becomes the minted token's act claim (azp on a Grant mint is always
+  // kernel — see the message comment above). Paired with delegate_namespace:
+  // the name alone does not identify a delegate (see Delegate.name).
+  string delegate_name = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+
+  // subject is the user this grant acts for — the sub of the token that will be
+  // minted, and the identity whose claims were recorded below.
+  string subject = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+
+  // authorized_scope is the per-service scope the user recorded at consent time.
+  // Every mint intersects the fresh OPA result with this, so the grant can only
+  // ever narrow the user's live authority, never widen it.
+  entitlements.TokenEntitlements authorized_scope = 4;
+
+  // claims are the user's IDP claims as captured at consent time, in the same
+  // google.protobuf.Struct shape that userentitlements.EntitlementEvalInput.claims
+  // takes, so they can be replayed into OPA verbatim.
+  google.protobuf.Struct claims = 5;
+
+  // created_at_ms is the consent time, epoch milliseconds.
+  int64 created_at_ms = 6 [(spec.assert_ge) = 0];
+
+  // expires_at_ms is when the grant itself stops being usable, epoch
+  // milliseconds. 0 means no expiry (revocation only).
+  int64 expires_at_ms = 7 [(spec.assert_ge) = 0];
+
+  // revoked_at_ms is when the grant was revoked via Mint.RevokeGrant, epoch
+  // milliseconds. 0 means not revoked. A revoked grant is MARKED, never
+  // deleted, so the record remains as an audit trail of the delegation that
+  // existed and when it was withdrawn. Every mint from the grant and every
+  // later exchange of a token minted from it is denied once this is set
+  // (IdentityServiceImpl.assertGrantStillActive), so revocation kills
+  // already-minted derived tokens within one request.
+  int64 revoked_at_ms = 8 [(spec.assert_ge) = 0];
+
+  // delegate_namespace is the Delegate.tenant_namespace of the intermediary
+  // holding this grant, completing the (name, namespace) key delegate_name
+  // alone cannot supply. Empty means the /system delegate of that name — the
+  // shared-service case, and every grant written before tenant-owned services
+  // existed. A grant held by tenant acme's docmanager carries /tenants/acme
+  // here, so tenant beta's docmanager — same delegate_name — cannot mint from
+  // it or revoke it.
+  string delegate_namespace = 9 [(spec.assert_max_size) = 512];
+}
+
+// GrantRevokeRequest revokes a standing delegation by its opaque grant id.
+// Only a party to the grant (its subject or its delegate) may revoke it.
+message GrantRevokeRequest {
+  // grant_id is the Grant.id to revoke.
+  string grant_id = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+}
+
+// ============================================================================
+// Kernel disk persistence (UC1 whole-state snapshot)
+// ============================================================================
+//
+// KernelDiskState is kernel's OWN durable state, snapshotted to kernel's local
+// volume via the tacplus diskstore. It is a service_store with NO store_key,
+// so tacplus generates UC1 snapshot save/load only (no distributed key-value
+// service, no redo log) — kernel persists its whole (small) state as one
+// atomic object and restores it on boot.
+//
+// Kernel persists ONLY its own state — never another service's. Ephemeral,
+// rebuilt-at-runtime state (Cluster membership, ServiceHealth, Identity.fqdn,
+// WorkloadState.localities, TrustedCa from Config) is deliberately NOT
+// snapshotted; only state that must survive a restart is.
+message KernelDiskState {
+  option (spec.service_store) = {label: ["kernel"]};
+
+  // signing_keys are the active private signing keys, one per algorithm
+  // (EdDSA for internal tokens, ES256 for WIF external tokens). Each record
+  // pairs the private key with its public JWK.
+  repeated SigningKeyRecord signing_keys = 1 [(spec.assert_max_size) = 8];
+
+  // verifying_keys is the public verifying set (Identity.verifying_keys),
+  // including keys rotated out but not yet expired, so tokens they signed
+  // still verify across a restart. Must match Identity.verifying_keys — this
+  // IS that set — and so carries the same 128 and the same arithmetic; see the
+  // comment there. The old 32 was below even the healthy 3-replica steady
+  // state, and validation runs on load but not on save: kernel wrote snapshots
+  // it then refused to read, silently cold-starting and discarding every
+  // persisted key on each boot.
+  repeated jwk.Jwk verifying_keys = 2 [(spec.assert_max_size) = 128];
+
+  // ca_certs are the cluster root CA certificate(s) (Ca.ca_certs).
+  repeated x509.X509Cert ca_certs = 3 [(spec.assert_max_size) = 16];
+
+  // service_cas are the per-service intermediate CA key pairs created on
+  // X509Mint (Ca.service_cas), keyed by service name.
+  repeated x509.X509CertChain service_cas = 4 [(spec.assert_max_size) = 64];
+
+  // tenants / tenant_configs / project_configs mirror ConfigState — the
+  // tenant/project tree and per-tenant config created at runtime via TenantAdmin.
+  repeated Tenant tenants = 5 [(spec.assert_max_size) = 4096];
+  repeated TenantConfigEntry tenant_configs = 6 [(spec.assert_max_size) = 4096];
+  repeated ProjectConfigEntry project_configs = 7 [(spec.assert_max_size) = 4096];
+
+  // workload_revocations are revoked workload identities (WorkloadState.revocations);
+  // checked on refresh. Localities are ephemeral and not persisted.
+  repeated WorkloadRevocation workload_revocations = 8 [(spec.assert_max_size) = 4096];
+
+  // grants are standing delegation grants (see Grant). Durable state lives in
+  // kernel so one snapshot restores the whole control plane; the gating service
+  // that consumes them stays stateless.
+  repeated Grant grants = 9 [(spec.assert_max_size) = 4096];
+
+  // personal_principals are the registered people (PrincipalState.personal_principals)
+  // — the principal_id, its credentials and its tenant memberships. Kernel is
+  // where a person's identity is created, so the snapshot is the only thing that
+  // makes a login survive a full cluster restart; without it the first restart
+  // after registration would silently de-register every person.
+  repeated PersonalPrincipal personal_principals = 10 [(spec.assert_max_size) = 65536];
+
+  // people are the `people` tenant's user rows (PrincipalState.people). Carried
+  // for the same reason personal_principals is: a person is created on their
+  // first IdP login and found by user_id thereafter, so a snapshot that drops
+  // them would silently re-create every person on the first cluster restart —
+  // new row, same id, and any state keyed to created_at gone.
+  repeated Person people = 11 [(spec.assert_max_size) = 65536];
+
+  // tenant_user_links are the link rows (PrincipalState.tenant_user_links).
+  // Carried for the same reason people is, and more sharply: a link is proven
+  // once, by two live IdP logins sharing a nonce, and is never re-derivable
+  // from anything kernel holds. A snapshot that dropped it would silently
+  // unlink every user and there would be nothing to notice it by except a
+  // `linked` claim that stopped appearing.
+  repeated TenantUserLinks tenant_user_links = 12 [(spec.assert_max_size) = 65536];
+}
+
+// ============================================================================
+// TenantAdmin — the single tenant/project control plane
+// ============================================================================
+
+// TenantAdmin is kernel's tenant/project control plane. There is no separate
+// cluster-admin service: the namespace tree is uniform (ROOT "/" + tenants +
+// projects) and every RPC is ordinary C2S, gated by the single generated
+// entitlement authorizer, which enforces the level-or-below rule (caller must be
+// at-or-above the target namespace) declaratively via each method's
+// target_namespace_field. A caller entitled at ROOT manages top-level tenants; a
+// tenant admin manages its own subtree. Handlers trust the inbound namespace
+// strings (authorization already happened in the interceptor).
+service TenantAdmin {
+  option (spec.service_c2s) = {auth_entitled_users: true};
+
+  // CreateTenant creates the tenant named by tenant_namespace (e.g. "/acme", or
+  // "/acme/sub" for a sub-tenant) with the given immutable constraints. The
+  // tenant must not already exist. Two-step: existence only — it returns the
+  // Tenant and nothing else (no config, no key material); bootstrap it via
+  // SetTenantConfig. Caller must be at-or-above tenant_namespace (ROOT "/" to
+  // create a top-level tenant).
+  rpc CreateTenant(CreateTenantRequest) returns (Tenant) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "tenant_namespace"};
+  }
+
+  // DeleteTenant removes the tenant named by tenant_namespace and all its state.
+  rpc DeleteTenant(DeleteTenantRequest) returns (DeleteTenantResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "tenant_namespace"};
+  }
+
+  // ListTenants returns the immediate child tenants of parent_namespace
+  // (ROOT "/" lists top-level tenants), one bounded page at a time.
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "parent_namespace"};
+    option (spec.method_collection) = {mode: COLLECTION_MODE_PAGE, order_by: ["name"], default_page_size: 100};
+    option (spec.rest_method) = {methods: [REST_METHOD_GET]};
+  }
+
+  // GetTenantConfig returns the TenantConfig for tenant_namespace (its cred_pairs
+  // + oauth IDP + opa policy slices). Caller must be at-or-above the target.
+  rpc GetTenantConfig(GetTenantConfigRequest) returns (tenant_config.TenantConfig) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "tenant_namespace"};
+    option (spec.rest_method) = {methods: [REST_METHOD_GET]};
+  }
+
+  // UpdateTenantConfig atomically replaces the whole TenantConfig for
+  // tenant_namespace. Caller must be at-or-above the target. cred_pair
+  // management happens here (add = include the public key; remove = omit it) —
+  // this single atomic write path is where constraints are validated:
+  //   - every cred_pair's entitlements ⊆ the tenant's ceiling (Constraints);
+  //   - min-admin-credential invariant: the result must contain >=1 cred_pair
+  //     entitled to administer the tenant (always on);
+  //   - self-lockout guard: when acting on its own tenant, the result must
+  //     still contain the authenticating cred_pair (two-step rotation).
+  rpc UpdateTenantConfig(SetTenantConfigRequest) returns (tenant_config.TenantConfig) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "tenant_namespace"};
+  }
+
+  // --- Project config ---
+
+  // GetProjectConfig returns the (currently empty) ProjectConfig for
+  // project_namespace ("/tenant/project") — its presence records existence.
+  rpc GetProjectConfig(GetProjectConfigRequest) returns (ProjectConfig) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "project_namespace"};
+    option (spec.rest_method) = {methods: [REST_METHOD_GET]};
+  }
+
+  // UpdateProjectConfig atomically replaces the ProjectConfig for project_namespace
+  // (currently empty — used to create a project by establishing its existence).
+  // "/tenant/default" is auto-created empty at tenant creation.
+  rpc UpdateProjectConfig(SetProjectConfigRequest) returns (ProjectConfig) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "project_namespace"};
+  }
+
+  // ListProjects returns the immediate project children of tenant_namespace,
+  // one bounded page at a time.
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "tenant_namespace"};
+    option (spec.method_collection) = {mode: COLLECTION_MODE_PAGE, order_by: ["project_namespace"], default_page_size: 100};
+    option (spec.rest_method) = {methods: [REST_METHOD_GET]};
+  }
+
+  // DeleteProject removes the project named by project_namespace and its state.
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "project_namespace"};
+  }
+}
+
+message CreateTenantRequest {
+  // tenant_namespace is the full namespace of the new tenant (e.g. "/acme", or
+  // "/acme/sub"). Caller must be at-or-above it. The leaf segment becomes the
+  // tenant's SPIFFE segment.
+  string      tenant_namespace = 1 [(spec.assert_required) = true, (spec.assert_min_size) = 1, (spec.assert_max_size) = 256];
+  Constraints constraints      = 2;
+}
+
+message DeleteTenantRequest  { string tenant_namespace = 1 [(spec.assert_required) = true]; }
+message DeleteTenantResponse {}
+
+// ListTenantsRequest lists the immediate child tenants of parent_namespace
+// ("/" for top-level tenants). page_token is the opaque cursor returned by the
+// previous response; empty starts at the first page. page_size 0 uses the
+// method_collection default.
+message ListTenantsRequest {
+  string parent_namespace = 1 [(spec.assert_required) = true];
+  int32  page_size        = 2;
+  string page_token       = 3;
+}
+message ListTenantsResponse {
+  repeated Tenant tenants        = 1 [(spec.assert_max_size) = 4096];
+  string          next_page_token = 2;
+  int64           total_count     = 3;
+}
+
+message GetTenantConfigRequest {
+  string tenant_namespace = 1 [(spec.assert_required) = true];
+}
+message SetTenantConfigRequest {
+  string                     tenant_namespace = 1 [(spec.assert_required) = true];
+  tenant_config.TenantConfig config           = 2 [(spec.assert_required) = true];
+}
+
+message GetProjectConfigRequest { string project_namespace = 1 [(spec.assert_required) = true]; }
+message SetProjectConfigRequest {
+  string        project_namespace = 1 [(spec.assert_required) = true];
+  ProjectConfig config            = 2 [(spec.assert_required) = true];
+}
+
+message ProjectNamespace {
+  string project_namespace = 1 [(spec.assert_required) = true];
+}
+
+message ListProjectsRequest {
+  string tenant_namespace = 1 [(spec.assert_required) = true];
+  int32  page_size        = 2;
+  string page_token       = 3;
+}
+message ListProjectsResponse {
+  repeated ProjectNamespace project_namespaces = 1 [(spec.assert_max_size) = 4096];
+  string                    next_page_token    = 2;
+  int64                     total_count        = 3;
+}
+
+message DeleteProjectRequest  { string project_namespace = 1 [(spec.assert_required) = true]; }
+message DeleteProjectResponse {}

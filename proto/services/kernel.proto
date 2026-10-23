@@ -18,7 +18,6 @@ import "sys/tokenrequest.proto";
 import "common/hazelcast.proto";
 import "common/credentials.proto";
 import "sys/healthreport.proto";
-import "sys/servicehealth.proto";
 import "sys/minter.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/empty.proto";
@@ -1135,8 +1134,9 @@ message AdminConfigDump {
 // ============================================================================
 //
 // ServiceHealth is part of the sys contract: tacplus declares it in
-// sys/servicehealth.proto (routing label "kernel"); kernel hosts it but does
-// not declare it. Every service reports into it through its generated
+// sys/servicehealth.proto with routing label "kernel", so kernel hosts it
+// without declaring or importing it (a state-root proto may not import
+// another). Every service reports into it through its generated
 // ServiceManager without importing this file.
 
 // ============================================================================

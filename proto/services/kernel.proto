@@ -19,6 +19,7 @@ import "common/hazelcast.proto";
 import "common/credentials.proto";
 import "sys/healthreport.proto";
 import "sys/servicehealth.proto";
+import "sys/minter.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
@@ -408,9 +409,12 @@ message TrustedCa {
 // ES256 for WIF assertion verification (Anthropic WIF rejects EdDSA).
 service Mint {
   option (spec.service_s2s) = {};
-  // Authoritative S2S token minter — bootstrap codegen targets this. Kernel is
-  // the cluster's sole JWT token authority (and cert authority, below).
-  option (spec.token_minter) = {};
+  // The minting contract (MintServiceToken, MintExternalServiceToken, MintToken,
+  // MintX509Cert) is the sys contract tacplus declares in sys/minter.proto,
+  // hosted at routing label "kernel"; kernel implements minter.Minter and no
+  // longer declares those RPCs or (spec.token_minter) here. What remains below
+  // is kernel's own policy: user, delegated, client and workload tokens,
+  // principals, links and approvals.
   // Kernel is also the SMB CA authority (SPIFFE plan D7): it mints the isolated
   // per-SMB CA + member certs for spec.smb services via SmbCertService
   // (implemented by SmbCertServiceImpl). Designation only — like token_minter,
@@ -422,27 +426,7 @@ service Mint {
   // the instance-side member-cert seam (Handler.newSmbCert).
   option (spec.smb) = {};
 
-  // MintServiceToken — self-mint. An internal service exchanges its Kubernetes
-  // token / cloud proof (bootstrap) or a kernel-signed refresh/access token for a
-  // token bearing its OWN identity (sub = caller SPIFFE). Never calls OPA;
-  // S2S tokens are identity-only. Signs Ed25519.
-  // auth_disabled: the caller authenticates via credentials in the request body
-  // (kubernetes_token / cloud_proof / kernel-signed input_token), not a bearer header.
-  rpc MintServiceToken(tokenrequest.MintServiceTokenRequest) returns (tokenrequest.TokenMintResponse) {
-    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, flags: [RPC_FLAG_SELF_AUTHENTICATES]};
-  }
 
-  // MintExternalServiceToken — a service's OWN identity for an off-cluster
-  // audience (WIF jwt-bearer assertion, e.g. aud = https://api.anthropic.com).
-  // The caller presents its kernel-signed service token in input_token; kernel
-  // verifies it, takes sub from it (never from the request), checks aud against
-  // the caller Delegate's external-audience allowlist, and mints a NEW token on
-  // every call. Never calls OPA. Signs ES256 (WIF rejects EdDSA).
-  // auth_disabled: the credential is input_token in the body, as MintServiceToken.
-  rpc MintExternalServiceToken(tokenrequest.MintExternalServiceTokenRequest)
-      returns (tokenrequest.TokenMintResponse) {
-    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, flags: [RPC_FLAG_SELF_AUTHENTICATES]};
-  }
 
   // MintUserToken — on-behalf-of (AZP). A broker presents the user's
   // already-IDP-validated claims; kernel runs OPA EvalEntitlement on them, then
@@ -498,16 +482,6 @@ service Mint {
     option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
   }
 
-  // MintToken — exchange (RT→AT→ST). The caller presents a kernel-signed token;
-  // kernel VERIFIES it and mints the next tier per the 3-tier rules (a refresh
-  // can't directly mint a service token, etc.). service_auds mints AT + N ST in
-  // one call. azp is preserved from the presented token onto every issued
-  // token. Signs Ed25519. This IS the real exchange (replaces the former
-  // standalone TokenExchange service).
-  // auth_disabled: the token to exchange is carried in the request body.
-  rpc MintToken(tokenrequest.TokenMintRequest) returns (tokenrequest.TokenMintResponse) {
-    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, flags: [RPC_FLAG_SELF_AUTHENTICATES]};
-  }
 
   // MintExternalToken — WIF. A proxy presents the user token plus opaque routing
   // metadata; kernel runs OPA EvalProxyPolicy, then mints an external token
@@ -637,25 +611,6 @@ service Mint {
   // signing chain), NOT the JWT signing keys.
   // --------------------------------------------------------------------------
 
-  // MintX509Cert signs an X.509 certificate under a per-service intermediate CA.
-  // Authentication via bearer token in the Authorization header or input_token
-  // in the request body (for gateway-mediated calls). auth_disabled: handler
-  // validates authentication internally — accepts both bearer tokens and
-  // request body credentials.
-  //
-  // On each call, kernel:
-  //   1. Extracts the service SPIFFE identity from the token's sub claim.
-  //   2. Gets or creates an intermediate CA for that identity
-  //      (signed by root CA, pathlen:0).
-  //   3. Signs the caller-provided public key (cert_request.key) under the
-  //      intermediate CA, with the SPIFFE URI as a URI SAN.
-  //   4. Returns X509CertChain: leaf cert + intermediate CA cert in chain.
-  //
-  // The intermediate CA is unique per service, providing per-service trust
-  // isolation — only nodes of the same service verify each other.
-  rpc MintX509Cert(tokenrequest.X509MintRequest) returns (x509.X509CertChain) {
-    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, flags: [RPC_FLAG_SELF_AUTHENTICATES]};
-  }
 
   // MintWorkload mints a child workload identity. Caller must be authenticated
   // (bearer token). The child's SPIFFE ID is the caller's SPIFFE ID + "/" +

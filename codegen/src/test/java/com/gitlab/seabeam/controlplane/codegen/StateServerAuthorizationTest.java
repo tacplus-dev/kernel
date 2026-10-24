@@ -145,6 +145,25 @@ class StateServerAuthorizationTest {
 				"every service reads the shared config singleton to boot");
 	}
 
+	/**
+	 * ServiceHealth moved from kernel.proto to the sys contract
+	 * (sys/servicehealth.proto); every service writes its own instances and
+	 * reads the whole root, as before.
+	 */
+	@Test
+	void infraStatePoliciesSuppliesServiceHealth() {
+		AccessPolicy policy = InfraStatePolicies.merge(List.of()).stream()
+				.filter(p -> "servicehealth.ServiceHealth".equals(p.graphKey()))
+				.findFirst()
+				.orElseThrow(() -> new AssertionError(
+						"servicehealth.ServiceHealth has no computed policy and none declared"));
+
+		assertEquals(List.of("*"), policy.rw(),
+				"every service reports its own instance health (instance-keyed writes)");
+		assertEquals(List.of("*"), policy.ro(),
+				"every service may read fleet health");
+	}
+
 	/** A computed policy always wins over the declared infra fallback. */
 	@Test
 	void aComputedPolicyIsNotOverriddenByInfraStatePolicies() {

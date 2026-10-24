@@ -43,12 +43,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  */
 class SelfAuthenticatingRpcSkipTest {
 
-	/** kernel.Mint RPCs flagged RPC_FLAG_SELF_AUTHENTICATES — they authenticate from the body. */
+	/**
+	 * RPCs flagged RPC_FLAG_SELF_AUTHENTICATES — they authenticate from the body.
+	 * The minting contract's four live on minter.Minter (tacplus's sys/minter.proto,
+	 * hosted by kernel); kernel's own policy RPCs stay on kernel.Mint.
+	 */
 	private static final String[] SELF_AUTHENTICATING = {
-		"kernel.Mint/MintToken",
-		"kernel.Mint/MintServiceToken",
+		"minter.Minter/MintToken",
+		"minter.Minter/MintServiceToken",
+		"minter.Minter/MintX509Cert",
 		"kernel.Mint/MintClientToken",
-		"kernel.Mint/MintX509Cert",
 		"kernel.Mint/CreatePersonalPrincipal",
 	};
 

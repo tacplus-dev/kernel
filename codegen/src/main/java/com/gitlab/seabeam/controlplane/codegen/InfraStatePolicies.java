@@ -43,7 +43,17 @@ final class InfraStatePolicies {
 			List.of("service:kernel"), List.of("*"), List.of(),
 			Map.of(), false, false);
 
-	private static final List<AccessPolicy> POLICIES = List.of(SERVICE_CONFIG_STATE);
+	// ServiceHealth is the sys contract's health root (sys/servicehealth.proto,
+	// routing label kernel): every service writes its own instances into it
+	// (the generated server keys writes by the caller's instance, so one
+	// service cannot write another's entry) and every service may read it.
+	// It used to be kernel.ServiceHealth, declared in kernel.proto, where
+	// tacplus computed this same policy; as a sys root it is declared here.
+	private static final AccessPolicy SERVICE_HEALTH = new AccessPolicy(
+			"ServiceHealth", "servicehealth",
+			List.of("*"), List.of("*"), List.of(),
+			Map.of(), false, false);
+	private static final List<AccessPolicy> POLICIES = List.of(SERVICE_CONFIG_STATE, SERVICE_HEALTH);
 
 	private InfraStatePolicies() {
 	}

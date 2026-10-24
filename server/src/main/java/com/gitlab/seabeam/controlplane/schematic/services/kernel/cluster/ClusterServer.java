@@ -49,6 +49,7 @@ import io.grpc.protobuf.services.HealthStatusManager;
 import io.grpc.stub.ServerCalls;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.chassis.servicemanager.Auth;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.Mint;
+import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.sys.minter.Minter;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.fencedlock.RatisFencedLock;
 import org.apache.ratis.protocol.RaftGroup;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.FencedLock;
@@ -94,7 +95,10 @@ public class ClusterServer {
 	private static final Metadata.Key<String> AUTH_HEADER_KEY =
 			Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
 	private static final String MINT_SERVICE_NAME = "kernel.Mint";
-	private static final String MINT_X509_CERT_METHOD_NAME = MINT_SERVICE_NAME + "/MintX509Cert";
+	// The minting contract (MintServiceToken, MintExternalServiceToken, MintToken,
+	// MintX509Cert) is tacplus's sys/minter.proto, hosted here at label kernel.
+	private static final String MINTER_SERVICE_NAME = "minter.Minter";
+	private static final String MINT_X509_CERT_METHOD_NAME = MINTER_SERVICE_NAME + "/MintX509Cert";
 	private static final MethodDescriptor<Tokenrequest.X509MintRequest, X509.X509CertChain> MINT_X509_CERT_METHOD =
 			MethodDescriptor.<Tokenrequest.X509MintRequest, X509.X509CertChain>newBuilder()
 					.setType(MethodDescriptor.MethodType.UNARY)
@@ -744,7 +748,7 @@ public class ClusterServer {
 			var opaConn = new com.gitlab.seabeam.controlplane.schematic.services.kernel.model.chassis.serviceconnection.ServiceConnection("opa", s2sChannelFactory);
 
 			// Feed ServiceHealthState into the OPA ServiceConnection.
-			var healthMap = backendServers.services().getServiceHealthMap();
+			var healthMap = backendServers.sys().getServiceHealthMap(); // the health root is the sys contract's now
 			final String selfGrpcHost = (hostname != null && !hostname.isEmpty()
 					&& !hostname.equals("0.0.0.0")) ? hostname : "kernel-0";
 			Thread healthPoller = new Thread(() -> {
@@ -858,7 +862,11 @@ public class ClusterServer {
 					webauthnRelyingParty());
 			identityService.setPeopleSignupsPaused(configOverrides::peopleSignupsPaused);
 
-			Mint mintWrapper = new Mint(identityService, kernelAuthorizer) {
+			Mint mintWrapper = new Mint(identityService, kernelAuthorizer);
+			// minter.Minter: the sys minting contract every service's generated
+			// ServiceManager calls; kernel hosts it (routing label kernel). The
+			// same IdentityServiceImpl implements it.
+			Minter minterWrapper = new Minter(identityService, kernelAuthorizer) {
 				@Override
 				public void mintX509Cert(Tokenrequest.X509MintRequest request,
 						io.grpc.stub.StreamObserver<X509.X509CertChain> responseObserver) {
@@ -880,16 +888,20 @@ public class ClusterServer {
 					}
 				}
 			};
-			ServerServiceDefinition mintServiceDefinition =
-					ensureMintX509CertBinding(mintWrapper.bindService(), identityService);
+			ServerServiceDefinition mintServiceDefinition = mintWrapper.bindService();
 			serverBuilder.addService(mintServiceDefinition);
-			// The rate limiter was built before this service existed, so its
-			// classification map has no entry for the Mint methods — and an
+			ServerServiceDefinition minterServiceDefinition =
+					ensureMintX509CertBinding(minterWrapper.bindService(), identityService);
+			serverBuilder.addService(minterServiceDefinition);
+			// The rate limiter was built before these services existed, so its
+			// classification map has no entry for their methods — and an
 			// unclassified method is exempt. Register them now so credential
 			// issuance is bounded per caller.
-			rateLimiter.registerServices(List.of(mintServiceDefinition));
+			rateLimiter.registerServices(List.of(mintServiceDefinition, minterServiceDefinition));
 			logger.info("MintService registered on gRPC server ({} delegates, methods={})",
 					delegates.size(), methodNames(mintServiceDefinition));
+			logger.info("minter.Minter (sys minting contract) registered on gRPC server (methods={})",
+					methodNames(minterServiceDefinition));
 
 			// UserMint — the same IdentityServiceImpl, seen from the client side.
 			// MintDelegateOfflineToken's caller is a PERSON holding their own

@@ -3,10 +3,11 @@ package com.gitlab.seabeam.controlplane.schematic.services.kernel.authz;
 
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.cluster.SpiffeIds;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
-import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.kernel.ServiceHealthStateServiceGrpc;
+import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.servicehealth.ServiceHealthStateServiceGrpc;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.healthreport.Healthreport;
+import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.servicehealth.Servicehealth;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.trace.Trace;
-import com.gitlab.seabeam.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.ServiceHealthStateServiceServer;
+import com.gitlab.seabeam.controlplane.schematic.services.kernel.tacplusbackend.sys.servicehealth.ServiceHealthStateServiceServer;
 import io.grpc.ServerInterceptors;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -77,12 +78,12 @@ class FleetWideDiscoveryTest extends StateChrootTestBase {
 	}
 
 	private static Set<String> getAll(ServiceHealthStateServiceGrpc.ServiceHealthStateServiceBlockingStub stub) {
-		return stub.getAllInstances(Kernel.InstancesGetAllRequest.getDefaultInstance()).getEntriesMap().keySet();
+		return stub.getAllInstances(Servicehealth.InstancesGetAllRequest.getDefaultInstance()).getEntriesMap().keySet();
 	}
 
-	private static Kernel.InstancesValueResponse get(
+	private static Servicehealth.InstancesValueResponse get(
 			ServiceHealthStateServiceGrpc.ServiceHealthStateServiceBlockingStub stub, String key) {
-		return stub.getInstances(Kernel.InstancesGetRequest.newBuilder().setKey(key).build());
+		return stub.getInstances(Servicehealth.InstancesGetRequest.newBuilder().setKey(key).build());
 	}
 
 	@Test
@@ -91,7 +92,7 @@ class FleetWideDiscoveryTest extends StateChrootTestBase {
 		assertEquals(Set.of("eventbus@eb-1", "blobstore@bs-1", "docmanager@dm-y"), getAll(tenantY));
 
 		// The payload is what the chassis matches on: service_id, untouched.
-		Kernel.InstancesEntriesResponse all = tenantX.getAllInstances(Kernel.InstancesGetAllRequest.getDefaultInstance());
+		Servicehealth.InstancesEntriesResponse all = tenantX.getAllInstances(Servicehealth.InstancesGetAllRequest.getDefaultInstance());
 		assertEquals("eventbus", all.getEntriesMap().get("eventbus@eb-1").getServiceId());
 		assertEquals("blobstore", all.getEntriesMap().get("blobstore@bs-1").getServiceId());
 		assertEquals("dm-x", all.getEntriesMap().get("docmanager@dm-x").getInstanceId());
@@ -100,7 +101,7 @@ class FleetWideDiscoveryTest extends StateChrootTestBase {
 	@Test
 	void tenantWatchStreamsSystemInstancesAndItsOwnButNeverAnotherTenants() {
 		// The deadline turns a stream that never delivers into a failure, not a hang.
-		Iterator<Kernel.InstancesEntriesResponse> xStream = tenantX.withDeadlineAfter(10, TimeUnit.SECONDS)
+		Iterator<Servicehealth.InstancesEntriesResponse> xStream = tenantX.withDeadlineAfter(10, TimeUnit.SECONDS)
 				.watchInstances(Trace.TraceRequest.getDefaultInstance());
 
 		assertEquals(Set.of("eventbus@eb-1", "blobstore@bs-1", "docmanager@dm-x"),
@@ -124,10 +125,10 @@ class FleetWideDiscoveryTest extends StateChrootTestBase {
 		assertFalse(get(tenantX, "/tenants/y/docmanager@dm-y").getFound());
 
 		assertTrue(tenantX.containsKeyInstances(
-				Kernel.InstancesGetRequest.newBuilder().setKey("blobstore@bs-1").build()).getFound());
+				Servicehealth.InstancesGetRequest.newBuilder().setKey("blobstore@bs-1").build()).getFound());
 		assertEquals(Set.of("eventbus@eb-1", "blobstore@bs-1", "docmanager@dm-x"), Set.copyOf(
-				tenantX.keySetInstances(Kernel.InstancesKeysRequest.getDefaultInstance()).getKeysList()));
-		assertEquals(3, tenantX.sizeInstances(Kernel.InstancesSizeRequest.getDefaultInstance()).getSize());
+				tenantX.keySetInstances(Servicehealth.InstancesKeysRequest.getDefaultInstance()).getKeysList()));
+		assertEquals(3, tenantX.sizeInstances(Servicehealth.InstancesSizeRequest.getDefaultInstance()).getSize());
 	}
 
 	@Test

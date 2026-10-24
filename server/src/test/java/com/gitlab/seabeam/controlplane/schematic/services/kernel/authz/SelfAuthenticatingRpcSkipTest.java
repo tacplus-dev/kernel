@@ -53,13 +53,18 @@ class SelfAuthenticatingRpcSkipTest {
 		"minter.Minter/MintServiceToken",
 		"minter.Minter/MintX509Cert",
 		"kernel.Mint/MintClientToken",
-		"kernel.Mint/CreatePersonalPrincipal",
 	};
 
-	/** kernel.Mint RPCs carrying no exemption flag — the interceptor must still enforce. */
+	/**
+	 * kernel.Mint RPCs carrying no exemption flag — the interceptor must still enforce.
+	 * CreatePersonalPrincipal proves the registering key inside the handler but is
+	 * declared {@code auth_services: ["*"]} with no RPC_FLAG_SELF_AUTHENTICATES, so the
+	 * calling service's bearer is still required at the interceptor.
+	 */
 	private static final String[] ENFORCED = {
 		"kernel.Mint/MintUserToken",
 		"kernel.Mint/MintExternalToken",
+		"kernel.Mint/CreatePersonalPrincipal",
 	};
 
 	private static final MethodDescriptor.Marshaller<String> STRINGS =
@@ -87,21 +92,22 @@ class SelfAuthenticatingRpcSkipTest {
 	void setUp() throws Exception {
 		SecurityAuthenticator authenticator = new SecurityAuthenticator();
 
-		// Every method here lives on the one service kernel.Mint, so they must be
-		// registered as a single ServerServiceDefinition — one per method would
-		// leave only the last registration bound.
-		ServerServiceDefinition.Builder mint = ServerServiceDefinition.builder("kernel.Mint");
-		for (String fullName : SELF_AUTHENTICATING) {
-			addEchoMethod(mint, fullName);
+		// Methods are grouped by the service they live on (kernel.Mint, and the
+		// sys minting contract minter.Minter), one ServerServiceDefinition per
+		// service — one per method would leave only the last registration bound.
+		Map<String, ServerServiceDefinition.Builder> byService = new LinkedHashMap<>();
+		for (String[] group : new String[][] {SELF_AUTHENTICATING, ENFORCED}) {
+			for (String fullName : group) {
+				String service = fullName.substring(0, fullName.indexOf('/'));
+				addEchoMethod(byService.computeIfAbsent(service, ServerServiceDefinition::builder), fullName);
+			}
 		}
-		for (String fullName : ENFORCED) {
-			addEchoMethod(mint, fullName);
+		ServerBuilder<?> builder = ServerBuilder.forPort(0);
+		for (ServerServiceDefinition.Builder svc : byService.values()) {
+			builder.addService(ServerInterceptors.interceptForward(
+					svc.build(), authenticator.callerInterceptor()));
 		}
-		server = ServerBuilder.forPort(0)
-				.addService(ServerInterceptors.interceptForward(
-						mint.build(), authenticator.callerInterceptor()))
-				.build()
-				.start();
+		server = builder.build().start();
 		channel = ManagedChannelBuilder.forAddress("localhost", server.getPort())
 				.usePlaintext()
 				.build();

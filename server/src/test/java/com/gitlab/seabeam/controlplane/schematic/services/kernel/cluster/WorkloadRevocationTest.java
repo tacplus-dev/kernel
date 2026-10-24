@@ -7,6 +7,8 @@ import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.chassis.k
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.chassis.spiffe.Spiffe;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.chassis.token.TokenWrapper;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.services.kernel.Mint;
+import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.s2sm.internal.grpc.servers.sys.minter.Minter;
+import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.minter.MinterGrpc;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.kernel.MintGrpc;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.jwk.JwkOuterClass;
@@ -140,6 +142,10 @@ class WorkloadRevocationTest {
 						new Mint(identityService, authorizer),
 						Authorizer.headerCaptureInterceptor(),
 						rawAuthInterceptor()))
+				.addService(ServerInterceptors.interceptForward(
+						new Minter(identityService, authorizer),
+						Authorizer.headerCaptureInterceptor(),
+						rawAuthInterceptor()))
 				.build()
 				.start();
 		channel = ManagedChannelBuilder.forAddress("localhost", server.getPort())
@@ -182,6 +188,11 @@ class WorkloadRevocationTest {
 		return MintGrpc.newBlockingStub(channel);
 	}
 
+	/** The sys minting contract (MintToken, MintX509Cert, ...), hosted by kernel. */
+	private MinterGrpc.MinterBlockingStub minterStub() {
+		return MinterGrpc.newBlockingStub(channel);
+	}
+
 	/** Stub presenting the parent service's kernel-signed S2S token. */
 	private MintGrpc.MintBlockingStub parentStub() {
 		Metadata headers = new Metadata();
@@ -213,13 +224,13 @@ class WorkloadRevocationTest {
 		Tokenrequest.WorkloadMintResponse minted = parentStub().mintWorkload(
 				Tokenrequest.WorkloadMintRequest.newBuilder().setWorkloadName(name).build());
 		String bootstrap = TokenWrapper.from(minted.getBootstrapToken()).getBase64();
-		return stub().mintToken(
+		return minterStub().mintToken(
 				Tokenrequest.TokenMintRequest.newBuilder().setInputToken(bootstrap).build());
 	}
 
 	/** Exchanges a refresh token for a fresh access token — the F8 refresh path. */
 	private Tokenrequest.TokenMintResponse refresh(Tokenrequest.TokenMintResponse pair) {
-		return stub().mintToken(Tokenrequest.TokenMintRequest.newBuilder()
+		return minterStub().mintToken(Tokenrequest.TokenMintRequest.newBuilder()
 				.setInputToken(TokenWrapper.from(pair.getRefreshToken()).getBase64())
 				.build());
 	}

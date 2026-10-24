@@ -76,6 +76,23 @@ class StateServerAuthorizationTest {
 	}
 
 	/**
+	 * A service's typed Config root (<Svc>ConfigState) reads through to the
+	 * system entry: the bundle installs the fleet's config there, and a
+	 * tenant-owned instance of the service is a confined caller with no entry of
+	 * its own until a tenant-level config is written. Without this every
+	 * per-tenant instance started on an empty config.
+	 */
+	@Test
+	void aServiceConfigRootReadsTheFleetEntryAsItsDefault(@TempDir Path tmp) throws IOException {
+		String proto = PROTO.replace("FixtureState", "FixturesConfigState");
+		AccessPolicy ownOnly = new AccessPolicy("FixturesConfigState", "fixtures",
+				List.of("service:fixtures"), List.of("service:fixtures"), List.of(), Map.of(), false, false);
+		assertTrue(generateStateServer(tmp, List.of(ownOnly), proto, "FixturesConfigState")
+				.contains("private static final boolean FLEET_WIDE_READ = true;"),
+				"a per-service config root must read the fleet's entry when the tenant has none");
+	}
+
+	/**
 	 * A root whose policy grants every service is fleet-wide: tenant callers read
 	 * its system entries. Any root that names its callers stays a plain chroot.
 	 */
@@ -112,7 +129,7 @@ class StateServerAuthorizationTest {
 				"the failure must name the state root that has no policy: " + e.getMessage());
 		assertFalse(e.getMessage().contains("WARNING"),
 				"this must be a hard failure, not a warning: " + e.getMessage());
-		assertFalse(Files.exists(generatedFile(tmp)),
+		assertFalse(Files.exists(generatedFile(tmp, "FixtureState")),
 				"no state server may be written when its policy is missing");
 	}
 
@@ -181,7 +198,11 @@ class StateServerAuthorizationTest {
 
 	/** Runs discovery, boundary analysis and generation exactly as BackendServerMojo does. */
 	private static String generateStateServer(Path tmp, List<AccessPolicy> policies) throws IOException {
-		Path protoDir = layout(tmp);
+		return generateStateServer(tmp, policies, PROTO, "FixtureState");
+	}
+
+	private static String generateStateServer(Path tmp, List<AccessPolicy> policies, String proto, String stateName) throws IOException {
+		Path protoDir = layout(tmp, proto);
 
 		ProtoDescriptorParser parser = new ProtoDescriptorParser(protoDir);
 		parser.parseAll();
@@ -196,18 +217,18 @@ class StateServerAuthorizationTest {
 				"com.example.graphs", "", tmp.resolve("out"), protoDir, parser, policies, "Copyright test");
 		BackendServiceServerGenerator.generate(svc, info, ctx);
 
-		return Files.readString(generatedFile(tmp));
+		return Files.readString(generatedFile(tmp, stateName));
 	}
 
-	private static Path generatedFile(Path tmp) {
+	private static Path generatedFile(Path tmp, String stateName) {
 		return tmp.resolve("out/src/main/java/com/example/backend/services/fixtures/"
-				+ "FixtureStateStateServiceServer.java");
+				+ stateName + "StateServiceServer.java");
 	}
 
-	private static Path layout(Path tmp) throws IOException {
+	private static Path layout(Path tmp, String proto) throws IOException {
 		Path protoDir = tmp.resolve("proto-annotated");
 		Files.createDirectories(protoDir.resolve("services"));
-		Files.writeString(protoDir.resolve("services/fixtures.proto"), PROTO);
+		Files.writeString(protoDir.resolve("services/fixtures.proto"), proto);
 		Files.writeString(tmp.resolve("registry.json"), "{\"name\": \"root\", \"children\": []}");
 		return protoDir;
 	}

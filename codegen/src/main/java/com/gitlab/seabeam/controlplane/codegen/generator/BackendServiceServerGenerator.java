@@ -561,6 +561,9 @@ public class BackendServiceServerGenerator {
 	 * its system entries, not an empty chroot.
 	 */
 	private static boolean fleetWideRead(BackendServiceInfo svc, GeneratorContext ctx) {
+		if (isServiceConfigRoot(svc)) {
+			return true;
+		}
 		String key = graphKey(svc, ctx);
 		for (AccessPolicy policy : ctx.getSecurityPolicies()) {
 			if (key.equals(policy.graphKey())) {
@@ -568,6 +571,19 @@ public class BackendServiceServerGenerator {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Whether a state root is a service's typed Config ({@code <Svc>ConfigState},
+	 * the root tacplus appends per gRPC service and the bundle installs at system
+	 * scope). A tenant-owned instance of that service is a confined caller, and
+	 * its tenant has no entry until a tenant-level config is written, so it reads
+	 * the fleet's entry as its default; a tenant entry, once written, is what it
+	 * reads instead. Writes stay chrooted, so a tenant can only ever override its
+	 * own.
+	 */
+	private static boolean isServiceConfigRoot(BackendServiceInfo svc) {
+		return svc.getStateName().endsWith("ConfigState");
 	}
 
 	private static boolean grantsEveryService(List<String> subjects) {

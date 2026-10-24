@@ -41,9 +41,11 @@ public class {{CLASS_NAME}}
     /** Policy key for this state root: "<proto package>.<state root>". */
     private static final String GRAPH = "{{GRAPH}}";
     /**
-     * Whether this root is fleet-wide: its policy grants every service, so a
-     * confined caller's reads see the system entries as well as its own
-     * ({@link NamespaceScope#readsSystemEntry}). Writes stay chrooted either way.
+     * Whether a confined caller's reads see the system entries as well as its
+     * own ({@link NamespaceScope#readsSystemEntry}): a root whose policy grants
+     * every service (fleet-wide state), or a service's typed Config root, whose
+     * system entry is the default a tenant-owned instance runs on until a
+     * tenant-level entry is written. Writes stay chrooted either way.
      */
     private static final boolean FLEET_WIDE_READ = {{FLEET_WIDE_READ}};
 {{LEADER_CONSTANTS}}

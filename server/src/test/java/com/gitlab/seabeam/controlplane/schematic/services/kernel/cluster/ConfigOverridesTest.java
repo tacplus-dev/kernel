@@ -4,7 +4,6 @@ package com.gitlab.seabeam.controlplane.schematic.services.kernel.cluster;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.generated.services_config.ServicesConfig;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.llmproxy.Llmproxy;
-import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.mailbox.MailboxOuterClass;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.oauth.Oauth;
 
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -42,20 +41,18 @@ class ConfigOverridesTest {
 	private ch.qos.logback.classic.Logger logger;
 
 	/**
-	 * The bundle: oauth on with a session timeout, mailbox with gmail, llmproxy
-	 * with one blocked caller. Defaulted the way the operator defaults every entry,
+	 * The bundle: oauth on with a session timeout and one provider, llmproxy with
+	 * one blocked caller. Only services every fleet of ours runs: this test is
+	 * generated against whichever fleet kernel is built for. Defaulted the way the operator defaults every entry,
 	 * so it is a valid holder (the merge is validated).
 	 */
 	private static final Kernel.Config BUNDLE = Kernel.Config.newBuilder()
 			.setConfigs(ServicesConfig.Services.newBuilder()
 					.setOauthConfig(com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.oauth.Helpers
-							.configDefaults(Oauth.Config.newBuilder().setEnable(true).setSessionTimeoutSeconds(120).build()))
-					.setMailboxConfig(com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.mailbox.Helpers
-							.configDefaults(MailboxOuterClass.Config.newBuilder()
-									.setRetrievedGraceSeconds(60)
-									.setGmail(MailboxOuterClass.GmailConfig.newBuilder()
-											.setMailbox("hello@seabeam.test").setSendAs("tally@seabeam.test")
-											.setSendAsName("Tally").setWatchTopic("projects/p/topics/gmail"))
+							.configDefaults(Oauth.Config.newBuilder().setEnable(true).setSessionTimeoutSeconds(120)
+									.addProviders(Oauth.ProviderConfig.newBuilder().setEnable(true).setName("google")
+											.setIssuer("https://accounts.google.com").setClientId("cid")
+											.addAllowedRedirectUriPrefixes("https://console.example.test/"))
 									.build()))
 					.setLlmproxyConfig(com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.llmproxy.Helpers
 							.configDefaults(Llmproxy.Config.newBuilder().addBlockedCallers("spiffe://t/tenants/x").build())))
@@ -114,7 +111,7 @@ class ConfigOverridesTest {
 
 		assertFalse(boot.getOauthConfig().getEnable(), "false replaces the bundle's true");
 		assertEquals(120, boot.getOauthConfig().getSessionTimeoutSeconds(), "an unnamed field keeps the bundle's value");
-		assertEquals(BUNDLE.getConfigs().getMailboxConfig(), boot.getMailboxConfig());
+		assertEquals(BUNDLE.getConfigs().getLlmproxyConfig(), boot.getLlmproxyConfig());
 	}
 
 	/**
@@ -136,8 +133,7 @@ class ConfigOverridesTest {
 		ServicesConfig.Services stop = installs.get(0);
 		assertTrue(stop.hasOauthConfig());
 		assertFalse(stop.getOauthConfig().getEnable());
-		assertFalse(stop.hasMailboxConfig(), "a service no path names is not reinstalled");
-		assertFalse(stop.hasLlmproxyConfig());
+		assertFalse(stop.hasLlmproxyConfig(), "a service no path names is not reinstalled");
 		assertTrue(logged("APPLIED", "flipped_by=claude", "configs.oauth_config.enable"));
 
 		write(by("jody").build());
@@ -161,18 +157,18 @@ class ConfigOverridesTest {
 		assertTrue(installs.isEmpty());
 	}
 
-	/** The email switch: an unset message field clears the bundle's gmail block. */
+	/** The provider switch: an unset message field clears the bundle's providers. */
 	@Test
 	void anUnsetMessageFieldClearsTheBundles() throws Exception {
 		ConfigOverrides o = overrides();
 		o.bootConfigs();
 
-		write(by("jody").addPaths("configs.mailbox_config.gmail").build());
+		write(by("jody").addPaths("configs.oauth_config.providers").build());
 		o.poll();
 
-		MailboxOuterClass.Config mailbox = installs.get(0).getMailboxConfig();
-		assertFalse(mailbox.hasGmail());
-		assertEquals(60, mailbox.getRetrievedGraceSeconds());
+		Oauth.Config oauth = installs.get(0).getOauthConfig();
+		assertEquals(0, oauth.getProvidersCount());
+		assertEquals(120, oauth.getSessionTimeoutSeconds());
 	}
 
 	/** The LLM switch: a repeated field replaces the bundle's list rather than appending to it. */
@@ -209,9 +205,9 @@ class ConfigOverridesTest {
 	}
 
 	/**
-	 * The file killswitch.sh writes with all three switches stopped, byte for
-	 * byte (captured from its own test stub): proto field names, a numeric
-	 * int64. The script and the parser must agree on this shape.
+	 * The shape a killswitch script writes with all three switches stopped:
+	 * proto field names, a numeric int64. A script and the parser must agree on
+	 * this shape; the service paths are this fleet's (oauth, llmproxy).
 	 */
 	@Test
 	void theFileKillswitchWritesIsAccepted() throws Exception {
@@ -220,15 +216,15 @@ class ConfigOverridesTest {
 
 		Files.writeString(file, "{\"configs\":{\"llmproxy_config\":{\"blocked_callers\":[\"spiffe://\"]}},"
 				+ "\"paths\":[\"configs.llmproxy_config.blocked_callers\",\"people_signups_paused\","
-				+ "\"configs.mailbox_config.gmail\"],\"flipped_by\":\"jody\",\"reason\":\"kernel parse fixture\","
+				+ "\"configs.oauth_config.providers\"],\"flipped_by\":\"jody\",\"reason\":\"kernel parse fixture\","
 				+ "\"flipped_at_ms\":1792178663000,\"people_signups_paused\":true}");
 		o.poll();
 
 		assertTrue(o.peopleSignupsPaused());
 		ServicesConfig.Services installed = installs.get(0);
 		assertEquals(List.of("spiffe://"), installed.getLlmproxyConfig().getBlockedCallersList());
-		assertFalse(installed.getMailboxConfig().hasGmail());
-		assertFalse(installed.hasOauthConfig());
+		assertEquals(0, installed.getOauthConfig().getProvidersCount());
+		assertEquals(120, installed.getOauthConfig().getSessionTimeoutSeconds(), "an unnamed field keeps the bundle's value");
 		assertTrue(logged("APPLIED", "flipped_by=jody", "flipped_at_ms=1792178663000"));
 	}
 

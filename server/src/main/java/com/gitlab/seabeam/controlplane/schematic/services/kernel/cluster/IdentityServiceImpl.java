@@ -4997,6 +4997,10 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		TokenWrapper token = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
 				.setSubject("cred-pair:" + credPairId)
+				// The caller identity the authenticators read (principal, falling back
+				// to service_name): a cred_pair token is the pair, not a person or a
+				// service, and without this every authenticated RPC refuses it.
+				.setPrincipal("cred-pair:" + credPairId)
 				.setAudience(Kernel.getDescriptor().getPackage())
 				.setIssuedAt(now)
 				.setExpiration(exp)

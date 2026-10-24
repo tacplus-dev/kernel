@@ -26,10 +26,10 @@ COPY --from=setup --chown=65532:65532 /app/data /app/data
 COPY server/target/kernel.jar /app/kernel.jar
 
 ARG TARGETARCH
-COPY launcher-linux-${TARGETARCH} /usr/local/bin/kernel
+COPY launcher-linux-${TARGETARCH} /usr/local/bin/launcher
 
 USER nonroot
 
 ENV LAUNCH_CMD="java -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:InitiatingHeapOccupancyPercent=45 -XX:+UseStringDeduplication -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:MinRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/kernel-heapdump.hprof -Djava.net.preferIPv4Stack=true -Dio.netty.recycler.maxCapacityPerThread=0 -jar /app/kernel.jar"
 
-ENTRYPOINT ["kernel"]
+ENTRYPOINT ["launcher"]

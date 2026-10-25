@@ -9,3 +9,4 @@ depends:
 header: |
   Copyright (c) 2026 Jody Scott
   SPDX-License-Identifier: Apache-2.0
+states: all

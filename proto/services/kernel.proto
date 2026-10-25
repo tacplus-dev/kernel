@@ -949,6 +949,12 @@ message Delegate {
   // via Mint.MintExternalServiceToken. Exact match. EMPTY — the default —
   // means the delegate may mint no external service token.
   repeated string external_audiences = 9 [(spec.assert_max_size) = 8];
+
+  // workload_broker lets this delegate mint workloads rooted under ANOTHER
+  // service (WorkloadMintRequest.parent_spiffe_id) and revoke them: the
+  // coop, which runs pigeons for the dogs that ask, so each pigeon is its
+  // dog's tenant's by construction. Nothing else should carry it.
+  bool workload_broker = 10;
 }
 
 // ============================================================================

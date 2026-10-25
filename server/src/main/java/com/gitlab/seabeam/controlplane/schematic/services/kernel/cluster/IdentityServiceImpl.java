@@ -4090,8 +4090,25 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			throw new StatusException(Status.INVALID_ARGUMENT, "workload_name must match [a-zA-Z0-9_-]+");
 		}
 
+		// The parent is the caller, unless the caller is a workload broker (the
+		// coop) naming the service the child is minted for (the dog), so the
+		// child is that service's — and that tenant's — by construction.
+		String parentSub = callerSub;
+		String requestedParent = request.getParentSpiffeId();
+		if (requestedParent != null && !requestedParent.isEmpty()) {
+			Kernel.Delegate callerDelegate = findDelegateBySubject(callerSub);
+			if (callerDelegate == null || !callerDelegate.getWorkloadBroker()) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						callerSub + " is not a workload broker; it can mint workloads only under itself");
+			}
+			if (!SpiffeIds.isSpiffeUri(requestedParent) || requestedParent.contains("/workloads/")) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"parent_spiffe_id must be a service SPIFFE URI");
+			}
+			parentSub = requestedParent;
+		}
 		// Construct child SPIFFE URI via the generated self-describing helper.
-		String childSub = Spiffe.workloadSpiffeId(callerSub, workloadName);
+		String childSub = Spiffe.workloadSpiffeId(parentSub, workloadName);
 
 		// A revoked identity cannot be re-minted under the same SPIFFE ID, and the
 		// ancestor walk covers the caller too: a revoked parent can mint nothing.
@@ -4126,7 +4143,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				.setExpiration(bootstrapExp)
 				.setJTI(UUID.randomUUID().toString());
 
-		bootstrapToken.setCustomField(PARENT_SUB, callerSub);
+		bootstrapToken.setCustomField(PARENT_SUB, parentSub);
 		bootstrapToken.setCustomField(TERMINAL, request.getTerminal() ? "true" : "false");
 		bootstrapToken.setTokenUse(TOKEN_USE_BOOTSTRAP);
 		bootstrapToken.setSubType(SUB_TYPE_SERVICE);
@@ -4135,8 +4152,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		bootstrapToken.sign(signingKey);
 
-		logger.info("WorkloadMint: parent={}, child={}, terminal={}",
-				callerSub, childSub, request.getTerminal());
+		logger.info("WorkloadMint: parent={}, child={}, terminal={}, broker={}",
+				parentSub, childSub, request.getTerminal(), parentSub.equals(callerSub) ? "" : callerSub);
 
 		return Tokenrequest.WorkloadMintResponse.newBuilder()
 				.setBootstrapToken(bootstrapToken.getProto())
@@ -4254,8 +4271,14 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			throw new StatusException(Status.INVALID_ARGUMENT, "spiffe_id is required");
 		}
 		if (!targetSpiffeId.startsWith(callerSub + "/")) {
-			throw new StatusException(Status.PERMISSION_DENIED,
-					"cannot revoke " + targetSpiffeId + " — not a descendant of " + callerSub);
+			// A workload broker may revoke any workload: it minted pigeons under
+			// other services, which are not its descendants.
+			Kernel.Delegate callerDelegate = findDelegateBySubject(callerSub);
+			boolean broker = callerDelegate != null && callerDelegate.getWorkloadBroker();
+			if (!broker || !targetSpiffeId.contains("/workloads/")) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"cannot revoke " + targetSpiffeId + " — not a descendant of " + callerSub);
+			}
 		}
 
 		// Record the revocation. Keyed by SPIFFE ID, so re-revoking is idempotent.

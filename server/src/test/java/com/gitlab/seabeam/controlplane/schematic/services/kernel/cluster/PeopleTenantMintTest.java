@@ -274,9 +274,13 @@ class PeopleTenantMintTest {
 		TokenWrapper refresh = TokenWrapper.parse(resp.getRefreshToken().getBase64());
 		assertEquals(SpiffeIds.userSubject(TRUST_DOMAIN, person.getXid()), refresh.getSubject());
 		assertEquals("spiffe://" + TRUST_DOMAIN + "/users/" + person.getXid(), refresh.getSubject());
+		// The long-lived token is the session credential; the first access token
+		// is the people tenant's.
+		assertTrue(SessionCredential.isCredential(refresh));
 		assertEquals(PeopleTenant.NAMESPACE, refresh.getNamespace());
-		assertEquals(PeopleTenant.NAMESPACE,
-				TokenWrapper.parse(resp.getAccessToken().getBase64()).getNamespace());
+		TokenWrapper access = TokenWrapper.parse(resp.getAccessToken().getBase64());
+		assertEquals(refresh.getSubject(), access.getSubject());
+		assertEquals(PeopleTenant.NAMESPACE, access.getNamespace());
 
 		// And again: the repeat login finds the same person rather than a second one.
 		Tokenrequest.TokenMintResponse again = login(GOOGLE_ISSUER, GOOGLE_SUB, "");
@@ -315,7 +319,8 @@ class PeopleTenantMintTest {
 		Kernel.Person person = person("google", GOOGLE_SUB);
 		TokenWrapper refresh = TokenWrapper.parse(resp.getRefreshToken().getBase64());
 		assertEquals(SpiffeIds.userSubject(TRUST_DOMAIN, person.getXid()), refresh.getSubject());
-		assertEquals(ORG_NAMESPACE, refresh.getNamespace());
+		assertEquals(ORG_NAMESPACE,
+				TokenWrapper.parse(resp.getAccessToken().getBase64()).getNamespace());
 		assertEquals(2, person.getMembershipsCount());
 		assertEquals(PeopleTenant.NAMESPACE, person.getMemberships(0).getTenantNamespace());
 		assertEquals(ORG_NAMESPACE, person.getMemberships(1).getTenantNamespace());
@@ -326,7 +331,7 @@ class PeopleTenantMintTest {
 		// The same person signing in where no tenant routes them gets `people`.
 		opaNamespace = "";
 		TokenWrapper personal = TokenWrapper.parse(
-				login(GOOGLE_ISSUER, GOOGLE_SUB, "").getRefreshToken().getBase64());
+				login(GOOGLE_ISSUER, GOOGLE_SUB, "").getAccessToken().getBase64());
 		assertEquals(refresh.getSubject(), personal.getSubject());
 		assertEquals(PeopleTenant.NAMESPACE, personal.getNamespace());
 	}

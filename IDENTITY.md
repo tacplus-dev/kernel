@@ -248,3 +248,74 @@ here so the parent session can follow without asking.
   `DeviceWebauthnLinkTest`, `PendingApprovalTest` updated to find the person through the
   link index.
 - Seatrials: see the next dated entry once the kernel image is rolled.
+
+## 2026-10-25 — Identity decision record, step 2: the session credential
+
+### What changed
+
+- **Mint (login) returns a session credential plus the first access token.** The people arm
+  now mints a kernel-signed credential into `TokenMintResponse.refresh_token` and the first AT
+  into `access_token`, so oauth, the gateway and the webapp see the same wire shape as before.
+  The credential is refresh-class (offline-class when the broker asked for `offline_access`),
+  `sub=/users/<xid>`, `namespace=/tenants/people` (the default tenant; a signed user token must
+  carry one, and it never selects what the credential mints), and the two claims that make it a
+  credential: `xid_gen` (the per-XID generation) and `proofs` (JSON array of
+  `{idp_id, sub, auth_time, exp, tenants, claims}`). `SessionCredential.java` holds the shape.
+- **A proof's `tenants` is fixed at login.** An org login the claim matchers routed vouches
+  `[org, people]`; a personal login vouches `[people]`. Never re-derived at the exchange, so a
+  later matcher change cannot widen a session already out. `claims` are the IdP claims the
+  broker relayed, replayed into OPA for entitlements at every mint from that proof.
+- **The per-tenant exchange is `Mint.MintToken` with `input_token=<credential>` and
+  `tenant_namespace=/tenants/<t>`** (no tenant means `people`). Kernel: signature → the person
+  exists, is not disabled, and the credential's generation is theirs → a live proof vouches
+  `<t>` whose link row still maps to this XID → the membership of `<t>` exists and is not
+  revoked → AT (`sub=/users/<xid>`, `namespace=/tenants/<t>`, exp ≤ min(request, access
+  lifetime, proof exp, credential exp), entitlements from OPA on the proof's claims,
+  `parent_jti` the credential's, `linked` as the legacy mint stamped it). Otherwise
+  `PERMISSION_DENIED` — the step-up ("no live proof vouches for <t>: sign in with that tenant's
+  identity provider") for a missing proof or membership, one indistinct refusal for a dead
+  person/generation. `service_auds` works as on every other exchange; `offline_access` hands
+  the same credential back (a credential is not renewed: a proof lives on its IdP's policy, a
+  new login is what extends a session).
+- **Merge and Unmerge are kernel.proto RPCs on the C2S `UserMint` service**, callable with any
+  live AT of the same person as bearer; the credentials travel in the body and are verified by
+  signature, never looked up. `MergeCredentials(credentials[])`: same XID required (two people
+  is Link, a write), current generation required, proofs unioned and deduplicated by
+  `(idp_id, sub)` keeping the fresher `auth_time`, re-signed with exp = the latest proof's.
+  `RevokeCredentialProof(credential, idp_id, sub)` is the record's Unmerge under a registered
+  verb ("Unmerge" is not in tacplus's closed verb registry; adding it would have meant a
+  tacplus change AND a new tacplus image pin): drops the proof, re-signs, returns no
+  credential when the last proof is dropped, `NOT_FOUND` for a proof the credential does not
+  carry. Both stateless.
+- **Shape, not `token_use`, selects the arm.** `SessionCredential.isCredential` requires both
+  `xid_gen` and `proofs`. A legacy single-namespace refresh token never enters the credential
+  arm (with a tenant named it is refused as it always was, INVALID_ARGUMENT; without one it
+  exchanges the legacy way); a credential never reaches the legacy clone path (its AT carries
+  none of the credential's claims and the generation check is made). One test per direction.
+- No sys-proto change was needed: the credential rides the existing `refresh_token` slot and
+  `TokenMintRequest.tenant_namespace`; Merge/Unmerge are kernel's own policy RPCs.
+
+### Decided here (record silent)
+
+- Proof `exp` = the login's requested `exp` if given, else kernel's refresh lifetime (offline
+  lifetime with `offline_access`), under the same ceilings the legacy refresh token had. No
+  tenant configures a max proof age yet. `auth_time` = `origin_auth_time`, else `origin_iat`,
+  else now.
+- The first AT at login is the routed org's when there is one, else `people`'s.
+- Sign-out-everywhere, Link, Unlink and Delete account are later surfaces; step 2 only
+  checks `Person.generation`.
+- Project scoping (`authorized_projects`/`default_project`, v3) and `Delegate.custom_claims` are
+  not stamped on credential-minted ATs; they were IdP-session features of the legacy refresh
+  token and nothing on seatrials uses them.
+
+### Proof
+
+- Kernel: `SessionCredentialTest` — personal proof yields people only; org proof yields
+  org + people and not a second org; tenants fixed at login; Merge unions, dedupes keeping
+  the fresher, refuses two people and another person's bearer; Unmerge drops a proof, the last
+  one signs out, unknown proof NOT_FOUND, the link remains; expired proof no longer mints
+  while the personal one still does; link removed → no mint; membership revoked → no org
+  token, people untouched; generation bump fails every outstanding credential and Merge;
+  disabled person mints nothing; legacy refresh is never a proof set; a credential never takes
+  the legacy path. Step 1 tests updated for the credential in the refresh slot.
+- Seatrials: see the next dated entry once the kernel image is rolled.

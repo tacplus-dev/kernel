@@ -841,9 +841,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			}
 		}
 
-		return mintUserTokenInternal(
-				SpiffeIds.userSubject(trustDomainReader.get(), person.getXid()),
-				claims, request.getExp(), callerSub, request.getOfflineAccess(), namespace, opaResult);
+		// The proof records what this login vouched for, now, never re-derived
+		// at the exchange: an org login vouches the org AND people; a personal
+		// login vouches people only.
+		List<String> tenants = routedTenant.isEmpty()
+				? List.of(PeopleTenant.NAMESPACE) : List.of(routedTenant, PeopleTenant.NAMESPACE);
+		return mintSessionCredential(person, idpId, providerSubject, tenants, namespace, claims,
+				request, callerSub, opaResult);
 	}
 
 	/**
@@ -992,6 +996,449 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			return null;
 		}
 		return value.getStringValue();
+	}
+
+	// ========================================================================
+	// The session credential (identity decision record 2026-10-25, step 2)
+	// ========================================================================
+
+	/**
+	 * Mint (login): the broker's verified assertion becomes a credential with one
+	 * proof, plus the first access token. The credential is a kernel-signed
+	 * refresh-class token (or offline-class when the broker asked for offline
+	 * access, so the existing lifetime rules apply unchanged) whose shape is the
+	 * {@code xid_gen} and {@code proofs} claims — see {@link SessionCredential}.
+	 * Nothing is written here; the credential IS the session.
+	 *
+	 * <p>{@code tenants} is what this login vouches for, fixed now and carried in
+	 * the proof: an org login the claim matchers routed vouches the org AND
+	 * {@code people}; a personal login vouches {@code people} only. The first AT
+	 * is the org's when there is one, else {@code people}'s.
+	 */
+	private Tokenrequest.TokenMintResponse mintSessionCredential(Kernel.Person person, String idpId,
+			String providerSubject, List<String> tenants, String firstTenant, Struct claims,
+			Tokenrequest.MintUserTokenRequest request, String callerSub,
+			Userentitlements.EntitlementEvalResult opaResult) throws StatusException {
+		Kernel.Delegate delegate = findDelegateBySubject(callerSub);
+		if (delegate == null) {
+			throw new StatusException(Status.INTERNAL, "delegate not found: " + callerSub);
+		}
+		long now = Instant.now().getEpochSecond();
+		boolean offline = request.getOfflineAccess();
+		// The proof lives as long as the login would have: the broker's requested
+		// exp, else the refresh (or offline) lifetime, under the same ceilings the
+		// legacy refresh token had. No tenant configures a max proof age yet.
+		long maxExp = now + (offline ? offlineTokenLifetimeSeconds : maxTokenLifetimeSeconds);
+		long exp;
+		if (request.getExp() > 0) {
+			exp = request.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > maxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
+			}
+		} else {
+			exp = now + (offline ? offlineTokenLifetimeSeconds : refreshTokenLifetimeSeconds);
+		}
+		long authTime = claimLong(claims, "origin_auth_time", claimLong(claims, "origin_iat", now));
+		SessionCredential.Proof proof = new SessionCredential.Proof(
+				idpId, providerSubject, authTime, exp, tenants, claims);
+
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+		TokenWrapper credential = signCredential(
+				SpiffeIds.userSubject(trustDomainReader.get(), person.getXid()), person.getGeneration(),
+				delegate.getName(), offline, List.of(proof), now, exp, signingKey);
+		long accessExp = Math.min(exp, now + accessTokenLifetimeSeconds);
+		TokenOuterClass.Token accessToken = accessTokenFromProof(
+				credential, proof, firstTenant, opaResult, now, accessExp, signingKey);
+
+		logger.info("Mint: credential for xid={} vouching {} via {}, first AT in {}, exp={}, offline={}",
+				person.getXid(), tenants, idpId, firstTenant, exp, offline);
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setRefreshToken(credential.getProto())
+				.setAccessToken(accessToken)
+				.build();
+	}
+
+	/** Signs a credential: the identity, its generation and the proofs; the tenant is the exchange's to choose. */
+	private TokenWrapper signCredential(String subject, long generation, String azp, boolean offline,
+			List<SessionCredential.Proof> proofs, long now, long exp, ImmutableKey signingKey) {
+		TokenWrapper credential = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(subject)
+				.setAudience(Kernel.getDescriptor().getPackage())
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+		credential.setAzp(azp);
+		credential.setSubType(SUB_TYPE_USER);
+		// The default tenant, which every person belongs to. A signed user token
+		// must carry a namespace; this one never selects what the credential
+		// mints — the tenant comes from the exchange, against the proofs.
+		credential.setNamespace(PeopleTenant.NAMESPACE);
+		if (offline) {
+			credential.setTokenUse(TOKEN_USE_OFFLINE);
+		} else {
+			credential.setTokenUse(TOKEN_USE_REFRESH);
+			credential.setCustomField("typ", TOKEN_TYPE_REFRESH);
+		}
+		credential.setCustomField(SessionCredential.CLAIM_GENERATION, Long.toString(generation));
+		credential.setCustomField(SessionCredential.CLAIM_PROOFS, SessionCredential.encode(proofs));
+		credential.sign(signingKey);
+		return credential;
+	}
+
+	/**
+	 * An access token for one tenant, minted from one proof: {@code sub} is the
+	 * person, {@code namespace} the tenant, the claims are the proof's (the IdP
+	 * claims the broker verified at that login), entitlements OPA's, and
+	 * {@code parent_jti} the credential's so lineage reads as it does for a
+	 * refresh token.
+	 */
+	private TokenOuterClass.Token accessTokenFromProof(TokenWrapper credential,
+			SessionCredential.Proof proof, String tenantNamespace,
+			Userentitlements.EntitlementEvalResult opaResult, long now, long exp,
+			ImmutableKey signingKey) {
+		TokenWrapper accessToken = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(credential.getSubject())
+				.setAudience(Kernel.getDescriptor().getPackage())
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+		accessToken.setAzp(credential.getAzp());
+		accessToken.setSubType(SUB_TYPE_USER);
+		accessToken.setTokenUse(TOKEN_USE_ACCESS);
+		accessToken.setNamespace(tenantNamespace);
+		// The `linked` claim, as the legacy user mint stamps it, so a device or
+		// tenant user linked to this person (TenantUserLink, moving in step 4)
+		// keeps reading what it reads today.
+		List<String> linked = linkedNamespaces(tenantNamespace, credential.getSubject());
+		if (!linked.isEmpty()) {
+			accessToken.setLinked(linked);
+		}
+		accessToken.setClaimsFromStruct(proof.claims(), STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
+		accessToken.setCustomField("parent_jti", credential.getJTI());
+		setFlatServiceEntitlements(accessToken, expandEntitlements(opaResult));
+		accessToken.sign(signingKey);
+		return accessToken.getProto();
+	}
+
+	/**
+	 * The per-tenant exchange: a credential and a tenant in, that tenant's access
+	 * token out — only when a live proof vouches for the tenant (or the tenant is
+	 * {@code people}, which any proof activates); otherwise PERMISSION_DENIED
+	 * with the step-up. No tenant named means {@code people}.
+	 *
+	 * <p>Checks, not lookups, except the record's two reads: the proof's link
+	 * still maps to this XID (an Unlink reaches the session here), and the
+	 * membership still exists and is not revoked (an org removing a member
+	 * reaches it here). Plus the generation: sign-out-everywhere is one bump.
+	 * Every miss is ONE PERMISSION_DENIED shape, so the exchange is not an
+	 * oracle for which tenants a person belongs to; the step-up is the one
+	 * distinguished answer, because it is the one the client acts on.
+	 *
+	 * <p>{@code offline_access} hands the same credential back beside the AT: a
+	 * credential is not renewed, a proof lives on its IdP's policy and a new
+	 * login is what extends a session.
+	 */
+	private Tokenrequest.TokenMintResponse mintFromSessionCredential(
+			Tokenrequest.TokenMintRequest request, TokenWrapper credential) throws StatusException {
+		if (!request.getAud().isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"a session credential mints service tokens via service_auds, not aud");
+		}
+		String tenantNamespace = request.getTenantNamespace().isEmpty()
+				? PeopleTenant.NAMESPACE : request.getTenantNamespace();
+		if (SpiffeIds.namespaceRoot().equals(tenantNamespace)) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"tenant_namespace must name a tenant, not the authorization-tree root");
+		}
+		long now = Instant.now().getEpochSecond();
+		Kernel.Person person = livePersonOf(credential);
+
+		SessionCredential.Proof proof = null;
+		for (SessionCredential.Proof candidate : SessionCredential.proofsOf(credential)) {
+			if (candidate.isLive(now) && candidate.vouches(tenantNamespace)
+					&& linkStillMapsTo(candidate, person.getXid())) {
+				proof = candidate;
+				break;
+			}
+		}
+		if (proof == null) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no live proof vouches for " + tenantNamespace
+							+ ": sign in with that tenant's identity provider");
+		}
+		if (!hasLiveMembership(person, tenantNamespace)) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"no live proof vouches for " + tenantNamespace
+							+ ": sign in with that tenant's identity provider");
+		}
+
+		Userentitlements.EntitlementEvalResult opaResult =
+				resolveEntitlementsViaOpa(proof.claims(), request.getTraceId());
+
+		long exp;
+		if (request.getExp() > 0) {
+			exp = request.getExp();
+			if (exp <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
+			}
+			if (exp > now + maxTokenLifetimeSeconds) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds max token lifetime ceiling " + (now + maxTokenLifetimeSeconds));
+			}
+		} else {
+			exp = now + accessTokenLifetimeSeconds;
+		}
+		// The AT never outlives the proof that vouched for it, nor the credential.
+		exp = Math.min(exp, Math.min(proof.exp(), credential.getExpiration()));
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+		TokenOuterClass.Token accessToken = accessTokenFromProof(
+				credential, proof, tenantNamespace, opaResult, now, exp, signingKey);
+
+		logger.info("MintToken (session credential): xid={}, tenant={}, via={}, exp={}",
+				person.getXid(), tenantNamespace, proof.idpId(), exp);
+		Tokenrequest.TokenMintResponse.Builder resp = Tokenrequest.TokenMintResponse.newBuilder()
+				.setAccessToken(accessToken);
+		if (request.getOfflineAccess()) {
+			resp.setRefreshToken(credential.getProto());
+		}
+		if (!request.getServiceAudsList().isEmpty()) {
+			TokenWrapper accessWrapper = TokenWrapper.from(accessToken);
+			for (String svcAud : request.getServiceAudsList()) {
+				if (svcAud.isEmpty()) {
+					throw new StatusException(Status.INVALID_ARGUMENT, "service_auds entries must be non-empty");
+				}
+				resp.addServiceTokens(exchangeKernelToken(Tokenrequest.TokenMintRequest.newBuilder()
+						.setAud(svcAud)
+						.setExp(request.getExp())
+						.build(), accessWrapper).getAccessToken());
+			}
+		}
+		return resp.build();
+	}
+
+	/**
+	 * The person a verified credential names, if they still exist, are not
+	 * disabled, and the credential's generation is theirs. One refusal shape for
+	 * every miss, for the reason {@link #mintFromSessionCredential} gives.
+	 */
+	private Kernel.Person livePersonOf(TokenWrapper credential) throws StatusException {
+		String xid = SessionCredential.xidOf(credential);
+		Kernel.Person person = xid == null ? Kernel.Person.getDefaultInstance() : principalMap.getPeople(xid);
+		if (person.getXid().isEmpty() || person.getDisabledAtMs() != 0
+				|| SessionCredential.generationOf(credential) != person.getGeneration()) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"this session is no longer valid: sign in again");
+		}
+		return person;
+	}
+
+	/** The record's first read: the proof's link still resolves to this person. */
+	private boolean linkStillMapsTo(SessionCredential.Proof proof, String xid) {
+		return xid.equals(principalMap.getIdentityLinks(
+				identityLinkKey(proof.idpId(), proof.providerSubject())).getXid());
+	}
+
+	/** The record's second read: the membership exists and is not revoked. */
+	private static boolean hasLiveMembership(Kernel.Person person, String tenantNamespace) {
+		for (Kernel.PersonMembership membership : person.getMembershipsList()) {
+			if (tenantNamespace.equals(membership.getTenantNamespace())) {
+				return membership.getRevokedAtMs() == 0;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * A credential presented in a request body: parsed, verified against
+	 * kernel's own keys, and of the credential shape. Anything else — a legacy
+	 * refresh token, an access token, a token kernel did not sign — is refused
+	 * before a single proof is read.
+	 */
+	private TokenWrapper verifiedSessionCredential(String raw) throws StatusException {
+		TokenWrapper token;
+		try {
+			token = TokenWrapper.parse(raw);
+		} catch (Exception e) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "invalid credential: " + e.getMessage());
+		}
+		verifyKernelSigned(token, "credential");
+		if (!SessionCredential.isCredential(token) || SessionCredential.xidOf(token) == null) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "token is not a session credential");
+		}
+		return token;
+	}
+
+	/** Verifies a kernel-signed token against the current verifying set; {@code label} names it in refusals. */
+	private void verifyKernelSigned(TokenWrapper token, String label) throws StatusException {
+		String kid = token.getKid();
+		if (kid == null || kid.isEmpty() || !isPlausibleKid(kid)) {
+			throw new StatusException(Status.UNAUTHENTICATED, label + " signed with unknown key: " + kid);
+		}
+		JwkOuterClass.Jwk matchingKey = null;
+		for (JwkOuterClass.Jwk jwk : verifyingKeysReader.get()) {
+			if (kid.equals(jwk.getKid())) {
+				matchingKey = jwk;
+				break;
+			}
+		}
+		if (matchingKey == null) {
+			throw new StatusException(Status.UNAUTHENTICATED, label + " signed with unknown key: " + kid);
+		}
+		try {
+			token.verify(ImmutableJwk.from(matchingKey));
+		} catch (Exception e) {
+			throw new StatusException(Status.UNAUTHENTICATED, label + " verification failed: " + e.getMessage());
+		}
+	}
+
+	/** Re-signs {@code template}'s identity with {@code proofs}; exp is the latest proof's. */
+	private TokenWrapper resignCredential(TokenWrapper template, long generation,
+			List<SessionCredential.Proof> proofs) throws StatusException {
+		long now = Instant.now().getEpochSecond();
+		long exp = 0;
+		for (SessionCredential.Proof proof : proofs) {
+			exp = Math.max(exp, proof.exp());
+		}
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+		return signCredential(template.getSubject(), generation, template.getAzp(),
+				TOKEN_USE_OFFLINE.equals(template.getTokenUse()), proofs, now, exp, signingKey);
+	}
+
+	@Override
+	public Kernel.MergeCredentialsResponse mergeCredentials(Caller caller,
+			Kernel.MergeCredentialsRequest request) throws ProtoException {
+		try {
+			return doMergeCredentials(caller, request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("MergeCredentials failed", e);
+			throw new ProtoException(ProtoException.INTERNAL, "merge failed: " + e.getMessage(), e);
+		}
+	}
+
+	/**
+	 * Merge: all credentials must name the caller's own XID and its current
+	 * generation; the result carries the union of their proofs, deduplicated by
+	 * (idp_id, subject) keeping the fresher. Stateless. Two credentials naming
+	 * two people are refused — joining two people is Link, the write, with its
+	 * own warning path.
+	 */
+	private Kernel.MergeCredentialsResponse doMergeCredentials(Caller caller,
+			Kernel.MergeCredentialsRequest request) throws StatusException {
+		if (request.getCredentialsCount() == 0) {
+			throw new StatusException(Status.INVALID_ARGUMENT, "no credentials to merge");
+		}
+		TokenWrapper first = null;
+		Kernel.Person person = null;
+		List<SessionCredential.Proof> proofs = List.of();
+		for (String raw : request.getCredentialsList()) {
+			TokenWrapper credential = verifiedSessionCredential(raw);
+			if (first == null) {
+				first = credential;
+				requireCallerIs(caller, credential.getSubject());
+				person = livePersonOf(credential);
+			} else if (!first.getSubject().equals(credential.getSubject())) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"credentials name different people; Link, not Merge, joins two people");
+			} else {
+				livePersonOf(credential);
+			}
+			proofs = SessionCredential.merge(proofs, SessionCredential.proofsOf(credential));
+		}
+		TokenWrapper merged = resignCredential(first, person.getGeneration(), proofs);
+		logger.info("MergeCredentials: xid={}, {} credential(s) -> {} proof(s)",
+				person.getXid(), request.getCredentialsCount(), proofs.size());
+		return Kernel.MergeCredentialsResponse.newBuilder().setCredential(merged.getProto()).build();
+	}
+
+	@Override
+	public Kernel.RevokeCredentialProofResponse revokeCredentialProof(Caller caller,
+			Kernel.RevokeCredentialProofRequest request) throws ProtoException {
+		try {
+			return doRevokeCredentialProof(caller, request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("RevokeCredentialProof failed", e);
+			throw new ProtoException(ProtoException.INTERNAL, "unmerge failed: " + e.getMessage(), e);
+		}
+	}
+
+	/**
+	 * Unmerge: drop one proof and re-sign. Dropping the last proof is a sign-out
+	 * and returns no credential. Stateless: the link the proof names stays on
+	 * the person; only what this credential can mint changes.
+	 */
+	private Kernel.RevokeCredentialProofResponse doRevokeCredentialProof(Caller caller,
+			Kernel.RevokeCredentialProofRequest request) throws StatusException {
+		TokenWrapper credential = verifiedSessionCredential(request.getCredential());
+		requireCallerIs(caller, credential.getSubject());
+		Kernel.Person person = livePersonOf(credential);
+		List<SessionCredential.Proof> remaining = new java.util.ArrayList<>();
+		boolean found = false;
+		for (SessionCredential.Proof proof : SessionCredential.proofsOf(credential)) {
+			if (proof.sameIdentity(request.getIdpId(), request.getProviderSubject())) {
+				found = true;
+			} else {
+				remaining.add(proof);
+			}
+		}
+		if (!found) {
+			throw new StatusException(Status.NOT_FOUND, "the credential carries no such proof");
+		}
+		if (remaining.isEmpty()) {
+			logger.info("RevokeCredentialProof: xid={} dropped its last proof — signed out", person.getXid());
+			return Kernel.RevokeCredentialProofResponse.getDefaultInstance();
+		}
+		TokenWrapper resigned = resignCredential(credential, person.getGeneration(), remaining);
+		return Kernel.RevokeCredentialProofResponse.newBuilder().setCredential(resigned.getProto()).build();
+	}
+
+	/** A credential is the caller's own: the bearer and the credential name the same person. */
+	private static void requireCallerIs(Caller caller, String subject) throws StatusException {
+		if (!subject.equals(caller.getSubject())) {
+			throw new StatusException(Status.PERMISSION_DENIED, "the credential is not the caller's own");
+		}
+	}
+
+	/** The value of an integer claim, or {@code fallback} when absent or not a number. */
+	private static long claimLong(@Nullable Struct claims, String key, long fallback) {
+		if (claims == null) {
+			return fallback;
+		}
+		Value value = claims.getFieldsMap().get(key);
+		if (value == null) {
+			return fallback;
+		}
+		if (value.getKindCase() == Value.KindCase.NUMBER_VALUE) {
+			return (long) value.getNumberValue();
+		}
+		if (value.getKindCase() == Value.KindCase.STRING_VALUE) {
+			try {
+				return Long.parseLong(value.getStringValue());
+			} catch (NumberFormatException e) {
+				return fallback;
+			}
+		}
+		return fallback;
 	}
 
 	// ========================================================================
@@ -2929,6 +3376,15 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// Same choke point, for standing delegations: a token that derives from a
 		// Grant is only exchangeable while that Grant is still live.
 		assertGrantStillActive(inputToken);
+
+		// Session-credential arm (identity decision record 2026-10-25). Selected by
+		// claim SHAPE — the xid_gen and proofs claims — never by token_use, so a
+		// legacy refresh token can never be read as a proof set, and a credential
+		// never reaches the legacy clone path below without the proof, generation,
+		// link and membership checks.
+		if (SessionCredential.isCredential(inputToken)) {
+			return mintFromSessionCredential(request, inputToken);
+		}
 
 		// Personal-principal arm. Placed here — after verification, before the
 		// bootstrap/offline/access routing below — because a personal token can

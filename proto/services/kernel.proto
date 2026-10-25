@@ -15,6 +15,7 @@ import "sys/jwk.proto";
 import "sys/x509.proto";
 import "sys/cloudvendor.proto";
 import "sys/tokenrequest.proto";
+import "sys/token.proto";
 import "common/hazelcast.proto";
 import "common/credentials.proto";
 import "google/protobuf/struct.proto";
@@ -684,6 +685,61 @@ service UserMint {
       flags: [RPC_FLAG_AUTH_ANY_USER, RPC_FLAG_MINTS_CREDENTIAL]
     };
   }
+
+  // MergeCredentials — the session credential's union (identity decision record
+  // 2026-10-25). Every credential presented must be kernel-signed, carry the
+  // caller's XID and its current generation; the result carries the union of
+  // their proofs, deduplicated by (idp_id, provider_subject) keeping the fresher
+  // auth_time, re-signed. Stateless: nothing is written. A person's several
+  // logins (an org IdP, a second personal provider) are proofs like any other
+  // and merge the same way. RPC_FLAG_AUTH_ANY_USER: the bearer is any live
+  // access token of the same person; the credentials themselves are the
+  // argument, verified by signature, never looked up.
+  rpc MergeCredentials(MergeCredentialsRequest) returns (MergeCredentialsResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER, RPC_FLAG_MINTS_CREDENTIAL]
+    };
+  }
+
+  // RevokeCredentialProof is the record's UNMERGE: it drops one proof from a
+  // credential and re-signs it. Stateless — nothing on the person changes; the
+  // verb is the registry's closest to "this credential no longer carries that
+  // proof". Dropping the last proof is a sign-out: the response carries no
+  // credential. The link the proof names remains on the person (Unlink, a
+  // write, is a different RPC).
+  rpc RevokeCredentialProof(RevokeCredentialProofRequest) returns (RevokeCredentialProofResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER, RPC_FLAG_MINTS_CREDENTIAL]
+    };
+  }
+}
+
+message MergeCredentialsRequest {
+  // credentials are the session credentials to merge, compact JWTs as
+  // TokenMintResponse.refresh_token.base64 carried them. All must name one XID.
+  repeated string credentials = 1 [(spec.assert_min_size) = 1, (spec.assert_max_size) = 16];
+  string trace_id = 200;
+}
+message MergeCredentialsResponse {
+  // credential is the merged, re-signed session credential.
+  token.Token credential = 1;
+}
+message RevokeCredentialProofRequest {
+  string credential = 1 [(spec.assert_required) = true];
+  // idp_id and provider_subject name the proof to drop, as the credential's
+  // proofs carry them.
+  string idp_id = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+  string provider_subject = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+  string trace_id = 200;
+}
+message RevokeCredentialProofResponse {
+  // credential is the re-signed credential without that proof; UNSET when the
+  // dropped proof was the last one — the caller is signed out.
+  token.Token credential = 1;
 }
 
 // ============================================================================

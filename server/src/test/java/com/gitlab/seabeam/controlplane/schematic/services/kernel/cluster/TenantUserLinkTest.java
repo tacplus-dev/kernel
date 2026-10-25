@@ -246,8 +246,10 @@ class TenantUserLinkTest {
 		assertEquals(TENANT_NAMESPACE, tenantToken.getNamespace());
 		assertEquals(List.of(PeopleTenant.NAMESPACE), tenantToken.getLinked());
 
+		// The person's long-lived token is a session credential naming no tenant;
+		// the claim rides the people access token minted beside it.
 		TokenWrapper personToken = TokenWrapper.parse(
-				peopleMint().getRefreshToken().getBase64());
+				peopleMint().getAccessToken().getBase64());
 		assertEquals(PeopleTenant.NAMESPACE, personToken.getNamespace());
 		assertEquals(List.of(TENANT_NAMESPACE), personToken.getLinked());
 

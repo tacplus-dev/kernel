@@ -319,3 +319,18 @@ here so the parent session can follow without asking.
   disabled person mints nothing; legacy refresh is never a proof set; a credential never takes
   the legacy path. Step 1 tests updated for the credential in the refresh slot.
 - Seatrials: see the next dated entry once the kernel image is rolled.
+
+### Seatrials proof (2026-10-25 23:53 UTC, kernel 28ae372)
+
+One Google sign-in by Jody at https://seatrials.tacplus.dev through the fleet's single
+`/system` oauth, with no claim matcher routing it, produced in kernel-0's log:
+
+- `Created person: xid=f6ce7fb592d3bb13ae34639b1cc9e35c idp_id=google` (step 1: XID minted,
+  link and `people` membership written);
+- `Mint: credential for xid=f6ce7fb5… vouching [/tenants/people] via google, first AT in
+  /tenants/people` (step 2: the login is a credential with one personal proof plus the first AT);
+- `MintToken (session credential): xid=f6ce7fb5…, tenant=/tenants/people, via=google` (the
+  webapp's own exchange of the credential took the credential arm and minted the people AT).
+
+Before this change the same sign-in failed at MintUserToken with "entitlements policy returned
+no namespace for this caller".

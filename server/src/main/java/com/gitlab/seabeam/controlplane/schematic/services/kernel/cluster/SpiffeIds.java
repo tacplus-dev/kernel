@@ -53,6 +53,16 @@ public final class SpiffeIds {
 				+ "/" + Spiffe.SERVICES_SEGMENT + "/" + Spiffe.normalizeSegment(serviceName);
 	}
 
+	/**
+	 * A person's identity: {@code spiffe://<td>/users/<xid>}. Rooted at the
+	 * tree's root, not at any tenant — the XID names no tenant, cluster or IdP,
+	 * so the same human is the same subject in every tenant's access token. The
+	 * tenant is the token's {@code namespace} claim, never part of the subject.
+	 */
+	public static String userSubject(String trustDomain, String xid) {
+		return Spiffe.userSpiffeId(trustDomain, namespaceRoot(), xid);
+	}
+
 	/** Returns true if the value is a SPIFFE URI. */
 	public static boolean isSpiffeUri(String value) {
 		return value != null && value.startsWith(Spiffe.SCHEME + "://");

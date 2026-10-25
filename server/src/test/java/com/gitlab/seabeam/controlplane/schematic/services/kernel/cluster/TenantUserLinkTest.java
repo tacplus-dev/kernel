@@ -64,8 +64,6 @@ class TenantUserLinkTest {
 	private static final String NONCE = "3f1c9a2e-7b44-4a1d-9f0e-2c6b8d5a1e77";
 	private static final Caller CALLER = new Caller("", "test-req");
 
-	/** The people user the Apple login above resolves to. */
-	private static final String PERSON_USER_ID = "apple." + APPLE_SUB;
 
 	private final List<JwkOuterClass.Jwk> verifyingKeys = new CopyOnWriteArrayList<>();
 	private final List<Kernel.Delegate> delegates = new ArrayList<>();
@@ -82,8 +80,8 @@ class TenantUserLinkTest {
 				() -> verifyingKeys,
 				null);
 		keyRotator.start();
-		// The people tenant's own IdP broker, and a /system one. Which of the two
-		// calls is what decides whether a people side may be attested at all.
+		// A people-tenant-rooted IdP broker and a /system one. Either may attest a
+		// people side: the fleet's one oauth instance brokers every login.
 		delegates.add(Kernel.Delegate.newBuilder()
 				.setName(BROKER_NAME)
 				.setTenantNamespace(PeopleTenant.NAMESPACE)
@@ -155,7 +153,7 @@ class TenantUserLinkTest {
 		// The people side is a login, so it creates the person if nobody has seen
 		// them before — "only an IdP creates a person" holds, this IS an IdP login.
 		assertEquals(1, principalMap.proto().getPeopleCount());
-		assertEquals(APPLE_SUB, principalMap.getPeople(PERSON_USER_ID).getProviderSubject());
+		assertEquals(APPLE_SUB, person().getLinks(0).getProviderSubject());
 	}
 
 	/**
@@ -183,18 +181,16 @@ class TenantUserLinkTest {
 	}
 
 	/**
-	 * Only the people tenant's own broker may attest a people side — the same
-	 * gate the mint uses to reach the people arm. Without it, any delegate
-	 * trusted to broker some other tenant's IdP could name an Apple subject and
-	 * link itself to a person it never authenticated.
+	 * A people side is attested by whichever IdP broker verified the login. The
+	 * fleet runs ONE oauth instance, rooted at /system, so a /system broker links
+	 * exactly as a people-rooted one does (identity decision record 2026-10-25).
 	 */
 	@Test
-	void aBrokerOutsideThePeopleTenantCannotAttestAPeopleSide() {
-		ProtoException ex = assertThrows(ProtoException.class,
-				() -> linkCall(request(NONCE, NONCE), ""));
+	void aBrokerOutsideThePeopleTenantAttestsAPeopleSideToo() throws Exception {
+		Kernel.CreateTenantUserLinkResponse resp = linkCall(request(NONCE, NONCE), "");
 
-		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
-		assertLinkRegistryEmpty();
+		assertEquals(PeopleTenant.NAMESPACE + "|" + personSubject(), resp.getBUserKey());
+		assertEquals(1, principalMap.proto().getPeopleCount());
 	}
 
 	/** Re-proving an existing link is the same fact, not a second edge. */
@@ -238,7 +234,7 @@ class TenantUserLinkTest {
 	 *
 	 * <p>NAMESPACE-shaped, not a user path: tacplus's backstop compares the claim
 	 * against {@code (spec.store_namespace)}, which holds a namespace, so
-	 * {@code /tenants/people/users/<u>} would never compare equal and the linked
+	 * {@code /users/<xid>} would never compare equal and the linked
 	 * caller's read would never be accepted (tacplus, 2026-09-21 13:48 MDT).
 	 */
 	@Test
@@ -306,8 +302,14 @@ class TenantUserLinkTest {
 	// Harness
 	// ------------------------------------------------------------------
 
+	/** The person the Apple login above resolved to, found through the link index. */
+	private Kernel.Person person() {
+		return principalMap.getPeople(principalMap.getIdentityLinks(
+				IdentityServiceImpl.identityLinkKey("apple", APPLE_SUB)).getXid());
+	}
+
 	private String personSubject() {
-		return Spiffe.userSpiffeId(TRUST_DOMAIN, PeopleTenant.NAMESPACE, PERSON_USER_ID);
+		return SpiffeIds.userSubject(TRUST_DOMAIN, person().getXid());
 	}
 
 	private void assertLinkRegistryEmpty() {
@@ -425,11 +427,14 @@ class TenantUserLinkTest {
 			super(UNUSABLE_CHANNEL, () -> "unused-token");
 		}
 
+		/** Routes drpepper's own IdP into drpepper; a people-provider login routes nowhere. */
 		@Override
 		public Userentitlements.EntitlementEvalResult evalEntitlement(
 				Userentitlements.EntitlementEvalInput request) {
+			Value issuer = request.getClaims().getFieldsMap().get("origin_iss");
+			boolean tenantLogin = issuer != null && TENANT_ISSUER.equals(issuer.getStringValue());
 			return Userentitlements.EntitlementEvalResult.newBuilder()
-					.setNamespace(TENANT_NAMESPACE)
+					.setNamespace(tenantLogin ? TENANT_NAMESPACE : "")
 					.setTokenEntitlements(Entitlements.TokenEntitlements.newBuilder()
 							.addGrants("KERNEL_TENANT_ADMIN_GET_TENANT_CONFIG")
 							.build())

@@ -1295,31 +1295,36 @@ public class ClusterServer {
 	}
 
 	/**
-	 * Restores the {@code people} tenant's user rows from the disk snapshot into
-	 * the live {@code PrincipalState} boundary.
+	 * Restores the XID-keyed people and their link index from the disk snapshot
+	 * into the live {@code PrincipalState} boundary.
 	 *
 	 * <p>Separate from {@link #restorePersonalPrincipals} rather than folded into
 	 * it because the two collections are independently populated: a cluster can
 	 * hold people and no personal principals, and that method returns early on an
 	 * empty principal list.
 	 *
-	 * <p>Fails closed for the same reason: a person whose row does not come back
-	 * is not merely absent, they are re-created with a fresh {@code created_at_ms}
-	 * on their next login, so a partial restore is a silently rewritten identity
-	 * rather than a missing one.
+	 * <p>Fails closed for the same reason, and a sharper one: a person whose row
+	 * or link does not come back is not merely absent, they are minted a NEW XID
+	 * on their next login — and the XID is the one thing about a person that
+	 * must never change.
 	 */
 	static void restorePeople(
 			Kernel.KernelDiskState snapshot,
 			com.gitlab.seabeam.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap principalState) {
-		if (snapshot == null || snapshot.getPeopleCount() == 0) {
+		if (snapshot == null || (snapshot.getPeopleCount() == 0 && snapshot.getIdentityLinksCount() == 0)) {
 			return;
 		}
 		try {
 			for (Kernel.Person person : snapshot.getPeopleList()) {
 				principalState.putPeople(
-						Objects.requireNonNull(person.getUserId(), "person.user_id"), person);
+						Objects.requireNonNull(person.getXid(), "person.xid"), person);
 			}
-			logger.info("Restored {} person row(s) from the disk snapshot", snapshot.getPeopleCount());
+			for (Kernel.IdentityLinkRow link : snapshot.getIdentityLinksList()) {
+				principalState.putIdentityLinks(
+						Objects.requireNonNull(link.getLinkKey(), "identity_links.link_key"), link);
+			}
+			logger.info("Restored {} person row(s) and {} identity link(s) from the disk snapshot",
+					snapshot.getPeopleCount(), snapshot.getIdentityLinksCount());
 		} catch (Exception e) {
 			logger.error("Failed to restore people from the disk snapshot — refusing to start with "
 					+ "a partial restore: {}", e.getMessage(), e);

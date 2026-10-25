@@ -87,7 +87,6 @@ class DeviceWebauthnLinkTest {
 	private static final Caller CALLER = new Caller("", "test-req");
 
 	/** The people user the Apple login above resolves to. */
-	private static final String PERSON_USER_ID = "apple." + APPLE_SUB;
 
 	/** The relying party this deployment serves, and the one the passkey signs for. */
 	private static final String RP_ID = "example.test";
@@ -114,10 +113,10 @@ class DeviceWebauthnLinkTest {
 				() -> verifyingKeys,
 				null);
 		keyRotator.start();
-		// Three delegates, one per gate a device link has to pass: the people
-		// tenant's own device broker (the only one that may do this), a device
-		// broker rooted at /system, and a people-tenant broker that is an IdP
-		// broker only. Which of the three calls is what the refusal tests vary.
+		// Three delegates: a device broker rooted at the people tenant, a device
+		// broker rooted at /system, and a tenant broker that is an IdP broker
+		// only. The broker KIND is the gate a device link has to pass; where the
+		// broker is rooted is not (the fleet's one oauth brokers every login).
 		delegates.add(delegate(PeopleTenant.NAMESPACE,
 				Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE));
 		delegates.add(delegate("", Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE));
@@ -179,7 +178,7 @@ class DeviceWebauthnLinkTest {
 		// The people side created the person, the same way an ordinary IdP login
 		// would: this IS an IdP login, and only an IdP creates a person.
 		assertEquals(1, principalMap.proto().getPeopleCount());
-		assertEquals(APPLE_SUB, principalMap.getPeople(PERSON_USER_ID).getProviderSubject());
+		assertEquals(APPLE_SUB, person().getLinks(0).getProviderSubject());
 
 		String deviceKey = deviceNamespace(principal) + "|" + deviceSubject(principal);
 		String personKey = PeopleTenant.NAMESPACE + "|" + personSubject();
@@ -406,27 +405,24 @@ class DeviceWebauthnLinkTest {
 	}
 
 	/**
-	 * Two gates, both required, neither implied by the other: the caller must be
-	 * a delegate trusted to broker a DEVICE proof, and it must be rooted at the
-	 * people tenant (§2's people-side gate, unchanged). A device broker parked in
-	 * /system could otherwise name an Apple subject it never authenticated.
+	 * The caller must be a delegate trusted to broker a DEVICE proof. An IdP
+	 * broker relaying a device assertion is refused whatever it is rooted at; a
+	 * device broker is accepted wherever it is rooted.
 	 */
 	@Test
-	void aDeviceLinkNeedsADeviceBrokerRootedAtThePeopleTenant() throws Exception {
+	void aDeviceLinkNeedsADeviceBroker() throws Exception {
 		String thumbprint = WebauthnProof.thumbprint(passkey.publicJwk);
 		Kernel.CreateTenantUserLinkRequest request =
 				request(passkey, thumbprint, APPLE_ISSUER, APPLE_SUB);
 
-		// A device broker, but in /system: it passes the broker-kind gate and
-		// fails the people-side one.
-		assertEquals(ProtoException.PERMISSION_DENIED,
-				assertThrows(ProtoException.class, () -> linkCall(request, "",
-						Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE)).getCode());
-		// A people-tenant broker, but an IdP broker only: it fails the first gate.
 		assertEquals(ProtoException.PERMISSION_DENIED,
 				assertThrows(ProtoException.class, () -> linkCall(request, TENANT_NAMESPACE,
 						Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)).getCode());
 		assertNothingWritten();
+
+		// A device broker in /system passes: the kind is the gate, not the root.
+		linkCall(request, "", Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE);
+		assertEquals(1, principalMap.proto().getPeopleCount());
 	}
 
 	/** A link joins a device to a person. Two assertions prove no login at all. */
@@ -643,8 +639,14 @@ class DeviceWebauthnLinkTest {
 				.build();
 	}
 
+	/** The person the Apple login resolved to, found through the link index. */
+	private Kernel.Person person() {
+		return principalMap.getPeople(principalMap.getIdentityLinks(
+				IdentityServiceImpl.identityLinkKey("apple", APPLE_SUB)).getXid());
+	}
+
 	private String personSubject() {
-		return Spiffe.userSpiffeId(TRUST_DOMAIN, PeopleTenant.NAMESPACE, PERSON_USER_ID);
+		return SpiffeIds.userSubject(TRUST_DOMAIN, person().getXid());
 	}
 
 	private static String deviceNamespace(Kernel.PersonalPrincipal principal) {

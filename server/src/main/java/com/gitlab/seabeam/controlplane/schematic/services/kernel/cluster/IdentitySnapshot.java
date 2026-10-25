@@ -180,6 +180,7 @@ public final class IdentitySnapshot {
                 Kernel.PrincipalState principals = principalStateReader.get();
                 b.addAllPersonalPrincipals(principals.getPersonalPrincipalsList());
                 b.addAllPeople(principals.getPeopleList());
+                b.addAllIdentityLinks(principals.getIdentityLinksList());
                 b.addAllTenantUserLinks(principals.getTenantUserLinksList());
             }
 

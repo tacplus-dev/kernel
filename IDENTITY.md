@@ -178,3 +178,73 @@ C2S Token Exchange:
 3. **Destination services enforce access policy**, not kernel. Kernel mints tokens; destinations decide who may call them.
 4. **`azp` records who brokered the token.** For S2S: the delegate name. For C2S: the on-behalf-of service (oauth, fleetwood, etc.).
 5. **`sub_type` is the trust boundary.** Services declared `service_s2s` must reject `sub_type: "user"` tokens. Services declared `service_c2s` accept user tokens and enforce profile-based entitlements.
+
+## 2026-10-25 — Identity decision record, step 1: the XID-keyed person
+
+Implements step 1 of `identity-session-credential-2026-10-25` (schematic roadmap). Log kept
+here so the parent session can follow without asking.
+
+### What changed
+
+- **A human is `spiffe://<td>/users/<xid>`.** `Person` is keyed by a kernel-minted XID (128
+  random bits, lower-case hex, a legal SPIFFE segment as minted). The provider-keyed
+  `/tenants/people/users/<provider>.<sub>` row is gone: `Person.provider`/`provider_subject`
+  are reserved field numbers, replaced by `Person.links` (`IdentityLink{idp_id,
+  provider_subject}`) and `Person.memberships` (`PersonMembership{tenant_namespace}`).
+  `Person.generation` is declared for step 2's sign-out-everywhere.
+- **The link index.** `PrincipalState.identity_links` (`IdentityLinkRow{link_key =
+  "<idp_id>|<sub>", xid}`) is one keyed read from a verified `(idp_id, sub)` to the XID. It is
+  written with the Person at first login and is what every login reads; step 2's "the link
+  still exists" check reads the same row. Both collections ride the disk snapshot
+  (`KernelDiskState.identity_links = 13`) and are restored together, fail-closed, because a
+  person whose row or link does not come back is minted a NEW XID on their next login.
+- **First login.** `IdentityServiceImpl.resolveOrCreatePerson(idpId, sub)` (replaces
+  `findOrCreatePerson`): index hit → the Person (refused if disabled); miss → mint XID, write
+  the Person with that link and its `people` membership, write the index row, snapshot. The
+  sign-ups kill switch still refuses only the create half.
+- **Which logins are people.** The IdP mint arm now forks on the verified `origin_iss`, not on
+  the broker's `tenant_namespace`: an issuer in `PeopleTenant`'s fixed table (Google, Apple)
+  is a person; anything else is the untouched ordinary tenant login (`request.subject`,
+  namespace from OPA). The same holds for a `people` side of `CreateTenantUserLink`. The old
+  gate "only a `/tenants/people`-rooted broker may attest a people login" is removed: the
+  fleet runs ONE oauth instance, rooted at `/system`, and it brokers every login. This is
+  the shape that lets seatrials' Google sign-in mint without a second oauth.
+- **Org + people.** The people arm asks OPA once. If the claim matchers route the login to a
+  tenant, the token minted is that tenant's (`sub=/users/<xid>`, `namespace=/tenants/<t>`)
+  and the org membership is recorded on the Person the FIRST time (a write at first org
+  login; later logins read it and write nothing). A revoked org membership refuses the org
+  token. If nothing routes the login, the token is `people`'s. Subject is the XID either way.
+- `PeopleTenant.idpId(provider)` (`apple`, `google`) replaces the derived `userId`.
+  `SpiffeIds.userSubject(td, xid)` builds the subject.
+
+### What the record left open and what was decided here
+
+- **`idp_id` for tenant IdPs.** The record defines links as `(idp_id, provider_subject)`
+  and the 10-21 huddle (item 24) wants registered IdP records with immutable ids; none exist.
+  Decided: only the fixed people providers carry an `idp_id` today, so only Google/Apple
+  logins become XIDs; a tenant-IdP login stays on the legacy path until IdP records exist.
+  Seatrials has only Google, so nothing is lost on the proof fleet.
+- **Org membership is a record, written once.** The record says "a login … writes nothing"
+  and also "the membership still exists" is read at mint. Reconciled as: the first login
+  into each tenant writes its membership; every later login reads. Nothing revokes one yet
+  (no surface); the flag is honoured so the surface can be added without touching the mint.
+- **No `/users` root in tacplus's Spiffe helper.** The record says tacplus v2.2.0 carries
+  `/users/<xid>`; the generated `Spiffe` (pinned 03fccf6 and the registry-and-floor
+  template) does not — `parseSpiffeId("spiffe://td/users/x")` throws. Not needed: the
+  generated authenticator and the gateway read a user token's `namespace` claim and treat
+  its `sub` as opaque, and kernel builds the subject with `Spiffe.userSpiffeId(td, "/",
+  xid)`. Flagged, not fixed, in tacplus.
+- **The token returned at login** is still refresh + access (`TokenMintResponse`), with the
+  new subject. Step 2 puts the session credential in the long-lived slot.
+- Device links (`PersonalPrincipal`, `/people/<pid>`) and `TenantUserLink` are untouched
+  except that their people side now resolves to the XID; they move in step 4.
+
+### Proof
+
+- Kernel: `PeopleTenantMintTest` (XID minted once, resolved on repeat, distinct links are
+  distinct people, `/system` broker mints the `people` token for a Google login no tenant
+  routes, org routing mints the org token and records the membership once, revoked
+  membership refuses, restart round trip of Person + link). `TenantUserLinkTest`,
+  `DeviceWebauthnLinkTest`, `PendingApprovalTest` updated to find the person through the
+  link index.
+- Seatrials: see the next dated entry once the kernel image is rolled.

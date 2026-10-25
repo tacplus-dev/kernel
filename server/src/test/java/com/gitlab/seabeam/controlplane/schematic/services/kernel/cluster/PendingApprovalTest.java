@@ -620,8 +620,11 @@ class PendingApprovalTest {
 		return personSubject(APPLE_SUB);
 	}
 
+	/** The person an Apple login resolved to, found through the link index. */
 	private String personSubject(String appleSub) {
-		return Spiffe.userSpiffeId(TRUST_DOMAIN, PeopleTenant.NAMESPACE, "apple." + appleSub);
+		String xid = principalMap.getIdentityLinks(
+				IdentityServiceImpl.identityLinkKey("apple", appleSub)).getXid();
+		return SpiffeIds.userSubject(TRUST_DOMAIN, xid);
 	}
 
 	private String personKey() {

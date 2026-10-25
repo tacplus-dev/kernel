@@ -132,9 +132,13 @@ class UserRefreshTokenLifetimeTest {
 					.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
 					.setExp(exp)
 					.setOfflineAccess(offlineAccess)
+					// A Google login is a person: oauth relays the IdP's own
+					// sub as origin_sub, and the people arm resolves the XID by it.
 					.setClaims(Struct.newBuilder()
 							.putFields("origin_iss", Value.newBuilder()
 									.setStringValue("https://accounts.google.com").build())
+							.putFields("origin_sub", Value.newBuilder()
+									.setStringValue("alice-idp-sub").build())
 							.build())
 					.build());
 		} finally {

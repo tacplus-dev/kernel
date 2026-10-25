@@ -302,9 +302,12 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	/** Serializes the people-tenant mint's find-or-create; see {@link #mintPersonToken}. */
 	private final Object personRegistryLock = new Object();
 
+	/** Mints XIDs; see {@link #newXid}. */
+	private static final java.security.SecureRandom XID_RANDOM = new java.security.SecureRandom();
+
 	/**
 	 * The effective {@code Config.people_signups_paused}, read on every first
-	 * login; see {@link #findOrCreatePerson}. Off until kernel wires in the
+	 * login; see {@link #resolveOrCreatePerson}. Off until kernel wires in the
 	 * runtime override ({@code ConfigOverrides}).
 	 */
 	private volatile java.util.function.BooleanSupplier peopleSignupsPaused = () -> false;
@@ -464,7 +467,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				: WebauthnProof.RelyingParty.NONE;
 	}
 
-	/** Wires the sign-ups kill switch; see {@link #findOrCreatePerson}. */
+	/** Wires the sign-ups kill switch; see {@link #resolveOrCreatePerson}. */
 	void setPeopleSignupsPaused(java.util.function.BooleanSupplier peopleSignupsPaused) {
 		this.peopleSignupsPaused = peopleSignupsPaused;
 	}
@@ -718,16 +721,17 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		switch (brokerKind) {
 			case AUTH_BROKER_KIND_IDP:
 				// The broker validated the IdP assertion itself; kernel trusts the
-				// attestation and carries the broker in azp. Today's path.
+				// attestation and carries the broker in azp.
 				//
-				// One exception: a broker whose own identity is rooted at the
-				// reserved `people` tenant mints PEOPLE, not tenant users — the
-				// subject is derived from the verified IdP claims rather than taken
-				// from request.subject, and the row is created on first sight. The
-				// delegate's own tenant_namespace is what selects the arm, per the
-				// 2026-09-08 ruling that the namespace is stamped from the minting
-				// delegate's identity and never from OPA output.
-				if (PeopleTenant.NAMESPACE.equals(broker.getTenantNamespace())) {
+				// A login through one of the people providers (PeopleTenant's fixed
+				// table, matched on the verified origin_iss) is a PERSON: the subject
+				// is the XID the (idp_id, sub) link resolves to — created on first
+				// sight — never request.subject. The issuer selects the arm, not the
+				// broker's own namespace: a fleet runs ONE oauth instance, rooted at
+				// /system, and it brokers every login (identity decision record
+				// 2026-10-25, step 1). Any other issuer is an ordinary tenant login
+				// on the path below, unchanged, until tenant IdPs carry an idp_id.
+				if (PeopleTenant.providerForIssuer(claimString(request.getClaims(), "origin_iss")) != null) {
 					return mintPersonToken(request, callerSub);
 				}
 				break;
@@ -787,65 +791,68 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	}
 
 	/**
-	 * The {@code people}-tenant arm of the IdP mint: the first login for a
-	 * (provider, subject) pair CREATES that person's user row, and every login
-	 * after it finds the same row. Same human, same user, from any device or
-	 * browser.
+	 * The people arm of the IdP mint (identity decision record 2026-10-25,
+	 * step 1): a login through one of the fixed people providers resolves to a
+	 * PERSON — {@code spiffe://<td>/users/<xid>} — through the
+	 * {@code (idp_id, provider_subject)} link, created on first sight together
+	 * with the XID and its {@code people} membership. Same human, same XID, from
+	 * any device, browser or provider identity linked to it.
 	 *
 	 * <p>Nothing identifying is taken from the request except the claims the
 	 * broker already verified. {@code request.subject} is ignored the way the
-	 * device arm ignores it: the subject minted here is derived from
-	 * {@code origin_iss} and {@code origin_sub} — the IdP's own issuer and
-	 * subject, which oauth copies verbatim out of the id_token it verified — so
-	 * there is no field a broker could point at somebody else's person.
+	 * device arm ignores it: the link key is derived from {@code origin_iss} and
+	 * {@code origin_sub} — the IdP's own issuer and subject, which oauth copies
+	 * verbatim out of the id_token it verified — so there is no field a broker
+	 * could point at somebody else's person.
 	 *
-	 * <p>The issuer is matched against {@link PeopleTenant}'s fixed table rather
-	 * than against the tenant's configured providers. The tenant's IdP set is
-	 * fixed in the proto enum, and checking it here means a broker misconfigured
-	 * with a third issuer mints nothing rather than minting a person keyed to an
-	 * issuer this tenant does not recognise.
-	 *
-	 * <p>The claims ARE relayed into OPA, unlike the device arm: on this path the
-	 * broker attested the login, so OPA is entitled to see what it attested. The
-	 * NAMESPACE is not OPA's to name — it is stamped {@code /tenants/people}
-	 * from the delegate's own identity, per the 2026-09-08 ruling.
+	 * <p>OPA is asked ONCE, for the tenant the login routes to (the claim
+	 * matchers) and for entitlements. The tenants this login vouches for are
+	 * that tenant, if any, plus {@code people}, which every login activates. The
+	 * token minted is the org's when one is routed — an org login activates the
+	 * org AND people — and {@code people}'s otherwise: a login no tenant routes
+	 * is a person, not a refusal. The namespace is stamped here from kernel's
+	 * own resolution, never read back out of OPA by mintUserTokenInternal.
 	 */
 	private Tokenrequest.TokenMintResponse mintPersonToken(
 			Tokenrequest.MintUserTokenRequest request, String callerSub) throws StatusException {
 		Struct claims = request.getClaims();
 		String issuer = claimString(claims, "origin_iss");
 		String providerSubject = claimString(claims, "origin_sub");
-		if (issuer == null || providerSubject == null) {
+		Kernel.PeopleIdpProvider provider = issuer == null ? null : PeopleTenant.providerForIssuer(issuer);
+		if (provider == null || providerSubject == null) {
 			throw new StatusException(Status.UNAUTHENTICATED,
-					"people-tenant login carries no verified origin_iss/origin_sub claims");
+					"people login carries no verified origin_iss/origin_sub claims");
 		}
-		Kernel.PeopleIdpProvider provider = PeopleTenant.providerForIssuer(issuer);
-		if (provider == null) {
-			throw new StatusException(Status.PERMISSION_DENIED,
-					"issuer " + issuer + " is not one of the people tenant's fixed providers");
-		}
-		String userId = PeopleTenant.userId(provider, providerSubject);
-		String subject = Spiffe.userSpiffeId(trustDomainReader.get(), PeopleTenant.NAMESPACE, userId);
+		String idpId = PeopleTenant.idpId(provider);
 
-		// Read-check-write, serialized, for the same reason CreatePersonalPrincipal
-		// serializes registration: two concurrent first logins for one pair both
-		// see the row absent. Here they would both write the SAME key, so nothing
-		// is duplicated — but the later write would reset created_at_ms, and the
-		// cap check could be overshot. Node-local, like the other guards in this
-		// file that want a cluster lock and have none.
+		Userentitlements.EntitlementEvalResult opaResult =
+				resolveEntitlementsViaOpa(claims, request.getTraceId());
+		String routedTenant = opaResult.getNamespace();
+		String namespace = routedTenant.isEmpty() ? PeopleTenant.NAMESPACE : routedTenant;
+
+		// Read-check-write, serialized: two concurrent first logins for one link
+		// must not mint two XIDs. Node-local, like the other guards in this file
+		// that want a cluster lock and have none.
+		Kernel.Person person;
 		synchronized (personRegistryLock) {
-			findOrCreatePerson(userId, provider, providerSubject);
+			person = resolveOrCreatePerson(idpId, providerSubject);
+			if (!routedTenant.isEmpty()) {
+				person = ensureMembership(person, routedTenant);
+			}
 		}
 
-		return mintUserTokenInternal(subject, claims, request.getExp(), request.getTraceId(),
-				callerSub, request.getOfflineAccess(), PeopleTenant.NAMESPACE);
+		return mintUserTokenInternal(
+				SpiffeIds.userSubject(trustDomainReader.get(), person.getXid()),
+				claims, request.getExp(), callerSub, request.getOfflineAccess(), namespace, opaResult);
 	}
 
 	/**
-	 * Returns the person keyed by {@code userId}, creating the row on first
-	 * sight. Call under {@link #personRegistryLock}.
+	 * The person a verified {@code (idp_id, provider_subject)} resolves to,
+	 * created on first sight: a fresh XID, the {@code Person} row with this as
+	 * its first link and its {@code people} membership, and the index row that
+	 * finds it on every login after. Call under {@link #personRegistryLock}.
 	 *
-	 * <p>While {@code people_signups_paused} is in effect a pair with no row is
+	 * <p>While {@code people_signups_paused} is in effect a link with no row is
 	 * refused rather than created; a person who already has one is unaffected.
 	 *
 	 * <p>A disabled person mints nothing: the row is marked, never deleted (the
@@ -853,48 +860,62 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * only thing that keeps a disabled person from signing straight back in is
 	 * this check.
 	 *
-	 * <p>Package-private so the create/find behaviour can be proven directly:
-	 * the mint that wraps it cannot complete until tacplus stops reserving
-	 * {@code people} as a tenant name (see the slice's decision doc), and the
-	 * storage semantics are not the thing that blocker is about.
+	 * <p>Package-private so the create/find behaviour can be proven directly.
 	 */
-	void findOrCreatePerson(String userId, Kernel.PeopleIdpProvider provider,
-			String providerSubject) throws StatusException {
+	Kernel.Person resolveOrCreatePerson(String idpId, String providerSubject) throws StatusException {
+		String linkKey = identityLinkKey(idpId, providerSubject);
+		Kernel.IdentityLinkRow link = principalMap.getIdentityLinks(linkKey);
+		if (!link.getXid().isEmpty()) {
+			Kernel.Person existing = principalMap.getPeople(link.getXid());
+			if (existing.getXid().isEmpty()) {
+				// The index names a person the registry does not hold. The write
+				// side cannot produce this; refuse rather than mint a second XID
+				// for a link that already has one.
+				throw new StatusException(Status.INTERNAL, "identity link names an unknown person");
+			}
+			if (existing.getDisabledAtMs() != 0) {
+				throw new StatusException(Status.PERMISSION_DENIED, "person is disabled");
+			}
+			return existing;
+		}
+		// The sign-ups kill switch refuses the create half only: everyone with a
+		// row signed in above, and a link kernel has never seen mints nothing.
+		if (peopleSignupsPaused.getAsBoolean()) {
+			throw new StatusException(Status.PERMISSION_DENIED, "sign-ups are paused: no new person is created");
+		}
 		Kernel.PrincipalState registry;
 		try {
 			registry = principalMap.proto();
 		} catch (ProtoException e) {
 			throw new StatusException(Status.INTERNAL, "principal registry unavailable");
 		}
-		Kernel.Person existing = null;
-		for (Kernel.Person person : registry.getPeopleList()) {
-			if (userId.equals(person.getUserId())) {
-				existing = person;
-				break;
-			}
-		}
-		if (existing != null) {
-			if (existing.getDisabledAtMs() != 0) {
-				throw new StatusException(Status.PERMISSION_DENIED, "person is disabled");
-			}
-			return;
-		}
-		// The sign-ups kill switch refuses the create half only: everyone with a
-		// row signed in above, and a pair kernel has never seen mints nothing.
-		if (peopleSignupsPaused.getAsBoolean()) {
-			throw new StatusException(Status.PERMISSION_DENIED, "sign-ups are paused: no new person is created");
-		}
 		if (registry.getPeopleCount() >= MAX_PEOPLE) {
 			throw new StatusException(Status.RESOURCE_EXHAUSTED, "people registry is full");
 		}
+		String xid = newXid();
+		while (!principalMap.getPeople(xid).getXid().isEmpty()) {
+			// Never reused: a collision, however unlikely, must not land on an
+			// existing person.
+			xid = newXid();
+		}
+		long nowMs = System.currentTimeMillis();
 		Kernel.Person person = Kernel.Person.newBuilder()
-				.setUserId(userId)
-				.setProvider(provider)
-				.setProviderSubject(providerSubject)
-				.setCreatedAtMs(System.currentTimeMillis())
+				.setXid(xid)
+				.setCreatedAtMs(nowMs)
+				.addLinks(Kernel.IdentityLink.newBuilder()
+						.setIdpId(idpId)
+						.setProviderSubject(providerSubject)
+						.setCreatedAtMs(nowMs))
+				.addMemberships(Kernel.PersonMembership.newBuilder()
+						.setTenantNamespace(PeopleTenant.NAMESPACE)
+						.setCreatedAtMs(nowMs))
 				.build();
 		try {
-			principalMap.putPeople(userId, person);
+			principalMap.putPeople(xid, person);
+			principalMap.putIdentityLinks(linkKey, Kernel.IdentityLinkRow.newBuilder()
+					.setLinkKey(linkKey)
+					.setXid(xid)
+					.build());
 		} catch (ProtoException e) {
 			throw new StatusException(Status.INTERNAL, "person could not be recorded: " + e.getMessage());
 		}
@@ -903,7 +924,60 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		if (writeIdentitySnapshot != null) {
 			writeIdentitySnapshot.run();
 		}
-		logger.info("Created person: user_id={} provider={}", userId, provider.name());
+		logger.info("Created person: xid={} idp_id={}", xid, idpId);
+		return person;
+	}
+
+	/**
+	 * Records that {@code tenantNamespace}'s IdP routed this person into it, the
+	 * first time it does. An org membership is written once, at the first org
+	 * login; every login after that reads it — the mint-time "membership still
+	 * exists" check — and writes nothing. A revoked membership is not revived
+	 * here: an org that removed a member stays removed until the mark is lifted
+	 * by the surface that set it. Call under {@link #personRegistryLock}.
+	 */
+	private Kernel.Person ensureMembership(Kernel.Person person, String tenantNamespace)
+			throws StatusException {
+		for (Kernel.PersonMembership membership : person.getMembershipsList()) {
+			if (tenantNamespace.equals(membership.getTenantNamespace())) {
+				if (membership.getRevokedAtMs() != 0) {
+					throw new StatusException(Status.PERMISSION_DENIED,
+							"membership of " + tenantNamespace + " is revoked");
+				}
+				return person;
+			}
+		}
+		Kernel.Person updated = person.toBuilder()
+				.addMemberships(Kernel.PersonMembership.newBuilder()
+						.setTenantNamespace(tenantNamespace)
+						.setCreatedAtMs(System.currentTimeMillis()))
+				.build();
+		try {
+			principalMap.putPeople(updated.getXid(), updated);
+		} catch (ProtoException e) {
+			throw new StatusException(Status.INTERNAL, "membership could not be recorded: " + e.getMessage());
+		}
+		if (writeIdentitySnapshot != null) {
+			writeIdentitySnapshot.run();
+		}
+		logger.info("Recorded membership: xid={} tenant={}", updated.getXid(), tenantNamespace);
+		return updated;
+	}
+
+	/** The link index key: {@code <idp_id>|<provider_subject>}. Neither half may contain the separator. */
+	static String identityLinkKey(String idpId, String providerSubject) {
+		return idpId + LINK_KEY_SEPARATOR + providerSubject;
+	}
+
+	/**
+	 * A fresh XID: 128 random bits as lower-case hex, which is a legal SPIFFE
+	 * path segment as it stands. Random rather than derived from anything, so it
+	 * names no tenant, cluster or IdP and survives every change to all three.
+	 */
+	private static String newXid() {
+		byte[] bytes = new byte[16];
+		XID_RANDOM.nextBytes(bytes);
+		return java.util.HexFormat.of().formatHex(bytes);
 	}
 
 	/** The value of a string claim, or null when it is absent or not a non-empty string. */
@@ -993,7 +1067,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			recordLink(b, a, createdAt);
 		}
 		// The registry's durability is the disk snapshot, and nothing else on this
-		// path triggers one — the same reason findOrCreatePerson fires it.
+		// path triggers one — the same reason resolveOrCreatePerson fires it.
 		if (writeIdentitySnapshot != null) {
 			writeIdentitySnapshot.run();
 		}
@@ -1039,24 +1113,17 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		Kernel.PeopleIdpProvider provider = PeopleTenant.providerForIssuer(issuer);
 		if (provider != null) {
-			// A people side is a login into the reserved tenant, and only that
-			// tenant's own broker may attest one — the same gate doMintUserToken
-			// uses to reach the people arm, for the same reason. Without it any
-			// delegate trusted to broker some other tenant's IdP could name an
-			// Apple subject and link itself to a person it never authenticated.
-			if (!PeopleTenant.NAMESPACE.equals(broker.getTenantNamespace())) {
-				throw new StatusException(Status.PERMISSION_DENIED,
-						"only the people tenant's own broker may attest a people-tenant link side");
-			}
-			String userId = PeopleTenant.userId(provider, providerSubject);
-			// A link may be the first time this person has been seen. Creating the
-			// row here is still "only an IdP creates a person": the claims this
-			// derives from are an IdP login the broker just verified.
+			// A people side is a person, resolved exactly as the mint resolves one:
+			// by the (idp_id, sub) link, created on first sight. The same broker
+			// that attests a login attests a link side — an IdP broker is trusted
+			// for IdP assertions whatever namespace it is rooted at, since the
+			// fleet's one oauth instance brokers every login.
+			Kernel.Person person;
 			synchronized (personRegistryLock) {
-				findOrCreatePerson(userId, provider, providerSubject);
+				person = resolveOrCreatePerson(PeopleTenant.idpId(provider), providerSubject);
 			}
 			return new LinkedUser(PeopleTenant.NAMESPACE,
-					Spiffe.userSpiffeId(trustDomainReader.get(), PeopleTenant.NAMESPACE, userId));
+					SpiffeIds.userSubject(trustDomainReader.get(), person.getXid()));
 		}
 
 		// Any other side is an ordinary tenant login, and its namespace is OPA's
@@ -1125,15 +1192,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		if (PeopleTenant.providerForIssuer(issuer) == null) {
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"a device links to a person; the other side is not a people-tenant login");
-		}
-		// The people-side gate, applied HERE and not left to resolveLinkSide.
-		// Resolving a device side REGISTERS its credential, and resolution runs
-		// side a before side b — so a device broker outside the people tenant
-		// would get a row written before the gate that refuses it ever fired.
-		// Same check, same reason as resolveLinkSide's; only the moment differs.
-		if (!PeopleTenant.NAMESPACE.equals(broker.getTenantNamespace())) {
-			throw new StatusException(Status.PERMISSION_DENIED,
-					"only the people tenant's own broker may attest a people-tenant link side");
 		}
 
 		DeviceCredential credential = deviceCredential(device);
@@ -1299,7 +1357,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 *
 	 * <p>Call under {@link #linkRegistryLock}: read-modify-write on one row, the
 	 * same shape and the same node-local limitation as
-	 * {@link #findOrCreatePerson}'s.
+	 * {@link #resolveOrCreatePerson}'s.
 	 */
 	private long recordLink(LinkedUser owner, LinkedUser peer, long now) throws StatusException {
 		Kernel.TenantUserLinks existing = principalMap.getTenantUserLinks(owner.key());
@@ -1739,6 +1797,22 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			long requestedExp, String traceId, String delegateSubject,
 			boolean offlineAccess, @Nullable String stampedNamespace)
 			throws StatusException {
+		// Resolve entitlements via UncleOPA.
+		return mintUserTokenInternal(subject, claims, requestedExp, delegateSubject,
+				offlineAccess, stampedNamespace, resolveEntitlementsViaOpa(claims, traceId));
+	}
+
+	/**
+	 * As {@link #mintUserTokenInternal(String, Struct, long, String, String, boolean, String)},
+	 * with the OPA result already in hand — the people arm evaluates OPA once to
+	 * learn which tenant the login routes to and then mints with that answer,
+	 * rather than asking twice.
+	 */
+	private Tokenrequest.TokenMintResponse mintUserTokenInternal(
+			String subject, com.google.protobuf.Struct claims,
+			long requestedExp, String delegateSubject, boolean offlineAccess,
+			@Nullable String stampedNamespace, Userentitlements.EntitlementEvalResult opaResult)
+			throws StatusException {
 
 		Kernel.Delegate delegate = findDelegateBySubject(delegateSubject);
 		if (delegate == null) {
@@ -1746,8 +1820,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					"delegate not found: " + delegateSubject);
 		}
 
-		// Resolve entitlements via UncleOPA.
-		Userentitlements.EntitlementEvalResult opaResult = resolveEntitlementsViaOpa(claims, traceId);
 		Entitlements.TokenEntitlements expanded = expandEntitlements(opaResult);
 
 		// Mint the token.

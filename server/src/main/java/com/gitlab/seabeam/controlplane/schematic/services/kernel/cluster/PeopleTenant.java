@@ -20,8 +20,10 @@ import org.slf4j.LoggerFactory;
  * The reserved {@code people} tenant: the one deliberate special case in the
  * namespace tree, stated here rather than hidden.
  *
- * <p>A person is a user in this tenant — {@code /tenants/people/users/<u>} —
- * and everything about the tenant except three things is ordinary. The three:
+ * <p>It is the DEFAULT tenant: every person ({@code spiffe://<td>/users/<xid>})
+ * is a member from first login, and a person's personal token is this tenant's
+ * access token. Everything about the tenant except three things is ordinary.
+ * The three:
  *
  * <ol>
  *   <li><b>The platform knows it exists ahead of time.</b> Kernel creates the
@@ -37,10 +39,11 @@ import org.slf4j.LoggerFactory;
  *       namespace, so no token is ever entitled to administer it.</li>
  * </ol>
  *
- * <p>Decision doc: {@code identity-people-tenant-devices-private-2026-09-21}
- * §1, which supersedes the {@code /people/<principal_id>} root the device path
- * ({@code PersonalPrincipal}) still uses. Migrating that path onto this shape
- * is §3 work and is deliberately not done here.
+ * <p>Decision record: {@code identity-session-credential-2026-10-25}, which
+ * replaces the provider-keyed user row of
+ * {@code identity-people-tenant-devices-private-2026-09-21} §1 with the XID.
+ * Both supersede the {@code /people/<principal_id>} root the device path
+ * ({@code PersonalPrincipal}) still uses; that path moves in the record's step 4.
  */
 final class PeopleTenant {
 
@@ -93,47 +96,17 @@ final class PeopleTenant {
 		return null;
 	}
 
-	/** The token name of a provider ({@code apple}, {@code google}). */
-	static String providerToken(Kernel.PeopleIdpProvider provider) {
+	/**
+	 * The fixed IdP record id of a provider ({@code apple}, {@code google}): the
+	 * {@code idp_id} half of an {@code IdentityLink}. Pre-registered and fixed,
+	 * never the issuer URL, which is a mutable attribute of the record.
+	 */
+	static String idpId(Kernel.PeopleIdpProvider provider) {
 		return switch (provider) {
 			case PEOPLE_IDP_PROVIDER_APPLE -> "apple";
 			case PEOPLE_IDP_PROVIDER_GOOGLE -> "google";
-			default -> throw new IllegalArgumentException("no token for " + provider);
+			default -> throw new IllegalArgumentException("no idp id for " + provider);
 		};
-	}
-
-	/**
-	 * The {@code <u>} in {@code /tenants/people/users/<u>}: the provider token,
-	 * a dot, and the provider's own {@code sub} verbatim.
-	 *
-	 * <p>Derived rather than minted, and with no hash of our own: the provider's
-	 * subject is already stable and unique within that provider, so the same
-	 * human lands on the same row from any device with no lookup table to keep
-	 * consistent. Neither provider token contains a dot, so the first one is an
-	 * unambiguous delimiter and the pair is recoverable from the id. Both
-	 * providers' subjects fit the segment grammar today — Apple's are dotted
-	 * hex, Google's decimal — so this is the branch every real login takes.
-	 *
-	 * <p>A subject that does NOT fit the grammar goes through
-	 * {@link Spiffe#opaqueSegment}, the generated, cross-language-stable
-	 * derivation, with the provider token as its {@code kind} so one provider's
-	 * subject can never collide with another's. Nothing is lost by it: the
-	 * {@code Person} row keeps the provider and the raw subject as fields, which
-	 * is exactly the "preserve the original external value" that helper's
-	 * contract requires.
-	 *
-	 * <p>{@link Spiffe#normalizeSegment} is the grammar oracle rather than a
-	 * pattern of our own, so the id and the SPIFFE path it becomes can never
-	 * disagree about what a legal segment is.
-	 */
-	static String userId(Kernel.PeopleIdpProvider provider, String providerSubject) {
-		String token = providerToken(provider);
-		String derived = token + "." + providerSubject;
-		try {
-			return Spiffe.normalizeSegment(derived);
-		} catch (IllegalArgumentException e) {
-			return Spiffe.opaqueSegment(token, providerSubject);
-		}
 	}
 
 	/**

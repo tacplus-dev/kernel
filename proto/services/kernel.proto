@@ -1199,20 +1199,23 @@ message WorkloadState {
 }
 
 // ============================================================================
-// The reserved `people` tenant
+// People: the XID, its links, and the reserved `people` tenant
 // ============================================================================
 //
-// A person is a user in the `people` tenant: /tenants/people/users/<u>. That
-// tenant is RESERVED, and this is the one deliberate special case in the
-// namespace tree, stated here rather than hidden: it has no admin, its IdP set
-// is fixed to the two providers below, and kernel creates it at boot instead of
-// an operator creating it through TenantAdmin (which refuses the name).
-// Everything else about it — its TenantConfig, its oauth slice, the SPIFFE
-// shape of its users — is an ordinary tenant.
+// A human is spiffe://<td>/users/<xid>. The XID is minted at first login,
+// random, immutable, never reused, and names no tenant, cluster or IdP. The
+// `people` tenant is the DEFAULT tenant every XID is a member of from first
+// login: RESERVED, always present, no admin, its IdP set fixed to the providers
+// below, created by kernel at boot rather than through TenantAdmin (which
+// refuses the name). The personal token IS the `people` tenant's access token
+// (sub = /users/<xid>, namespace = /tenants/people): every token is a tenant
+// token, so the authorizer's single-namespace model is unchanged.
 //
-// (Decision doc: identity-people-tenant-devices-private-2026-09-21 §1. It
-// supersedes the /people/<principal_id> root that PersonalPrincipal below still
-// uses; migrating the device path onto this shape is §3 work, not done here.)
+// (Decision record: identity-session-credential-2026-10-25. It replaces the
+// provider-keyed /tenants/people/users/<provider>.<sub> row of
+// identity-people-tenant-devices-private-2026-09-21 §1, and supersedes the
+// /people/<principal_id> root that PersonalPrincipal below still uses; the
+// device path moves onto the XID in the record's step 4.)
 
 // PeopleIdpProvider is the CLOSED set of identity providers the `people` tenant
 // accepts. Closed is the point: "one provider identity = one person" only holds
@@ -1240,34 +1243,73 @@ message PeopleIdpCredential {
   string client_secret = 3 [(spec.assert_required) = true, (spec.assert_min_size) = 1];
 }
 
-// Person is one human: a user row in the reserved `people` tenant, created the
-// first time an IdP token for its (provider, provider_subject) pair is seen and
-// found on every login after that, from any device or browser.
-//
-// One provider identity is one person. A human who signs in with both Apple and
-// Google is two Person rows until an explicit, both-sides-proven merge exists —
-// guessing they are the same human is how accounts get hijacked.
-message Person {
-  // user_id is the <u> in /tenants/people/users/<u>. It is DERIVED, not minted:
-  // "<provider>.<provider_subject>", with the provider drawn from the closed
-  // enum above (neither `apple` nor `google` contains a '.', so the first dot is
-  // an unambiguous delimiter). The provider's subject is already stable and
-  // unique within that provider, so there is no hash of our own to keep
-  // consistent, and the same human lands on the same row without a lookup
-  // table.
-  string user_id = 1 [
-    (spec.indexed) = true, (spec.assert_required) = true,
-    (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
-  // provider is which IdP proved this person.
-  PeopleIdpProvider provider = 2 [(spec.assert_enum_defined) = true];
+// IdentityLink is one provider identity bound to a person: (idp_id,
+// provider_subject). One provider identity belongs to exactly one XID. First
+// login creates the XID and its first link; a later login with a linked
+// identity resolves to the same XID.
+message IdentityLink {
+  // idp_id names the IdP record, never its issuer URL (the URL is a mutable
+  // attribute of the record). The fixed people providers carry fixed ids:
+  // `apple`, `google` (PeopleTenant.idpId).
+  string idp_id = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
   // provider_subject is the IdP's own `sub` claim, verbatim. Never an email:
   // an email is reassignable, and comparing them is how one human's rows become
   // another's.
-  string provider_subject = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+  string provider_subject = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+  int64 created_at_ms = 3 [(spec.assert_ge) = 0];
+}
+
+// IdentityLinkRow is the link index: one keyed read from a verified
+// (idp_id, provider_subject) to the XID it belongs to. It is what every login
+// and every access-token mint consult ("the link still exists"), so it is a
+// collection of its own rather than a scan over Person.links.
+message IdentityLinkRow {
+  // link_key is "<idp_id>|<provider_subject>" (IdentityServiceImpl.identityLinkKey).
+  string link_key = 1 [
+    (spec.indexed) = true, (spec.assert_required) = true,
+    (spec.assert_min_size) = 1, (spec.assert_max_size) = 260];
+  string xid = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+}
+
+// PersonMembership is one person's membership of one tenant. `people` is
+// written at first login and never removed; an org's is written the first time
+// the org's IdP routes this person into it. An access token for a tenant is
+// minted only while its membership exists and is not revoked — the read that
+// lets an org removing a member reach a running session at its next mint.
+message PersonMembership {
+  // tenant_namespace is the canonical /tenants/<name> form, never a bare name.
+  string tenant_namespace = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+  int64 created_at_ms = 2 [(spec.assert_ge) = 0];
+  // revoked_at_ms marks, never deletes — the same audit rule Grant.revoked_at_ms states.
+  int64 revoked_at_ms = 3 [(spec.assert_ge) = 0];
+}
+
+// Person is one human, keyed by XID. Created at first login with its first link
+// and its `people` membership; found through the link index on every login
+// after that, from any device or browser.
+message Person {
+  // xid is minted by kernel: random, immutable, never reused. It is the leaf of
+  // the person's SPIFFE id, spiffe://<td>/users/<xid>, so it is a legal path
+  // segment (base32, lower case).
+  string xid = 1 [
+    (spec.indexed) = true, (spec.assert_required) = true,
+    (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
+  // 2026-10-25: provider (2) and provider_subject (3) were the single
+  // provider-derived identity of the superseded row; they are the links now.
+  reserved 2, 3;
+  reserved "provider", "provider_subject";
   int64 created_at_ms = 4 [(spec.assert_ge) = 0];
   // disabled_at_ms marks, never deletes — the same audit rule
   // PersonalPrincipal.disabled_at_ms states.
   int64 disabled_at_ms = 5 [(spec.assert_ge) = 0];
+  // links are the provider identities that resolve to this XID. The index
+  // (PrincipalState.identity_links) is written with them and is the lookup.
+  repeated IdentityLink links = 6 [(spec.assert_max_size) = 64];
+  // memberships are the tenants this person belongs to; `people` is always one.
+  repeated PersonMembership memberships = 7 [(spec.assert_max_size) = 64];
+  // generation is bumped by sign-out-everywhere; a session credential carrying
+  // an older generation mints nothing.
+  int64 generation = 8 [(spec.assert_ge) = 0];
 }
 
 // ============================================================================
@@ -1415,13 +1457,21 @@ message PrincipalState {
     (spec.assert_max_size) = 65536
   ];
 
-  // people is the `people` tenant's user rows, keyed by Person.user_id. It
-  // lives in THIS boundary rather than one of its own because it is the same
-  // registry: kernel's record of which humans exist, kernel-only and unexported
-  // for the same reason personal_principals is. PersonalPrincipal is the
-  // superseded /people/<pid> shape and goes away with the device slice; Person
-  // is what remains.
+  // people is every human kernel knows, keyed by Person.xid. It lives in THIS
+  // boundary rather than one of its own because it is the same registry:
+  // kernel's record of which humans exist, kernel-only and unexported for the
+  // same reason personal_principals is. PersonalPrincipal is the superseded
+  // /people/<pid> shape and goes away with the device slice; Person is what
+  // remains.
   repeated Person people = 2 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 65536
+  ];
+
+  // identity_links is the (idp_id, provider_subject) → xid index, keyed by
+  // IdentityLinkRow.link_key. Written together with the Person it points at;
+  // read on every login and every access-token mint.
+  repeated IdentityLinkRow identity_links = 5 [
     (spec.persistence) = true,
     (spec.assert_max_size) = 65536
   ];
@@ -2123,12 +2173,16 @@ message KernelDiskState {
   // after registration would silently de-register every person.
   repeated PersonalPrincipal personal_principals = 10 [(spec.assert_max_size) = 65536];
 
-  // people are the `people` tenant's user rows (PrincipalState.people). Carried
-  // for the same reason personal_principals is: a person is created on their
-  // first IdP login and found by user_id thereafter, so a snapshot that drops
-  // them would silently re-create every person on the first cluster restart —
-  // new row, same id, and any state keyed to created_at gone.
+  // people are the XID-keyed Person rows (PrincipalState.people). Carried for
+  // the same reason personal_principals is: a person is created on their first
+  // IdP login and found through identity_links thereafter, so a snapshot that
+  // drops them would silently mint every person a NEW XID on the first cluster
+  // restart — and an XID is the one thing about a person that must never change.
   repeated Person people = 11 [(spec.assert_max_size) = 65536];
+
+  // identity_links is the link index (PrincipalState.identity_links). Carried
+  // with people, and for the same reason: without it no login finds its person.
+  repeated IdentityLinkRow identity_links = 13 [(spec.assert_max_size) = 65536];
 
   // tenant_user_links are the link rows (PrincipalState.tenant_user_links).
   // Carried for the same reason people is, and more sharply: a link is proven

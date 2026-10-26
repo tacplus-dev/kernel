@@ -587,6 +587,112 @@ class SessionCredentialTest {
 				() -> mergePeople(apple, google, microsoft, true)).getCode());
 	}
 
+	// ------------------------------------------------------------------
+	// Step 4: linked accounts, Unlink, delete account, sign out everywhere
+	// ------------------------------------------------------------------
+
+	/** The linked-accounts screen: the caller's own links and memberships, nobody else's. */
+	@Test
+	void getLinkedAccountsListsTheCallersLinksAndMemberships() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		TokenWrapper microsoft = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "s"));
+		mergePeople(google, google, microsoft, false);
+
+		Kernel.GetLinkedAccountsResponse resp = svc.getLinkedAccounts(callerOf(google),
+				Kernel.GetLinkedAccountsRequest.getDefaultInstance());
+
+		assertEquals(SessionCredential.xidOf(google), resp.getXid());
+		assertEquals(2, resp.getLinksCount());
+		assertEquals(PeopleTenant.NAMESPACE, resp.getMemberships(0).getTenantNamespace());
+	}
+
+	/**
+	 * Unlink removes a sign-in the session is not using; the next login with it
+	 * is a new person. The sign-in the session uses is refused.
+	 */
+	@Test
+	void unlinkRemovesAnotherSignInButNotTheOneInUse() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		TokenWrapper microsoft = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "s"));
+		mergePeople(google, google, microsoft, false);
+
+		assertEquals(ProtoException.FAILED_PRECONDITION, assertThrows(ProtoException.class,
+				() -> unlink(google, "google", GOOGLE_SUB)).getCode(), "not the one you are signed in with");
+
+		unlink(google, "microsoft", MSA_TID + ":" + OID);
+
+		assertEquals(1, person().getLinksCount());
+		TokenWrapper again = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "s"));
+		assertFalse(google.getSubject().equals(again.getSubject()), "an unlinked sign-in starts a new person");
+		assertEquals(ProtoException.NOT_FOUND, assertThrows(ProtoException.class,
+				() -> unlink(google, "apple", "never-linked")).getCode());
+	}
+
+	/** Delete account warns first; confirmed, the person is gone and the sign-in starts over. */
+	@Test
+	void deleteAccountIsWarnedThenTombstonesThePerson() throws Exception {
+		TokenWrapper credential = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		String xid = SessionCredential.xidOf(credential);
+
+		ProtoException warned = assertThrows(ProtoException.class, () -> deleteAccount(credential, false));
+		assertEquals(ProtoException.FAILED_PRECONDITION, warned.getCode());
+		assertTrue(warned.getMessage().contains("cannot be undone"), warned.getMessage());
+		assertEquals(PeopleTenant.NAMESPACE, accessToken(exchange(credential, "")).getNamespace(),
+				"the warning changes nothing");
+
+		deleteAccount(credential, true);
+
+		assertTrue(principalMap.getPeople(xid).getDeletedAtMs() > 0, "the person is tombstoned, not removed");
+		assertEquals(0, principalMap.getPeople(xid).getLinksCount());
+		assertEquals(ProtoException.PERMISSION_DENIED, assertThrows(ProtoException.class,
+				() -> exchange(credential, "")).getCode(), "every credential is dead");
+		TokenWrapper fresh = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		assertFalse(credential.getSubject().equals(fresh.getSubject()), "the XID is never reused");
+	}
+
+	/** Sign out everywhere: the caller's own credential dies too; a new login works. */
+	@Test
+	void signOutEverywhereKillsEveryOutstandingCredential() throws Exception {
+		TokenWrapper one = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		TokenWrapper two = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+
+		svc.revokeSessions(callerOf(one), Kernel.RevokeSessionsRequest.newBuilder()
+				.setCredential(one.getBase64()).build());
+
+		for (TokenWrapper dead : List.of(one, two)) {
+			assertEquals(ProtoException.PERMISSION_DENIED, assertThrows(ProtoException.class,
+					() -> exchange(dead, "")).getCode());
+		}
+		TokenWrapper fresh = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		assertEquals(one.getSubject(), fresh.getSubject(), "the same person signs back in");
+		assertEquals(PeopleTenant.NAMESPACE, accessToken(exchange(fresh, "")).getNamespace());
+	}
+
+	/** Another person's bearer can unlink, delete or sign out nothing of yours. */
+	@Test
+	void step4WritesNeedTheCredentialsOwnBearer() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		TokenWrapper apple = credential(login(APPLE_ISSUER, APPLE_SUB));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, assertThrows(ProtoException.class,
+				() -> svc.deleteAccount(callerOf(apple), Kernel.DeleteAccountRequest.newBuilder()
+						.setCredential(google.getBase64()).setConfirm(true).build())).getCode());
+		assertEquals(ProtoException.PERMISSION_DENIED, assertThrows(ProtoException.class,
+				() -> svc.revokeSessions(callerOf(apple), Kernel.RevokeSessionsRequest.newBuilder()
+						.setCredential(google.getBase64()).build())).getCode());
+		assertEquals(0, person().getDeletedAtMs());
+	}
+
+	private void unlink(TokenWrapper credential, String idpId, String subject) throws Exception {
+		svc.deleteIdentityLink(callerOf(credential), Kernel.DeleteIdentityLinkRequest.newBuilder()
+				.setCredential(credential.getBase64()).setIdpId(idpId).setProviderSubject(subject).build());
+	}
+
+	private void deleteAccount(TokenWrapper credential, boolean confirm) throws Exception {
+		svc.deleteAccount(callerOf(credential), Kernel.DeleteAccountRequest.newBuilder()
+				.setCredential(credential.getBase64()).setConfirm(confirm).build());
+	}
+
 	private TokenWrapper mergePeople(TokenWrapper bearer, TokenWrapper a, TokenWrapper b,
 			boolean confirm) throws Exception {
 		return TokenWrapper.parse(svc.mergePeople(callerOf(bearer), Kernel.MergePeopleRequest.newBuilder()

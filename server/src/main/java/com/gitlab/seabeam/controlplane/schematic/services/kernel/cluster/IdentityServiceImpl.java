@@ -208,17 +208,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	private static final int MAX_PERSONAL_PRINCIPALS = 65536;
 
 	/**
-	 * Cap on {@code PrincipalState.people}, matching the proto's
-	 * {@code assert_max_size} for the same reason {@link #MAX_PERSONAL_PRINCIPALS}
-	 * does: a registry grown past the bound fails validation on the way into the
-	 * disk snapshot, so every later write would be lost rather than the one that
-	 * overflowed.
-	 */
-	private static final int MAX_PEOPLE = 65536;
-
-	/**
 	 * Cap on one user's links, matching {@code TenantUserLinks.links}'s
-	 * {@code assert_max_size} for the same reason {@link #MAX_PEOPLE} matches its
+	 * {@code assert_max_size} for the same reason the people registry's cap matches its
 	 * own: a row grown past the bound fails validation on the way into the disk
 	 * snapshot, losing every later write rather than the one that overflowed.
 	 */
@@ -299,15 +290,16 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	/** Serializes CreatePersonalPrincipal's read-check-write; see the call site. */
 	private final Object personalPrincipalRegistryLock = new Object();
 
-	/** Serializes the people-tenant mint's find-or-create; see {@link #mintPersonToken}. */
-	private final Object personRegistryLock = new Object();
-
-	/** Mints XIDs; see {@link #newXid}. */
-	private static final java.security.SecureRandom XID_RANDOM = new java.security.SecureRandom();
+	/**
+	 * The identity graph — XIDs, links, memberships — behind the people
+	 * service's contract. Kernel state backs it until the people service exists
+	 * (stratum-per-tenant-2026-10-25); nothing else here touches those rows.
+	 */
+	private final IdentityGraph identityGraph;
 
 	/**
 	 * The effective {@code Config.people_signups_paused}, read on every first
-	 * login; see {@link #resolveOrCreatePerson}. Off until kernel wires in the
+	 * login; see {@link IdentityGraph#resolveOrCreate}. Off until kernel wires in the
 	 * runtime override ({@code ConfigOverrides}).
 	 */
 	private volatile java.util.function.BooleanSupplier peopleSignupsPaused = () -> false;
@@ -457,6 +449,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		this.principalMap = java.util.Objects.requireNonNull(principalMap,
 				"principalMap is required — the personal-principal registry backs device login");
 		this.writeIdentitySnapshot = writeIdentitySnapshot != null ? writeIdentitySnapshot : () -> { };
+		this.identityGraph = new KernelIdentityGraph(this.principalMap, this.writeIdentitySnapshot,
+				() -> peopleSignupsPaused.getAsBoolean());
 		// Default to the fail-closed UNIMPLEMENTED verifier so an un-wired kernel
 		// never silently accepts a kubernetes_token.
 		this.kubernetesTokenVerifier =
@@ -467,7 +461,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				: WebauthnProof.RelyingParty.NONE;
 	}
 
-	/** Wires the sign-ups kill switch; see {@link #resolveOrCreatePerson}. */
+	/** Wires the sign-ups kill switch; see {@link IdentityGraph#resolveOrCreate}. */
 	void setPeopleSignupsPaused(java.util.function.BooleanSupplier peopleSignupsPaused) {
 		this.peopleSignupsPaused = peopleSignupsPaused;
 	}
@@ -831,17 +825,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		String routedTenant = opaResult.getNamespace();
 		String namespace = routedTenant.isEmpty() ? PeopleTenant.NAMESPACE : routedTenant;
 
-		// Read-check-write, serialized: two concurrent first logins for one link
-		// must not mint two XIDs. Node-local, like the other guards in this file
-		// that want a cluster lock and have none.
-		Kernel.Person person;
-		boolean first;
-		synchronized (personRegistryLock) {
-			first = principalMap.getIdentityLinks(identityLinkKey(idpId, providerSubject)).getXid().isEmpty();
-			person = resolveOrCreatePerson(idpId, providerSubject);
-			if (!routedTenant.isEmpty()) {
-				person = ensureMembership(person, routedTenant);
-			}
+		IdentityGraph.Resolved resolved = identityGraph.resolveOrCreate(idpId, providerSubject);
+		Kernel.Person person = resolved.person();
+		boolean first = resolved.created();
+		if (!routedTenant.isEmpty()) {
+			person = identityGraph.addMembership(person.getXid(), routedTenant);
 		}
 
 		// The proof records what this login vouched for, now, never re-derived
@@ -853,138 +841,14 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				first, request, callerSub, opaResult);
 	}
 
-	/**
-	 * The person a verified {@code (idp_id, provider_subject)} resolves to,
-	 * created on first sight: a fresh XID, the {@code Person} row with this as
-	 * its first link and its {@code people} membership, and the index row that
-	 * finds it on every login after. Call under {@link #personRegistryLock}.
-	 *
-	 * <p>While {@code people_signups_paused} is in effect a link with no row is
-	 * refused rather than created; a person who already has one is unaffected.
-	 *
-	 * <p>A disabled person mints nothing: the row is marked, never deleted (the
-	 * same audit rule {@code PersonalPrincipal.disabled_at_ms} states), so the
-	 * only thing that keeps a disabled person from signing straight back in is
-	 * this check.
-	 *
-	 * <p>Package-private so the create/find behaviour can be proven directly.
-	 */
+	/** The login's person, created on first sight; see {@link IdentityGraph#resolveOrCreate}. */
 	Kernel.Person resolveOrCreatePerson(String idpId, String providerSubject) throws StatusException {
-		String linkKey = identityLinkKey(idpId, providerSubject);
-		Kernel.IdentityLinkRow link = principalMap.getIdentityLinks(linkKey);
-		if (!link.getXid().isEmpty()) {
-			Kernel.Person existing = principalMap.getPeople(link.getXid());
-			if (existing.getXid().isEmpty()) {
-				// The index names a person the registry does not hold. The write
-				// side cannot produce this; refuse rather than mint a second XID
-				// for a link that already has one.
-				throw new StatusException(Status.INTERNAL, "identity link names an unknown person");
-			}
-			if (existing.getDisabledAtMs() != 0) {
-				throw new StatusException(Status.PERMISSION_DENIED, "person is disabled");
-			}
-			return existing;
-		}
-		// The sign-ups kill switch refuses the create half only: everyone with a
-		// row signed in above, and a link kernel has never seen mints nothing.
-		if (peopleSignupsPaused.getAsBoolean()) {
-			throw new StatusException(Status.PERMISSION_DENIED, "sign-ups are paused: no new person is created");
-		}
-		Kernel.PrincipalState registry;
-		try {
-			registry = principalMap.proto();
-		} catch (ProtoException e) {
-			throw new StatusException(Status.INTERNAL, "principal registry unavailable");
-		}
-		if (registry.getPeopleCount() >= MAX_PEOPLE) {
-			throw new StatusException(Status.RESOURCE_EXHAUSTED, "people registry is full");
-		}
-		String xid = newXid();
-		while (!principalMap.getPeople(xid).getXid().isEmpty()) {
-			// Never reused: a collision, however unlikely, must not land on an
-			// existing person.
-			xid = newXid();
-		}
-		long nowMs = System.currentTimeMillis();
-		Kernel.Person person = Kernel.Person.newBuilder()
-				.setXid(xid)
-				.setCreatedAtMs(nowMs)
-				.addLinks(Kernel.IdentityLink.newBuilder()
-						.setIdpId(idpId)
-						.setProviderSubject(providerSubject)
-						.setCreatedAtMs(nowMs))
-				.addMemberships(Kernel.PersonMembership.newBuilder()
-						.setTenantNamespace(PeopleTenant.NAMESPACE)
-						.setCreatedAtMs(nowMs))
-				.build();
-		try {
-			principalMap.putPeople(xid, person);
-			principalMap.putIdentityLinks(linkKey, Kernel.IdentityLinkRow.newBuilder()
-					.setLinkKey(linkKey)
-					.setXid(xid)
-					.build());
-		} catch (ProtoException e) {
-			throw new StatusException(Status.INTERNAL, "person could not be recorded: " + e.getMessage());
-		}
-		// The registry's durability is the disk snapshot, and nothing else on this
-		// path triggers one — the same reason CreatePersonalPrincipal fires it.
-		if (writeIdentitySnapshot != null) {
-			writeIdentitySnapshot.run();
-		}
-		logger.info("Created person: xid={} idp_id={}", xid, idpId);
-		return person;
+		return identityGraph.resolveOrCreate(idpId, providerSubject).person();
 	}
 
-	/**
-	 * Records that {@code tenantNamespace}'s IdP routed this person into it, the
-	 * first time it does. An org membership is written once, at the first org
-	 * login; every login after that reads it — the mint-time "membership still
-	 * exists" check — and writes nothing. A revoked membership is not revived
-	 * here: an org that removed a member stays removed until the mark is lifted
-	 * by the surface that set it. Call under {@link #personRegistryLock}.
-	 */
-	private Kernel.Person ensureMembership(Kernel.Person person, String tenantNamespace)
-			throws StatusException {
-		for (Kernel.PersonMembership membership : person.getMembershipsList()) {
-			if (tenantNamespace.equals(membership.getTenantNamespace())) {
-				if (membership.getRevokedAtMs() != 0) {
-					throw new StatusException(Status.PERMISSION_DENIED,
-							"membership of " + tenantNamespace + " is revoked");
-				}
-				return person;
-			}
-		}
-		Kernel.Person updated = person.toBuilder()
-				.addMemberships(Kernel.PersonMembership.newBuilder()
-						.setTenantNamespace(tenantNamespace)
-						.setCreatedAtMs(System.currentTimeMillis()))
-				.build();
-		try {
-			principalMap.putPeople(updated.getXid(), updated);
-		} catch (ProtoException e) {
-			throw new StatusException(Status.INTERNAL, "membership could not be recorded: " + e.getMessage());
-		}
-		if (writeIdentitySnapshot != null) {
-			writeIdentitySnapshot.run();
-		}
-		logger.info("Recorded membership: xid={} tenant={}", updated.getXid(), tenantNamespace);
-		return updated;
-	}
-
-	/** The link index key: {@code <idp_id>|<provider_subject>}. Neither half may contain the separator. */
+	/** The link index key: {@code <idp_id>|<provider_subject>}. */
 	static String identityLinkKey(String idpId, String providerSubject) {
-		return idpId + LINK_KEY_SEPARATOR + providerSubject;
-	}
-
-	/**
-	 * A fresh XID: 128 random bits as lower-case hex, which is a legal SPIFFE
-	 * path segment as it stands. Random rather than derived from anything, so it
-	 * names no tenant, cluster or IdP and survives every change to all three.
-	 */
-	private static String newXid() {
-		byte[] bytes = new byte[16];
-		XID_RANDOM.nextBytes(bytes);
-		return java.util.HexFormat.of().formatHex(bytes);
+		return KernelIdentityGraph.linkKey(idpId, providerSubject);
 	}
 
 	/** The value of a string claim, or null when it is absent or not a non-empty string. */
@@ -1240,8 +1104,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private Kernel.Person livePersonOf(TokenWrapper credential) throws StatusException {
 		String xid = SessionCredential.xidOf(credential);
-		Kernel.Person person = xid == null ? Kernel.Person.getDefaultInstance() : principalMap.getPeople(xid);
-		if (person.getXid().isEmpty() || person.getDisabledAtMs() != 0
+		Kernel.Person person = xid == null ? Kernel.Person.getDefaultInstance() : identityGraph.person(xid);
+		if (person.getXid().isEmpty() || person.getDisabledAtMs() != 0 || person.getDeletedAtMs() != 0
 				|| !person.getMergedIntoXid().isEmpty()
 				|| SessionCredential.generationOf(credential) != person.getGeneration()) {
 			throw new StatusException(Status.PERMISSION_DENIED,
@@ -1252,8 +1116,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 	/** The record's first read: the proof's link still resolves to this person. */
 	private boolean linkStillMapsTo(SessionCredential.Proof proof, String xid) {
-		return xid.equals(principalMap.getIdentityLinks(
-				identityLinkKey(proof.idpId(), proof.providerSubject())).getXid());
+		return xid.equals(identityGraph.xidForLink(proof.idpId(), proof.providerSubject()));
 	}
 
 	/** The record's second read: the membership exists and is not revoked. */
@@ -1421,58 +1284,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		TokenWrapper survivorCredential = aSurvives ? a : b;
 		TokenWrapper loserCredential = aSurvives ? b : a;
 
-		Kernel.Person survivor;
-		synchronized (personRegistryLock) {
-			// Re-read under the lock: the rows the checks above saw may have moved.
-			survivor = principalMap.getPeople((aSurvives ? personA : personB).getXid());
-			Kernel.Person loser = principalMap.getPeople((aSurvives ? personB : personA).getXid());
-			if (!loser.getMergedIntoXid().isEmpty() || !survivor.getMergedIntoXid().isEmpty()) {
-				throw new StatusException(Status.PERMISSION_DENIED, "this session is no longer valid: sign in again");
-			}
-			if (!request.getConfirm() && !isFreshFromCredential(loser, loserCredential)) {
-				throw new StatusException(Status.FAILED_PRECONDITION,
-						"that sign-in already belongs to another account; merging moves that account into this one "
-								+ "— confirm to proceed");
-			}
-			Kernel.Person.Builder merged = survivor.toBuilder();
-			for (Kernel.IdentityLink link : loser.getLinksList()) {
-				boolean present = false;
-				for (Kernel.IdentityLink have : survivor.getLinksList()) {
-					present |= have.getIdpId().equals(link.getIdpId())
-							&& have.getProviderSubject().equals(link.getProviderSubject());
-				}
-				if (!present) {
-					merged.addLinks(link);
-				}
-			}
-			for (Kernel.PersonMembership membership : loser.getMembershipsList()) {
-				boolean present = false;
-				for (Kernel.PersonMembership have : survivor.getMembershipsList()) {
-					present |= have.getTenantNamespace().equals(membership.getTenantNamespace());
-				}
-				if (!present) {
-					merged.addMemberships(membership);
-				}
-			}
-			survivor = merged.build();
-			try {
-				principalMap.putPeople(survivor.getXid(), survivor);
-				for (Kernel.IdentityLink link : loser.getLinksList()) {
-					String key = identityLinkKey(link.getIdpId(), link.getProviderSubject());
-					principalMap.putIdentityLinks(key, Kernel.IdentityLinkRow.newBuilder()
-							.setLinkKey(key).setXid(survivor.getXid()).build());
-				}
-				principalMap.putPeople(loser.getXid(), loser.toBuilder()
-						.setMergedIntoXid(survivor.getXid()).build());
-			} catch (ProtoException e) {
-				throw new StatusException(Status.INTERNAL, "merge could not be recorded: " + e.getMessage());
-			}
-			if (writeIdentitySnapshot != null) {
-				writeIdentitySnapshot.run();
-			}
-			logger.info("MergePeople: xid={} absorbed into xid={} ({} link(s) moved, confirmed={})",
-					loser.getXid(), survivor.getXid(), loser.getLinksCount(), request.getConfirm());
-		}
+		Kernel.Person survivor = identityGraph.mergePeople(
+				(aSurvives ? personA : personB).getXid(), (aSurvives ? personB : personA).getXid(),
+				loser -> request.getConfirm() || isFreshFromCredential(loser, loserCredential));
 		return Kernel.MergePeopleResponse.newBuilder()
 				.setCredential(resignCredential(survivorCredential, survivor.getGeneration(), proofs).getProto())
 				.build();
@@ -1495,6 +1309,86 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			}
 		}
 		return false;
+	}
+
+	@Override
+	public Kernel.GetLinkedAccountsResponse getLinkedAccounts(Caller caller,
+			Kernel.GetLinkedAccountsRequest request) throws ProtoException {
+		try {
+			String xid = SessionCredential.xidOfSubject(caller.getSubject());
+			Kernel.Person person = xid == null ? Kernel.Person.getDefaultInstance() : identityGraph.person(xid);
+			if (person.getXid().isEmpty() || person.getDisabledAtMs() != 0 || person.getDeletedAtMs() != 0
+					|| !person.getMergedIntoXid().isEmpty()) {
+				throw new StatusException(Status.PERMISSION_DENIED, "this session is no longer valid: sign in again");
+			}
+			return Kernel.GetLinkedAccountsResponse.newBuilder()
+					.setXid(person.getXid())
+					.addAllLinks(person.getLinksList())
+					.addAllMemberships(person.getMembershipsList())
+					.build();
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		}
+	}
+
+	/**
+	 * Unlink. The link whose proof the presenting credential carries is refused —
+	 * "not the one you are signed in with" — which also means the last link can
+	 * never be unlinked: removing the whole account is DeleteAccount.
+	 */
+	@Override
+	public Kernel.DeleteIdentityLinkResponse deleteIdentityLink(Caller caller,
+			Kernel.DeleteIdentityLinkRequest request) throws ProtoException {
+		try {
+			TokenWrapper credential = verifiedSessionCredential(request.getCredential());
+			requireCallerIs(caller, credential.getSubject());
+			Kernel.Person person = livePersonOf(credential);
+			for (SessionCredential.Proof proof : SessionCredential.proofsOf(credential)) {
+				if (proof.sameIdentity(request.getIdpId(), request.getProviderSubject())) {
+					throw new StatusException(Status.FAILED_PRECONDITION,
+							"that is the sign-in this session uses; sign in with another to remove it");
+				}
+			}
+			identityGraph.removeLink(person.getXid(), request.getIdpId(), request.getProviderSubject());
+			return Kernel.DeleteIdentityLinkResponse.getDefaultInstance();
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		}
+	}
+
+	/** Delete account, warned and two-step: without {@code confirm} it only says what would go. */
+	@Override
+	public Kernel.DeleteAccountResponse deleteAccount(Caller caller,
+			Kernel.DeleteAccountRequest request) throws ProtoException {
+		try {
+			TokenWrapper credential = verifiedSessionCredential(request.getCredential());
+			requireCallerIs(caller, credential.getSubject());
+			Kernel.Person person = livePersonOf(credential);
+			if (!request.getConfirm()) {
+				throw new StatusException(Status.FAILED_PRECONDITION,
+						"deleting this account removes its " + person.getLinksCount() + " sign-in(s) and "
+								+ person.getMembershipsCount() + " tenant membership(s) and signs out every "
+								+ "session; it cannot be undone — confirm to proceed");
+			}
+			identityGraph.deleteAccount(person.getXid());
+			return Kernel.DeleteAccountResponse.getDefaultInstance();
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		}
+	}
+
+	/** Sign out everywhere: one generation bump; every outstanding credential fails at its next mint. */
+	@Override
+	public Kernel.RevokeSessionsResponse revokeSessions(Caller caller,
+			Kernel.RevokeSessionsRequest request) throws ProtoException {
+		try {
+			TokenWrapper credential = verifiedSessionCredential(request.getCredential());
+			requireCallerIs(caller, credential.getSubject());
+			identityGraph.bumpGeneration(livePersonOf(credential).getXid());
+			return Kernel.RevokeSessionsResponse.getDefaultInstance();
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		}
 	}
 
 	@Override
@@ -1698,10 +1592,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			// that attests a login attests a link side — an IdP broker is trusted
 			// for IdP assertions whatever namespace it is rooted at, since the
 			// fleet's one oauth instance brokers every login.
-			Kernel.Person person;
-			synchronized (personRegistryLock) {
-				person = resolveOrCreatePerson(PeopleTenant.idpId(provider), providerSubject);
-			}
+			Kernel.Person person = resolveOrCreatePerson(PeopleTenant.idpId(provider), providerSubject);
 			return new LinkedUser(PeopleTenant.NAMESPACE,
 					SpiffeIds.userSubject(trustDomainReader.get(), person.getXid()));
 		}

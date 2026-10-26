@@ -91,7 +91,15 @@ final class SessionCredential {
 	/** The XID inside a credential's subject, or null if the subject is not a person. */
 	@Nullable
 	static String xidOf(TokenWrapper token) {
-		String subject = token.getSubject();
+		return xidOfSubject(token.getSubject());
+	}
+
+	/** The XID inside a person's subject ({@code spiffe://<td>/users/<xid>}), or null. */
+	@Nullable
+	static String xidOfSubject(String subject) {
+		if (subject == null) {
+			return null;
+		}
 		int at = subject.indexOf("/users/");
 		if (at < 0 || subject.indexOf('/', at + "/users/".length()) >= 0) {
 			return null;

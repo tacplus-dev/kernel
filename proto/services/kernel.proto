@@ -719,6 +719,52 @@ service UserMint {
     };
   }
 
+  // GetLinkedAccounts returns the caller's own linked sign-ins and tenant
+  // memberships — the "linked accounts" screen. The person is the bearer's
+  // subject; there is no argument that could name somebody else.
+  rpc GetLinkedAccounts(GetLinkedAccountsRequest) returns (GetLinkedAccountsResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER]
+    };
+  }
+
+  // DeleteIdentityLink is the record's UNLINK: the write that removes a sign-in
+  // from the caller's person. Refused for a link whose proof is in the
+  // presenting credential ("not the one you are signed in with"). The next
+  // login with that sign-in starts a new person.
+  rpc DeleteIdentityLink(DeleteIdentityLinkRequest) returns (DeleteIdentityLinkResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER]
+    };
+  }
+
+  // DeleteAccount is warned and two-step: without `confirm` it refuses with
+  // FAILED_PRECONDITION describing what would be lost; with it, every link is
+  // revoked, the generation bumped (every credential dies) and the person
+  // tombstoned. The XID is never reused.
+  rpc DeleteAccount(DeleteAccountRequest) returns (DeleteAccountResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER]
+    };
+  }
+
+  // RevokeSessions is SIGN OUT EVERYWHERE: one write, a bump of the person's
+  // generation, after which every outstanding credential — the caller's own
+  // included — mints nothing.
+  rpc RevokeSessions(RevokeSessionsRequest) returns (RevokeSessionsResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER]
+    };
+  }
+
   // RevokeCredentialProof is the record's UNMERGE: it drops one proof from a
   // credential and re-signs it. Stateless — nothing on the person changes; the
   // verb is the registry's closest to "this credential no longer carries that
@@ -733,6 +779,36 @@ service UserMint {
     };
   }
 }
+
+message GetLinkedAccountsRequest {
+  string trace_id = 200;
+}
+message GetLinkedAccountsResponse {
+  string xid = 1;
+  repeated IdentityLink links = 2 [(spec.assert_max_size) = 64];
+  repeated PersonMembership memberships = 3 [(spec.assert_max_size) = 64];
+}
+message DeleteIdentityLinkRequest {
+  // credential is the caller's session credential; the link to remove must
+  // not be one of its proofs.
+  string credential = 1 [(spec.assert_required) = true];
+  string idp_id = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+  string provider_subject = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+  string trace_id = 200;
+}
+message DeleteIdentityLinkResponse {}
+message DeleteAccountRequest {
+  string credential = 1 [(spec.assert_required) = true];
+  // confirm is the second step; without it the call only warns.
+  bool confirm = 2;
+  string trace_id = 200;
+}
+message DeleteAccountResponse {}
+message RevokeSessionsRequest {
+  string credential = 1 [(spec.assert_required) = true];
+  string trace_id = 200;
+}
+message RevokeSessionsResponse {}
 
 message MergePeopleRequest {
   // a and b are two session credentials, compact JWTs. The caller's bearer
@@ -1406,6 +1482,10 @@ message Person {
   // (the record's Link) moved this person's links to the surviving XID. A
   // tombstoned person mints nothing and its XID is never reused.
   string merged_into_xid = 9 [(spec.assert_max_size) = 128];
+  // deleted_at_ms is the account deletion's tombstone (UserMint.DeleteAccount):
+  // the links are revoked, the generation bumped, and the row kept so the XID
+  // is never reused. A deleted person mints nothing.
+  int64 deleted_at_ms = 10 [(spec.assert_ge) = 0];
 }
 
 // ============================================================================

@@ -362,3 +362,33 @@ step 4 multi-login needs.
   console shows "Merge the accounts / Cancel".
 - Not done: device links (`TenantUserLink`/`PersonalPrincipal`) of an absorbed person are not
   moved; Unlink and Delete account are still open.
+
+## 2026-10-26 — Step 4's kernel surface; the identity graph behind the people service's contract
+
+Jody approved steps 3 and 4 (relayed by the hub, 2026-10-25 evening) and, in the Stratum huddle
+(`schematic/roadmap/stratum-per-tenant-2026-10-25.md`), moved the identity graph to a people service
+in the `people` tenant, on that tenant's Stratum.
+
+- **`IdentityGraph`** is that service's contract: resolve-or-create a login's person, add a
+  membership, read a person and a link, Link (merge), Unlink, delete account, bump the generation.
+  **`KernelIdentityGraph`** implements it on kernel's `PrincipalState` as the interim backend (the
+  10-23 rule "behind an interface shaped like the Stratum operations, so the switch is a backend
+  swap"). IdentityServiceImpl no longer touches people or link rows directly; switching to the
+  people service is replacing that one class.
+- **Step 4 RPCs on `UserMint`**, all authenticated by the caller's own access token and, for the
+  writes, the caller's own session credential:
+  - `GetLinkedAccounts` — the caller's links and memberships (the linked-accounts screen).
+  - `DeleteIdentityLink` — the record's Unlink; refused for a sign-in whose proof the presenting
+    credential carries, so the last link can never be unlinked. The next login with an unlinked
+    sign-in starts a new person.
+  - `DeleteAccount` — warned and two-step: without `confirm`, FAILED_PRECONDITION saying what goes;
+    with it, every link revoked, the generation bumped, the person tombstoned (`deleted_at_ms`), the
+    XID never reused.
+  - `RevokeSessions` — sign out everywhere: one generation bump; every outstanding credential,
+    the caller's own included, fails at its next mint.
+  Names follow tacplus's closed verb registry (no "Unlink"; List requires paging).
+- Tests: `SessionCredentialTest` (30), including Unlink of the in-use sign-in refused, delete
+  account warned then tombstoned, sign-out-everywhere killing two credentials, and another
+  person's bearer refused for every write.
+- Not yet on seatrials; the console screens for these (gateway) and step 3's claim matchers
+  (fleet-seatrials) go to their repos' loopers as issues.

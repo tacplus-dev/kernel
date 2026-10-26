@@ -392,3 +392,12 @@ in the `people` tenant, on that tenant's Stratum.
   person's bearer refused for every write.
 - Not yet on seatrials; the console screens for these (gateway) and step 3's claim matchers
   (fleet-seatrials) go to their repos' loopers as issues.
+
+### Seatrials (2026-10-26)
+
+Kernel 77f7c24 and the gateway rebuilt against it are live on seatrials (fleet 3d2ec3a; only kernel and the
+gateway restarted, letsencrypt untouched). Kernel registers `UserMint/GetLinkedAccounts`,
+`DeleteIdentityLink`, `DeleteAccount`, `RevokeSessions`; through the gateway an anonymous call is refused
+(401) and an unknown method is not found (404). The gateway kept its Let's Encrypt certificate across the
+kernel restart (letsencrypt 2c60a0d re-mirrors it when the kernel Watch reconnects). The console screens for
+these RPCs are gateway#2.

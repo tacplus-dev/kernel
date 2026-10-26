@@ -334,3 +334,31 @@ One Google sign-in by Jody at https://seatrials.tacplus.dev through the fleet's 
 
 Before this change the same sign-in failed at MintUserToken with "entitlements policy returned
 no namespace for this caller".
+
+## 2026-10-26 — Microsoft is a people provider; adding a sign-in (Link)
+
+Jody, directly: Microsoft logins get an XID, a signed-in person can add the other providers'
+sign-ins to the same account (to test multi-login), and the sign-in buttons carry the
+providers' logos. This settles the record's open "Microsoft" item and pulls in the part of
+step 4 multi-login needs.
+
+- **Microsoft.** `PeopleIdpProvider.MICROSOFT`; issuer `https://login.microsoftonline.com/<tid>/v2.0`
+  (one per directory, the consumer directory included). Link key `microsoft|<tid>:<oid>`, per
+  the 10-21 huddle's claim table (item 23): `sub` is pairwise per app registration and is not
+  the key; `tid` must be the directory the issuer names. A Microsoft login without `oid`
+  (oauth relays `tid`/`oid` verbatim; the seatrials scopes include `profile`) mints nothing.
+  An Entra work account follows the same trust rule as Google Workspace: routed by a claim
+  matcher it is an org proof, otherwise a personal one.
+- **Adding a sign-in = the record's Link, as `UserMint.MergePeople`** (tacplus's closed verb
+  registry has no "Link"). The console runs the provider flow again; that login mints its own
+  credential (a fresh XID if the identity is new); the console presents both credentials. The
+  older XID survives (huddle item 13); the other's links and memberships move to it, its index
+  rows are repointed, and it is tombstoned (`Person.merged_into_xid`), after which its own
+  credentials mint nothing. The response is the survivor's credential with both proofs. Two
+  credentials of one person are just merged (no write).
+- **Warning path.** A proof now records `first` when its login created the XID. The absorbed
+  person may be folded in without `confirm` only when it is exactly that: one link, its proof
+  `first`, no membership beyond `people`. Otherwise FAILED_PRECONDITION until `confirm`; the
+  console shows "Merge the accounts / Cancel".
+- Not done: device links (`TenantUserLink`/`PersonalPrincipal`) of an absorbed person are not
+  moved; Unlink and Delete account are still open.

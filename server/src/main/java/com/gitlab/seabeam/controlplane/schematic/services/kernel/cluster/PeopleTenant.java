@@ -30,7 +30,7 @@ import org.slf4j.LoggerFactory;
  *       tenant record and its oauth config slice at every boot
  *       ({@link #seed}); no operator creates it through {@code TenantAdmin},
  *       which refuses the name.</li>
- *   <li><b>Its IdP set is fixed.</b> Apple and Google, and only those. A
+ *   <li><b>Its IdP set is fixed.</b> Apple, Google and Microsoft, and only those. A
  *       deployment supplies client credentials; the issuer URL comes from
  *       {@link #issuerUrl} here, so there is no configuration that could point
  *       the tenant at a third issuer.</li>
@@ -62,6 +62,14 @@ final class PeopleTenant {
 	 */
 	private static final String APPLE_ISSUER = "https://appleid.apple.com";
 	private static final String GOOGLE_ISSUER = "https://accounts.google.com";
+	/**
+	 * Microsoft's issuer names the directory: one per tenant id, personal
+	 * accounts included (the consumer directory's fixed id). The common
+	 * endpoint is what a deployment configures; the token's own issuer is this.
+	 */
+	private static final java.util.regex.Pattern MICROSOFT_ISSUER = java.util.regex.Pattern.compile(
+			"^https://login\\.microsoftonline\\.com/([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})/v2\\.0$");
+	private static final String MICROSOFT_COMMON_ISSUER = "https://login.microsoftonline.com/common/v2.0";
 
 	/**
 	 * The scopes the tenant requests from both providers: OIDC's own minimum.
@@ -80,6 +88,7 @@ final class PeopleTenant {
 		return switch (provider) {
 			case PEOPLE_IDP_PROVIDER_APPLE -> APPLE_ISSUER;
 			case PEOPLE_IDP_PROVIDER_GOOGLE -> GOOGLE_ISSUER;
+			case PEOPLE_IDP_PROVIDER_MICROSOFT -> MICROSOFT_COMMON_ISSUER;
 			default -> null;
 		};
 	}
@@ -93,7 +102,33 @@ final class PeopleTenant {
 		if (GOOGLE_ISSUER.equals(issuer)) {
 			return Kernel.PeopleIdpProvider.PEOPLE_IDP_PROVIDER_GOOGLE;
 		}
+		if (issuer != null && MICROSOFT_ISSUER.matcher(issuer).matches()) {
+			return Kernel.PeopleIdpProvider.PEOPLE_IDP_PROVIDER_MICROSOFT;
+		}
 		return null;
+	}
+
+	/**
+	 * The {@code provider_subject} half of a link, from the verified claims, or
+	 * null when they carry none. Apple and Google: the IdP's own {@code sub}
+	 * ({@code origin_sub}). Microsoft: {@code <tid>:<oid>} — {@code sub} is
+	 * pairwise per app registration, {@code oid} is the account's id within its
+	 * directory, and the directory is named by {@code tid}, which must be the
+	 * one the issuer names (identity graph huddle 2026-10-21, item 23).
+	 */
+	@javax.annotation.Nullable
+	static String providerSubject(Kernel.PeopleIdpProvider provider, String issuer,
+			java.util.function.Function<String, String> claim) {
+		if (provider != Kernel.PeopleIdpProvider.PEOPLE_IDP_PROVIDER_MICROSOFT) {
+			return claim.apply("origin_sub");
+		}
+		java.util.regex.Matcher m = MICROSOFT_ISSUER.matcher(issuer);
+		String tid = claim.apply("tid");
+		String oid = claim.apply("oid");
+		if (!m.matches() || tid == null || oid == null || !m.group(1).equalsIgnoreCase(tid)) {
+			return null;
+		}
+		return tid.toLowerCase(java.util.Locale.ROOT) + ":" + oid.toLowerCase(java.util.Locale.ROOT);
 	}
 
 	/**
@@ -105,6 +140,7 @@ final class PeopleTenant {
 		return switch (provider) {
 			case PEOPLE_IDP_PROVIDER_APPLE -> "apple";
 			case PEOPLE_IDP_PROVIDER_GOOGLE -> "google";
+			case PEOPLE_IDP_PROVIDER_MICROSOFT -> "microsoft";
 			default -> throw new IllegalArgumentException("no idp id for " + provider);
 		};
 	}

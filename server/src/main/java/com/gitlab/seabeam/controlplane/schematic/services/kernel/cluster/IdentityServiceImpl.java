@@ -817,11 +817,12 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			Tokenrequest.MintUserTokenRequest request, String callerSub) throws StatusException {
 		Struct claims = request.getClaims();
 		String issuer = claimString(claims, "origin_iss");
-		String providerSubject = claimString(claims, "origin_sub");
 		Kernel.PeopleIdpProvider provider = issuer == null ? null : PeopleTenant.providerForIssuer(issuer);
+		String providerSubject = provider == null ? null
+				: PeopleTenant.providerSubject(provider, issuer, key -> claimString(claims, key));
 		if (provider == null || providerSubject == null) {
 			throw new StatusException(Status.UNAUTHENTICATED,
-					"people login carries no verified origin_iss/origin_sub claims");
+					"people login carries no verified subject claims for its provider");
 		}
 		String idpId = PeopleTenant.idpId(provider);
 
@@ -834,7 +835,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// must not mint two XIDs. Node-local, like the other guards in this file
 		// that want a cluster lock and have none.
 		Kernel.Person person;
+		boolean first;
 		synchronized (personRegistryLock) {
+			first = principalMap.getIdentityLinks(identityLinkKey(idpId, providerSubject)).getXid().isEmpty();
 			person = resolveOrCreatePerson(idpId, providerSubject);
 			if (!routedTenant.isEmpty()) {
 				person = ensureMembership(person, routedTenant);
@@ -847,7 +850,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		List<String> tenants = routedTenant.isEmpty()
 				? List.of(PeopleTenant.NAMESPACE) : List.of(routedTenant, PeopleTenant.NAMESPACE);
 		return mintSessionCredential(person, idpId, providerSubject, tenants, namespace, claims,
-				request, callerSub, opaResult);
+				first, request, callerSub, opaResult);
 	}
 
 	/**
@@ -1017,7 +1020,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private Tokenrequest.TokenMintResponse mintSessionCredential(Kernel.Person person, String idpId,
 			String providerSubject, List<String> tenants, String firstTenant, Struct claims,
-			Tokenrequest.MintUserTokenRequest request, String callerSub,
+			boolean first, Tokenrequest.MintUserTokenRequest request, String callerSub,
 			Userentitlements.EntitlementEvalResult opaResult) throws StatusException {
 		Kernel.Delegate delegate = findDelegateBySubject(callerSub);
 		if (delegate == null) {
@@ -1045,7 +1048,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		}
 		long authTime = claimLong(claims, "origin_auth_time", claimLong(claims, "origin_iat", now));
 		SessionCredential.Proof proof = new SessionCredential.Proof(
-				idpId, providerSubject, authTime, exp, tenants, claims);
+				idpId, providerSubject, authTime, exp, tenants, claims, first);
 
 		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
 		if (signingKey == null) {
@@ -1239,6 +1242,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		String xid = SessionCredential.xidOf(credential);
 		Kernel.Person person = xid == null ? Kernel.Person.getDefaultInstance() : principalMap.getPeople(xid);
 		if (person.getXid().isEmpty() || person.getDisabledAtMs() != 0
+				|| !person.getMergedIntoXid().isEmpty()
 				|| SessionCredential.generationOf(credential) != person.getGeneration()) {
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"this session is no longer valid: sign in again");
@@ -1367,6 +1371,130 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		logger.info("MergeCredentials: xid={}, {} credential(s) -> {} proof(s)",
 				person.getXid(), request.getCredentialsCount(), proofs.size());
 		return Kernel.MergeCredentialsResponse.newBuilder().setCredential(merged.getProto()).build();
+	}
+
+	@Override
+	public Kernel.MergePeopleResponse mergePeople(Caller caller,
+			Kernel.MergePeopleRequest request) throws ProtoException {
+		try {
+			return doMergePeople(caller, request);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		} catch (Exception e) {
+			logger.error("MergePeople failed", e);
+			throw new ProtoException(ProtoException.INTERNAL, "merge failed: " + e.getMessage(), e);
+		}
+	}
+
+	/**
+	 * The record's Link: two credentials of two people, both presented, become
+	 * one person. The older XID survives (identity graph huddle item 13); the
+	 * other's links and memberships move to it, its index rows are repointed,
+	 * and it is tombstoned with a redirect. The response is the survivor's
+	 * credential carrying both credentials' proofs, so the session that asked
+	 * now holds every sign-in it just proved.
+	 *
+	 * <p>The warning path: the absorbed person must be nothing but the identity
+	 * its credential just proved — one link, that link's proof marked
+	 * {@code first} (the XID began at that login), and no membership beyond
+	 * {@code people}. Anything more is somebody's existing account, and moving it
+	 * takes {@code confirm}.
+	 */
+	private Kernel.MergePeopleResponse doMergePeople(Caller caller, Kernel.MergePeopleRequest request)
+			throws StatusException {
+		TokenWrapper a = verifiedSessionCredential(request.getCredentialA());
+		TokenWrapper b = verifiedSessionCredential(request.getCredentialB());
+		if (!caller.getSubject().equals(a.getSubject()) && !caller.getSubject().equals(b.getSubject())) {
+			throw new StatusException(Status.PERMISSION_DENIED, "neither credential is the caller's own");
+		}
+		Kernel.Person personA = livePersonOf(a);
+		Kernel.Person personB = livePersonOf(b);
+		List<SessionCredential.Proof> proofs =
+				SessionCredential.merge(SessionCredential.proofsOf(a), SessionCredential.proofsOf(b));
+		if (personA.getXid().equals(personB.getXid())) {
+			// Same person: this is Merge, and writes nothing.
+			return Kernel.MergePeopleResponse.newBuilder()
+					.setCredential(resignCredential(a, personA.getGeneration(), proofs).getProto())
+					.build();
+		}
+		boolean aSurvives = personA.getCreatedAtMs() <= personB.getCreatedAtMs();
+		TokenWrapper survivorCredential = aSurvives ? a : b;
+		TokenWrapper loserCredential = aSurvives ? b : a;
+
+		Kernel.Person survivor;
+		synchronized (personRegistryLock) {
+			// Re-read under the lock: the rows the checks above saw may have moved.
+			survivor = principalMap.getPeople((aSurvives ? personA : personB).getXid());
+			Kernel.Person loser = principalMap.getPeople((aSurvives ? personB : personA).getXid());
+			if (!loser.getMergedIntoXid().isEmpty() || !survivor.getMergedIntoXid().isEmpty()) {
+				throw new StatusException(Status.PERMISSION_DENIED, "this session is no longer valid: sign in again");
+			}
+			if (!request.getConfirm() && !isFreshFromCredential(loser, loserCredential)) {
+				throw new StatusException(Status.FAILED_PRECONDITION,
+						"that sign-in already belongs to another account; merging moves that account into this one "
+								+ "— confirm to proceed");
+			}
+			Kernel.Person.Builder merged = survivor.toBuilder();
+			for (Kernel.IdentityLink link : loser.getLinksList()) {
+				boolean present = false;
+				for (Kernel.IdentityLink have : survivor.getLinksList()) {
+					present |= have.getIdpId().equals(link.getIdpId())
+							&& have.getProviderSubject().equals(link.getProviderSubject());
+				}
+				if (!present) {
+					merged.addLinks(link);
+				}
+			}
+			for (Kernel.PersonMembership membership : loser.getMembershipsList()) {
+				boolean present = false;
+				for (Kernel.PersonMembership have : survivor.getMembershipsList()) {
+					present |= have.getTenantNamespace().equals(membership.getTenantNamespace());
+				}
+				if (!present) {
+					merged.addMemberships(membership);
+				}
+			}
+			survivor = merged.build();
+			try {
+				principalMap.putPeople(survivor.getXid(), survivor);
+				for (Kernel.IdentityLink link : loser.getLinksList()) {
+					String key = identityLinkKey(link.getIdpId(), link.getProviderSubject());
+					principalMap.putIdentityLinks(key, Kernel.IdentityLinkRow.newBuilder()
+							.setLinkKey(key).setXid(survivor.getXid()).build());
+				}
+				principalMap.putPeople(loser.getXid(), loser.toBuilder()
+						.setMergedIntoXid(survivor.getXid()).build());
+			} catch (ProtoException e) {
+				throw new StatusException(Status.INTERNAL, "merge could not be recorded: " + e.getMessage());
+			}
+			if (writeIdentitySnapshot != null) {
+				writeIdentitySnapshot.run();
+			}
+			logger.info("MergePeople: xid={} absorbed into xid={} ({} link(s) moved, confirmed={})",
+					loser.getXid(), survivor.getXid(), loser.getLinksCount(), request.getConfirm());
+		}
+		return Kernel.MergePeopleResponse.newBuilder()
+				.setCredential(resignCredential(survivorCredential, survivor.getGeneration(), proofs).getProto())
+				.build();
+	}
+
+	/**
+	 * Whether {@code person} is nothing but the one identity {@code credential}
+	 * just proved: a single link, whose proof in the credential is marked
+	 * {@code first}, and no membership beyond {@code people}.
+	 */
+	private static boolean isFreshFromCredential(Kernel.Person person, TokenWrapper credential) {
+		if (person.getLinksCount() != 1 || person.getMembershipsCount() != 1
+				|| !PeopleTenant.NAMESPACE.equals(person.getMemberships(0).getTenantNamespace())) {
+			return false;
+		}
+		Kernel.IdentityLink only = person.getLinks(0);
+		for (SessionCredential.Proof proof : SessionCredential.proofsOf(credential)) {
+			if (proof.first() && proof.sameIdentity(only.getIdpId(), only.getProviderSubject())) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	@Override
@@ -1560,6 +1688,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		Kernel.PeopleIdpProvider provider = PeopleTenant.providerForIssuer(issuer);
 		if (provider != null) {
+			providerSubject = PeopleTenant.providerSubject(provider, issuer, key -> claimString(claims, key));
+			if (providerSubject == null) {
+				throw new StatusException(Status.UNAUTHENTICATED,
+						"link side " + which + " carries no verified subject claims for its provider");
+			}
 			// A people side is a person, resolved exactly as the mint resolves one:
 			// by the (idp_id, sub) link, created on first sight. The same broker
 			// that attests a login attests a link side — an IdP broker is trusted

@@ -60,9 +60,12 @@ final class SessionCredential {
 	 * @param claims          the verified IdP claims the broker relayed at login,
 	 *                        replayed into OPA for entitlements at every mint from
 	 *                        this proof
+	 * @param first           this login created the person: the XID began here. It
+	 *                        is what lets MergePeople absorb that person without the
+	 *                        warning — there is nothing behind it but this login.
 	 */
 	record Proof(String idpId, String providerSubject, long authTime, long exp,
-			List<String> tenants, Struct claims) {
+			List<String> tenants, Struct claims, boolean first) {
 
 		boolean isLive(long nowSeconds) {
 			return exp > nowSeconds;
@@ -130,6 +133,9 @@ final class SessionCredential {
 			JsonArray tenants = new JsonArray();
 			proof.tenants().forEach(tenants::add);
 			o.add("tenants", tenants);
+			if (proof.first()) {
+				o.addProperty("first", true);
+			}
 			try {
 				o.add("claims", JsonParser.parseString(JsonFormat.printer().print(proof.claims())));
 			} catch (com.google.protobuf.InvalidProtocolBufferException e) {
@@ -162,7 +168,8 @@ final class SessionCredential {
 					o.get("auth_time").getAsLong(),
 					o.get("exp").getAsLong(),
 					List.copyOf(tenants),
-					claims.build()));
+					claims.build(),
+					o.has("first") && o.get("first").getAsBoolean()));
 		}
 		return proofs;
 	}

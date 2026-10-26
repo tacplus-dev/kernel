@@ -265,7 +265,7 @@ message Config {
   // from its own fixed table. "The `people` tenant's IdP set is fixed" is
   // therefore a property of this type, not of an operator's discipline — there
   // is no field a deployment could point at a third issuer.
-  repeated PeopleIdpCredential people_idp_credentials = 38 [(spec.assert_max_size) = 2];
+  repeated PeopleIdpCredential people_idp_credentials = 38 [(spec.assert_max_size) = 3];
 
   // people_signups_paused refuses the CREATE half of the people tenant's
   // find-or-create on first IdP login: a (provider, subject) pair kernel has
@@ -703,6 +703,22 @@ service UserMint {
     };
   }
 
+  // MergePeople is the record's LINK (named for the closed verb registry,
+  // which has no "Link"): two credentials of two different people, both
+  // presented, become one person. THE write: the links move to the surviving
+  // XID (the older), the other XID is tombstoned with a redirect, and the
+  // response is the survivor's credential carrying both credentials' proofs.
+  // Two credentials of the same person are simply merged. Own warning path:
+  // FAILED_PRECONDITION unless `confirm` when the absorbed person is more than
+  // the identity its credential just proved.
+  rpc MergePeople(MergePeopleRequest) returns (MergePeopleResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER, RPC_FLAG_MINTS_CREDENTIAL]
+    };
+  }
+
   // RevokeCredentialProof is the record's UNMERGE: it drops one proof from a
   // credential and re-signs it. Stateless — nothing on the person changes; the
   // verb is the registry's closest to "this credential no longer carries that
@@ -716,6 +732,22 @@ service UserMint {
       flags: [RPC_FLAG_AUTH_ANY_USER, RPC_FLAG_MINTS_CREDENTIAL]
     };
   }
+}
+
+message MergePeopleRequest {
+  // a and b are two session credentials, compact JWTs. The caller's bearer
+  // must be one of the two people.
+  string credential_a = 1 [(spec.assert_required) = true];
+  string credential_b = 2 [(spec.assert_required) = true];
+  // confirm acknowledges the warning: required when the person being absorbed
+  // is more than the one identity its credential just proved (other links, an
+  // org membership, or an XID that did not begin at that login).
+  bool confirm = 3;
+  string trace_id = 200;
+}
+message MergePeopleResponse {
+  // credential is the surviving person's, carrying both credentials' proofs.
+  token.Token credential = 1;
 }
 
 message MergeCredentialsRequest {
@@ -1283,6 +1315,10 @@ enum PeopleIdpProvider {
   PEOPLE_IDP_PROVIDER_APPLE = 1;
   // Google Sign-In (issuer https://accounts.google.com).
   PEOPLE_IDP_PROVIDER_GOOGLE = 2;
+  // Microsoft (personal or work/school account; issuer
+  // https://login.microsoftonline.com/<tid>/v2.0, one per directory). Keyed by
+  // (tid, oid), never `sub` (identity graph huddle 2026-10-21, item 23).
+  PEOPLE_IDP_PROVIDER_MICROSOFT = 3;
 }
 
 // PeopleIdpCredential is one provider's OAuth client credentials, the only part
@@ -1366,6 +1402,10 @@ message Person {
   // generation is bumped by sign-out-everywhere; a session credential carrying
   // an older generation mints nothing.
   int64 generation = 8 [(spec.assert_ge) = 0];
+  // merged_into_xid is the tombstone's redirect: set when UserMint.MergePeople
+  // (the record's Link) moved this person's links to the surviving XID. A
+  // tombstoned person mints nothing and its XID is never reused.
+  string merged_into_xid = 9 [(spec.assert_max_size) = 128];
 }
 
 // ============================================================================

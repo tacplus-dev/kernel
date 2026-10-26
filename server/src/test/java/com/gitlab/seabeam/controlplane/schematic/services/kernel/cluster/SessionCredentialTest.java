@@ -58,7 +58,12 @@ class SessionCredentialTest {
 	private static final String BETA = "/tenants/beta";
 	private static final String GOOGLE_ISSUER = "https://accounts.google.com";
 	private static final String APPLE_ISSUER = "https://appleid.apple.com";
-	private static final String MICROSOFT_ISSUER = "https://login.microsoftonline.com/common/v2.0";
+	/** An issuer no people provider owns: an ordinary tenant login. */
+	private static final String TENANT_ISSUER = "https://login.drpepper.example/oidc";
+	/** Microsoft's consumer directory (personal accounts) and a work directory. */
+	private static final String MSA_TID = "9188040d-6c67-4c5b-b112-36a304b66dad";
+	private static final String WORK_TID = "72f988bf-86f1-41af-91ab-2d7cd011db47";
+	private static final String OID = "00000000-0000-0000-66f3-3332eca7ea81";
 	private static final String GOOGLE_SUB = "110169484474386276334";
 	private static final String APPLE_SUB = "001672.9c4f1a33be7d4e1fb0c2.0913";
 	private static final Caller CALLER = new Caller("", "test-req");
@@ -382,7 +387,7 @@ class SessionCredentialTest {
 		Tokenrequest.TokenMintResponse resp = mint(Tokenrequest.MintUserTokenRequest.newBuilder()
 				.setSubject("alice@example.com")
 				.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
-				.setClaims(idpClaims(MICROSOFT_ISSUER, "abc", 0, 0))
+				.setClaims(idpClaims(TENANT_ISSUER, "abc", 0, 0))
 				.build());
 		TokenWrapper legacy = TokenWrapper.parse(resp.getRefreshToken().getBase64());
 		assertFalse(SessionCredential.isCredential(legacy));
@@ -431,6 +436,180 @@ class SessionCredentialTest {
 		assertEquals(ProtoException.INVALID_ARGUMENT, assertThrows(ProtoException.class,
 				() -> svc.mergeCredentials(callerOf(credential), Kernel.MergeCredentialsRequest.newBuilder()
 						.addCredentials("not.a.token").build())).getCode());
+	}
+
+	// ------------------------------------------------------------------
+	// Microsoft is a people provider, keyed by (tid, oid)
+	// ------------------------------------------------------------------
+
+	/** A Microsoft login no tenant routes is a person, linked as microsoft|<tid>:<oid>. */
+	@Test
+	void aMicrosoftLoginIsAPersonKeyedByTidAndOid() throws Exception {
+		TokenWrapper credential = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "pairwise-sub-1"));
+
+		SessionCredential.Proof proof = SessionCredential.proofsOf(credential).get(0);
+		assertEquals("microsoft", proof.idpId());
+		assertEquals(MSA_TID + ":" + OID, proof.providerSubject());
+		assertEquals(List.of(PeopleTenant.NAMESPACE), proof.tenants());
+		assertEquals(SessionCredential.xidOf(credential), principalMap.getIdentityLinks(
+				IdentityServiceImpl.identityLinkKey("microsoft", MSA_TID + ":" + OID)).getXid());
+
+		// The pairwise `sub` is not the key: the same account through another
+		// app registration (another sub) is the same person.
+		TokenWrapper again = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "pairwise-sub-2"));
+		assertEquals(credential.getSubject(), again.getSubject());
+		assertEquals(1, principalMap.proto().getPeopleCount());
+	}
+
+	/** The same oid in another directory is another account, so another person. */
+	@Test
+	void theSameOidInAnotherDirectoryIsAnotherPerson() throws Exception {
+		TokenWrapper personal = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "s"));
+		TokenWrapper work = credential(microsoftLogin(WORK_TID, WORK_TID, OID, "s"));
+
+		assertFalse(personal.getSubject().equals(work.getSubject()));
+	}
+
+	/** No oid, or a tid the issuer does not name, is no Microsoft identity at all. */
+	@Test
+	void aMicrosoftLoginWithoutAMatchingTidAndOidMintsNothing() {
+		assertEquals(ProtoException.UNAUTHENTICATED, assertThrows(ProtoException.class,
+				() -> microsoftLogin(MSA_TID, WORK_TID, OID, "s")).getCode());
+		assertEquals(ProtoException.UNAUTHENTICATED, assertThrows(ProtoException.class,
+				() -> microsoftLogin(MSA_TID, MSA_TID, null, "s")).getCode());
+		try {
+			assertEquals(0, principalMap.proto().getPeopleCount());
+		} catch (ProtoException e) {
+			throw new RuntimeException(e);
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// MergePeople: the record's Link
+	// ------------------------------------------------------------------
+
+	/**
+	 * Multi-login: signed in with Google, the person adds a Microsoft sign-in
+	 * nobody has seen. That login made a throwaway XID; MergePeople folds it
+	 * into the older Google person without a warning, and the merged credential
+	 * carries both proofs. A fresh Microsoft login later resolves to the Google
+	 * person.
+	 */
+	@Test
+	void addingAFreshSecondSignInFoldsItIntoThePersonWithoutAWarning() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		TokenWrapper microsoft = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "s"));
+		String loserXid = SessionCredential.xidOf(microsoft);
+
+		TokenWrapper merged = mergePeople(google, google, microsoft, false);
+
+		assertEquals(google.getSubject(), merged.getSubject(), "the older person survives");
+		assertEquals(2, SessionCredential.proofsOf(merged).size());
+		assertEquals(PeopleTenant.NAMESPACE,
+				accessToken(exchange(merged, PeopleTenant.NAMESPACE)).getNamespace());
+		Kernel.Person survivor = person();
+		assertEquals(2, survivor.getLinksCount());
+		assertEquals(survivor.getXid(), principalMap.getPeople(loserXid).getMergedIntoXid(),
+				"the absorbed XID is tombstoned with a redirect");
+		assertEquals(ProtoException.PERMISSION_DENIED, assertThrows(ProtoException.class,
+				() -> exchange(microsoft, PeopleTenant.NAMESPACE)).getCode(),
+				"the absorbed person's own credential mints nothing");
+
+		TokenWrapper later = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "s"));
+		assertEquals(google.getSubject(), later.getSubject(),
+				"the Microsoft account now signs in as the Google person");
+	}
+
+	/** Either order: the survivor is the older XID, whoever's bearer asked. */
+	@Test
+	void theOlderPersonSurvivesWhicheverSideAsks() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		TokenWrapper microsoft = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "s"));
+
+		TokenWrapper merged = mergePeople(microsoft, microsoft, google, true);
+
+		assertEquals(google.getSubject(), merged.getSubject());
+	}
+
+	/** Absorbing somebody's existing account is the warning path: confirm or nothing moves. */
+	@Test
+	void absorbingAnExistingAccountTakesConfirm() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		credential(microsoftLogin(MSA_TID, MSA_TID, OID, "s"));
+		// The Microsoft person signs in again: no longer the login that made it.
+		TokenWrapper returning = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "s"));
+		assertFalse(SessionCredential.proofsOf(returning).get(0).first());
+
+		ProtoException ex = assertThrows(ProtoException.class,
+				() -> mergePeople(google, google, returning, false));
+		assertEquals(ProtoException.FAILED_PRECONDITION, ex.getCode());
+		assertEquals(2, principalMap.proto().getPeopleList().stream()
+				.filter(p -> p.getMergedIntoXid().isEmpty()).count(), "nothing moved");
+
+		TokenWrapper merged = mergePeople(google, google, returning, true);
+		assertEquals(google.getSubject(), merged.getSubject());
+	}
+
+	/** The org memberships of the absorbed person move with it. */
+	@Test
+	void membershipsMoveToTheSurvivor() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		opaNamespace = ACME;
+		TokenWrapper work = credential(microsoftLogin(WORK_TID, WORK_TID, OID, "s"));
+
+		TokenWrapper merged = mergePeople(google, google, work, true);
+
+		assertEquals(ACME, accessToken(exchange(merged, ACME)).getNamespace(),
+				"the work proof still vouches acme, and the membership moved");
+	}
+
+	/** Two credentials of one person are a Merge: nothing is written. */
+	@Test
+	void mergePeopleOfOnePersonIsAMerge() throws Exception {
+		TokenWrapper one = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		TokenWrapper two = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+
+		TokenWrapper merged = mergePeople(one, one, two, false);
+
+		assertEquals(one.getSubject(), merged.getSubject());
+		assertEquals(1, SessionCredential.proofsOf(merged).size());
+		assertEquals(1, principalMap.proto().getPeopleCount());
+	}
+
+	/** A third person's bearer cannot join two others. */
+	@Test
+	void mergePeopleNeedsTheCallerToBeOneOfThem() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		TokenWrapper microsoft = credential(microsoftLogin(MSA_TID, MSA_TID, OID, "s"));
+		TokenWrapper apple = credential(login(APPLE_ISSUER, APPLE_SUB));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, assertThrows(ProtoException.class,
+				() -> mergePeople(apple, google, microsoft, true)).getCode());
+	}
+
+	private TokenWrapper mergePeople(TokenWrapper bearer, TokenWrapper a, TokenWrapper b,
+			boolean confirm) throws Exception {
+		return TokenWrapper.parse(svc.mergePeople(callerOf(bearer), Kernel.MergePeopleRequest.newBuilder()
+				.setCredentialA(a.getBase64()).setCredentialB(b.getBase64()).setConfirm(confirm)
+				.build()).getCredential().getBase64());
+	}
+
+	/** A Microsoft login as oauth relays one: origin_iss names the directory; tid, oid verbatim. */
+	private Tokenrequest.TokenMintResponse microsoftLogin(String issuerTid, String tid, String oid,
+			String sub) throws Exception {
+		Struct.Builder claims = Struct.newBuilder()
+				.putFields("origin_iss", Value.newBuilder()
+						.setStringValue("https://login.microsoftonline.com/" + issuerTid + "/v2.0").build())
+				.putFields("origin_sub", Value.newBuilder().setStringValue(sub).build())
+				.putFields("tid", Value.newBuilder().setStringValue(tid).build());
+		if (oid != null) {
+			claims.putFields("oid", Value.newBuilder().setStringValue(oid).build());
+		}
+		return mint(Tokenrequest.MintUserTokenRequest.newBuilder()
+				.setSubject("whatever-the-broker-says")
+				.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
+				.setClaims(claims.build())
+				.build());
 	}
 
 	// ------------------------------------------------------------------

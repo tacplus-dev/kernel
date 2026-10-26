@@ -62,7 +62,8 @@ class PeopleTenantMintTest {
 	private static final String ORG_NAMESPACE = "/tenants/acme";
 	private static final String APPLE_ISSUER = "https://appleid.apple.com";
 	private static final String GOOGLE_ISSUER = "https://accounts.google.com";
-	private static final String MICROSOFT_ISSUER = "https://login.microsoftonline.com/common/v2.0";
+	/** An issuer no people provider owns: an ordinary tenant login. */
+	private static final String TENANT_ISSUER = "https://login.drpepper.example/oidc";
 	/** An Apple `sub`: dotted hex, and a legal path segment as it stands. */
 	private static final String APPLE_SUB = "001672.9c4f1a33be7d4e1fb0c2.0913";
 	private static final String GOOGLE_SUB = "110169484474386276334";
@@ -389,7 +390,7 @@ class PeopleTenantMintTest {
 				Tokenrequest.MintUserTokenRequest.newBuilder()
 						.setSubject("alice@example.com")
 						.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
-						.setClaims(idpClaims(MICROSOFT_ISSUER, "abc"))
+						.setClaims(idpClaims(TENANT_ISSUER, "abc"))
 						.build(),
 				"");
 

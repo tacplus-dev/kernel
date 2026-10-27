@@ -1,4 +1,5 @@
-// Copyright (c) 2026 Seabeam LLC. All rights reserved.
+// Copyright (c) 2026 Jody Scott
+// SPDX-License-Identifier: Apache-2.0
 //
 // Kernel configuration, cluster state, and token exchange definitions.
 // Admin and Hazelcast types are defined in common/hazelcast.proto.
@@ -921,7 +922,7 @@ service FencedLock {
 // FencedLockAcquireRequest names the lock and who is taking it.
 message FencedLockAcquireRequest {
   // key is the lock's name. Opaque to kernel; callers partition the namespace
-  // themselves (e.g. "<caller spiffe>/scotty/<user>").
+  // themselves (e.g. "<caller spiffe>/<app>/<user>").
   string key = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
   // holder_id identifies the acquiring party well enough to distinguish it
   // from any other contender and to make a retried Acquire idempotent. Caller
@@ -1541,7 +1542,7 @@ message PersonalCredential {
   string label = 3 [(spec.assert_max_size) = 128];
   // platform_synced records whether this key lives in a synced credential store
   // (iCloud Keychain / Google passkey) or in device hardware only. It is what
-  // makes "lose this phone and your Scotty is gone" a truthful statement rather
+  // makes "lose this phone and your passkey is gone" a truthful statement rather
   // than a guess.
   bool platform_synced = 4;
   int64 created_at_ms = 5 [(spec.assert_ge) = 0];

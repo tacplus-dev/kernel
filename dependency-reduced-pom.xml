@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
   <modelVersion>4.0.0</modelVersion>
-  <groupId>com.gitlab.seabeam.controlplane.schematic.services.kernel</groupId>
+  <groupId>com.github.tacplusdev.kernel</groupId>
   <artifactId>kernel-parent</artifactId>
   <packaging>pom</packaging>
   <name>Kernel Parent</name>
@@ -112,12 +112,6 @@
     <module>codegen</module>
     <module>server</module>
   </modules>
-  <repositories>
-    <repository>
-      <id>gitlab-maven</id>
-      <url>https://gitlab.com/api/v4/projects/79641700/packages/maven</url>
-    </repository>
-  </repositories>
   <dependencies>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
@@ -278,18 +272,12 @@
         <version>1.80</version>
       </dependency>
       <dependency>
-        <groupId>com.gitlab.seabeam.controlplane.schematic.services.kernel</groupId>
+        <groupId>com.github.tacplusdev.kernel</groupId>
         <artifactId>kernel-model</artifactId>
         <version>${project.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
-  <distributionManagement>
-    <repository>
-      <id>gitlab-maven</id>
-      <url>${env.CI_API_V4_URL}/projects/${env.CI_PROJECT_ID}/packages/maven</url>
-    </repository>
-  </distributionManagement>
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
     <toml4j.version>0.7.2</toml4j.version>

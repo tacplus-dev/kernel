@@ -22,7 +22,8 @@ the Rust rewrite with Hazelcast removed) happen here. The two are not kept in sy
 ## Divergences from the private copy (2026-10-23)
 
 1. Headers in `tacplus.yaml`: `Copyright (c) 2026 Jody Scott`, Apache-2.0 (LICENSE added).
-   `pkg` is unchanged so the hand-written Java keeps compiling; it moves with the Java packages later.
+   `pkg` was unchanged at first; since 2026-10-27 (#10) it is `com.github.tacplusdev.kernel`, as are
+   the Java packages and the Maven groupId (see PROVENANCE.md).
 2. `src: proto` (this repo) instead of the private platform proto repo. This repo holds only kernel's
    own proto and the two common protos it imports.
 3. `proto/registry.yaml` is a lock of github.com/tacplus-dev/registry (kernel = 8).

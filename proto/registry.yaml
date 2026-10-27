@@ -6,9 +6,9 @@ services:
       id: 8
       tenant_slice_field: 1
       contract: https://github.com/tacplus-dev/kernel.git
-      visibility: private
+      visibility: public
 vservices:
     - name: proxypolicy
       field_id: 45
-      contract: https://gitlab.com/seabeam/schematic/platform/proto.git
-      visibility: private
+      contract: https://github.com/tacplus-dev/kernel.git
+      visibility: public

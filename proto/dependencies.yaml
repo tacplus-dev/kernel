@@ -1,10 +1,10 @@
 # registry.yaml and vservice-registry.yaml are now authoritative for field IDs.
 registry:
-    gitlab_project_id: "79641700"
-    interfaces:
-        rust: seabeam-controlplane-interfaces
+    # tacplus requires a Java interfaces import base for a Java build; it
+    # becomes codegen-config.json's interfacesPackage, which the backend
+    # codegen requires.
     imports:
-        java: com.gitlab.seabeam.controlplane.schematic.services.kernel
+        java: com.github.tacplusdev.kernel
 tools:
     go: "1.23"
     java: "17"

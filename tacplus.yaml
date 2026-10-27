@@ -1,7 +1,6 @@
 tacplus: "2.4"
 language: java
-# pkg kept as copied so the hand-written Java keeps compiling; moves with the Java packages later.
-pkg: com.gitlab.seabeam.controlplane.schematic.services.kernel
+pkg: com.github.tacplusdev.kernel
 output-dir: tacplus/target/generated-sources
 src: proto
 # kernel's contract calls out to opa (spec.opa_import) and so needs its proto.

@@ -1,4 +1,5 @@
-// Copyright (c) 2026 Seabeam LLC. All rights reserved.
+// Copyright (c) 2026 Jody Scott
+// SPDX-License-Identifier: Apache-2.0
 
 // Package hazelcast defines shared types for Hazelcast-backed services.
 // Any service running its own Hazelcast cluster can import these types for

@@ -12,7 +12,6 @@ import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.jwk.JwkOuterClass;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.errors.ProtoException;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.x509.X509;
-import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.grpcconfig.Grpcconfig;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.kernel.Helpers;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.services.kernel.Kernel;
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.common.hazelcast.Hazelcast;
@@ -694,19 +693,7 @@ public class ClusterServer {
 			TenantAdmin.registerMethodAuth(kernelAuthorizer);
 			FencedLock.registerMethodAuth(kernelAuthorizer);
 
-			// Seed ServiceConfigState with the trust domain and location path so all
-			// services build identities under the same self-describing SPIFFE root.
-			try {
-				backendServers.sys().getServiceConfigStateMap().putConfig(
-						Grpcconfig.Config.newBuilder()
-								.setSpiffeTrustDomain(spiffeTrustDomain)
-								.setLocationPath(spiffeLocationPath)
-								.build());
-				logger.info("Seeded ServiceConfigState spiffe_trust_domain={}, location_path={}",
-						spiffeTrustDomain, spiffeLocationPath);
-			} catch (Exception e) {
-				logger.warn("Failed to seed ServiceConfigState: {}", e.getMessage());
-			}
+			seedServiceConfig(backendServers.sys().getServiceConfigStateMap(), spiffeTrustDomain, spiffeLocationPath);
 
 			// Use schematic-issued signing chain from bootstrap config (intermediate CA).
 			this.signingCa = ImmutableCertChain.from(cfg.getSigningCa());
@@ -1090,6 +1077,34 @@ public class ClusterServer {
 		throw new IllegalStateException(
 				"none of the configured members resolves to a local address; "
 						+ "this node cannot tell which FencedLock Raft peer it is");
+	}
+
+	/**
+	 * Seeds ServiceConfigState with the trust domain and location path so all
+	 * services build identities under the same self-describing SPIFFE root.
+	 *
+	 * <p>putConfig validates the whole Config, and a Config carrying only these
+	 * two fields is refused ({@code listen_address} is required). So the two are
+	 * merged into what the root already holds, and the rest is defaulted with the
+	 * same {@code configDefaults} every service applies to the Config it fetches
+	 * from here: what a service ends up with is unchanged, the seed just lands.
+	 */
+	static void seedServiceConfig(
+			com.gitlab.seabeam.controlplane.schematic.services.kernel.tacplusbackend.sys.grpcconfig.ServiceConfigStateMap serviceConfigState,
+			String spiffeTrustDomain, String spiffeLocationPath) {
+		try {
+			serviceConfigState.putConfig(
+					com.gitlab.seabeam.controlplane.schematic.services.kernel.model.types.sys.grpcconfig.Helpers
+							.configDefaults(serviceConfigState.getConfig().toBuilder()
+									.setSpiffeTrustDomain(spiffeTrustDomain)
+									.setLocationPath(spiffeLocationPath)
+									.build())
+							.build());
+			logger.info("Seeded ServiceConfigState spiffe_trust_domain={}, location_path={}",
+					spiffeTrustDomain, spiffeLocationPath);
+		} catch (Exception e) {
+			logger.warn("Failed to seed ServiceConfigState: {}", e.getMessage());
+		}
 	}
 
 	/**

@@ -765,12 +765,16 @@ service UserMint {
     };
   }
 
-  // RevokeCredentialProof is the record's UNMERGE: it drops one proof from a
-  // credential and re-signs it. Stateless — nothing on the person changes; the
-  // verb is the registry's closest to "this credential no longer carries that
-  // proof". Dropping the last proof is a sign-out: the response carries no
-  // credential. The link the proof names remains on the person (Unlink, a
-  // write, is a different RPC).
+  // RevokeCredentialProof is the record's UNMERGE, and SIGN OUT OF ONE
+  // PROVIDER: it drops a provider's proof from a credential, re-signs it, and
+  // mints an access token from what remains — in the bearer's tenant when a
+  // remaining proof still vouches it, else people's. Tenants only the dropped
+  // proof vouched stop being active. Stateless — nothing on the person changes;
+  // the verb is the registry's closest to "this credential no longer carries
+  // that proof". Dropping the last proof is a sign-out: the response carries no
+  // credential and no access token. The link the proof names remains on the
+  // person (Unlink, a write, is DeleteIdentityLink); signing out of every
+  // session is RevokeSessions.
   rpc RevokeCredentialProof(RevokeCredentialProofRequest) returns (RevokeCredentialProofResponse) {
     option (spec.rpc) = {
       principal: RPC_PRINCIPAL_USER,
@@ -838,16 +842,20 @@ message MergeCredentialsResponse {
 }
 message RevokeCredentialProofRequest {
   string credential = 1 [(spec.assert_required) = true];
-  // idp_id and provider_subject name the proof to drop, as the credential's
-  // proofs carry them.
+  // idp_id names the provider to sign out of, as the credential's proofs carry
+  // it: every proof of that provider is dropped. provider_subject, when set,
+  // narrows that to the one sign-in.
   string idp_id = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
-  string provider_subject = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+  string provider_subject = 3 [(spec.assert_max_size) = 128];
   string trace_id = 200;
 }
 message RevokeCredentialProofResponse {
   // credential is the re-signed credential without that proof; UNSET when the
   // dropped proof was the last one — the caller is signed out.
   token.Token credential = 1;
+  // access_token is minted from the remaining proofs, as the exchange would
+  // mint it; UNSET with credential.
+  token.Token access_token = 2;
 }
 
 // ============================================================================

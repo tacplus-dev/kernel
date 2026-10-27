@@ -401,3 +401,27 @@ gateway restarted, letsencrypt untouched). Kernel registers `UserMint/GetLinkedA
 (401) and an unknown method is not found (404). The gateway kept its Let's Encrypt certificate across the
 kernel restart (letsencrypt 2c60a0d re-mirrors it when the kernel Watch reconnects). The console screens for
 these RPCs are gateway#2.
+
+## 2026-10-27 — Sign out of one provider (#6)
+
+Jody, testing seatrials (2026-10-26): the sign-in page lists the session's sign-ins and each offers
+"Sign out" for that provider. That is the record's Unmerge, which kernel already had as
+`UserMint.RevokeCredentialProof`; it is extended rather than joined by a second RPC doing the same thing.
+
+- **Named by provider.** `provider_subject` is no longer required: `idp_id` alone drops every proof of
+  that provider the credential carries (two Google sign-ins in one session both go); with
+  `provider_subject` set it drops that one sign-in, as before. A provider the credential carries no proof
+  of — unknown, or simply not signed in — is `NOT_FOUND`.
+- **Credential and access token back.** The response now carries `access_token` beside the re-signed
+  credential, minted by the same exchange as `Mint.MintToken`: in the bearer's tenant when a remaining
+  proof still activates it (live, vouches it, link still this person's, membership not revoked), else
+  `people`. Tenants only the dropped proof vouched are no longer active; reaching them again is the
+  ordinary step-up. Dropping the last proof ends the session: neither field is set.
+- **Still stateless.** Nothing on the person changes, so the credential the client held before the call
+  still carries the dropped proof until it expires; the client discards it, as it discards a credential
+  on a full sign-out. Killing every outstanding credential is `RevokeSessions`; removing the link is
+  `DeleteIdentityLink`.
+- Tests (`SessionCredentialTest`): one of two providers dropped (the other's tenants only; the AT stays
+  in acme when the remaining proof vouches it, falls to `people` when it does not, and acme is a step-up
+  again), the last dropped (no credential, no AT), an unknown or absent provider refused, a provider's
+  every proof dropped by `idp_id` alone.

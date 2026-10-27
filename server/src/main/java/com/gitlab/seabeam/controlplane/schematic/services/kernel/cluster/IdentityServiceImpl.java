@@ -1030,14 +1030,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		long now = Instant.now().getEpochSecond();
 		Kernel.Person person = livePersonOf(credential);
 
-		SessionCredential.Proof proof = null;
-		for (SessionCredential.Proof candidate : SessionCredential.proofsOf(credential)) {
-			if (candidate.isLive(now) && candidate.vouches(tenantNamespace)
-					&& linkStillMapsTo(candidate, person.getXid())) {
-				proof = candidate;
-				break;
-			}
-		}
+		SessionCredential.Proof proof =
+				liveProofFor(SessionCredential.proofsOf(credential), person, tenantNamespace, now);
 		if (proof == null) {
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"no live proof vouches for " + tenantNamespace
@@ -1112,6 +1106,21 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					"this session is no longer valid: sign in again");
 		}
 		return person;
+	}
+
+	/**
+	 * The first of {@code proofs} that is live, vouches {@code tenantNamespace},
+	 * and whose link still maps to the person; null when none does.
+	 */
+	@Nullable
+	private SessionCredential.Proof liveProofFor(List<SessionCredential.Proof> proofs,
+			Kernel.Person person, String tenantNamespace, long now) {
+		for (SessionCredential.Proof proof : proofs) {
+			if (proof.isLive(now) && proof.vouches(tenantNamespace) && linkStillMapsTo(proof, person.getXid())) {
+				return proof;
+			}
+		}
+		return null;
 	}
 
 	/** The record's first read: the proof's link still resolves to this person. */
@@ -1405,9 +1414,12 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	}
 
 	/**
-	 * Unmerge: drop one proof and re-sign. Dropping the last proof is a sign-out
-	 * and returns no credential. Stateless: the link the proof names stays on
-	 * the person; only what this credential can mint changes.
+	 * Unmerge, and sign out of one provider: drop the provider's proofs (or the
+	 * one sign-in, when the subject is named), re-sign, and mint an access token
+	 * from what remains — in the bearer's tenant if a remaining proof still
+	 * activates it, else {@code people}. Dropping the last proof is a sign-out
+	 * and returns nothing. Stateless: the link the proof names stays on the
+	 * person; only what this credential can mint changes.
 	 */
 	private Kernel.RevokeCredentialProofResponse doRevokeCredentialProof(Caller caller,
 			Kernel.RevokeCredentialProofRequest request) throws StatusException {
@@ -1417,7 +1429,10 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		List<SessionCredential.Proof> remaining = new java.util.ArrayList<>();
 		boolean found = false;
 		for (SessionCredential.Proof proof : SessionCredential.proofsOf(credential)) {
-			if (proof.sameIdentity(request.getIdpId(), request.getProviderSubject())) {
+			boolean named = request.getProviderSubject().isEmpty()
+					? proof.idpId().equals(request.getIdpId())
+					: proof.sameIdentity(request.getIdpId(), request.getProviderSubject());
+			if (named) {
 				found = true;
 			} else {
 				remaining.add(proof);
@@ -1431,7 +1446,22 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			return Kernel.RevokeCredentialProofResponse.getDefaultInstance();
 		}
 		TokenWrapper resigned = resignCredential(credential, person.getGeneration(), remaining);
-		return Kernel.RevokeCredentialProofResponse.newBuilder().setCredential(resigned.getProto()).build();
+		String bearerTenant = caller.getNamespace();
+		String tenant = hasLiveMembership(person, bearerTenant)
+				&& liveProofFor(remaining, person, bearerTenant, Instant.now().getEpochSecond()) != null
+				? bearerTenant : PeopleTenant.NAMESPACE;
+		Tokenrequest.TokenMintResponse minted = mintFromSessionCredential(
+				Tokenrequest.TokenMintRequest.newBuilder()
+						.setTenantNamespace(tenant)
+						.setTraceId(request.getTraceId())
+						.build(),
+				resigned);
+		logger.info("RevokeCredentialProof: xid={} signed out of {}, {} proof(s) left, AT in {}",
+				person.getXid(), request.getIdpId(), remaining.size(), tenant);
+		return Kernel.RevokeCredentialProofResponse.newBuilder()
+				.setCredential(resigned.getProto())
+				.setAccessToken(minted.getAccessToken())
+				.build();
 	}
 
 	/** A credential is the caller's own: the bearer and the credential name the same person. */

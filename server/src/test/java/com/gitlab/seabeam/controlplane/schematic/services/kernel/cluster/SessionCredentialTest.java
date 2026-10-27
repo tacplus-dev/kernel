@@ -270,6 +270,91 @@ class SessionCredentialTest {
 								.build())).getCode());
 	}
 
+	/**
+	 * Sign out of one provider: naming only the provider drops its proof, the
+	 * credential keeps the other, and the response carries the re-signed
+	 * credential and an access token in a tenant the remaining proofs vouch —
+	 * the bearer's own when one still does, else {@code people}.
+	 */
+	@Test
+	void signingOutOfOneProviderKeepsTheOtherProof() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		opaNamespace = ACME;
+		TokenWrapper apple = credential(login(APPLE_ISSUER, APPLE_SUB, google));
+		TokenWrapper merged = TokenWrapper.parse(svc.mergeCredentials(callerOf(google),
+				Kernel.MergeCredentialsRequest.newBuilder()
+						.addCredentials(google.getBase64()).addCredentials(apple.getBase64())
+						.build()).getCredential().getBase64());
+
+		// Out of Apple, the org proof, while working in acme: acme goes with it.
+		Kernel.RevokeCredentialProofResponse outOfApple = svc.revokeCredentialProof(callerOf(merged, ACME),
+				Kernel.RevokeCredentialProofRequest.newBuilder()
+						.setCredential(merged.getBase64()).setIdpId("apple").build());
+		TokenWrapper googleOnly = TokenWrapper.parse(outOfApple.getCredential().getBase64());
+		List<SessionCredential.Proof> left = SessionCredential.proofsOf(googleOnly);
+		assertEquals(1, left.size());
+		assertEquals("google", left.get(0).idpId());
+		TokenWrapper at = TokenWrapper.parse(outOfApple.getAccessToken().getBase64());
+		assertEquals(googleOnly.getSubject(), at.getSubject());
+		assertEquals(PeopleTenant.NAMESPACE, at.getNamespace(), "acme is no longer vouched: the AT is people's");
+		ProtoException stepUp = assertThrows(ProtoException.class, () -> exchange(googleOnly, ACME));
+		assertEquals(ProtoException.PERMISSION_DENIED, stepUp.getCode());
+		assertTrue(stepUp.getMessage().contains(STEP_UP), "the removed proof is a step-up away again");
+
+		// Out of Google instead: the Apple proof still vouches acme, so the AT stays there.
+		Kernel.RevokeCredentialProofResponse outOfGoogle = svc.revokeCredentialProof(callerOf(merged, ACME),
+				Kernel.RevokeCredentialProofRequest.newBuilder()
+						.setCredential(merged.getBase64()).setIdpId("google").build());
+		TokenWrapper appleOnly = TokenWrapper.parse(outOfGoogle.getCredential().getBase64());
+		assertEquals("apple", SessionCredential.proofsOf(appleOnly).get(0).idpId());
+		assertEquals(ACME, TokenWrapper.parse(outOfGoogle.getAccessToken().getBase64()).getNamespace());
+	}
+
+	/** Signing out of the last provider ends the session: no credential, no access token. */
+	@Test
+	void signingOutOfTheLastProviderEndsTheSession() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		Kernel.RevokeCredentialProofResponse out = svc.revokeCredentialProof(callerOf(google),
+				Kernel.RevokeCredentialProofRequest.newBuilder()
+						.setCredential(google.getBase64()).setIdpId("google").build());
+		assertFalse(out.hasCredential());
+		assertFalse(out.hasAccessToken());
+	}
+
+	/** A provider the credential carries no proof of — unknown or simply not signed in — is refused. */
+	@Test
+	void signingOutOfAProviderTheSessionDoesNotCarryIsRefused() throws Exception {
+		TokenWrapper google = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		for (String idpId : List.of("facebook", "apple")) {
+			assertEquals(ProtoException.NOT_FOUND, assertThrows(ProtoException.class,
+					() -> svc.revokeCredentialProof(callerOf(google),
+							Kernel.RevokeCredentialProofRequest.newBuilder()
+									.setCredential(google.getBase64()).setIdpId(idpId).build())).getCode(),
+					idpId);
+		}
+	}
+
+	/** Naming only the provider signs out of every sign-in of it the session carries. */
+	@Test
+	void signingOutOfAProviderDropsEachOfItsProofs() throws Exception {
+		TokenWrapper personal = credential(login(GOOGLE_ISSUER, GOOGLE_SUB));
+		TokenWrapper second = credential(login(GOOGLE_ISSUER, "9" + GOOGLE_SUB, personal));
+		TokenWrapper apple = credential(login(APPLE_ISSUER, APPLE_SUB, personal));
+		TokenWrapper merged = TokenWrapper.parse(svc.mergeCredentials(callerOf(personal),
+				Kernel.MergeCredentialsRequest.newBuilder()
+						.addCredentials(personal.getBase64()).addCredentials(second.getBase64())
+						.addCredentials(apple.getBase64())
+						.build()).getCredential().getBase64());
+
+		TokenWrapper left = TokenWrapper.parse(svc.revokeCredentialProof(callerOf(merged),
+				Kernel.RevokeCredentialProofRequest.newBuilder()
+						.setCredential(merged.getBase64()).setIdpId("google").build())
+				.getCredential().getBase64());
+		List<SessionCredential.Proof> proofs = SessionCredential.proofsOf(left);
+		assertEquals(1, proofs.size());
+		assertEquals("apple", proofs.get(0).idpId());
+	}
+
 	/** A credential is the caller's own: another person's bearer cannot merge or unmerge it. */
 	@Test
 	void anotherPersonCannotMergeOrUnmergeYourCredential() throws Exception {
@@ -790,8 +875,13 @@ class SessionCredentialTest {
 
 	/** The C2S caller: a verified bearer of the person a credential names. */
 	private static Caller callerOf(TokenWrapper credential) {
+		return callerOf(credential, PeopleTenant.NAMESPACE);
+	}
+
+	/** The C2S caller with a bearer minted in {@code tenant}. */
+	private static Caller callerOf(TokenWrapper credential, String tenant) {
 		return new Caller("{\"sub\":\"" + credential.getSubject() + "\",\"namespace\":\""
-				+ PeopleTenant.NAMESPACE + "\"}", "test-req");
+				+ tenant + "\"}", "test-req");
 	}
 
 	private static Struct idpClaims(String issuer, String sub, long authTime, long unused) {

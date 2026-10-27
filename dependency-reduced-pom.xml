@@ -259,7 +259,7 @@
       <dependency>
         <groupId>io.javalin</groupId>
         <artifactId>javalin</artifactId>
-        <version>6.7.0</version>
+        <version>${javalin.version}</version>
       </dependency>
       <dependency>
         <groupId>org.bouncycastle</groupId>
@@ -316,6 +316,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <junit.version>6.0.2</junit.version>
     <grpc.version>1.79.0</grpc.version>
+    <javalin.version>7.2.4</javalin.version>
     <logback.version>1.5.38</logback.version>
     <shade-plugin.version>3.6.1</shade-plugin.version>
   </properties>

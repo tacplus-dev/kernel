@@ -79,7 +79,7 @@
 		<dependency>
 			<groupId>io.javalin</groupId>
 			<artifactId>javalin</artifactId>
-		<version>6.7.0</version></dependency>
+		<version>${javalin.version}</version></dependency>
 		<!-- Serialization -->
 		<dependency>
 			<groupId>org.yaml</groupId>

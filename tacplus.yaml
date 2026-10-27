@@ -1,11 +1,22 @@
+tacplus: "2.4"
 language: java
 # pkg kept as copied so the hand-written Java keeps compiling; moves with the Java packages later.
 pkg: com.gitlab.seabeam.controlplane.schematic.services.kernel
 output-dir: tacplus/target/generated-sources
 src: proto
 # kernel's contract calls out to opa (spec.opa_import) and so needs its proto.
+# kernel seeds the people tenant's oauth OAuthTenantConfig at boot
+# (cluster/PeopleTenant.java), and so needs oauth's types.
 depends:
   - opa
+  - oauth
+# states: all widens only a fleet build; a standalone build generates from
+# depends and test-depends alone. The ConfigHolder install tests assert on
+# gateway's and llmproxy's configs (ConfigStateSeedBundleWinsTest,
+# ConfigOverridesTest).
+test-depends:
+  - gateway
+  - llmproxy
 header: |
   Copyright (c) 2026 Jody Scott
   SPDX-License-Identifier: Apache-2.0

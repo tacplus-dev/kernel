@@ -48,5 +48,25 @@ generate:
 verify:
   {{TACPLUS}} verify
 
+# What every change must pass: regenerate from scratch with the floor compiler,
+# check generation touched nothing under version control, then build and test.
+# tacplus/target is removed first because the tacplus module skips generation
+# whenever generated sources exist, so stale ones would otherwise be compiled.
+# `verify` is not a gate: the compiler image has no mvn, so it cannot resolve
+# the proofs' classpath when tacplus runs as a container.
+gates:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  rm -rf tacplus/target
+  before="$(git status --porcelain -uall; git diff HEAD)"
+  just generate
+  after="$(git status --porcelain -uall; git diff HEAD)"
+  if [[ "$before" != "$after" ]]; then
+    echo "gates: generation changed files under version control:" >&2
+    git status --short >&2
+    exit 1
+  fi
+  mvn -B verify
+
 clean:
   rm -rf tacplus/target codegen/target server/target target

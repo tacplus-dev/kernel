@@ -59,7 +59,7 @@ class ViewRpcAuthorizationTest {
 	private static final AccessPolicy FIXTURE_POLICY = new AccessPolicy(
 			"FixtureState", "fixtures",
 			List.of("service:fixtures"), List.of("service:fixtures"), List.of(),
-			Map.of(), false, false);
+			Map.of(), List.of(), false, false);
 
 	@Test
 	void theViewWatchAuthorizesBeforeItStreams(@TempDir Path tmp) throws IOException {

@@ -1,0 +1,9 @@
+
+    /**
+     * Replaces the value under {@code key} with {@code next} only if the stored value equals
+     * {@code expected}, atomically at the key's partition owner. Returns whether it replaced.
+     */
+    public boolean replace{{FIELD_PASCAL}}(String key, {{QUALIFIED_TYPE}} expected, {{QUALIFIED_TYPE}} next) throws ProtoException {
+        {{HELPERS_REF}}.validate{{TYPE_NAME}}(next);
+        return {{FIELD_CAMEL}}Map.replace(key, expected, next);
+    }

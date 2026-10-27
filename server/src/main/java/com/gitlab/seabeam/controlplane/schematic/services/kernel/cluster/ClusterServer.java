@@ -474,9 +474,6 @@ public class ClusterServer {
 		restoreGrantRevocations(snapshot, liveGrants);
 		keyRotator.restore(snapshot != null ? snapshot.getSigningKeysList() : List.of());
 
-		// Cluster is always SERVING once construction completes.
-		healthManager.setStatus("", ServingStatus.SERVING);
-
 		// 5. Build gRPC server
 		StateServer backendServer = new StateServer();
 
@@ -1453,7 +1450,12 @@ public class ClusterServer {
 							jwk.getKid(), jwk.getExp());
 					continue;
 				}
-				identityState.putVerifyingKeys(Objects.requireNonNull(jwk.getKid(), "jwk.kid"), jwk);
+				// Only where the live set has no such key. The snapshot holds
+				// peers' keys at the exp they had when it was written; a live
+				// copy carries any extension made since, and overwriting it
+				// would drop a key its owner is still signing with at the
+				// older exp.
+				identityState.putIfAbsentVerifyingKeys(Objects.requireNonNull(jwk.getKid(), "jwk.kid"), jwk);
 			}
 			for (X509.X509Cert cert : snapshot.getCaCertsList()) {
 				caState.putCaCerts(Objects.requireNonNull(cert.getId(), "caCert.id"), cert);
@@ -1531,6 +1533,10 @@ public class ClusterServer {
 			keyRotator.start();
 		}
 		configOverrides.start();
+		// SERVING only now that :5000 accepts. The kubelet probes the separate
+		// 8444 listener, so reporting SERVING during construction left a pod Ready
+		// while startup was still blocked ahead of grpcServer.start().
+		healthManager.setStatus("", ServingStatus.SERVING);
 		logger.info("gRPC server started on port {}", grpcPort);
 	}
 

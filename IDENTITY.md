@@ -425,3 +425,18 @@ Jody, testing seatrials (2026-10-26): the sign-in page lists the session's sign-
   in acme when the remaining proof vouches it, falls to `people` when it does not, and acme is a step-up
   again), the last dropped (no credential, no AT), an unknown or absent provider refused, a provider's
   every proof dropped by `idp_id` alone.
+
+## 2026-10-27 — Relayed claims never carry the names kernel synthesizes (#9)
+
+Ported from SeaBeam a19d59a ("kernel owns the synthesized claim names"), in this repo's shape. Kernel hands OPA
+claim sets it builds itself on two paths (the device arm and the personal-principal tenant exchange):
+`principal_id`, `tenant_namespace`, `proof_kind`, `customer`. oauth relays any non-well-known IdP claim under its
+own name, so a tenant IdP could put one of those names in its id_token and have it read as kernel's.
+
+- Every relayed claim set loses those four names before OPA sees it: the people arm (so the proof, and every
+  access token minted from it, never carries them either), the ordinary tenant login, a link's tenant side, and
+  the CLI token broker. `IdentityServiceImpl.SYNTHESIZED_CLAIMS` is the list.
+- Not ported from that commit: `owner` (kernel does not synthesize it here) and handing OPA `principal_id = <xid>`
+  at login (the per-tenant exchange here replays the proof's claims and synthesizes nothing).
+- Tests: `SessionCredentialTest` (people login: OPA at login and exchange, the proof, both access tokens; tenant
+  login; CLI broker), `TenantUserLinkTest` (link side). Each failed before the change.

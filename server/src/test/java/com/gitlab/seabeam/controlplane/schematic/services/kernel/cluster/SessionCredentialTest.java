@@ -19,10 +19,13 @@ import com.gitlab.seabeam.controlplane.schematic.services.kernel.tacplusbackend.
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
 import io.grpc.MethodDescriptor;
+import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -72,6 +75,8 @@ class SessionCredentialTest {
 	private final List<JwkOuterClass.Jwk> verifyingKeys = new CopyOnWriteArrayList<>();
 	private final List<Kernel.Delegate> delegates = new ArrayList<>();
 	private String opaNamespace = "";
+	/** Every claim set the fake OPA was handed, in order. */
+	private final List<Struct> opaClaims = new CopyOnWriteArrayList<>();
 	private KeyRotator keyRotator;
 	private PrincipalMap principalMap;
 	private IdentityServiceImpl svc;
@@ -804,6 +809,125 @@ class SessionCredentialTest {
 	}
 
 	// ------------------------------------------------------------------
+	// Relayed claims: kernel alone sets the names it synthesizes for OPA
+	// ------------------------------------------------------------------
+
+	/**
+	 * An IdP can put any claim in its id_token, and oauth relays it under its
+	 * own name. A people login's claims reach OPA, the proof and the tokens
+	 * minted from it without the names kernel synthesizes for OPA, at login and
+	 * at every exchange that replays the proof.
+	 */
+	@Test
+	void aPeopleLoginsRelayedSynthesizedClaimsNeverReachOpaOrItsTokens() throws Exception {
+		Tokenrequest.TokenMintResponse resp = mint(Tokenrequest.MintUserTokenRequest.newBuilder()
+				.setSubject("whatever-the-broker-says")
+				.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
+				.setClaims(withSynthesizedClaims(idpClaims(GOOGLE_ISSUER, GOOGLE_SUB, 0, 0)))
+				.build());
+		TokenWrapper credential = credential(resp);
+		TokenWrapper exchanged = accessToken(exchange(credential, PeopleTenant.NAMESPACE));
+
+		assertEquals(2, opaClaims.size(), "the login and the exchange each asked OPA once");
+		for (Struct claims : opaClaims) {
+			assertNoSynthesizedClaim(claims, "OPA");
+			assertEquals(GOOGLE_SUB, claims.getFieldsOrThrow("origin_sub").getStringValue(),
+					"the rest of the relayed set still reaches OPA");
+		}
+		assertNoSynthesizedClaim(SessionCredential.proofsOf(credential).get(0).claims(), "the proof");
+		for (TokenWrapper token : List.of(accessToken(resp), exchanged)) {
+			for (String name : IdentityServiceImpl.SYNTHESIZED_CLAIMS) {
+				assertNull(token.getCustomField(name), name + " must not be stamped on the access token");
+			}
+		}
+	}
+
+	/** An ordinary tenant login's relayed claims reach OPA without the synthesized names. */
+	@Test
+	void aTenantLoginsRelayedSynthesizedClaimsNeverReachOpa() throws Exception {
+		opaNamespace = ACME;
+		mint(Tokenrequest.MintUserTokenRequest.newBuilder()
+				.setSubject("alice@example.com")
+				.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
+				.setClaims(withSynthesizedClaims(idpClaims(TENANT_ISSUER, "abc", 0, 0)))
+				.build());
+
+		assertEquals(1, opaClaims.size());
+		assertNoSynthesizedClaim(opaClaims.get(0), "OPA");
+		assertEquals("abc", opaClaims.get(0).getFieldsOrThrow("origin_sub").getStringValue());
+	}
+
+	/** The CLI broker relays oauth's claim set to the mint; OPA sees none of the synthesized names in it. */
+	@Test
+	void theCliTokenBrokerHandsOpaNoRelayedSynthesizedClaim() throws Exception {
+		opaNamespace = ACME;
+		int[] ports = {HazelcastTestMembers.freePort()};
+		HazelcastInstance hz = Hazelcast.newHazelcastInstance(
+				HazelcastTestMembers.hazelcastConfig("cli-broker-" + UUID.randomUUID(), ports[0], ports));
+		try {
+			List<Kernel.CliTokenBrokerResponse> responses = new CopyOnWriteArrayList<>();
+			StreamObserver<Kernel.CliTokenBrokerRequest> requests =
+					new CliTokenBrokerServiceImpl(svc, hz).brokerStream(null, new StreamObserver<>() {
+						@Override
+						public void onNext(Kernel.CliTokenBrokerResponse value) {
+							responses.add(value);
+						}
+
+						@Override
+						public void onError(Throwable t) {
+						}
+
+						@Override
+						public void onCompleted() {
+						}
+					});
+			String nonce = "n".repeat(64);
+			requests.onNext(Kernel.CliTokenBrokerRequest.newBuilder()
+					.setRegister(Kernel.CliTokenBrokerRegister.newBuilder().setInstanceId("oauth-a"))
+					.build());
+			requests.onNext(Kernel.CliTokenBrokerRequest.newBuilder()
+					.setRegisterNonce(Kernel.CliTokenBrokerRegisterNonce.newBuilder().setNonce(nonce))
+					.build());
+			requests.onNext(Kernel.CliTokenBrokerRequest.newBuilder()
+					.setCompleteNonce(Kernel.CliTokenBrokerCompleteNonce.newBuilder()
+							.setNonce(nonce)
+							.setSubject("cli-user")
+							.setClaims(withSynthesizedClaims(idpClaims(TENANT_ISSUER, "abc", 0, 0))))
+					.build());
+
+			assertTrue(responses.stream().anyMatch(Kernel.CliTokenBrokerResponse::hasTokenDelivery),
+					"the broker must have minted and delivered");
+			assertEquals(1, opaClaims.size());
+			assertNoSynthesizedClaim(opaClaims.get(0), "OPA");
+			assertEquals("abc", opaClaims.get(0).getFieldsOrThrow("origin_sub").getStringValue());
+		} finally {
+			hz.shutdown();
+		}
+	}
+
+	/**
+	 * Every access token a credential mints carries the person's name as their
+	 * IdP sent it, the org's as well as people's, so the tenant and its
+	 * services see who is acting.
+	 */
+	@Test
+	void everyAccessTokenFromACredentialCarriesThePersonsName() throws Exception {
+		opaNamespace = ACME;
+		Tokenrequest.TokenMintResponse resp = mint(Tokenrequest.MintUserTokenRequest.newBuilder()
+				.setSubject("whatever-the-broker-says")
+				.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
+				.setClaims(idpClaims(GOOGLE_ISSUER, GOOGLE_SUB, 0, 0).toBuilder()
+						.putFields("name", Value.newBuilder().setStringValue("Jody Scott").build()))
+				.build());
+		TokenWrapper credential = credential(resp);
+
+		assertEquals("Jody Scott", accessToken(resp).getCustomField("name"));
+		assertEquals("Jody Scott", accessToken(exchange(credential, ACME)).getCustomField("name"));
+		assertEquals("Jody Scott",
+				accessToken(exchange(credential, PeopleTenant.NAMESPACE)).getCustomField("name"));
+	}
+
+	// ------------------------------------------------------------------
 	// Harness
 	// ------------------------------------------------------------------
 
@@ -884,6 +1008,22 @@ class SessionCredentialTest {
 				+ tenant + "\"}", "test-req");
 	}
 
+	/** A relayed claim set that also asserts every name kernel synthesizes for OPA. */
+	private static Struct withSynthesizedClaims(Struct relayed) {
+		return relayed.toBuilder()
+				.putFields("principal_id", Value.newBuilder().setStringValue("someone-else").build())
+				.putFields("tenant_namespace", Value.newBuilder().setStringValue("/tenants/victim").build())
+				.putFields("proof_kind", Value.newBuilder().setStringValue("MEMBERSHIP_PROOF_KIND_IDP").build())
+				.putFields("customer", Value.newBuilder().setBoolValue(false).build())
+				.build();
+	}
+
+	private static void assertNoSynthesizedClaim(Struct claims, String where) {
+		for (String name : IdentityServiceImpl.SYNTHESIZED_CLAIMS) {
+			assertFalse(claims.containsFields(name), name + " must not reach " + where);
+		}
+	}
+
 	private static Struct idpClaims(String issuer, String sub, long authTime, long unused) {
 		Struct.Builder claims = Struct.newBuilder()
 				.putFields("origin_iss", Value.newBuilder().setStringValue(issuer).build())
@@ -931,6 +1071,7 @@ class SessionCredentialTest {
 		@Override
 		public Userentitlements.EntitlementEvalResult evalEntitlement(
 				Userentitlements.EntitlementEvalInput request) {
+			opaClaims.add(request.getClaims());
 			return Userentitlements.EntitlementEvalResult.newBuilder()
 					.setNamespace(opaNamespace)
 					.setTokenEntitlements(Entitlements.TokenEntitlements.newBuilder()

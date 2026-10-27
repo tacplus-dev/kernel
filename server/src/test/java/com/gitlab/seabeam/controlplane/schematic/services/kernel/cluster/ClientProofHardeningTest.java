@@ -177,6 +177,20 @@ class ClientProofHardeningTest {
 				TokenWrapper.from(resp.getAccessToken()).getAudience());
 	}
 
+	/**
+	 * The authenticators read the caller identity from principal (falling back to
+	 * service_name). The token carried only the subject, so every authenticated RPC
+	 * refused a token kernel had just minted ("token missing caller identity").
+	 */
+	@Test
+	void theMintedTokenCarriesTheCredPairAsItsPrincipal() {
+		Tokenrequest.TokenMintResponse resp =
+				identityService.mintClientToken(null, request(proof(p -> { })));
+
+		assertEquals("cred-pair:" + credPairId,
+				TokenWrapper.from(resp.getAccessToken()).getPrincipal());
+	}
+
 	// ---- L7: an id that resolves ambiguously -------------------------------
 
 	/**

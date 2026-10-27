@@ -79,7 +79,7 @@ class DeviceWebauthnLinkTest {
 	private static final String TRUST_DOMAIN = "test.schematic.io";
 	private static final String KERNEL_AUDIENCE = "schematic-kernel";
 	private static final String ISSUER = "https://kernel.test/oidc";
-	private static final String BROKER_NAME = "personalauth";
+	private static final String BROKER_NAME = "device-broker";
 	private static final String APPLE_ISSUER = "https://appleid.apple.com";
 	private static final String APPLE_SUB = "001672.9c4f1a33be7d4e1fb0c2.0913";
 	private static final String TENANT_NAMESPACE = "/tenants/drpepper";

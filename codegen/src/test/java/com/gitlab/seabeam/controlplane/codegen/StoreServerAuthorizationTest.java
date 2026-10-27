@@ -59,7 +59,7 @@ class StoreServerAuthorizationTest {
 	private static final AccessPolicy FIXTURE_POLICY = new AccessPolicy(
 			"FixtureStoreEntry", "fixtures",
 			List.of("service:fixtures"), List.of("*"), List.of(),
-			Map.of(), false, false);
+			Map.of(), List.of(), false, false);
 
 	@Test
 	void generatedStoreServerLooksUpItsComputedPolicy(@TempDir Path tmp) throws IOException {
@@ -107,7 +107,7 @@ class StoreServerAuthorizationTest {
 	@Test
 	void aPolicyForADifferentStoreDoesNotSatisfyTheLookup(@TempDir Path tmp) {
 		AccessPolicy other = new AccessPolicy("FixtureStoreEntry", "otherpkg",
-				List.of("service:otherpkg"), List.of("*"), List.of(), Map.of(), false, false);
+				List.of("service:otherpkg"), List.of("*"), List.of(), Map.of(), List.of(), false, false);
 
 		assertThrows(IllegalStateException.class, () -> generateStoreServer(tmp, List.of(other)));
 	}

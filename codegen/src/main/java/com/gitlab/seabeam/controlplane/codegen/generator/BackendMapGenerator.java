@@ -8,7 +8,8 @@ import java.util.*;
 
 /**
  * Generates {BackendName}Map.java — typed IMap accessors per boundary.
- * Singletons get/put/lock, collections get/put/delete.
+ * Singletons get/put/lock, collections get/put/delete (plus putIfAbsent/replace on convergent ones,
+ * and a TTL-carrying putIfAbsent on non-replicated epoch-expiring ones).
  */
 public class BackendMapGenerator {
 
@@ -112,6 +113,16 @@ public class BackendMapGenerator {
                 methods.append(generateEpochPut(b, vars, outerClassName));
             } else {
                 methods.append(TemplateEngine.renderFragment("statemap_collection_put_convergent.java.template", vars));
+            }
+            // Conditional writes only where they are atomic at the partition owner: a
+            // replicated map's replace is a local read-then-put, and an epoch-expiring
+            // put carries a TTL that only putIfAbsent has an IMap overload for.
+            if (!b.isReplicated() && b.getEpochExpirationGetter() == null) {
+                methods.append(TemplateEngine.renderFragment("statemap_collection_put_if_absent.java.template", vars));
+                methods.append(TemplateEngine.renderFragment("statemap_collection_replace.java.template", vars));
+            } else if (!b.isReplicated()) {
+                vars.put("EPOCH_GETTER", b.getEpochExpirationGetter());
+                methods.append(TemplateEngine.renderFragment("statemap_collection_put_if_absent_epoch.java.template", vars));
             }
             methods.append(TemplateEngine.renderFragment("statemap_collection_delete.java.template", vars));
         }

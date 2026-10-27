@@ -444,6 +444,9 @@ public class KeyRotator {
      * there than in the snapshot ({@link #reserve} extended it after the
      * snapshot was taken). That later {@code exp} is adopted, never overwritten:
      * republishing the snapshot's would cut off tokens the key has signed since.
+     * One published with an EARLIER {@code exp} than the restored record (a
+     * peer's stale copy, written before this node extended it) is republished
+     * with the record's, or it would leave the set while still signing.
      *
      * <p>A restored key whose {@code exp}, after that, has passed is retired as
      * {@link #sweepExpired} retires one, never republished: no live token used
@@ -472,9 +475,10 @@ public class KeyRotator {
                         a.alg, kid, k.jwk.getExp());
                 generateKey(a);
                 replaced = true;
-            } else if (published == null) {
+            } else if (published == null || published.getExp() < jwk.getExp()) {
                 keyPublisher.accept(jwk);
-                logger.info("Re-injected signing JWK into verifying_keys on boot: alg={}, kid={}", a.alg, kid);
+                logger.info("Re-injected signing JWK into verifying_keys on boot: alg={}, kid={}, exp={}",
+                        a.alg, kid, jwk.getExp());
             }
         }
         return replaced;

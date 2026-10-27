@@ -1,0 +1,11 @@
+
+    /**
+     * Stores {@code value} under {@code key} only if the key is absent, atomically at the
+     * key's partition owner. Returns the value bound to {@code key} afterwards: the existing
+     * value if one was already there (nothing is written), otherwise {@code value}.
+     */
+    public {{QUALIFIED_TYPE}} putIfAbsent{{FIELD_PASCAL}}(String key, {{QUALIFIED_TYPE}} value) throws ProtoException {
+        {{HELPERS_REF}}.validate{{TYPE_NAME}}(value);
+        {{QUALIFIED_TYPE}} existing = {{FIELD_CAMEL}}Map.putIfAbsent(key, value);
+        return existing != null ? existing : value;
+    }

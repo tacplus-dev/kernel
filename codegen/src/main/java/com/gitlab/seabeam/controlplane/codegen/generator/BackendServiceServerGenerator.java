@@ -10,9 +10,12 @@ import java.util.Map;
 
 import com.gitlab.seabeam.controlplane.codegen.model.AccessPolicy;
 import com.gitlab.seabeam.controlplane.codegen.model.BackendServiceInfo;
+import com.gitlab.seabeam.controlplane.codegen.model.FieldDescriptor;
+import com.gitlab.seabeam.controlplane.codegen.model.MessageDescriptor;
 import com.gitlab.seabeam.controlplane.codegen.model.SharedBackendInfo;
 import com.gitlab.seabeam.controlplane.codegen.model.SharedBoundary;
 import com.gitlab.seabeam.controlplane.codegen.model.SharedView;
+import com.gitlab.seabeam.controlplane.codegen.model.TenantPinnedRead;
 
 /**
  * Generates {Prefix}BackendServiceServer.java — gRPC server implementation
@@ -204,10 +207,14 @@ public class BackendServiceServerGenerator {
 		}
 
 		// Collection RPCs
+		List<String> pinnedBoundaries = tenantPinnedBoundaries(svc, collections, ctx);
 		StringBuilder collectionRpcs = new StringBuilder();
 		if (!collections.isEmpty()) {
 			for (SharedBoundary b : collections) {
 				Map<String, String> vars = boundaryVars(b, outerClassName, servicePrefix, svc, ctx);
+				// A tenant-pinned collection's read RPCs authorize through
+				// checkPinnedRead and filter for a pinned caller; its writes do not change.
+				String reads = pinnedBoundaries.contains(b.getFieldName()) ? "server_collection_pinned_" : "server_collection_";
 				if (b.isInstanceKeyed()) {
 					collectionRpcs.append("\n    // --- ").append(b.getFieldPascal())
 							.append(" (instance-keyed collection) ---\n");
@@ -224,7 +231,7 @@ public class BackendServiceServerGenerator {
 					collectionRpcs.append(TemplateEngine.renderFragment("server_collection_watch.java.template", vars));
 				} else {
 					collectionRpcs.append("\n    // --- ").append(b.getFieldPascal()).append(" (collection) ---\n");
-					collectionRpcs.append(TemplateEngine.renderFragment("server_collection_get.java.template", vars));
+					collectionRpcs.append(TemplateEngine.renderFragment(reads + "get.java.template", vars));
 					collectionRpcs.append(TemplateEngine.renderFragment("server_collection_put.java.template", vars));
 					collectionRpcs.append(TemplateEngine.renderFragment("server_collection_set.java.template", vars));
 					collectionRpcs
@@ -232,16 +239,16 @@ public class BackendServiceServerGenerator {
 					collectionRpcs
 							.append(TemplateEngine.renderFragment("server_collection_delete.java.template", vars));
 					collectionRpcs.append(
-							TemplateEngine.renderFragment("server_collection_contains_key.java.template", vars));
+							TemplateEngine.renderFragment(reads + "contains_key.java.template", vars));
 					collectionRpcs
-							.append(TemplateEngine.renderFragment("server_collection_get_all.java.template", vars));
+							.append(TemplateEngine.renderFragment(reads + "get_all.java.template", vars));
 					collectionRpcs
-							.append(TemplateEngine.renderFragment("server_collection_key_set.java.template", vars));
-					collectionRpcs.append(TemplateEngine.renderFragment("server_collection_size.java.template", vars));
+							.append(TemplateEngine.renderFragment(reads + "key_set.java.template", vars));
+					collectionRpcs.append(TemplateEngine.renderFragment(reads + "size.java.template", vars));
 					collectionRpcs.append(TemplateEngine.renderFragment("server_collection_clear.java.template", vars));
 					collectionRpcs.append(
 							TemplateEngine.renderFragment("server_collection_put_if_absent.java.template", vars));
-					collectionRpcs.append(TemplateEngine.renderFragment("server_collection_watch.java.template", vars));
+					collectionRpcs.append(TemplateEngine.renderFragment(reads + "watch.java.template", vars));
 				}
 			}
 		}
@@ -586,6 +593,76 @@ public class BackendServiceServerGenerator {
 		return svc.getStateName().endsWith("ConfigState");
 	}
 
+	/**
+	 * The collections of this state root its policy carries a tenant-pinned read
+	 * of (tacplus #130), each checked against the shape the pinned fragments
+	 * filter. Fail closed: a pin this generator cannot serve filtered fails
+	 * generation instead of being dropped or served unfiltered.
+	 *
+	 * <p>Kernel generates no Query/WatchQuery handlers, so those two of the eight
+	 * pinned read RPCs answer UNIMPLEMENTED to every caller, pinned or not.
+	 */
+	private static List<String> tenantPinnedBoundaries(BackendServiceInfo svc, List<SharedBoundary> collections,
+			GeneratorContext ctx) {
+		String key = graphKey(svc, ctx);
+		List<String> pinned = new ArrayList<>();
+		for (AccessPolicy policy : ctx.getSecurityPolicies()) {
+			if (!key.equals(policy.graphKey())) {
+				continue;
+			}
+			for (TenantPinnedRead read : policy.tenantPinnedReads()) {
+				if (policy.disableAuth()) {
+					throw pinError(key, read, "the state root disables auth");
+				}
+				SharedBoundary b = collections.stream()
+						.filter(c -> c.getFieldName().equals(read.boundary())).findFirst()
+						.orElseThrow(() -> pinError(key, read, "it is not a collection this server serves"));
+				if (b.isInstanceKeyed()) {
+					throw pinError(key, read, "it is an instance-keyed collection");
+				}
+				if (!read.keyField().equals(b.getKeyFieldName())) {
+					throw pinError(key, read, "keyField is not the entry's (spec.indexed) key " + b.getKeyFieldName());
+				}
+				MessageDescriptor entry = b.isCrossPackage()
+						? ctx.getParser().findMessage(b.getCrossPkg(), b.getTypeName())
+						: ctx.getParser().findMessage(svc.getPackageName(), b.getTypeName());
+				FieldDescriptor keyField = entry == null ? null : field(entry, read.keyField());
+				if (keyField == null || keyField.isRepeated() || !"string".equals(keyField.getType())) {
+					throw pinError(key, read, "the entry has no singular string key field " + read.keyField());
+				}
+				FieldDescriptor configField = field(entry, read.configField());
+				if (configField == null || configField.isRepeated() || !"message".equals(configField.getTypeKind())) {
+					throw pinError(key, read, "the entry has no singular message field " + read.configField());
+				}
+				String type = configField.getType();
+				int dot = type.lastIndexOf('.');
+				MessageDescriptor config = dot < 0
+						? ctx.getParser().findMessage(svc.getPackageName(), type)
+						: ctx.getParser().findMessage(type.substring(0, dot), type.substring(dot + 1));
+				if (config == null) {
+					throw pinError(key, read, "the config type " + type + " was not found");
+				}
+				for (String slice : read.slices().values()) {
+					if (field(config, slice) == null) {
+						throw pinError(key, read, type + " has no slice field " + slice);
+					}
+				}
+				pinned.add(read.boundary());
+			}
+		}
+		return pinned;
+	}
+
+	private static FieldDescriptor field(MessageDescriptor msg, String name) {
+		return msg.getFields().stream().filter(f -> f.getName().equals(name)).findFirst().orElse(null);
+	}
+
+	private static IllegalStateException pinError(String graph, TenantPinnedRead read, String why) {
+		return new IllegalStateException("[tacplus-backend] tenantPinnedReads of \"" + graph + "." + read.boundary()
+				+ "\" cannot be served filtered: " + why
+				+ " — refusing to generate a state server that would serve it unfiltered.");
+	}
+
 	private static boolean grantsEveryService(List<String> subjects) {
 		return subjects.contains("*") || subjects.contains("service:*");
 	}
@@ -600,10 +677,6 @@ public class BackendServiceServerGenerator {
 		vars.put("FIELD_PASCAL", b.getFieldPascal());
 		vars.put("MAP_NAME", b.getMapName());
 		vars.put("HELPERS_REF", ctx.getHelpersRef(svc, b));
-		long ttlSeconds = b.getEvictionTtlSeconds();
-		vars.put("TTL_SET_CALL", ttlSeconds > 0
-				? b.getFieldCamel() + "Map.set(storedKey, authoritative, " + ttlSeconds + "L, TimeUnit.SECONDS);"
-				: b.getFieldCamel() + "Map.set(storedKey, authoritative);");
 		vars.put("OUTER_CLASS", outerClassName);
 		vars.put("SERVICE_PREFIX", servicePrefix);
 		vars.put("TRACE_REQUEST_TYPE", ctx.getTypesPackageBase() + ".types.sys.trace.Trace.TraceRequest");

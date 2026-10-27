@@ -298,20 +298,20 @@ class DevicePrincipalTest {
 	}
 
 	/**
-	 * The accepted caller: a delegate carrying AUTH_BROKER_KIND_DEVICE — the
-	 * personalauth broker's configured shape. Asserted as its own test rather
+	 * The accepted caller: a delegate carrying AUTH_BROKER_KIND_DEVICE — a
+	 * device broker's configured shape. Asserted as its own test rather
 	 * than left implicit in the registration tests above, so that a change which
 	 * denies every caller cannot pass by making all the refusals true.
 	 */
 	@Test
 	void registrationByADeviceBrokerDelegateSucceeds() throws Exception {
-		DeviceKey key = DeviceKey.generate("cred-via-personalauth");
+		DeviceKey key = DeviceKey.generate("cred-via-device-broker");
 
 		String principalId = registerAs(DELEGATE_NAME, key, "iPhone", true);
 
 		assertNotNull(principalId);
 		assertEquals(1, principalMap.proto().getPersonalPrincipalsCount());
-		assertEquals("cred-via-personalauth",
+		assertEquals("cred-via-device-broker",
 				principalMap.getPersonalPrincipals(principalId).getCredentials(0).getCredentialId());
 	}
 
@@ -347,7 +347,7 @@ class DevicePrincipalTest {
 	 * broker brokered the login, so a device login stays distinguishable from an
 	 * IdP login for the life of the token. That value is the calling Delegate's
 	 * bare NAME — not a SPIFFE id, not the issuer — because that is what the
-	 * mint stamps, and personalauth.proto documents it in exactly that shape.
+	 * mint stamps.
 	 */
 	@Test
 	void theMintedTokenRecordsTheBrokeringDelegateAsAzp() throws Exception {

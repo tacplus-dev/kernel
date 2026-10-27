@@ -41,7 +41,7 @@ final class InfraStatePolicies {
 	private static final AccessPolicy SERVICE_CONFIG_STATE = new AccessPolicy(
 			"ServiceConfigState", "grpcconfig",
 			List.of("service:kernel"), List.of("*"), List.of(),
-			Map.of(), false, false);
+			Map.of(), List.of(), false, false);
 
 	// ServiceHealth is the sys contract's health root (sys/servicehealth.proto,
 	// routing label kernel): every service writes its own instances into it
@@ -52,7 +52,7 @@ final class InfraStatePolicies {
 	private static final AccessPolicy SERVICE_HEALTH = new AccessPolicy(
 			"ServiceHealth", "servicehealth",
 			List.of("*"), List.of("*"), List.of(),
-			Map.of(), false, false);
+			Map.of(), List.of(), false, false);
 	private static final List<AccessPolicy> POLICIES = List.of(SERVICE_CONFIG_STATE, SERVICE_HEALTH);
 
 	private InfraStatePolicies() {

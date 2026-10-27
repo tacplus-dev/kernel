@@ -2,6 +2,7 @@
 package com.gitlab.seabeam.controlplane.schematic.services.kernel.graphs.hazelcast;
 
 import com.gitlab.seabeam.controlplane.schematic.services.kernel.graphs.IMap;
+import com.hazelcast.map.EntryProcessor;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Objects;
@@ -105,12 +106,41 @@ class HazelcastMap<K, V> implements IMap<K, V> {
 		return delegate.replace(Objects.requireNonNull(key, "key"), Objects.requireNonNull(value, "value"));
 	}
 
+	/**
+	 * Replaces only if the stored value equals {@code oldValue} as a value, compared
+	 * at the key's partition owner. Hazelcast's own {@code replace(key, old, new)}
+	 * compares serialized bytes instead, so a value a member running an older
+	 * kernel stored under an older compact schema never matches the equal value
+	 * this member serializes, and a compare-and-set loop on that key spins forever.
+	 */
 	@Override
 	public boolean replace(K key, V oldValue, V newValue) {
-		return delegate.replace(
+		return delegate.executeOnKey(
 				Objects.requireNonNull(key, "key"),
-				Objects.requireNonNull(oldValue, "oldValue"),
-				Objects.requireNonNull(newValue, "newValue"));
+				new ReplaceIfEqual<>(
+						Objects.requireNonNull(oldValue, "oldValue"),
+						Objects.requireNonNull(newValue, "newValue")));
+	}
+
+	/** Runs at the key's partition owner, so the compare and the write are one atomic step. */
+	private static final class ReplaceIfEqual<K, V> implements EntryProcessor<K, V, Boolean> {
+
+		private final V expected;
+		private final V next;
+
+		ReplaceIfEqual(V expected, V next) {
+			this.expected = expected;
+			this.next = next;
+		}
+
+		@Override
+		public Boolean process(Map.Entry<K, V> entry) {
+			if (!expected.equals(entry.getValue())) {
+				return false;
+			}
+			entry.setValue(next);
+			return true;
+		}
 	}
 
 	// ========================================================================

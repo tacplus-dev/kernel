@@ -1,0 +1,50 @@
+
+    @Override
+    public void watch{{FIELD_PASCAL}}({{TRACE_REQUEST_TYPE}} request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> responseObserver) {
+        SecurityAuthenticator.TenantPin pin;
+        try {
+            pin = authenticator.checkPinnedRead(GRAPH, "{{FIELD_NAME}}");
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+            return;
+        }
+        // Captured here: the poller runs on the scheduler thread, off the Context.
+        // A pinned caller watches the root scope through a filter applied to the
+        // snapshot and to every update frame.
+        NamespaceScope scope = pin == null ? NamespaceScope.current() : NamespaceScope.root();
+        StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> observer = pin == null
+            ? responseObserver
+            : SecurityAuthenticator.TenantPin.filtering(responseObserver, frame -> pin{{FIELD_PASCAL}}(pin, frame));
+        try {
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse snapshot = build{{FIELD_PASCAL}}Snapshot(scope);
+            if (snapshot.getEntriesCount() > 0) {
+                observer.onNext(snapshot);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to send initial {{FIELD_PASCAL}} collection snapshot", e);
+        }
+
+        WatcherEntry<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> entry = new WatcherEntry<>(observer, scope);
+        {{FIELD_CAMEL}}Watchers.add(entry);
+
+        if (responseObserver instanceof ServerCallStreamObserver) {
+            ((ServerCallStreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse>) responseObserver).setOnCancelHandler(
+                () -> {{FIELD_CAMEL}}Watchers.remove(entry));
+        }
+    }
+
+    /**
+     * The {{FIELD_PASCAL}} entries a tenant-pinned caller is served out of a root
+     * snapshot: the ones it admits, each projected to its own config slice.
+     */
+    private static {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse pin{{FIELD_PASCAL}}(
+            SecurityAuthenticator.TenantPin pin, {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse snapshot) {
+        {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse.newBuilder();
+        for (java.util.Map.Entry<String, {{QUALIFIED_TYPE}}> e : snapshot.getEntriesMap().entrySet()) {
+            if (pin.admits(e.getKey())) {
+                resp.putEntries(e.getKey(), pin.project(e.getValue()));
+            }
+        }
+        return resp.build();
+    }

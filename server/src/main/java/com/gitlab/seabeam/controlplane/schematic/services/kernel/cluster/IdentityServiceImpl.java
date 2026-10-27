@@ -97,6 +97,16 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	static final Set<String> WELL_KNOWN_JWT_CLAIMS = Set.of(
 			"iss", "sub", "aud", "exp", "nbf", "iat", "jti");
 
+	/**
+	 * The claim names kernel synthesizes for OPA (the device arm and the
+	 * personal-principal tenant exchange), which a policy may decide roles
+	 * from. A relayed claim set must never carry them: oauth forwards any
+	 * non-well-known IdP claim under its own name, so a tenant IdP could
+	 * otherwise put {@code tenant_namespace} in an id_token.
+	 */
+	static final Set<String> SYNTHESIZED_CLAIMS = Set.of(
+			"principal_id", "tenant_namespace", "proof_kind", "customer");
+
 	// Legacy typ claim value — kept for backwards compatibility during rollout.
 	private static final String TOKEN_TYPE_REFRESH = Helpers.tokenUseToString(TokenUse.TOKEN_USE_REFRESH);
 
@@ -747,7 +757,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// Resolve and mint via shared internal method. The caller's own verified
 		// subject is threaded through rather than the bare delegate name, which
 		// no longer identifies one delegate on its own.
-		return mintUserTokenInternal(request.getSubject(), request.getClaims(),
+		return mintUserTokenInternal(request.getSubject(), withoutSynthesizedClaims(request.getClaims()),
 				request.getExp(), request.getTraceId(), callerSub,
 				request.getOfflineAccess(), null);
 	}
@@ -809,7 +819,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private Tokenrequest.TokenMintResponse mintPersonToken(
 			Tokenrequest.MintUserTokenRequest request, String callerSub) throws StatusException {
-		Struct claims = request.getClaims();
+		Struct claims = withoutSynthesizedClaims(request.getClaims());
 		String issuer = claimString(claims, "origin_iss");
 		Kernel.PeopleIdpProvider provider = issuer == null ? null : PeopleTenant.providerForIssuer(issuer);
 		String providerSubject = provider == null ? null
@@ -849,6 +859,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	/** The link index key: {@code <idp_id>|<provider_subject>}. */
 	static String identityLinkKey(String idpId, String providerSubject) {
 		return KernelIdentityGraph.linkKey(idpId, providerSubject);
+	}
+
+	/** A relayed claim set without the names only kernel may set ({@link #SYNTHESIZED_CLAIMS}). */
+	static Struct withoutSynthesizedClaims(Struct relayed) {
+		Struct.Builder stripped = relayed.toBuilder();
+		SYNTHESIZED_CLAIMS.forEach(stripped::removeFields);
+		return stripped.build();
 	}
 
 	/** The value of a string claim, or null when it is absent or not a non-empty string. */
@@ -1635,7 +1652,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					"link side " + which + " names no subject");
 		}
 		return new LinkedUser(
-				requireNamespaceFromOpa(resolveEntitlementsViaOpa(claims, traceId)),
+				requireNamespaceFromOpa(resolveEntitlementsViaOpa(withoutSynthesizedClaims(claims), traceId)),
 				side.getSubject());
 	}
 
@@ -5649,7 +5666,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * reachable from outside the cluster — the RPC dropped
 	 * {@code RPC_FLAG_SELF_AUTHENTICATES}, so tacplus emits no NoAuth gateway proxy
 	 * route for it — and the CALLER must additionally be an authenticated delegate
-	 * carrying {@code AUTH_BROKER_KIND_DEVICE}, i.e. the personalauth broker. Two
+	 * carrying {@code AUTH_BROKER_KIND_DEVICE}, i.e. a device broker. Two
 	 * independent facts are required and neither replaces the other: the broker is
 	 * a device broker, and whoever is registering holds the private half. Without
 	 * the caller check a client could skip the broker and register against kernel

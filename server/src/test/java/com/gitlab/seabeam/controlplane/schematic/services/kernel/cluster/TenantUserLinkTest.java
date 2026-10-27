@@ -67,6 +67,8 @@ class TenantUserLinkTest {
 
 	private final List<JwkOuterClass.Jwk> verifyingKeys = new CopyOnWriteArrayList<>();
 	private final List<Kernel.Delegate> delegates = new ArrayList<>();
+	/** Every claim set the fake OPA was handed, in order. */
+	private final List<Struct> opaClaims = new CopyOnWriteArrayList<>();
 	private KeyRotator keyRotator;
 	private PrincipalMap principalMap;
 	private IdentityServiceImpl svc;
@@ -105,7 +107,7 @@ class TenantUserLinkTest {
 				(name, chain) -> { }, // serviceCaWriter
 				() -> TRUST_DOMAIN,
 				ISSUER,
-				new FakeOpaEvalGrpcClient(),
+				new FakeOpaEvalGrpcClient(opaClaims),
 				null,            // proxyPolicyOpaClient
 				new ConfigMap(new InMemoryManager()),
 				new WorkloadMap(new InMemoryManager()),
@@ -191,6 +193,29 @@ class TenantUserLinkTest {
 
 		assertEquals(PeopleTenant.NAMESPACE + "|" + personSubject(), resp.getBUserKey());
 		assertEquals(1, principalMap.proto().getPeopleCount());
+	}
+
+	/**
+	 * The tenant side's claims are relayed from its IdP, which can put any claim
+	 * in its id_token. OPA names that side's namespace from a claim set with
+	 * none of the names kernel synthesizes for OPA in it.
+	 */
+	@Test
+	void aTenantSidesRelayedSynthesizedClaimsNeverReachOpa() throws Exception {
+		Struct spoofed = idpClaims(TENANT_ISSUER, "jody", NONCE).toBuilder()
+				.putFields("principal_id", Value.newBuilder().setStringValue("someone-else").build())
+				.putFields("tenant_namespace", Value.newBuilder().setStringValue("/tenants/victim").build())
+				.putFields("proof_kind", Value.newBuilder().setStringValue("MEMBERSHIP_PROOF_KIND_IDP").build())
+				.putFields("customer", Value.newBuilder().setBoolValue(false).build())
+				.build();
+		linkCall(request(NONCE, NONCE).toBuilder().setA(side(spoofed, TENANT_SUBJECT)).build(),
+				PeopleTenant.NAMESPACE);
+
+		assertEquals(1, opaClaims.size(), "only the tenant side reaches OPA");
+		for (String name : IdentityServiceImpl.SYNTHESIZED_CLAIMS) {
+			assertFalse(opaClaims.get(0).containsFields(name), name + " must not reach OPA");
+		}
+		assertEquals("jody", opaClaims.get(0).getFieldsOrThrow("origin_sub").getStringValue());
 	}
 
 	/** Re-proving an existing link is the same fact, not a second edge. */
@@ -423,16 +448,20 @@ class TenantUserLinkTest {
 		return t.getBase64();
 	}
 
-	/** Returns a canned EntitlementEvalResult; the channel throws if ever used. */
+	/** Returns a canned EntitlementEvalResult and records its claims; the channel throws if ever used. */
 	private static class FakeOpaEvalGrpcClient extends OpaEvalGrpcClient {
-		FakeOpaEvalGrpcClient() {
+		private final List<Struct> claims;
+
+		FakeOpaEvalGrpcClient(List<Struct> claims) {
 			super(UNUSABLE_CHANNEL, () -> "unused-token");
+			this.claims = claims;
 		}
 
 		/** Routes drpepper's own IdP into drpepper; a people-provider login routes nowhere. */
 		@Override
 		public Userentitlements.EntitlementEvalResult evalEntitlement(
 				Userentitlements.EntitlementEvalInput request) {
+			claims.add(request.getClaims());
 			Value issuer = request.getClaims().getFieldsMap().get("origin_iss");
 			boolean tenantLogin = issuer != null && TENANT_ISSUER.equals(issuer.getStringValue());
 			return Userentitlements.EntitlementEvalResult.newBuilder()

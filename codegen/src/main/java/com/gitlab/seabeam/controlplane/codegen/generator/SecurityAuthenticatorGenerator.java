@@ -1,6 +1,7 @@
 package com.gitlab.seabeam.controlplane.codegen.generator;
 
 import com.gitlab.seabeam.controlplane.codegen.model.AccessPolicy;
+import com.gitlab.seabeam.controlplane.codegen.model.TenantPinnedRead;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -41,6 +42,7 @@ public class SecurityAuthenticatorGenerator {
         vars.put("NO_AUTH_METHODS", buildNoAuthSet(noAuthEntries, true));
         vars.put("ACCEPTED_AUDIENCES", buildAcceptedAudiences(ctx.getAcceptedAudiences()));
         vars.put("POLICY_MAP_INIT", buildAuthenticatorPolicyMapInit(ctx.getSecurityPolicies()));
+        vars.put("TENANT_PINNED_READS", buildTenantPinnedReads(ctx.getSecurityPolicies()));
 
         String content = TemplateEngine.render("SecurityAuthenticator.java.template", vars);
 
@@ -103,6 +105,32 @@ public class SecurityAuthenticatorGenerator {
             sb.append("));\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * Builds SecurityAuthenticator's tenant-pinned read authorization (tacplus #130):
+     * the TENANT_PINNED_READS table, checkPinnedRead and the TenantPin class. Empty
+     * when no policy carries tenantPinnedReads, so such a build generates exactly
+     * what it did before the field existed.
+     */
+    private static String buildTenantPinnedReads(List<AccessPolicy> policies) {
+        List<String> entries = new ArrayList<>();
+        for (AccessPolicy policy : policies) {
+            for (TenantPinnedRead read : policy.tenantPinnedReads()) {
+                List<String> slices = new ArrayList<>();
+                for (var slice : read.slices().entrySet()) {
+                    slices.add("Map.entry(\"" + slice.getKey() + "\", \"" + slice.getValue() + "\")");
+                }
+                entries.add("            Map.entry(\"" + policy.graphKey() + "/" + read.boundary()
+                        + "\", new PinnedRead(\"" + read.keyField() + "\", \"" + read.configField()
+                        + "\", Map.ofEntries(" + String.join(", ", slices) + ")))");
+            }
+        }
+        if (entries.isEmpty()) {
+            return "";
+        }
+        return TemplateEngine.renderFragment("authenticator_tenant_pinned_reads.java.template",
+                Map.of("TENANT_PINNED_READS_INIT", String.join(",\n", entries)));
     }
 
     /**

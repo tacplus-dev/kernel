@@ -1,0 +1,167 @@
+    /**
+     * Tenant-pinned reads (tacplus #130), from codegen-config.json
+     * {@code securityPolicies[].tenantPinnedReads}: "&lt;graph&gt;/&lt;boundary&gt;" → the
+     * callers outside rw/ro that may call that one collection's read RPCs, each
+     * pinned to its own tenant's entry and its own config slice. Deliberately not
+     * in {@link Policy#boundaryGrants}, which grants a boundary outright.
+     */
+    private static final Map<String, PinnedRead> TENANT_PINNED_READS = Map.ofEntries(
+{{TENANT_PINNED_READS_INIT}});
+
+    /** One tenant-pinned collection: its key field, its config field, and caller → slice field. */
+    private record PinnedRead(String keyField, String configField, Map<String, String> slices) {
+    }
+
+    /**
+     * Authorizes a read RPC of a tenant-pinned collection.
+     *
+     * <p>A caller that is not a pinned caller — the policy's rw/ro, a boundary
+     * grant, or anyone else — gets exactly {@link #checkAccess}: null when it is
+     * admitted (it is then served as on any other collection), PERMISSION_DENIED
+     * when it is not. A caller named in the collection's slices and absent from
+     * rw/ro gets its {@link TenantPin}, or PERMISSION_DENIED when its namespace is
+     * neither {@code /system[/...]} nor exactly {@code /tenants/<t>}.
+     *
+     * <p>Only the generated read RPCs of a pinned collection call this; its writes
+     * and every other boundary still go through {@link #checkAccess} alone.
+     */
+    public TenantPin checkPinnedRead(String graph, String boundary) throws ProtoException {
+        PinnedRead read = TENANT_PINNED_READS.get(graph + "/" + boundary);
+        Policy policy = GRAPH_POLICIES.get(graph);
+        String caller = CALLER_SERVICE_PATH_KEY.get();
+        String slice = null;
+        if (read != null && policy != null && caller != null && !caller.isEmpty()
+                && !matchesAny(policy.rw, caller) && !matchesAny(policy.ro, caller)) {
+            for (Map.Entry<String, String> s : read.slices().entrySet()) {
+                if (matchesAny(List.of(s.getKey()), caller)) {
+                    slice = s.getValue();
+                    break;
+                }
+            }
+        }
+        if (slice == null) {
+            checkAccess(graph, boundary, OperationType.READ);
+            return null;
+        }
+        return TenantPin.resolve(graph, boundary, caller, CALLER_NAMESPACE_KEY.get(),
+                read.keyField(), read.configField(), slice);
+    }
+
+    /**
+     * How one pinned caller reads a tenant-pinned collection: every tenant's
+     * entry from {@code /system} or below, only the entry keyed by the caller's
+     * full namespace {@code /tenants/<t>} from exactly {@code /tenants/<t>}, and
+     * in both cases each entry projected to its key field plus, inside its
+     * config field, the caller's own slice. Keys are
+     * the stored root-scope keys: a pinned caller is never chrooted.
+     */
+    public static final class TenantPin {
+        private static final String SYSTEM_NAMESPACE = "/" + Spiffe.SYSTEM_SEGMENT;
+        private static final String TENANT_NAMESPACE_PREFIX = "/" + Spiffe.TENANTS_SEGMENT + "/";
+
+        /** The one tenant's key (its full namespace) served, or null for every tenant. */
+        private final String tenant;
+        private final String keyField;
+        private final String configField;
+        private final String sliceField;
+
+        private TenantPin(String tenant, String keyField, String configField, String sliceField) {
+            this.tenant = tenant;
+            this.keyField = keyField;
+            this.configField = configField;
+            this.sliceField = sliceField;
+        }
+
+        private static TenantPin resolve(String graph, String boundary, String caller, String namespace,
+                String keyField, String configField, String sliceField) throws ProtoException {
+            String ns = namespace == null ? "" : namespace;
+            if (ns.equals(SYSTEM_NAMESPACE) || ns.startsWith(SYSTEM_NAMESPACE + "/")) {
+                return new TenantPin(null, keyField, configField, sliceField);
+            }
+            if (ns.startsWith(TENANT_NAMESPACE_PREFIX)) {
+                String t = ns.substring(TENANT_NAMESPACE_PREFIX.length());
+                if (!t.isEmpty() && t.indexOf('/') < 0) {
+                    return new TenantPin(ns, keyField, configField, sliceField);
+                }
+            }
+            logger.warn("[authz] REJECTED {}.{} READ — pinned caller {} in namespace \"{}\"", graph, boundary, caller, ns);
+            throw ProtoException.newErrPermissionDenied(null,
+                    "a tenant-pinned read of \"%s.%s\" is served to %s and %s<t> callers only, not namespace \"%s\"",
+                    graph, boundary, SYSTEM_NAMESPACE, TENANT_NAMESPACE_PREFIX, ns);
+        }
+
+        /** Whether the entry stored under {@code key} is served to this caller. */
+        public boolean admits(String key) {
+            return tenant == null || tenant.equals(key);
+        }
+
+        /** Refuses a Get/ContainsKey of another tenant's key: PERMISSION_DENIED, not not-found. */
+        public void requireAdmitted(String key) throws ProtoException {
+            if (!admits(key)) {
+                throw ProtoException.newErrPermissionDenied(null, "the key is another tenant's entry");
+            }
+        }
+
+        /**
+         * A copy of {@code entry} holding only its key field and, inside its
+         * config field, the caller's own slice. Unknown fields are dropped at
+         * both levels. Null stays null.
+         */
+        @SuppressWarnings("unchecked")
+        public <T extends com.google.protobuf.Message> T project(T entry) {
+            if (entry == null) {
+                return null;
+            }
+            com.google.protobuf.Message.Builder b = entry.toBuilder();
+            keepOnly(b, keyField, configField);
+            com.google.protobuf.Descriptors.FieldDescriptor cfd = b.getDescriptorForType().findFieldByName(configField);
+            if (b.hasField(cfd)) {
+                com.google.protobuf.Message.Builder cb = ((com.google.protobuf.Message) b.getField(cfd)).toBuilder();
+                keepOnly(cb, sliceField);
+                b.setField(cfd, cb.build());
+            }
+            return (T) b.build();
+        }
+
+        private static void keepOnly(com.google.protobuf.Message.Builder b, String... keep) {
+            List<String> kept = List.of(keep);
+            for (com.google.protobuf.Descriptors.FieldDescriptor fd : b.getDescriptorForType().getFields()) {
+                if (!kept.contains(fd.getName())) {
+                    b.clearField(fd);
+                }
+            }
+            b.setUnknownFields(com.google.protobuf.UnknownFieldSet.getDefaultInstance());
+        }
+
+        /**
+         * A Watch observer that filters every frame before passing it on, and
+         * drops a filtered frame identical to the last one it delivered: a change
+         * to another tenant's entry changes the unfiltered snapshot only.
+         */
+        public static <T> io.grpc.stub.StreamObserver<T> filtering(io.grpc.stub.StreamObserver<T> delegate,
+                java.util.function.UnaryOperator<T> filter) {
+            return new io.grpc.stub.StreamObserver<T>() {
+                private T last;
+
+                @Override
+                public synchronized void onNext(T value) {
+                    T filtered = filter.apply(value);
+                    if (!filtered.equals(last)) {
+                        last = filtered;
+                        delegate.onNext(filtered);
+                    }
+                }
+
+                @Override
+                public void onError(Throwable t) {
+                    delegate.onError(t);
+                }
+
+                @Override
+                public void onCompleted() {
+                    delegate.onCompleted();
+                }
+            };
+        }
+    }
+

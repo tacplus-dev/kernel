@@ -1,12 +1,14 @@
 package com.gitlab.seabeam.controlplane.codegen;
 
 import com.gitlab.seabeam.controlplane.codegen.model.AccessPolicy;
+import com.gitlab.seabeam.controlplane.codegen.model.TenantPinnedRead;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -122,11 +124,86 @@ public class CodegenConfig {
         List<String> rw = extractStringArray(obj, "rw");
         List<String> ro = extractStringArray(obj, "ro");
         Map<String, List<String>> boundaryGrants = parseBoundaryGrants(obj);
+        List<TenantPinnedRead> tenantPinnedReads = parseTenantPinnedReads(name, obj);
         boolean disableAuth = extractBoolField(obj, "disableAuth");
         boolean internal = extractBoolField(obj, "internal");
 
         return new AccessPolicy(name, pkg == null ? "" : pkg, rw, ro, List.of(),
-                boundaryGrants, disableAuth, internal);
+                boundaryGrants, tenantPinnedReads, disableAuth, internal);
+    }
+
+    /**
+     * Parses the optional "tenantPinnedReads" array of a policy object (tacplus #130).
+     * Each entry is {"boundary", "keyField", "configField",
+     * "slices": [{"caller", "sliceField"}, ...]}. It is deliberately not a
+     * boundaryGrants entry: a reader that does not know this field grants nothing.
+     * An entry missing any part fails generation rather than being dropped.
+     */
+    private static List<TenantPinnedRead> parseTenantPinnedReads(String policyName, String obj) {
+        int idx = obj.indexOf("\"tenantPinnedReads\"");
+        if (idx < 0) return List.of();
+        int arrayStart = obj.indexOf('[', idx);
+        int arrayEnd = findMatchingBracket(obj, arrayStart);
+        if (arrayStart < 0 || arrayEnd < arrayStart) {
+            throw new IllegalStateException("codegen-config.json: malformed tenantPinnedReads on " + policyName);
+        }
+
+        String arrayContent = obj.substring(arrayStart + 1, arrayEnd);
+        List<TenantPinnedRead> reads = new ArrayList<>();
+        int pos = 0;
+        while (pos < arrayContent.length()) {
+            int objStart = arrayContent.indexOf('{', pos);
+            if (objStart < 0) break;
+            int objEnd = findMatchingBrace(arrayContent, objStart);
+            if (objEnd < 0) break;
+
+            String entry = arrayContent.substring(objStart, objEnd + 1);
+            String boundary = extractStringField(entry, "boundary");
+            String keyField = extractStringField(entry, "keyField");
+            String configField = extractStringField(entry, "configField");
+            Map<String, String> slices = parseSlices(entry);
+            if (isEmpty(boundary) || isEmpty(keyField) || isEmpty(configField) || slices.isEmpty()) {
+                throw new IllegalStateException("codegen-config.json: tenantPinnedReads entry on " + policyName
+                        + " needs boundary, keyField, configField and at least one slice: " + entry);
+            }
+            reads.add(new TenantPinnedRead(boundary, keyField, configField, slices));
+            pos = objEnd + 1;
+        }
+        return reads;
+    }
+
+    /** Parses a tenantPinnedReads entry's "slices" array: caller → sliceField, in file order. */
+    private static Map<String, String> parseSlices(String entry) {
+        int idx = entry.indexOf("\"slices\"");
+        if (idx < 0) return Map.of();
+        int arrayStart = entry.indexOf('[', idx);
+        int arrayEnd = findMatchingBracket(entry, arrayStart);
+        if (arrayStart < 0 || arrayEnd < arrayStart) return Map.of();
+
+        String arrayContent = entry.substring(arrayStart + 1, arrayEnd);
+        Map<String, String> slices = new LinkedHashMap<>();
+        int pos = 0;
+        while (pos < arrayContent.length()) {
+            int objStart = arrayContent.indexOf('{', pos);
+            if (objStart < 0) break;
+            int objEnd = findMatchingBrace(arrayContent, objStart);
+            if (objEnd < 0) break;
+
+            String slice = arrayContent.substring(objStart, objEnd + 1);
+            String caller = extractStringField(slice, "caller");
+            String sliceField = extractStringField(slice, "sliceField");
+            if (isEmpty(caller) || isEmpty(sliceField)) {
+                throw new IllegalStateException("codegen-config.json: tenantPinnedReads slice needs caller and sliceField: "
+                        + slice);
+            }
+            slices.put(caller, sliceField);
+            pos = objEnd + 1;
+        }
+        return slices;
+    }
+
+    private static boolean isEmpty(String s) {
+        return s == null || s.isEmpty();
     }
 
     /**

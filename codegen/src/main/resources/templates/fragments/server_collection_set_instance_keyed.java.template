@@ -40,7 +40,10 @@
             // Only the map key is scoped. The payload keeps the bare composite id,
             // which is what consumers of this record match on.
             String storedKey = NamespaceScope.current().scope(compositeKey);
-            {{TTL_SET_CALL}}
+            // Nothing deletes an instance's entry: a pod killed without a clean
+            // shutdown never does. Each report re-arms the TTL instead, three
+            // missed reports long (every chassis healthreporter reports every 10s).
+            {{FIELD_CAMEL}}Map.set(storedKey, authoritative, 30L, TimeUnit.SECONDS);
             responseObserver.onNext({{OUTER_CLASS}}.MapEmpty.getDefaultInstance());
             responseObserver.onCompleted();
         } catch (ProtoException e) {

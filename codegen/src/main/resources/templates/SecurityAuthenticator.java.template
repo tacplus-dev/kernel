@@ -260,7 +260,7 @@ public class SecurityAuthenticator {
                 "service \"%s\" is not authorized for %s on \"%s.%s\"", caller, op, graph, boundary);
     }
 
-    /**
+{{TENANT_PINNED_READS}}    /**
      * Matches a caller's service path against a policy subject list. Subjects are
      * "service:&lt;name&gt;" (from ComputeSecurityPolicies) or bare "&lt;name&gt;"
      * (from boundary_callers); "*" matches any caller. The comparison is exact

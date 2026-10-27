@@ -1,0 +1,29 @@
+
+    @Override
+    public void keySet{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysRequest request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysResponse> responseObserver) {
+        try {
+            SecurityAuthenticator.TenantPin pin = authenticator.checkPinnedRead(GRAPH, "{{FIELD_NAME}}");
+            NamespaceScope scope = NamespaceScope.current();
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}KeysResponse.newBuilder();
+            for (String key : {{FIELD_CAMEL}}Map.keySet()) {
+                if (pin != null) {
+                    if (pin.admits(key)) {
+                        resp.addKeys(key);
+                    }
+                } else if (scope.owns(key)) {
+                    resp.addKeys(scope.unscope(key));
+                } else if (readsSystem{{FIELD_PASCAL}}(scope, key)) {
+                    resp.addKeys(key);
+                }
+            }
+            responseObserver.onNext(resp.build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to keySet {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

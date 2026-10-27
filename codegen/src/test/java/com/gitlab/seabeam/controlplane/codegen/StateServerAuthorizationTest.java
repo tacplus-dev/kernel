@@ -60,7 +60,7 @@ class StateServerAuthorizationTest {
 	private static final AccessPolicy FIXTURE_POLICY = new AccessPolicy(
 			"FixtureState", "fixtures",
 			List.of("service:fixtures"), List.of("service:fixtures"), List.of(),
-			Map.of(), false, false);
+			Map.of(), List.of(), false, false);
 
 	@Test
 	void generatedStateServerCarriesTheGraphKeyOfItsPolicy(@TempDir Path tmp) throws IOException {
@@ -86,7 +86,7 @@ class StateServerAuthorizationTest {
 	void aServiceConfigRootReadsTheFleetEntryAsItsDefault(@TempDir Path tmp) throws IOException {
 		String proto = PROTO.replace("FixtureState", "FixturesConfigState");
 		AccessPolicy ownOnly = new AccessPolicy("FixturesConfigState", "fixtures",
-				List.of("service:fixtures"), List.of("service:fixtures"), List.of(), Map.of(), false, false);
+				List.of("service:fixtures"), List.of("service:fixtures"), List.of(), Map.of(), List.of(), false, false);
 		assertTrue(generateStateServer(tmp, List.of(ownOnly), proto, "FixturesConfigState")
 				.contains("private static final boolean FLEET_WIDE_READ = true;"),
 				"a per-service config root must read the fleet's entry when the tenant has none");
@@ -103,9 +103,9 @@ class StateServerAuthorizationTest {
 
 		List<AccessPolicy> grantingEveryone = List.of(
 				new AccessPolicy("FixtureState", "fixtures", List.of("*"), List.of("service:fixtures"),
-						List.of(), Map.of(), false, false),
+						List.of(), Map.of(), List.of(), false, false),
 				new AccessPolicy("FixtureState", "fixtures", List.of("service:fixtures"), List.of("*"),
-						List.of(), Map.of(), false, false));
+						List.of(), Map.of(), List.of(), false, false));
 		for (int i = 0; i < grantingEveryone.size(); i++) {
 			AccessPolicy everyone = grantingEveryone.get(i);
 			assertTrue(generateStateServer(tmp.resolve("everyone-" + i), List.of(everyone))
@@ -138,7 +138,7 @@ class StateServerAuthorizationTest {
 	void aPolicyForADifferentPackageDoesNotSatisfyTheLookup(@TempDir Path tmp) {
 		AccessPolicy other = new AccessPolicy("FixtureState", "otherpkg",
 				List.of("service:otherpkg"), List.of("service:otherpkg"), List.of(),
-				Map.of(), false, false);
+				Map.of(), List.of(), false, false);
 
 		assertThrows(IllegalStateException.class, () -> generateStateServer(tmp, List.of(other)));
 	}
@@ -186,7 +186,7 @@ class StateServerAuthorizationTest {
 	void aComputedPolicyIsNotOverriddenByInfraStatePolicies() {
 		AccessPolicy computed = new AccessPolicy("ServiceConfigState", "grpcconfig",
 				List.of("service:someone"), List.of("service:someone"), List.of(),
-				Map.of(), false, false);
+				Map.of(), List.of(), false, false);
 
 		List<AccessPolicy> merged = InfraStatePolicies.merge(List.of(computed));
 

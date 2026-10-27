@@ -1,0 +1,18 @@
+
+    @Override
+    public void getAll{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}GetAllRequest request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}EntriesResponse> responseObserver) {
+        try {
+            SecurityAuthenticator.TenantPin pin = authenticator.checkPinnedRead(GRAPH, "{{FIELD_NAME}}");
+            responseObserver.onNext(pin == null
+                ? build{{FIELD_PASCAL}}Snapshot(NamespaceScope.current())
+                : pin{{FIELD_PASCAL}}(pin, build{{FIELD_PASCAL}}Snapshot(NamespaceScope.root())));
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to getAll {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

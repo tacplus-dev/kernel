@@ -20,7 +20,6 @@ public class SharedBoundary {
     private String epochExpirationGetter;  // e.g., "getExpiresAt" — null when no epoch field
     private boolean replicated;
     private boolean instanceKeyed;  // server builds key from auth context (instance_id claim)
-    private long evictionTtlSeconds;
 
     public String getFieldName() { return fieldName; }
     public void setFieldName(String fieldName) { this.fieldName = fieldName; }
@@ -78,8 +77,5 @@ public class SharedBoundary {
 
     public boolean isInstanceKeyed() { return instanceKeyed; }
     public void setInstanceKeyed(boolean instanceKeyed) { this.instanceKeyed = instanceKeyed; }
-
-    public long getEvictionTtlSeconds() { return evictionTtlSeconds; }
-    public void setEvictionTtlSeconds(long evictionTtlSeconds) { this.evictionTtlSeconds = evictionTtlSeconds; }
 
 }

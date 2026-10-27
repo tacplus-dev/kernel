@@ -1,0 +1,29 @@
+
+    @Override
+    public void get{{FIELD_PASCAL}}({{OUTER_CLASS}}.{{FIELD_PASCAL}}GetRequest request,
+            StreamObserver<{{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse> responseObserver) {
+        try {
+            SecurityAuthenticator.TenantPin pin = authenticator.checkPinnedRead(GRAPH, "{{FIELD_NAME}}");
+            {{QUALIFIED_TYPE}} value;
+            if (pin == null) {
+                value = {{FIELD_CAMEL}}Map.get(
+                    readKey{{FIELD_PASCAL}}(NamespaceScope.current(), request.getKey()));
+            } else {
+                // A pinned caller names the root-scope key, and only its own tenant's.
+                pin.requireAdmitted(request.getKey());
+                value = pin.project({{FIELD_CAMEL}}Map.get(request.getKey()));
+            }
+            {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.Builder resp = {{OUTER_CLASS}}.{{FIELD_PASCAL}}ValueResponse.newBuilder();
+            if (value != null) {
+                resp.setValue(value).setFound(true);
+            }
+            responseObserver.onNext(resp.build());
+            responseObserver.onCompleted();
+        } catch (ProtoException e) {
+            responseObserver.onError(toGrpcError(e));
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("failed to get {{FIELD_PASCAL}}: " + e.getMessage())
+                .withCause(e).asRuntimeException());
+        }
+    }

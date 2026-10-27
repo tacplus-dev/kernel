@@ -15,16 +15,21 @@ import java.util.Map;
  * @param exec           subjects with execution access (unused in namespace model)
  * @param boundaryGrants boundary field name → callers granted that boundary,
  *                       from (spec.boundary_callers) on queue/topic/command fields
+ * @param tenantPinnedReads collections whose read RPCs some callers outside rw/ro
+ *                       may call, each pinned to its own tenant's entry and config
+ *                       slice — kept apart from boundaryGrants, which grants a
+ *                       boundary outright
  * @param disableAuth    true if this backend skips authentication
  * @param internal       true if this backend is private to its namespace (no cross-namespace access)
  */
 public record AccessPolicy(String name, String pkg, List<String> rw, List<String> ro, List<String> exec,
                             Map<String, List<String>> boundaryGrants,
+                            List<TenantPinnedRead> tenantPinnedReads,
                             boolean disableAuth, boolean internal) {
 
     /** Compatibility constructor for 4-arg callers. */
     public AccessPolicy(String name, List<String> rw, List<String> ro, List<String> exec) {
-        this(name, "", rw, ro, exec, Map.of(), false, false);
+        this(name, "", rw, ro, exec, Map.of(), List.of(), false, false);
     }
 
     /**

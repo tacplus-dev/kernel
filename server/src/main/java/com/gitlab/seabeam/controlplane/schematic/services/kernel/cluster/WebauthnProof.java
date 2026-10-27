@@ -24,9 +24,9 @@ import javax.annotation.Nullable;
  * checks and the signature it verifies. No ceremony state, no challenge store,
  * no network call — everything here is a pure function of the request.
  *
- * <p><b>Why kernel does this and not the broker.</b> {@code personalauth.proto}'s
- * header states the invariant the whole personal-login design rests on:
- * "compromising personalauth forges no personal identity". A broker that parsed
+ * <p><b>Why kernel does this and not the broker.</b> The whole personal-login
+ * design rests on one invariant: compromising the device broker forges no
+ * personal identity. A broker that parsed
  * the assertion and told kernel whose device it was would make that false by
  * construction. So the broker relays four opaque fields, and kernel recomputes
  * the signed bytes, reads the challenge, and checks the signature itself.

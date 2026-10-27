@@ -8,3 +8,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-10-27 looper issue Logback 1.5.29 has advisories: bump to 1.5.38 (#14, 2e1b3af)
 - 2026-10-27 looper issue Hazelcast 5.5.0 has a CRITICAL advisory, fixed only in 5.7.0 (#15, 670d8df)
 - 2026-10-27 looper issue Jetty 11.0.25 (via Javalin 6.7.0) has HIGH advisories; no fixed Jetty 11 on Maven Central (#16, 604be82)
+- 2026-10-27 looper issue Base image distroless/java21-debian12 is behind the latest line (java25-debian13) (#17, b447775)

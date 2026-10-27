@@ -153,7 +153,6 @@
     <mcp.version>2.0.1</mcp.version>
     <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
     <tacplus.bin>tacplus</tacplus.bin>
-    <hazelcast.version>5.5.0</hazelcast.version>
     <gson.version>2.13.2</gson.version>
     <jjwt.version>0.13.0</jjwt.version>
     <exec-plugin.version>3.5.0</exec-plugin.version>

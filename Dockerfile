@@ -1,5 +1,6 @@
 # Kernel Release Image
-# Distroless Java 21 base with no shell.
+# Distroless Java 25 (LTS) on Debian 13 with no shell. The jar is compiled for
+# Java 21 (maven.compiler.release) and runs unchanged on 25.
 # The launcher binary (copied from the CI context) reads LAUNCH_CMD and execs java.
 
 # Pre-create /data (config mount point) and /app/data (PVC data dir) with correct
@@ -7,7 +8,7 @@
 FROM busybox AS setup
 RUN mkdir -p /data /app/data
 
-FROM gcr.io/distroless/java21-debian12
+FROM gcr.io/distroless/java25-debian13
 
 ARG BUILD_DATE
 ARG VCS_REF

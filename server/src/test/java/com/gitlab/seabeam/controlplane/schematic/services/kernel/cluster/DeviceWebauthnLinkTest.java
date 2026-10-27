@@ -47,8 +47,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * §3 of the identity decision doc, WebAuthn/passkey arm: linking a device to a
- * person, and unlinking it again.
+ * §3 of the identity decision doc, WebAuthn/passkey arm: enrolling a device on a
+ * person's XID (kernel#18: a device is a credential of the XID, not a
+ * {@code /people/<pid>} principal linked to it), and removing it again.
  *
  * <p>The thing under test is a PAIR OF BINDINGS, so nearly every test here is a
  * refusal. One request carries a WebAuthn assertion and one Apple login; the
@@ -63,16 +64,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * verified issuer/subject, so a {@code drpepper} namespace appearing anywhere in
  * these assertions means a side fell through to {@code requireNamespaceFromOpa}.
  *
- * <p><b>On the mint tests.</b> What a link is FOR is the {@code linked} claim on
- * the device's own token, and the login that produces that token today is the
- * existing {@code AUTH_BROKER_KIND_DEVICE} JWT-proof path — the credential row
- * is the same row however it was registered, and {@code verifyDeviceProof}
- * finds it by {@code kid}. A real desktop passkey cannot sign a JWT, so a
- * WebAuthn LOGIN is a named follow-on (it needs a fresh server-issued challenge,
- * which the link ceremony does not: see the slice's decision doc). These two
- * tests therefore prove exactly what they say — that a linked device principal's
- * token carries the person's namespace, and that unlinking stops it — using the
- * login path that exists.
+ * <p><b>On the mint tests.</b> What enrolment is FOR is the device's own token,
+ * which is the person's, and the login that produces it today is the existing
+ * {@code AUTH_BROKER_KIND_DEVICE} JWT-proof path — the credential is the same
+ * credential however it was enrolled, and {@code verifyDeviceProof} finds it by
+ * {@code kid}. A real desktop passkey cannot sign a JWT, so a WebAuthn LOGIN is
+ * a named follow-on (it needs a fresh server-issued challenge, which the link
+ * ceremony does not: see the slice's decision doc). The mint tests therefore
+ * prove what they say using the login path that exists.
  */
 class DeviceWebauthnLinkTest {
 
@@ -85,8 +84,6 @@ class DeviceWebauthnLinkTest {
 	private static final String TENANT_NAMESPACE = "/tenants/drpepper";
 	private static final String TENANT_ISSUER = "https://login.drpepper.example/oidc";
 	private static final Caller CALLER = new Caller("", "test-req");
-
-	/** The people user the Apple login above resolves to. */
 
 	/** The relying party this deployment serves, and the one the passkey signs for. */
 	private static final String RP_ID = "example.test";
@@ -101,7 +98,6 @@ class DeviceWebauthnLinkTest {
 	private KeyRotator keyRotator;
 	private PrincipalMap principalMap;
 	private IdentityServiceImpl svc;
-	private PersonalIdentityServiceImpl personalIdentity;
 	private Passkey passkey;
 
 	@BeforeEach
@@ -145,7 +141,6 @@ class DeviceWebauthnLinkTest {
 				null,            // kubernetesTokenVerifier
 				KERNEL_AUDIENCE,
 				RELYING_PARTY);
-		personalIdentity = new PersonalIdentityServiceImpl(principalMap, null);
 		passkey = Passkey.generate();
 	}
 
@@ -155,45 +150,37 @@ class DeviceWebauthnLinkTest {
 
 	/**
 	 * The slice in one test. A passkey nobody has seen before and one Apple login
-	 * whose nonce is that key's thumbprint: the credential is registered, the
-	 * person is created, and the two are linked in both directions.
+	 * whose nonce is that key's thumbprint: the person is created and the passkey
+	 * is enrolled on their XID. No link edge is written and no other principal
+	 * exists — the device IS the person's credential.
 	 *
-	 * <p>Registration happens HERE and not in an RPC of its own, deliberately: a
-	 * passkey nobody has linked belongs to nobody, so there is no moment before
-	 * this one at which the row has an owner to attribute it to.
+	 * <p>Enrolment happens HERE and not in an RPC of its own, deliberately: a
+	 * passkey nobody has proved a login beside belongs to nobody, and only a
+	 * personal login anchors an XID.
 	 */
 	@Test
-	void aPasskeyAndAnAppleLoginRegisterTheDeviceAndLinkItToThatPerson() throws Exception {
+	void aPasskeyAndAnAppleLoginEnrolTheDeviceOnThatPersonsXid() throws Exception {
 		Kernel.CreateTenantUserLinkResponse resp = link();
-
-		// The device side registered a personal principal holding this passkey.
-		assertEquals(1, principalMap.proto().getPersonalPrincipalsCount());
-		Kernel.PersonalPrincipal principal = principalMap.proto().getPersonalPrincipals(0);
-		assertEquals(1, principal.getCredentialsCount());
-		assertEquals(passkey.credentialId, principal.getCredentials(0).getCredentialId());
-		assertEquals(passkey.publicJwk, principal.getCredentials(0).getPublicKey());
-		assertEquals("Jody's ThinkPad", principal.getCredentials(0).getLabel());
-		assertEquals(0, principal.getCredentials(0).getRevokedAtMs());
 
 		// The people side created the person, the same way an ordinary IdP login
 		// would: this IS an IdP login, and only an IdP creates a person.
 		assertEquals(1, principalMap.proto().getPeopleCount());
-		assertEquals(APPLE_SUB, person().getLinks(0).getProviderSubject());
+		Kernel.Person person = person();
+		assertEquals(APPLE_SUB, person.getLinks(0).getProviderSubject());
 
-		String deviceKey = deviceNamespace(principal) + "|" + deviceSubject(principal);
+		assertEquals(1, person.getDevicesCount());
+		Kernel.PersonalCredential device = person.getDevices(0);
+		assertEquals(passkey.credentialId, device.getCredentialId());
+		assertEquals(passkey.publicJwk, device.getPublicKey());
+		assertEquals("Jody's ThinkPad", device.getLabel());
+		assertEquals(0, device.getRevokedAtMs());
+
 		String personKey = PeopleTenant.NAMESPACE + "|" + personSubject();
-		assertEquals(deviceKey, resp.getAUserKey());
+		assertEquals(personKey, resp.getAUserKey());
 		assertEquals(personKey, resp.getBUserKey());
-
-		Kernel.TenantUserLinks fromDevice = principalMap.getTenantUserLinks(deviceKey);
-		assertEquals(1, fromDevice.getLinksCount());
-		assertEquals(PeopleTenant.NAMESPACE, fromDevice.getLinks(0).getPeerNamespace());
-		assertEquals(personSubject(), fromDevice.getLinks(0).getPeerSubject());
-
-		Kernel.TenantUserLinks fromPerson = principalMap.getTenantUserLinks(personKey);
-		assertEquals(1, fromPerson.getLinksCount());
-		assertEquals(deviceNamespace(principal), fromPerson.getLinks(0).getPeerNamespace());
-		assertEquals(resp.getCreatedAtMs(), fromPerson.getLinks(0).getCreatedAtMs());
+		assertEquals(device.getCreatedAtMs(), resp.getCreatedAtMs());
+		assertEquals(0, principalMap.proto().getTenantUserLinksCount(),
+				"a device is a credential of the person, not a link edge");
 	}
 
 	/**
@@ -361,9 +348,9 @@ class DeviceWebauthnLinkTest {
 	}
 
 	/**
-	 * Once a credential is registered, the STORED key is what the assertion is
+	 * Once a credential is enrolled, the STORED key is what the assertion is
 	 * checked against — the request's copy is consulted exactly once, on the
-	 * first link, when there is no row to consult instead.
+	 * first enrolment, when there is no stored key to consult instead.
 	 *
 	 * <p>Without that, a broker (or anyone reaching this RPC) could re-present a
 	 * registered credential id under a key of its own and link somebody else's
@@ -381,8 +368,28 @@ class DeviceWebauthnLinkTest {
 						Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE));
 
 		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
-		assertEquals(passkey.publicJwk,
-				principalMap.proto().getPersonalPrincipals(0).getCredentials(0).getPublicKey());
+		assertEquals(passkey.publicJwk, person().getDevices(0).getPublicKey());
+	}
+
+	/**
+	 * One key, one person. A device enrolled on one XID, presented beside ANOTHER
+	 * person's login — with both bindings perfectly valid for that login — is
+	 * refused, and the other login's person is not even created: moving a key
+	 * between people is a merge, not an enrolment.
+	 */
+	@Test
+	void aDeviceOfAnotherPersonCannotBeEnrolledHere() throws Exception {
+		link();
+		String otherSub = "002511.other.apple.person";
+
+		ProtoException ex = assertThrows(ProtoException.class,
+				() -> linkCall(request(passkey, WebauthnProof.thumbprint(passkey.publicJwk),
+						APPLE_ISSUER, otherSub), PeopleTenant.NAMESPACE,
+						Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+		assertEquals(1, principalMap.proto().getPeopleCount());
+		assertEquals(1, person().getDevicesCount());
 	}
 
 	/**
@@ -465,7 +472,7 @@ class DeviceWebauthnLinkTest {
 
 	/**
 	 * Presenting the same device and the same person again is the same fact: one
-	 * principal, one credential, one edge each way. Replaying the whole request
+	 * person, one credential. Replaying the whole request
 	 * is therefore harmless, which is what lets the assertion carry no freshness
 	 * of its own — the same position §2 took on replaying both id_tokens.
 	 */
@@ -476,144 +483,106 @@ class DeviceWebauthnLinkTest {
 
 		assertEquals(first.getAUserKey(), again.getAUserKey());
 		assertEquals(first.getCreatedAtMs(), again.getCreatedAtMs());
-		assertEquals(1, principalMap.proto().getPersonalPrincipalsCount());
-		assertEquals(1, principalMap.getTenantUserLinks(first.getAUserKey()).getLinksCount());
-		assertEquals(1, principalMap.getTenantUserLinks(first.getBUserKey()).getLinksCount());
+		assertEquals(1, principalMap.proto().getPeopleCount());
+		assertEquals(1, person().getDevicesCount());
 	}
 
 	// ------------------------------------------------------------------
-	// What the link is for, and taking it away
+	// What enrolment is for, and taking it away
 	// ------------------------------------------------------------------
 
 	/**
-	 * The point of the whole slice: after linking, the DEVICE's own token carries
-	 * {@code /tenants/people} as a {@code linked} claim, so the generated
-	 * namespace backstop accepts a row in the person's subtree. Before the link,
-	 * the same device's token carries nothing.
+	 * The point of the whole slice: after enrolment the DEVICE's own token is the
+	 * person's — the XID as {@code sub}, the people tenant as namespace, never
+	 * the tenant OPA names — with the {@code device} claim naming this passkey.
+	 * Before enrolment the same key mints nothing.
 	 *
 	 * <p>See the class javadoc on why the login here is the JWT-proof device arm.
 	 */
 	@Test
-	void aLinkedDevicesTokenCarriesThePeopleNamespace() throws Exception {
+	void anEnrolledDevicesTokenIsThePersonsToken() throws Exception {
+		assertEquals(ProtoException.PERMISSION_DENIED,
+				assertThrows(ProtoException.class, this::deviceMint).getCode());
 		link();
 
-		TokenWrapper refresh = TokenWrapper.parse(deviceMint().getRefreshToken().getBase64());
-		assertEquals(List.of(PeopleTenant.NAMESPACE), refresh.getLinked());
-		assertNotEquals(TENANT_NAMESPACE, refresh.getNamespace(),
-				"a device side must never take its namespace from OPA");
-		// The access token is cloned from the refresh token, so the claim reaches
-		// the token services actually present.
-		assertEquals(List.of(PeopleTenant.NAMESPACE),
-				TokenWrapper.parse(deviceMint().getAccessToken().getBase64()).getLinked());
+		Tokenrequest.TokenMintResponse minted = deviceMint();
+		for (TokenWrapper token : List.of(TokenWrapper.parse(minted.getRefreshToken().getBase64()),
+				TokenWrapper.parse(minted.getAccessToken().getBase64()))) {
+			assertEquals(personSubject(), token.getSubject());
+			assertEquals(PeopleTenant.NAMESPACE, token.getNamespace());
+			assertNotEquals(TENANT_NAMESPACE, token.getNamespace(),
+					"a device side must never take its namespace from OPA");
+			assertEquals(passkey.credentialId, token.getCustomField(IdentityServiceImpl.CLAIM_DEVICE));
+		}
 	}
 
 	/**
-	 * Unlink, end to end, from the device's own token: the mark is written on both
-	 * directions and the {@code linked} claim stops appearing at the very next
-	 * mint. A device that can no longer read the person's rows is the observable
-	 * meaning of "the person unlinked it".
-	 *
-	 * <p>The credential itself is NOT revoked — the device is still a principal
-	 * and can still log in as itself. Unlinking withdraws reach into the person's
-	 * namespace, which is exactly what the link granted.
+	 * The person's linked-accounts view lists the device, so the person can see
+	 * what they would be removing.
 	 */
 	@Test
-	void unlinkingStopsTheLinkedClaimAtTheNextMint() throws Exception {
-		Kernel.CreateTenantUserLinkResponse linked = link();
-		Kernel.PersonalPrincipal principal = principalMap.proto().getPersonalPrincipals(0);
-		assertEquals(List.of(PeopleTenant.NAMESPACE),
-				TokenWrapper.parse(deviceMint().getRefreshToken().getBase64()).getLinked());
+	void theLinkedAccountsViewListsTheDevice() throws Exception {
+		link();
 
-		Kernel.RevokeTenantUserLinkResponse revoked = personalIdentity.revokeTenantUserLink(
-				linkOwner(deviceNamespace(principal), deviceSubject(principal)),
-				Kernel.RevokeTenantUserLinkRequest.newBuilder()
-						.setPeerNamespace(PeopleTenant.NAMESPACE)
-						.setPeerSubject(personSubject())
+		Kernel.GetLinkedAccountsResponse accounts = svc.getLinkedAccounts(
+				linkOwner(PeopleTenant.NAMESPACE, personSubject()),
+				Kernel.GetLinkedAccountsRequest.getDefaultInstance());
+
+		assertEquals(1, accounts.getDevicesCount());
+		assertEquals(passkey.credentialId, accounts.getDevices(0).getCredentialId());
+	}
+
+	/**
+	 * Removing a device, end to end: the person signs in with their provider and
+	 * revokes it — no proof from the device, which is most often removed because
+	 * it is lost. The credential is marked, never deleted, and from the next
+	 * mint on it mints nothing; presenting it again does not re-enrol it.
+	 */
+	@Test
+	void thePersonRemovesADeviceAndItMintsNothingAfter() throws Exception {
+		link();
+		deviceMint();
+
+		Kernel.RevokeDeviceCredentialResponse revoked = svc.revokeDeviceCredential(
+				linkOwner(PeopleTenant.NAMESPACE, personSubject()),
+				Kernel.RevokeDeviceCredentialRequest.newBuilder()
+						.setCredential(sessionCredential())
+						.setCredentialId(passkey.credentialId)
 						.build());
 
 		assertTrue(revoked.getRevokedAtMs() > 0);
-		assertTrue(TokenWrapper.parse(deviceMint().getRefreshToken().getBase64())
-				.getLinked().isEmpty(), "an unlinked device must carry no linked claim");
-		// Both directions are marked, or the person's own token would still name
-		// the device's namespace.
-		assertEquals(revoked.getRevokedAtMs(), principalMap
-				.getTenantUserLinks(linked.getAUserKey()).getLinks(0).getRevokedAtMs());
-		assertEquals(revoked.getRevokedAtMs(), principalMap
-				.getTenantUserLinks(linked.getBUserKey()).getLinks(0).getRevokedAtMs());
-		// Marked, never deleted: the edge is still there to be audited.
-		assertEquals(1, principalMap.getTenantUserLinks(linked.getAUserKey()).getLinksCount());
-		// And the device is still a principal with a live credential.
-		assertEquals(0, principalMap.proto().getPersonalPrincipals(0)
-				.getCredentials(0).getRevokedAtMs());
-	}
-
-	/**
-	 * Either side may unlink — "from any linked device or via the people tenant
-	 * flow" (§3). The person's own token revokes the same edge, and the owner
-	 * half still comes from the caller's {@code sub}, never the request.
-	 */
-	@Test
-	void thePersonCanUnlinkTheDeviceFromTheirOwnSide() throws Exception {
-		Kernel.CreateTenantUserLinkResponse linked = link();
-		Kernel.PersonalPrincipal principal = principalMap.proto().getPersonalPrincipals(0);
-
-		personalIdentity.revokeTenantUserLink(
+		assertEquals(revoked.getRevokedAtMs(), person().getDevices(0).getRevokedAtMs());
+		assertEquals(ProtoException.PERMISSION_DENIED,
+				assertThrows(ProtoException.class, this::deviceMint).getCode());
+		assertEquals(ProtoException.PERMISSION_DENIED,
+				assertThrows(ProtoException.class, this::link).getCode());
+		// Revoking twice is the same fact.
+		assertEquals(revoked.getRevokedAtMs(), svc.revokeDeviceCredential(
 				linkOwner(PeopleTenant.NAMESPACE, personSubject()),
-				Kernel.RevokeTenantUserLinkRequest.newBuilder()
-						.setPeerNamespace(deviceNamespace(principal))
-						.setPeerSubject(deviceSubject(principal))
-						.build());
-
-		assertTrue(TokenWrapper.parse(deviceMint().getRefreshToken().getBase64())
-				.getLinked().isEmpty());
-		assertNotEquals(0, principalMap.getTenantUserLinks(linked.getAUserKey())
-				.getLinks(0).getRevokedAtMs());
+				Kernel.RevokeDeviceCredentialRequest.newBuilder()
+						.setCredential(sessionCredential())
+						.setCredentialId(passkey.credentialId)
+						.build()).getRevokedAtMs());
 	}
 
 	/**
-	 * Re-proving a link after an unlink restores it, and does not leave a second
-	 * edge behind: a row carrying one live and one revoked edge for one peer
-	 * would make "is this link live?" depend on which the reader saw first.
+	 * Only the person's own devices: a credential id that is not one of theirs
+	 * is NOT_FOUND, and another person's session cannot reach this person's.
 	 */
 	@Test
-	void relinkingAfterAnUnlinkClearsTheMarkRatherThanAddingAnEdge() throws Exception {
-		Kernel.CreateTenantUserLinkResponse linked = link();
-		Kernel.PersonalPrincipal principal = principalMap.proto().getPersonalPrincipals(0);
-		personalIdentity.revokeTenantUserLink(
-				linkOwner(deviceNamespace(principal), deviceSubject(principal)),
-				Kernel.RevokeTenantUserLinkRequest.newBuilder()
-						.setPeerNamespace(PeopleTenant.NAMESPACE)
-						.setPeerSubject(personSubject())
-						.build());
-
+	void aDeviceThatIsNotThePersonsIsNotFound() throws Exception {
 		link();
-
-		assertEquals(1, principalMap.getTenantUserLinks(linked.getAUserKey()).getLinksCount());
-		assertEquals(0, principalMap.getTenantUserLinks(linked.getAUserKey())
-				.getLinks(0).getRevokedAtMs());
-		assertEquals(List.of(PeopleTenant.NAMESPACE),
-				TokenWrapper.parse(deviceMint().getRefreshToken().getBase64()).getLinked());
-	}
-
-	/**
-	 * The owner half of the edge is the caller's own key, so "no such link" and
-	 * "that link is not yours" are necessarily the same answer. Nothing here can
-	 * be used to discover whether somebody else's link exists.
-	 */
-	@Test
-	void unlinkingSomethingThatIsNotLinkedIsNotFound() throws Exception {
-		link();
-		Kernel.PersonalPrincipal principal = principalMap.proto().getPersonalPrincipals(0);
 
 		ProtoException ex = assertThrows(ProtoException.class,
-				() -> personalIdentity.revokeTenantUserLink(
-						linkOwner(deviceNamespace(principal), deviceSubject(principal)),
-						Kernel.RevokeTenantUserLinkRequest.newBuilder()
-								.setPeerNamespace(TENANT_NAMESPACE)
-								.setPeerSubject("jody@drpepper.example")
+				() -> svc.revokeDeviceCredential(
+						linkOwner(PeopleTenant.NAMESPACE, personSubject()),
+						Kernel.RevokeDeviceCredentialRequest.newBuilder()
+								.setCredential(sessionCredential())
+								.setCredentialId("some-other-credential")
 								.build()));
 
 		assertEquals(ProtoException.NOT_FOUND, ex.getCode());
+		assertEquals(0, person().getDevices(0).getRevokedAtMs());
 	}
 
 	// ------------------------------------------------------------------
@@ -649,21 +618,29 @@ class DeviceWebauthnLinkTest {
 		return SpiffeIds.userSubject(TRUST_DOMAIN, person().getXid());
 	}
 
-	private static String deviceNamespace(Kernel.PersonalPrincipal principal) {
-		return "/" + Spiffe.PEOPLE_SEGMENT + "/" + principal.getPrincipalId();
-	}
-
-	private String deviceSubject(Kernel.PersonalPrincipal principal) {
-		return Spiffe.userSpiffeId(TRUST_DOMAIN, deviceNamespace(principal),
-				principal.getPrincipalId());
+	/**
+	 * The person's session credential, from an ordinary Apple sign-in through
+	 * the IdP broker — what the console holds when the person removes a device.
+	 */
+	private String sessionCredential() throws Exception {
+		io.grpc.Context ctx = io.grpc.Context.current().withValue(
+				ClusterServer.RAW_AUTH_TOKEN_KEY,
+				brokerToken(TENANT_NAMESPACE, Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP));
+		io.grpc.Context previous = ctx.attach();
+		try {
+			return svc.mintUserToken(CALLER, Tokenrequest.MintUserTokenRequest.newBuilder()
+					.setBrokerKind(Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP)
+					.setClaims(idpClaims(APPLE_ISSUER, APPLE_SUB, "login-nonce"))
+					.build()).getRefreshToken().getBase64();
+		} finally {
+			ctx.detach(previous);
+		}
 	}
 
 	private void assertNothingWritten() {
 		try {
 			assertEquals(0, principalMap.proto().getTenantUserLinksCount(),
 					"an unbound proof must link nothing");
-			assertEquals(0, principalMap.proto().getPersonalPrincipalsCount(),
-					"an unbound proof must register nothing");
 			assertEquals(0, principalMap.proto().getPeopleCount(),
 					"an unbound proof must create nobody");
 		} catch (ProtoException e) {

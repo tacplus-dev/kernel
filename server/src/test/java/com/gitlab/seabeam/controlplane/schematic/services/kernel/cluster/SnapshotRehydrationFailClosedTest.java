@@ -87,20 +87,6 @@ class SnapshotRehydrationFailClosedTest {
 				"the partial restore must not be accepted as the node's state");
 	}
 
-	/** A personal principal that cannot be applied refuses the boot too. */
-	@Test
-	void anUnapplicablePersonalPrincipalRefusesTheBoot() {
-		Kernel.KernelDiskState snapshot = Kernel.KernelDiskState.newBuilder()
-				.addPersonalPrincipals(Kernel.PersonalPrincipal.getDefaultInstance())
-				.build();
-
-		IllegalStateException e = assertThrows(IllegalStateException.class,
-				() -> ClusterServer.restorePersonalPrincipals(
-						snapshot, new PrincipalMap(new InMemoryManager())));
-		assertEquals("kernel refuses to start: personal principals could not be restored from the "
-				+ "disk snapshot", e.getMessage());
-	}
-
 	/** A well-formed snapshot still restores, and a cold start is still a no-op. */
 	@Test
 	void aCleanSnapshotAndAColdStartAreUnaffected() throws Exception {

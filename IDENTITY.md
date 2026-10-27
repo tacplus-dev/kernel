@@ -440,3 +440,81 @@ own name, so a tenant IdP could put one of those names in its id_token and have 
   at login (the per-tenant exchange here replays the proof's claims and synthesizes nothing).
 - Tests: `SessionCredentialTest` (people login: OPA at login and exchange, the proof, both access tokens; tenant
   login; CLI broker), `TenantUserLinkTest` (link side). Each failed before the change.
+
+## 2026-10-27 — Devices belong to the XID; the `/people/<pid>` principal is retired (#18)
+
+tacplus 2.4 retired the `/people/<pid>` SPIFFE root (tacplus#131): a person is `spiffe://<td>/users/<xid>`. Kernel's
+device principal moves onto the person, which is step 4's device half and answers #4's open question for approvals.
+
+### What changed
+
+- **A device is a credential of the XID.** `Person.devices` (repeated `PersonalCredential`, at most 16) holds a
+  person's device keys. One key belongs to at most one person. `PrincipalState.personal_principals` is gone.
+- **Enrolment** is `Mint.CreateTenantUserLink` with a device side beside a people-provider login, bound exactly as
+  §3 bound it: the id_token's `nonce` is the key's thumbprint, and the WebAuthn assertion's challenge names that
+  login. The credential goes onto the XID the login resolves to (created on first sight, as any login creates
+  one). No link edge is written; the response's two keys are both the person's. A key already on another
+  person's XID is refused before anything is written, the login's person included (moving a key between people is
+  a merge). Re-enrolling the same key on the same person changes nothing, and a revoked key cannot be re-enrolled.
+- **The device token (the cred_pair mint)** is `MintUserToken` with `AUTH_BROKER_KIND_DEVICE`, a JWT signed by an
+  enrolled key: `sub = /users/<xid>`, `namespace = /tenants/people` (the people tenant's token, like every personal
+  token), `device = <credential_id>`, and `xid_gen` (the person's generation). `device` joins the synthesized claim
+  names stripped from every relayed claim set, so no IdP login can pass for a device token. The exchange re-checks
+  a device token on every use: the credential must still be enrolled and unrevoked on the live person its `sub`
+  names, at that generation. So removing the device, deleting the account and signing out everywhere all reach a
+  device token that is already out.
+- **Approvals check the XID directly.** The person is the caller's `sub` when it is an XID, in whichever tenant
+  (`personUserKey` is `/tenants/people|<sub>` as before). The approving credential must be on that XID's
+  `devices`. No `TenantUserLink` is read. `BrokerPendingApprovalResponse.device_namespace` (3) becomes
+  `device_credential_id` (3).
+- **Removing a device** is the new `UserMint.RevokeDeviceCredential(credential, credential_id)`: the caller's own
+  session credential, no proof from the device (a device is most often removed because it is lost). The credential
+  is marked revoked, never deleted. `GetLinkedAccounts` now lists `devices`. MergePeople moves the absorbed person's
+  devices to the survivor. DeleteAccount clears them.
+- **Retired with the principal:** `Mint.CreatePersonalPrincipal` (device-first registration);
+  `PersonalIdentity.GetMyIdentity`; the personal-principal tenant exchange (`MintToken` with `tenant_namespace` on a
+  `/people` token) together with `TenantMembership` and `MembershipProofKind`. `PersonalPrincipal` survives only as
+  the shape of `KernelDiskState.personal_principals` (10), so that an old snapshot can be read once.
+
+### Decided here
+
+- **No device-first XID.** Only a personal IdP login mints an XID. A self-asserted key alone may not (identity graph
+  huddle 2026-10-21, items 3 and 17), and device attestation, the one other anchor, is deferred (platform
+  direction 2026-10-23). So enrolment needs the person's login, and `CreatePersonalPrincipal` has no XID to
+  register onto. Nothing in the fleet called it.
+- **A device token is the people tenant's token**, `namespace = /tenants/people`, not a `/users/<xid>` namespace:
+  the authorizer's single-namespace model is unchanged (step 1). A tenant token needs a live proof from that
+  tenant's IdP (step 2). The `/people` exchange that minted one from a membership record alone does not survive.
+
+### Migration (one-time, at boot)
+
+`ClusterServer.migratePersonalPrincipals` runs after the people and the links are restored. A device principal
+whose live link edges into `/tenants/people` name exactly one live person (following a merge redirect) moves onto
+that XID: every credential, with its key, label and revocation mark. A credential some person already holds is not
+copied. Every other principal is dropped: no live link, links to two people, a deleted person, or a disabled
+principal. Its memberships are dropped either way. Every `TenantUserLinks` edge naming `/people/...` is removed,
+both directions. The boot log line counts what moved and what was dropped: `Migrated N /people device principal(s)
+(C credential(s)) onto their XIDs; dropped K with no live link to exactly one person; removed E device link
+edge(s)`. Nothing is written back by the migration itself. Until the next identity write, the old snapshot still
+holds the rows, and replaying it gives the same result. The next snapshot carries no `personal_principals`. It
+fails closed, like the restores around it.
+
+How many are dropped on seatrials is that log line's to say once the image rolls (no deploy here). The expected
+count is zero rows of either kind: the fleet runs no device broker, and nothing there ever called
+`CreatePersonalPrincipal` or linked a device.
+
+### Proof
+
+- Kernel: `DevicePrincipalTest` (the device token is the person's with the `device` claim; two devices, one
+  subject; only a device broker relays a proof; revoked, unknown and deleted-person keys get one refusal; a key
+  cannot mint for another person; a device token already out stops when its device is revoked, the person signs
+  out everywhere, or the account is deleted; a device token cannot name a tenant; a relayed `device` claim never
+  reaches a token). `DeviceWebauthnLinkTest` (enrolment onto the XID and every binding refusal writing nothing;
+  another person's device refused; the linked-accounts view; RevokeDeviceCredential end to end).
+  `PendingApprovalTest` (approval by a device of the XID; another person's device and a revoked device refused;
+  the person's token in any tenant proposes as them; a tenant user, including `/tenants/t/users/<xid>`, cannot).
+  `PersonalPrincipalMigrationTest` (linked principal migrated with its marks and edges removed; the five drop
+  cases counted; merge redirect followed; no double copy; restart round trip with no `personal_principals`
+  written; fail-closed). Mutation-checked: disabling the approval ownership check, the cross-person enrolment
+  refusal, the `device` strip or the exchange re-check fails exactly the test written for it.
+- Gates on tacplus 2.4 (kernel#1's floor). See the issue for how they were run before that floor is on main.

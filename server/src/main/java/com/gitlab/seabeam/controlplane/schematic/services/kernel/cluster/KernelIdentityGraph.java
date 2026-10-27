@@ -39,6 +39,9 @@ final class KernelIdentityGraph implements IdentityGraph {
 	 */
 	private static final int MAX_PEOPLE = 65536;
 
+	/** Cap on one person's devices, matching {@code Person.devices}'s {@code assert_max_size}. */
+	private static final int MAX_DEVICES_PER_PERSON = 16;
+
 	/** Separates the two halves of a link key; neither half may contain it. */
 	private static final String LINK_KEY_SEPARATOR = "|";
 
@@ -185,6 +188,13 @@ final class KernelIdentityGraph implements IdentityGraph {
 					merged.addMemberships(membership);
 				}
 			}
+			// The loser's devices are the survivor's now: one key, one person, so
+			// they leave the tombstone rather than being copied.
+			merged.addAllDevices(loser.getDevicesList());
+			if (merged.getDevicesCount() > MAX_DEVICES_PER_PERSON) {
+				throw new StatusException(Status.RESOURCE_EXHAUSTED,
+						"the merged account would hold more than " + MAX_DEVICES_PER_PERSON + " devices");
+			}
 			Kernel.Person result = merged.build();
 			write(() -> {
 				principalMap.putPeople(survivorXid, result);
@@ -193,7 +203,8 @@ final class KernelIdentityGraph implements IdentityGraph {
 					principalMap.putIdentityLinks(key, Kernel.IdentityLinkRow.newBuilder()
 							.setLinkKey(key).setXid(survivorXid).build());
 				}
-				principalMap.putPeople(loserXid, loser.toBuilder().setMergedIntoXid(survivorXid).build());
+				principalMap.putPeople(loserXid,
+						loser.toBuilder().clearDevices().setMergedIntoXid(survivorXid).build());
 			}, "merge");
 			logger.info("MergePeople: xid={} absorbed into xid={} ({} link(s) moved)",
 					loserXid, survivorXid, loser.getLinksCount());
@@ -231,8 +242,11 @@ final class KernelIdentityGraph implements IdentityGraph {
 	public void deleteAccount(String xid) throws StatusException {
 		synchronized (lock) {
 			Kernel.Person person = requirePerson(xid);
+			// The devices go with the links: a deleted person's keys authenticate
+			// nobody, and the same key may be enrolled on a new person later.
 			Kernel.Person tombstone = person.toBuilder()
 					.clearLinks()
+					.clearDevices()
 					.setGeneration(person.getGeneration() + 1)
 					.setDeletedAtMs(System.currentTimeMillis())
 					.build();
@@ -257,6 +271,72 @@ final class KernelIdentityGraph implements IdentityGraph {
 			write(() -> principalMap.putPeople(xid, updated), "generation");
 			logger.info("Signed out everywhere: xid={} generation={}", xid, updated.getGeneration());
 			return updated;
+		}
+	}
+
+	@Override
+	public Kernel.Person deviceOwner(String credentialId) {
+		try {
+			for (Kernel.Person person : principalMap.proto().getPeopleList()) {
+				for (Kernel.PersonalCredential device : person.getDevicesList()) {
+					if (credentialId.equals(device.getCredentialId())) {
+						return person;
+					}
+				}
+			}
+		} catch (ProtoException e) {
+			logger.warn("people registry unavailable: {}", e.getMessage());
+		}
+		return Kernel.Person.getDefaultInstance();
+	}
+
+	@Override
+	public Kernel.Person addDevice(String xid, Kernel.PersonalCredential credential) throws StatusException {
+		synchronized (lock) {
+			Kernel.Person person = requirePerson(xid);
+			Kernel.Person owner = deviceOwner(credential.getCredentialId());
+			if (!owner.getXid().isEmpty() && !owner.getXid().equals(xid)) {
+				throw new StatusException(Status.PERMISSION_DENIED, "that device belongs to another account");
+			}
+			for (Kernel.PersonalCredential device : person.getDevicesList()) {
+				if (device.getCredentialId().equals(credential.getCredentialId())) {
+					if (device.getRevokedAtMs() != 0) {
+						throw new StatusException(Status.PERMISSION_DENIED, "that device credential is revoked");
+					}
+					return person;
+				}
+			}
+			if (person.getDevicesCount() >= MAX_DEVICES_PER_PERSON) {
+				throw new StatusException(Status.RESOURCE_EXHAUSTED,
+						"this account is at the " + MAX_DEVICES_PER_PERSON + "-device cap");
+			}
+			Kernel.Person updated = person.toBuilder().addDevices(credential).build();
+			write(() -> principalMap.putPeople(xid, updated), "device");
+			logger.info("Enrolled device: xid={} platform_synced={}", xid, credential.getPlatformSynced());
+			return updated;
+		}
+	}
+
+	@Override
+	public Kernel.PersonalCredential revokeDevice(String xid, String credentialId) throws StatusException {
+		synchronized (lock) {
+			Kernel.Person person = requirePerson(xid);
+			for (int i = 0; i < person.getDevicesCount(); i++) {
+				Kernel.PersonalCredential device = person.getDevices(i);
+				if (!device.getCredentialId().equals(credentialId)) {
+					continue;
+				}
+				if (device.getRevokedAtMs() != 0) {
+					return device;
+				}
+				Kernel.PersonalCredential revoked = device.toBuilder()
+						.setRevokedAtMs(System.currentTimeMillis()).build();
+				Kernel.Person updated = person.toBuilder().setDevices(i, revoked).build();
+				write(() -> principalMap.putPeople(xid, updated), "device revocation");
+				logger.info("Revoked device: xid={}", xid);
+				return revoked;
+			}
+			throw new StatusException(Status.NOT_FOUND, "that device is not one of this account's");
 		}
 	}
 

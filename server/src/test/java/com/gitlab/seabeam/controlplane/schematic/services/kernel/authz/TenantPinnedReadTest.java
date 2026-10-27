@@ -238,9 +238,9 @@ class TenantPinnedReadTest extends StateChrootTestBase {
 	}
 
 	/**
-	 * Below a tenant root is not the tenant root. A service subject cannot sit
-	 * under /people at all, so /people is covered by a user token there: it has
-	 * no service identity to pin, and is refused like any unpinned caller.
+	 * Below a tenant root is not the tenant root. A person — sub
+	 * spiffe://<td>/users/<xid>, here in the people tenant — has no service
+	 * identity to pin, and is refused like any unpinned caller.
 	 */
 	@Test
 	@EnabledIf("pinGenerated")
@@ -248,7 +248,9 @@ class TenantPinnedReadTest extends StateChrootTestBase {
 		List<ConfigStateServiceGrpc.ConfigStateServiceBlockingStub> callers = List.of(
 				as("opa", "/tenants/A/workspaces/x"),
 				ConfigStateServiceGrpc.newBlockingStub(channel)
-						.withInterceptors(bearer(principalTokenFor("user", "alice@people.example", "/people/p1"))));
+						.withInterceptors(bearer(principalTokenFor("user",
+								SpiffeIds.userSubject(TRUST_DOMAIN, "a11ce0000000000000000000000000aa"),
+								"/tenants/people"))));
 		for (ConfigStateServiceGrpc.ConfigStateServiceBlockingStub caller : callers) {
 			assertDenied("Get", () -> caller.getTenantConfigs(key(A)));
 			assertDenied("ContainsKey", () -> caller.containsKeyTenantConfigs(key(A)));

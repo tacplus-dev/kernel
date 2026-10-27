@@ -502,42 +502,13 @@ service Mint {
     option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, flags: [RPC_FLAG_SELF_AUTHENTICATES]};
   }
 
-  // CreatePersonalPrincipal — device-first registration (first launch). The
-  // device presents a JWT signed by the key it is registering; kernel verifies
-  // that signature against the public key carried in the SAME request, mints an
-  // opaque principal_id, and creates the PersonalPrincipal row holding that one
-  // credential. This is the bootstrap case MintClientToken does not have: there
-  // is no stored credential to look the key up by yet, so the key comes out of
-  // the request body and the only thing that proof establishes is possession of
-  // the private half — which is all the BODY needs to establish, because any
-  // person may create a personal principal (device-first, no signup). Who may
-  // carry that request to kernel is a separate question, answered below.
-  //
-  // Registration issues NO token. A registered device obtains one through
-  // MintUserToken with AUTH_BROKER_KIND_DEVICE, which is where the
-  // Delegate.auth_broker_kinds gate lives; minting here would route around it.
-  //
-  // NOT self-authenticating, and therefore NOT proxied to the outside. A device
-  // reaches this only through the personalauth broker, which calls it S2S:
-  // RPC_FLAG_SELF_AUTHENTICATES would make tacplus emit a NoAuth gateway proxy
-  // route, and an open route lets a client skip the broker entirely — which is
-  // where azp provenance, rate limiting and every future abuse control live.
-  // Dropping the flag deletes the route, so gateway's deny-by-default refuses
-  // the path; the generator enforces this, not a rule someone has to remember.
-  //
-  // auth_services: ["*"] rather than ["personalauth"] deliberately: who may
-  // broker a login is per-delegate config (Delegate.auth_broker_kinds), not a
-  // compile-time broker literal in kernel.proto. "*" says only "some
-  // authenticated S2S caller"; the handler requires that caller to be a
-  // delegate carrying AUTH_BROKER_KIND_DEVICE.
-  //
-  // The request body proof is unchanged and is a second, independent
-  // requirement: the caller must also hold the private half of the key it is
-  // registering, which is what makes the row worth writing.
-  rpc CreatePersonalPrincipal(CreatePersonalPrincipalRequest)
-      returns (CreatePersonalPrincipalResponse) {
-    option (spec.rpc) = {principal: RPC_PRINCIPAL_SERVICE, auth_services: ["*"]};
-  }
+  // 2026-10-27 (kernel#18): CreatePersonalPrincipal, device-first registration
+  // of a /people/<pid> principal holding one self-asserted key, is retired with
+  // the /people root (tacplus#131). A device is a credential of a person's XID,
+  // and only a personal IdP login mints an XID; a self-asserted key alone may
+  // not (identity graph huddle 2026-10-21, items 3 and 17; device attestation,
+  // the one other anchor, is deferred). A device is enrolled onto the XID by
+  // CreateTenantUserLink below, a device side beside that person's login.
 
   // CreateTenantUserLink records that two tenant-user identities are the same human.
   // Both sides are proved in ONE request: the caller is an IdP broker that has
@@ -560,6 +531,11 @@ service Mint {
   // challenge names that exact login. Kernel verifies the assertion itself, so
   // a device side rests on no broker's word at all.
   //
+  // A device link writes no link edge: it ENROLS the device. The credential
+  // goes onto Person.devices of the XID the login resolves to, and a device
+  // token is that person's (sub = /users/<xid>, the device named by its
+  // `device` claim). A credential already on another person's XID is refused.
+  //
   // auth_services: ["*"] for the same reason MintUserToken carries it — which
   // delegates may attest a human login is per-delegate runtime config
   // (Delegate.auth_broker_kinds), checked in the handler.
@@ -575,7 +551,7 @@ service Mint {
   // A pending approval is PROPOSED by the person through
   // PersonalIdentity.CreatePendingApproval — a browser or an agent proposes —
   // and is consumed here by the one thing that counts: a WebAuthn assertion
-  // from a device linked to that person. A browser IdP session, a delegated
+  // under a device credential of that person's XID (Person.devices). A browser IdP session, a delegated
   // agent token and a tenant admin all fail this, however completely they are
   // the user.
   //
@@ -676,7 +652,7 @@ service UserMint {
   // against the caller's OWN fresh OPA entitlements, narrowed further by the
   // request's optional scope. A separate entitlement grant here would gate
   // "may this person delegate at all", which is not a question the platform
-  // asks today; GetMyIdentity is annotated the same way for the same reason.
+  // asks today; GetLinkedAccounts is annotated the same way for the same reason.
   rpc MintDelegateOfflineToken(tokenrequest.MintDelegateOfflineTokenRequest)
       returns (tokenrequest.MintDelegateOfflineTokenResponse) {
     option (spec.rpc) = {
@@ -719,9 +695,9 @@ service UserMint {
     };
   }
 
-  // GetLinkedAccounts returns the caller's own linked sign-ins and tenant
-  // memberships — the "linked accounts" screen. The person is the bearer's
-  // subject; there is no argument that could name somebody else.
+  // GetLinkedAccounts returns the caller's own linked sign-ins, tenant
+  // memberships and devices — the "linked accounts" screen. The person is the
+  // bearer's subject; there is no argument that could name somebody else.
   rpc GetLinkedAccounts(GetLinkedAccountsRequest) returns (GetLinkedAccountsResponse) {
     option (spec.rpc) = {
       principal: RPC_PRINCIPAL_USER,
@@ -765,6 +741,19 @@ service UserMint {
     };
   }
 
+  // RevokeDeviceCredential removes a device from the caller's person: the
+  // credential is marked revoked (never deleted, PersonalCredential.revoked_at_ms),
+  // after which it mints no device token and approves nothing. No proof from
+  // the device itself is asked: a device is most often removed because it is
+  // lost. NOT_FOUND for a credential that is not one of this person's devices.
+  rpc RevokeDeviceCredential(RevokeDeviceCredentialRequest) returns (RevokeDeviceCredentialResponse) {
+    option (spec.rpc) = {
+      principal: RPC_PRINCIPAL_USER,
+      exposure: RPC_EXPOSURE_EXTERNAL,
+      flags: [RPC_FLAG_AUTH_ANY_USER]
+    };
+  }
+
   // RevokeCredentialProof is the record's UNMERGE, and SIGN OUT OF ONE
   // PROVIDER: it drops a provider's proof from a credential, re-signs it, and
   // mints an access token from what remains — in the bearer's tenant when a
@@ -791,6 +780,7 @@ message GetLinkedAccountsResponse {
   string xid = 1;
   repeated IdentityLink links = 2 [(spec.assert_max_size) = 64];
   repeated PersonMembership memberships = 3 [(spec.assert_max_size) = 64];
+  repeated PersonalCredential devices = 4 [(spec.assert_max_size) = 16];
 }
 message DeleteIdentityLinkRequest {
   // credential is the caller's session credential; the link to remove must
@@ -813,6 +803,16 @@ message RevokeSessionsRequest {
   string trace_id = 200;
 }
 message RevokeSessionsResponse {}
+message RevokeDeviceCredentialRequest {
+  string credential = 1 [(spec.assert_required) = true];
+  // credential_id names the device, as PersonalCredential.credential_id holds it.
+  string credential_id = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
+  string trace_id = 200;
+}
+message RevokeDeviceCredentialResponse {
+  // revoked_at_ms is the mark; revoking twice returns the mark already there.
+  int64 revoked_at_ms = 1 [(spec.assert_ge) = 0];
+}
 
 message MergePeopleRequest {
   // a and b are two session credentials, compact JWTs. The caller's bearer
@@ -1385,9 +1385,9 @@ message WorkloadState {
 //
 // (Decision record: identity-session-credential-2026-10-25. It replaces the
 // provider-keyed /tenants/people/users/<provider>.<sub> row of
-// identity-people-tenant-devices-private-2026-09-21 §1, and supersedes the
-// /people/<principal_id> root that PersonalPrincipal below still uses; the
-// device path moves onto the XID in the record's step 4.)
+// identity-people-tenant-devices-private-2026-09-21 §1, and the
+// /people/<principal_id> device root, retired by tacplus#131: a device is a
+// credential of the XID, Person.devices.)
 
 // PeopleIdpProvider is the CLOSED set of identity providers the `people` tenant
 // accepts. Closed is the point: "one provider identity = one person" only holds
@@ -1476,7 +1476,7 @@ message Person {
   reserved "provider", "provider_subject";
   int64 created_at_ms = 4 [(spec.assert_ge) = 0];
   // disabled_at_ms marks, never deletes — the same audit rule
-  // PersonalPrincipal.disabled_at_ms states.
+  // Grant.revoked_at_ms states.
   int64 disabled_at_ms = 5 [(spec.assert_ge) = 0];
   // links are the provider identities that resolve to this XID. The index
   // (PrincipalState.identity_links) is written with them and is the lookup.
@@ -1494,35 +1494,30 @@ message Person {
   // the links are revoked, the generation bumped, and the row kept so the XID
   // is never reused. A deleted person mints nothing.
   int64 deleted_at_ms = 10 [(spec.assert_ge) = 0];
+  // devices are this person's device credentials: each one a key enrolled by
+  // CreateTenantUserLink (a device side beside this person's login). A device
+  // token is this person's token, sub = /users/<xid>, with the credential named
+  // by its `device` claim; an approval is signed under one of these. One key
+  // belongs to at most one person. Revoked ones stay, marked.
+  repeated PersonalCredential devices = 11 [(spec.assert_max_size) = 16];
 }
 
 // ============================================================================
-// Principal State (personal principals and their tenant memberships)
+// Principal State (people, device credentials, links)
 // ============================================================================
 
-// MembershipProofKind is HOW a person proved they belong to a tenant. It is
-// recorded per membership because a tenant configures which proofs it accepts
-// (login doc §1), and because revoking a proof kind must revoke exactly the
-// memberships that used it.
-enum MembershipProofKind {
-  MEMBERSHIP_PROOF_KIND_UNSPECIFIED = 0;
-  // The tenant's own IdP (Entra, Google Workspace, Keycloak, ...).
-  MEMBERSHIP_PROOF_KIND_TENANT_IDP = 1;
-  // 2026-10-20: MEMBERSHIP_PROOF_KIND_EMAIL_LINK (a link emailed to an address
-  // the tenant's admin authorized) was 2; mail link removed from SeaBeam.
-  reserved 2;
-  reserved "MEMBERSHIP_PROOF_KIND_EMAIL_LINK";
-  // The admin linked this personal principal directly; the device login alone
-  // suffices thereafter (login doc §2b proof 3).
-  MEMBERSHIP_PROOF_KIND_LINKED_PERSONAL_IDENTITY = 3;
-}
+// 2026-10-27 (kernel#18): MembershipProofKind and TenantMembership were the
+// /people/<pid> principal's tenant memberships, read by the personal-principal
+// tenant exchange that is retired with it. A person's memberships are
+// Person.memberships, and a tenant token needs a live proof that vouches it.
 
-// PersonalCredential is one key that authenticates a personal principal. It is
-// a KEY, not a device: a platform-synced key presented from a phone and from an
-// iPad is one credential presented twice, which is what makes those two devices
-// the same principal with no sign-in (login doc §2a).
+// PersonalCredential is one key that authenticates one of a person's devices
+// (Person.devices). It is a KEY, not a device: a platform-synced key presented
+// from a phone and from an iPad is one credential presented twice, which is
+// what makes those two devices the same person with no sign-in (login doc §2a).
 message PersonalCredential {
-  // credential_id is the kid the proof JWT carries; kernel resolves the key by it.
+  // credential_id is the kid the proof JWT carries, and the WebAuthn credential
+  // id; kernel resolves the key by it. It is the device token's `device` claim.
   string credential_id = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
   // public_key is the public half. The private half never enters the cluster —
   // the same rule credentials.CredPair states for cred pairs.
@@ -1539,42 +1534,18 @@ message PersonalCredential {
   int64 revoked_at_ms = 6 [(spec.assert_ge) = 0];
 }
 
-// TenantMembership is one person's membership of one tenant. It is the record
-// that authorizes minting a /tenants/<t> token for this principal (see
-// Mint.MintToken's tenant_namespace): no live membership, no token.
-message TenantMembership {
-  // tenant_namespace is the canonical /tenants/<name> form, never a bare name.
-  string tenant_namespace = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
-  MembershipProofKind proof_kind = 2 [(spec.assert_enum_defined) = true];
-  // customer designates this membership as customer-facing: the person deals
-  // with the tenant as an outside party, not as a worker inside it. It is a
-  // DESIGNATION ON THIS MEMBERSHIP, deliberately not a principal kind — the same
-  // person is a customer of one tenant and a member of another, and may be both
-  // of the same tenant over time. Mint intersects the requested service_auds
-  // with the tenant's customer-facing service list when this is set.
-  bool customer = 3;
-  // proof_reference is the opaque handle to what was proved (the tenant IdP
-  // subject, the redeemed link id). Opaque to kernel, never an email string —
-  // login doc §2 rules out comparing email strings, and nothing here does.
-  string proof_reference = 4 [(spec.assert_max_size) = 512];
-  int64 created_at_ms = 5 [(spec.assert_ge) = 0];
-  int64 expires_at_ms = 6 [(spec.assert_ge) = 0];
-  // revoked_at_ms marks, never deletes: a departure is a withdrawal that must
-  // remain visible in the audit trail (login doc §7 bullet 3).
-  int64 revoked_at_ms = 7 [(spec.assert_ge) = 0];
-}
-
-// PersonalPrincipal is one person. It is NOT a tenant: its namespace is
-// /people/<principal_id>, it has no Tenant record, no config slice, and no
-// operator-deployed instance.
+// PersonalPrincipal is the RETIRED /people/<principal_id> device principal
+// (tacplus#131 removed the root). It survives only as the shape of
+// KernelDiskState.personal_principals, so a snapshot written before kernel#18
+// can be read once at boot and migrated: each principal's credentials move to
+// the XID its live device link names, and a principal with no such link is
+// dropped (ClusterServer.migratePersonalPrincipals). Nothing creates one.
 message PersonalPrincipal {
-  // principal_id is kernel-minted and opaque. Deliberately NOT derived from any
-  // key, so adding, rotating or revoking a credential never renames the person.
-  string principal_id = 1 [
-    (spec.indexed) = true, (spec.assert_required) = true,
-    (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
+  string principal_id = 1 [(spec.assert_max_size) = 128];
   repeated PersonalCredential credentials = 2 [(spec.assert_max_size) = 16];
-  repeated TenantMembership memberships = 3 [(spec.assert_max_size) = 64];
+  // memberships (3) were TenantMembership rows; dropped by the migration.
+  reserved 3;
+  reserved "memberships";
   int64 created_at_ms = 4 [(spec.assert_ge) = 0];
   int64 disabled_at_ms = 5 [(spec.assert_ge) = 0];
 }
@@ -1627,26 +1598,20 @@ message TenantUserLinks {
   repeated TenantUserLink links = 2 [(spec.assert_max_size) = 64];
 }
 
-// PrincipalState is the personal-principal registry. label ["kernel"] and NO
-// export: the generated state RPCs are kernel-only, so no other service can
-// read the registry over the state plane. The one read surface anybody else
-// gets is PersonalIdentity.GetMyIdentity below, which returns the CALLER'S OWN
-// row and takes no principal argument.
+// PrincipalState is the people registry. label ["kernel"] and NO export: the
+// generated state RPCs are kernel-only, so no other service can read the
+// registry over the state plane. A person reads their own row through
+// UserMint.GetLinkedAccounts, which takes no principal argument.
 message PrincipalState {
   option (spec.service_state) = {label: ["kernel"], identity_snapshot: true};
 
-  // personal_principals is keyed by PersonalPrincipal.principal_id.
-  repeated PersonalPrincipal personal_principals = 1 [
-    (spec.persistence) = true,
-    (spec.assert_max_size) = 65536
-  ];
+  // 2026-10-27 (kernel#18): personal_principals (1), the /people/<pid> device
+  // principals, is retired; their credentials are Person.devices.
+  reserved 1;
+  reserved "personal_principals";
 
-  // people is every human kernel knows, keyed by Person.xid. It lives in THIS
-  // boundary rather than one of its own because it is the same registry:
-  // kernel's record of which humans exist, kernel-only and unexported for the
-  // same reason personal_principals is. PersonalPrincipal is the superseded
-  // /people/<pid> shape and goes away with the device slice; Person is what
-  // remains.
+  // people is every human kernel knows, keyed by Person.xid, devices included.
+  // Kernel-only and unexported: kernel's record of which humans exist.
   repeated Person people = 2 [
     (spec.persistence) = true,
     (spec.assert_max_size) = 65536
@@ -1685,42 +1650,26 @@ message PrincipalState {
   ];
 }
 
-// PersonalIdentity is the personal principal's own view of itself. It exists
-// because kernel state RPCs are service-only (checkAccess denies user tokens on
-// every policed graph), so a person cannot read their own registry row over the
-// state plane.
+// PersonalIdentity is a user's own view of their links and approvals. It
+// exists because kernel state RPCs are service-only (checkAccess denies user
+// tokens on every policed graph), so a person cannot read or write their own
+// registry rows over the state plane.
+//
+// 2026-10-27 (kernel#18): GetMyIdentity, the /people/<pid> principal's
+// memberships, is retired with that principal; a person's own view is
+// UserMint.GetLinkedAccounts.
 service PersonalIdentity {
   option (spec.service_c2s) = {auth_entitled_users: true};
 
-  // GetMyIdentity returns the CALLER'S memberships. It takes no principal
-  // argument by construction: the principal is resolved from the token's sub,
-  // so there is no field an attacker can point at somebody else.
-  rpc GetMyIdentity(GetMyIdentityRequest) returns (GetMyIdentityResponse) {
-    option (spec.rpc) = {
-      principal: RPC_PRINCIPAL_USER,
-      exposure: RPC_EXPOSURE_EXTERNAL,
-      flags: [RPC_FLAG_AUTH_ANY_USER]
-    };
-  }
-
-  // RevokeTenantUserLink is UNLINK. It takes no owner argument, for the same
-  // reason GetMyIdentity takes none: the owning side of the edge is the
-  // CALLER'S OWN namespace and sub, out of the verified token, so there is no
-  // field pointing at somebody else's link. The request names only the peer to
-  // unlink from.
-  //
-  // Either side may unlink, which is what makes "the person may unlink a
-  // device, from any linked device or via the people tenant flow" (identity
-  // decision doc §3) true without a second surface: a /people/<pid> device
-  // token unlinks its own person edge, and a /tenants/people person token
-  // unlinks any of its device edges.
+  // RevokeTenantUserLink is UNLINK. It takes no owner argument: the owning
+  // side of the edge is the CALLER'S OWN namespace and sub, out of the verified
+  // token, so there is no field pointing at somebody else's link. The request
+  // names only the peer to unlink from. Either side may unlink.
   //
   // NO RE-PROOF IS REQUIRED. Linking demands both credentials at once because
-  // it GRANTS reach into another namespace; unlinking only withdraws it, and a
-  // device is most often unlinked precisely when it can no longer be presented
-  // (lost, stolen, wiped). Demanding the link-time proof to undo a link would
-  // mean a lost device can never be removed. Recorded as a product default in
-  // the slice's decision doc, not a silent choice.
+  // it GRANTS reach into another namespace; unlinking only withdraws it.
+  // (A device is no longer a link edge: removing one is
+  // UserMint.RevokeDeviceCredential.)
   rpc RevokeTenantUserLink(RevokeTenantUserLinkRequest) returns (RevokeTenantUserLinkResponse) {
     option (spec.rpc) = {
       principal: RPC_PRINCIPAL_USER,
@@ -1730,16 +1679,15 @@ service PersonalIdentity {
   }
 
   // CreatePendingApproval PROPOSES something that will need a device tap
-  // (identity decision doc §5). The caller is the person, or a tenant user
-  // linked to one, or an agent holding that person's delegated token — and
-  // proposing is ALL this does. The record it writes authorizes nothing until a
-  // device linked to that person signs it, which Mint.BrokerPendingApproval
-  // checks; that is why a proposer needs no privilege beyond being the user.
+  // (identity decision doc §5). The caller is the person — any token whose sub
+  // is their /users/<xid>, in whichever tenant, or an agent holding that
+  // person's delegated token — and proposing is ALL this does. The record it
+  // writes authorizes nothing until one of that XID's devices signs it, which
+  // Mint.BrokerPendingApproval checks; that is why a proposer needs no
+  // privilege beyond being the user.
   //
-  // It takes no principal argument, for the same reason GetMyIdentity takes
-  // none: the person is resolved from the caller's own verified claims, through
-  // the link registry, so there is no field pointing at somebody else's
-  // approval to create.
+  // It takes no principal argument: the person is the caller's own verified
+  // sub, so there is no field pointing at somebody else's approval to create.
   //
   // What it pins is the EXACT request. rpc_method names one RPC and
   // request_hash digests the exact request that will be made, so an approval
@@ -1759,8 +1707,8 @@ service PersonalIdentity {
 // RevokeTenantUserLinkRequest names the PEER to unlink from, and nothing else.
 // The owning side is the caller's own token — see the RPC comment.
 message RevokeTenantUserLinkRequest {
-  // peer_namespace is the canonical /tenants/<t> or /people/<pid> of the edge
-  // to revoke, as TenantUserLink.peer_namespace holds it.
+  // peer_namespace is the canonical /tenants/<t> of the edge to revoke, as
+  // TenantUserLink.peer_namespace holds it.
   string peer_namespace = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
   // peer_subject is that identity's `sub`, as TenantUserLink.peer_subject holds
   // it. Both halves are required: peer_namespace alone would revoke every edge
@@ -1773,60 +1721,6 @@ message RevokeTenantUserLinkResponse {
   // never comes back: an edge that was already revoked returns the mark it
   // already carried, so unlinking twice is the same fact, not an error.
   int64 revoked_at_ms = 1 [(spec.assert_ge) = 0];
-}
-
-// GetMyIdentityRequest is deliberately empty: the principal is the token's sub.
-message GetMyIdentityRequest {}
-
-// GetMyIdentityResponse is the caller's own identity: who they are, and the
-// tenants they may act in — the routing map §6 item 8 asks for.
-//
-// Credentials are deliberately NOT returned. Nothing in this goal reads them,
-// and the credential-management surface (§6 item 7, device authorization) will
-// define its own view when it is designed; a speculative second copy of the
-// credential list here is the same drift risk §6.2 refuses for a membership
-// index. public_key is not the reason — CredPair.public_key already crosses an
-// external RPC verbatim in TenantAdmin.GetTenantConfig, and this tree redacts
-// only true secrets, via (spec.redact) — the reason is that no caller needs it.
-message GetMyIdentityResponse {
-  // principal_id echoes the caller's own PersonalPrincipal.principal_id. The
-  // token's sub carries it inside /people/<pid>; returning it explicitly saves
-  // every client parsing a namespace string to learn its own name.
-  string principal_id = 1 [(spec.assert_max_size) = 128];
-  // memberships are the caller's live tenant memberships. Bound matches
-  // PersonalPrincipal.memberships — the whole set always fits one response,
-  // which is why this is a Get and not a paged List.
-  repeated TenantMembership memberships = 2 [(spec.assert_max_size) = 64];
-}
-
-// CreatePersonalPrincipalRequest is a first-launch device registration. It
-// carries its own proof: proof_token is a JWT signed by the private half of
-// public_key, and the proof's kid becomes the new credential's credential_id.
-// The kid is the only source for it, so there is no second field that can
-// disagree with what was actually signed.
-message CreatePersonalPrincipalRequest {
-  // proof_token is the self-signed JWT, the same shape as
-  // MintClientTokenRequest.input_token.
-  string proof_token = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 8192];
-  // public_key is the public half of the key that signed proof_token, and is
-  // stored verbatim as the new PersonalCredential.public_key. Kernel verifies
-  // the proof against THIS key — a proof that does not verify registers
-  // nothing.
-  jwk.Jwk public_key = 2 [(spec.assert_required) = true];
-  // label is human-facing ("iPhone"), stored on the credential.
-  string label = 3 [(spec.assert_max_size) = 128];
-  // platform_synced records whether this key lives in a synced credential store
-  // (iCloud Keychain / Google passkey) or in device hardware only.
-  bool platform_synced = 4;
-}
-
-// CreatePersonalPrincipalResponse returns the kernel-minted principal id and
-// nothing else — deliberately no token. The device's next call is MintUserToken
-// with AUTH_BROKER_KIND_DEVICE, presenting a fresh proof signed by the same key.
-message CreatePersonalPrincipalResponse {
-  // principal_id is the new person's opaque, kernel-minted id. Its namespace is
-  // /people/<principal_id>.
-  string principal_id = 1 [(spec.assert_max_size) = 128];
 }
 
 // WebauthnAssertion is one WebAuthn (passkey) assertion, exactly as the
@@ -1845,7 +1739,7 @@ message CreatePersonalPrincipalResponse {
 // identity decision doc's §3 — the one whose device proof is explicitly the
 // weaker one, because Windows/Linux have no App Attest / Play Integrity. The
 // public key therefore arrives as an ordinary jwk.Jwk (the platform's key type
-// everywhere else, including CreatePersonalPrincipal) and is trusted only as
+// everywhere else) and is trusted only as
 // far as the nonce binding makes it trustworthy: the IdP's id_token carries
 // that key's RFC 7638 thumbprint as its `nonce`, so a substituted key has no
 // matching login. App Attest and Play Integrity are named as follow-ons, not
@@ -1886,8 +1780,8 @@ message TenantUserLinkSide {
   // MintUserTokenRequest.subject carries it. Required for an ordinary tenant
   // side, where it is what names the user; IGNORED on a `people` side, which
   // derives its user id from the verified claims and takes nothing from the
-  // request, and IGNORED on a device side, which derives its principal from the
-  // credential the assertion is signed by.
+  // request, and IGNORED on a device side, which is enrolled onto the person
+  // the other side's login resolves to.
   string subject = 2 [(spec.assert_max_size) = 1024];
 
   // ---- The device shape (identity decision doc §3, WebAuthn/passkey arm) ----
@@ -1900,17 +1794,16 @@ message TenantUserLinkSide {
   // accepted and nothing can be replayed onto a different device.
   WebauthnAssertion device_assertion = 3;
   // device_public_key is the public half of the passkey, as a jwk.Jwk. Kernel
-  // verifies device_assertion against THIS key on a first link — the same
-  // bootstrap CreatePersonalPrincipal has, where the key must come out of the
-  // request because no stored credential exists yet — and against the STORED
-  // key on every link after that. The request's copy is never consulted again
-  // once the credential row exists.
+  // verifies device_assertion against THIS key on a first link — the key must
+  // come out of the request because no stored credential exists yet — and
+  // against the STORED key on every link after that. The request's copy is
+  // never consulted again once the credential is enrolled.
   jwk.Jwk device_public_key = 4;
   // device_label is human-facing ("Jody's ThinkPad"), stored on the credential.
   string device_label = 5 [(spec.assert_max_size) = 128];
   // device_platform_synced records whether the passkey lives in a synced
-  // credential store (iCloud Keychain / Google passkey) or on this device only,
-  // exactly as CreatePersonalPrincipalRequest.platform_synced does.
+  // credential store (iCloud Keychain / Google passkey) or on this device only
+  // (PersonalCredential.platform_synced).
   bool device_platform_synced = 6;
 }
 
@@ -1924,7 +1817,9 @@ message CreateTenantUserLinkRequest {
 message CreateTenantUserLinkResponse {
   // The two linked identities, as the "<namespace>|<sub>" keys the registry
   // holds them under. Returned so the caller can see what it actually linked —
-  // neither is echoed from the request.
+  // neither is echoed from the request. A device side is not an identity of
+  // its own: on a device link both keys are the person's
+  // ("/tenants/people|<sub>"), and created_at_ms is when the device was enrolled.
   string a_user_key = 1 [(spec.assert_max_size) = 1024];
   string b_user_key = 2 [(spec.assert_max_size) = 1024];
   int64 created_at_ms = 3 [(spec.assert_ge) = 0];
@@ -1941,7 +1836,7 @@ message CreateTenantUserLinkResponse {
 // APPROVAL. A browser IdP session or a delegated agent token can BE the user
 // without a human touching hardware, so an approval needs a proof no session
 // and no delegate can produce: a signature by a key linked to that person's
-// devices. The record is what that signature is verified AGAINST, which is what
+// devices (Person.devices). The record is what that signature is verified AGAINST, which is what
 // lets the generated (spec.rpc).requires_device check say WHAT was approved and
 // not merely that somebody tapped something.
 //
@@ -1962,10 +1857,9 @@ message PendingApproval {
   string approval_id = 1 [
     (spec.indexed) = true, (spec.assert_required) = true,
     (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
-  // person_user_key is WHO, in the form the link registry keys them by:
-  // "/tenants/people|<the person's SPIFFE sub>" (TenantUserLinks.user_key). The
-  // registry key rather than a bare user path because it is compared against the
-  // approving device's own link edges, and that is the form those hold.
+  // person_user_key is WHO: "/tenants/people|<the person's SPIFFE sub>", the
+  // person's people-tenant key, sub = spiffe://<td>/users/<xid>. The approving
+  // device must be a credential on that XID (Person.devices).
   string person_user_key = 2 [
     (spec.assert_required) = true, (spec.assert_max_size) = 1024];
   // rpc_method is WHICH RPC, as "pkg.Service/Method" — the qualified method key
@@ -2056,8 +1950,8 @@ message BrokerPendingApprovalRequest {
     (spec.assert_required) = true, (spec.assert_max_size) = 1024];
   // device_assertion is the tap: a WebAuthn assertion whose challenge is the one
   // CreatePendingApprovalResponse returned. Kernel verifies it against the
-  // STORED credential — an approving device must already be registered and
-  // linked, so no key travels in this request at all.
+  // STORED credential — an approving device must already be enrolled on the
+  // person's XID, so no key travels in this request at all.
   WebauthnAssertion device_assertion = 6 [(spec.assert_required) = true];
 }
 
@@ -2065,11 +1959,13 @@ message BrokerPendingApprovalResponse {
   // consumed_at_ms is when this approval was burned. A second call with the same
   // id is refused, so this value is returned exactly once.
   int64 consumed_at_ms = 1 [(spec.assert_ge) = 0];
-  // person_user_key and device_namespace are WHO approved and WITH WHAT, for the
-  // guarded service's own audit record. Both are kernel's: the person off the
-  // record, the device off the credential the signature verified under.
+  // person_user_key and device_credential_id are WHO approved and WITH WHAT,
+  // for the guarded service's own audit record. Both are kernel's: the person
+  // off the record, the device the credential the signature verified under
+  // (PersonalCredential.credential_id). Field 3 was device_namespace, the
+  // retired /people/<pid> device principal's namespace.
   string person_user_key = 2 [(spec.assert_max_size) = 1024];
-  string device_namespace = 3 [(spec.assert_max_size) = 512];
+  string device_credential_id = 3 [(spec.assert_max_size) = 1024];
 }
 
 // ============================================================================
@@ -2350,15 +2246,15 @@ message KernelDiskState {
   // that consumes them stays stateless.
   repeated Grant grants = 9 [(spec.assert_max_size) = 4096];
 
-  // personal_principals are the registered people (PrincipalState.personal_principals)
-  // — the principal_id, its credentials and its tenant memberships. Kernel is
-  // where a person's identity is created, so the snapshot is the only thing that
-  // makes a login survive a full cluster restart; without it the first restart
-  // after registration would silently de-register every person.
+  // personal_principals are the RETIRED /people/<pid> device principals,
+  // written by kernels before kernel#18 and never since. Read once at boot:
+  // ClusterServer.migratePersonalPrincipals moves each one's credentials to
+  // the XID its live device link names and drops the rest. The next snapshot
+  // carries none.
   repeated PersonalPrincipal personal_principals = 10 [(spec.assert_max_size) = 65536];
 
-  // people are the XID-keyed Person rows (PrincipalState.people). Carried for
-  // the same reason personal_principals is: a person is created on their first
+  // people are the XID-keyed Person rows (PrincipalState.people), their device
+  // credentials included. Carried because a person is created on their first
   // IdP login and found through identity_links thereafter, so a snapshot that
   // drops them would silently mint every person a NEW XID on the first cluster
   // restart — and an XID is the one thing about a person that must never change.

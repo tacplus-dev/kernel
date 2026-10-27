@@ -42,8 +42,9 @@ import org.slf4j.LoggerFactory;
  * <p>Decision record: {@code identity-session-credential-2026-10-25}, which
  * replaces the provider-keyed user row of
  * {@code identity-people-tenant-devices-private-2026-09-21} §1 with the XID.
- * Both supersede the {@code /people/<principal_id>} root the device path
- * ({@code PersonalPrincipal}) still uses; that path moves in the record's step 4.
+ * The {@code /people/<principal_id>} device root is retired too (tacplus#131,
+ * kernel#18): a device is a credential of the XID ({@code Person.devices}), and
+ * a device token is this tenant's token for that person.
  */
 final class PeopleTenant {
 

@@ -63,6 +63,26 @@ public final class SpiffeIds {
 		return Spiffe.userSpiffeId(trustDomain, namespaceRoot(), xid);
 	}
 
+	/**
+	 * The XID of a person's subject, {@code spiffe://<td>/users/<xid>} and nothing
+	 * longer, or null for any other subject — a tenant user's
+	 * {@code /tenants/<t>/users/<u>} included.
+	 */
+	public static String xidOf(String subject) {
+		if (!isSpiffeUri(subject)) {
+			return null;
+		}
+		try {
+			Spiffe.ParsedSpiffeId parsed = Spiffe.parseSpiffeId(subject);
+			if (parsed.pathSegments.size() == 2 && Spiffe.USERS_SEGMENT.equals(parsed.pathSegments.get(0))) {
+				return parsed.pathSegments.get(1);
+			}
+		} catch (IllegalArgumentException e) {
+			// Not a SPIFFE id the grammar accepts, so not a person.
+		}
+		return null;
+	}
+
 	/** Returns true if the value is a SPIFFE URI. */
 	public static boolean isSpiffeUri(String value) {
 		return value != null && value.startsWith(Spiffe.SCHEME + "://");

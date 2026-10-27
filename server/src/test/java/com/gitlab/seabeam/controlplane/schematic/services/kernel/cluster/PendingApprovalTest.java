@@ -49,19 +49,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * §5 of the identity decision doc: the pending-approval record and the check
  * tacplus's generated {@code (spec.rpc).requires_device} will call.
  *
- * <p>The claim under test is narrow and absolute: <b>only</b> a device linked to
- * the caller's person can consume an approval, and <b>only</b> for the exact
- * request it was created for. So most of this class is refusals, and the two
- * that matter most are {@link #anApprovalCannotBeSpentOnASameShapedDifferentRequest()}
- * and {@link #aDeviceLinkedToSomebodyElseCannotApprove()} — a browser session or
+ * <p>The claim under test is narrow and absolute: <b>only</b> a device of the
+ * caller's person — a credential on their XID, {@code Person.devices} — can
+ * consume an approval, and <b>only</b> for the exact request it was created for.
+ * So most of this class is refusals, and the two that matter most are
+ * {@link #anApprovalCannotBeSpentOnASameShapedDifferentRequest()} and
+ * {@link #aDeviceOfSomebodyElseCannotApprove()} — a browser session or
  * a delegated agent token can BE the user, which is precisely why being the user
  * is not what this check tests.
  *
- * <p>The setup is the real §3 ceremony, not a hand-seeded registry: the device
- * and the person and the link between them all exist because a passkey and an
- * Apple login proved them, through {@code CreateTenantUserLink}. A test that
- * seeded the link table directly would pass against a check that resolved a
- * device the wrong way.
+ * <p>The setup is the real §3 ceremony, not a hand-seeded registry: the person
+ * and the device enrolled on their XID exist because a passkey and an Apple
+ * login proved them, through {@code CreateTenantUserLink}. No link registry is
+ * consulted (kernel#18): the device is checked against the XID directly.
  */
 class PendingApprovalTest {
 
@@ -130,8 +130,8 @@ class PendingApprovalTest {
 				RELYING_PARTY);
 		personalIdentity = new PersonalIdentityServiceImpl(principalMap, null);
 		passkey = Passkey.generate();
-		// The §3 ceremony: this passkey and this Apple login become a registered
-		// device, a person, and a live link each way.
+		// The §3 ceremony: this passkey and this Apple login become a person with
+		// this device enrolled on their XID.
 		link(passkey, APPLE_SUB);
 	}
 
@@ -156,7 +156,7 @@ class PendingApprovalTest {
 
 		assertTrue(approved.getConsumedAtMs() > 0);
 		assertEquals(personKey(), approved.getPersonUserKey());
-		assertEquals(deviceNamespace(), approved.getDeviceNamespace());
+		assertEquals(passkey.credentialId, approved.getDeviceCredentialId());
 		// The record is burned in place, not deleted: a replay inside the window
 		// has to be answerable as "already used".
 		assertEquals(approved.getConsumedAtMs(),
@@ -312,19 +312,19 @@ class PendingApprovalTest {
 	}
 
 	// ------------------------------------------------------------------
-	// THE DEVICE-LINK CHECK
+	// THE DEVICE-OWNERSHIP CHECK
 	// ------------------------------------------------------------------
 
 	/**
-	 * "Signed by a key linked to the caller's person. Nothing else counts." This
-	 * device is real, registered, and holds a live credential — it is simply
-	 * somebody else's. Its signature verifies and it still approves nothing.
+	 * "Signed by a key of the caller's person. Nothing else counts." This device
+	 * is real, enrolled, and holds a live credential — it is simply somebody
+	 * else's. Its signature verifies and it still approves nothing.
 	 *
 	 * <p>This is the test that separates §5 from "a valid WebAuthn assertion". A
 	 * check that verified the signature and stopped would pass this.
 	 */
 	@Test
-	void aDeviceLinkedToSomebodyElseCannotApprove() throws Exception {
+	void aDeviceOfSomebodyElseCannotApprove() throws Exception {
 		Passkey stranger = Passkey.generate();
 		link(stranger, OTHER_APPLE_SUB);
 		byte[] hash = requestHash("transfer 5 to alice");
@@ -335,38 +335,32 @@ class PendingApprovalTest {
 						stranger.assertFor(proposed.getChallenge()))));
 
 		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
-		// The link check refused it, not the signature — the stranger's assertion
-		// is perfectly valid, which is the whole point of this test.
-		assertTrue(ex.getMessage().contains("not linked to the person"), ex.getMessage());
+		// The ownership check refused it, not the signature — the stranger's
+		// assertion is perfectly valid, which is the whole point of this test.
+		assertTrue(ex.getMessage().contains("not one of the devices of the person"), ex.getMessage());
 		assertEquals(0, principalMap.getPendingApprovals(proposed.getApprovalId())
 				.getConsumedAtMs());
 	}
 
 	/**
-	 * Unlink withdraws the ability to approve, at the very next attempt. The
-	 * credential is untouched and the device is still a principal — what it has
-	 * lost is being one of this person's devices, which is the only thing §5 asks
-	 * about.
+	 * Removing a device withdraws the ability to approve, at the very next
+	 * attempt: the credential is marked revoked on the person and its perfectly
+	 * good signature approves nothing.
 	 */
 	@Test
-	void anUnlinkedDeviceCannotApprove() throws Exception {
+	void aRevokedDeviceCannotApprove() throws Exception {
 		byte[] hash = requestHash("transfer 5 to alice");
 		Kernel.CreatePendingApprovalResponse proposed = propose(personCaller(), hash);
 		Kernel.WebauthnAssertion tap = passkey.assertFor(proposed.getChallenge());
-		personalIdentity.revokeTenantUserLink(
-				owner(deviceNamespace(), deviceSubject()),
-				Kernel.RevokeTenantUserLinkRequest.newBuilder()
-						.setPeerNamespace(PeopleTenant.NAMESPACE)
-						.setPeerSubject(personSubject())
-						.build());
+		new KernelIdentityGraph(principalMap, () -> { }, () -> false)
+				.revokeDevice(xid(APPLE_SUB), passkey.credentialId);
 
 		ProtoException ex = assertThrows(ProtoException.class, () -> brokerCall(
 				brokerRequest(proposed.getApprovalId(), RPC_METHOD, hash, personCaller(), tap)));
 
 		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
-		assertTrue(ex.getMessage().contains("not linked to the person"), ex.getMessage());
-		assertEquals(0, principalMap.proto().getPersonalPrincipals(0)
-				.getCredentials(0).getRevokedAtMs(), "unlink must not revoke the credential");
+		assertEquals("device approval refused", ex.getMessage());
+		assertEquals(0, principalMap.getPendingApprovals(proposed.getApprovalId()).getConsumedAtMs());
 	}
 
 	/** A credential kernel has never seen is refused, and says nothing about why. */
@@ -516,17 +510,18 @@ class PendingApprovalTest {
 	// ------------------------------------------------------------------
 
 	/**
-	 * The device itself may propose, and resolves to the same person through its
-	 * own link edge — the branch that makes "a browser or Scotty proposes" work
-	 * for any caller standing anywhere, not only for a caller already in the
-	 * people tenant.
+	 * The person is their XID in every tenant: the same person's token for an
+	 * org tenant proposes as that person, and the people-tenant token — the one
+	 * the device itself holds — consumes it. This is what makes "a browser or
+	 * Scotty proposes" work for a caller standing in any tenant, with no link
+	 * registry in between.
 	 */
 	@Test
-	void aLinkedDeviceResolvesToTheSamePersonWhenItProposes() throws Exception {
+	void thePersonsTokenInAnyTenantProposesAsThatPerson() throws Exception {
 		byte[] hash = requestHash("transfer 5 to alice");
 
 		Kernel.CreatePendingApprovalResponse proposed =
-				propose(owner(deviceNamespace(), deviceSubject()), hash);
+				propose(owner(TENANT_NAMESPACE, personSubject()), hash);
 
 		assertEquals(personKey(),
 				principalMap.getPendingApprovals(proposed.getApprovalId()).getPersonUserKey());
@@ -534,17 +529,21 @@ class PendingApprovalTest {
 	}
 
 	/**
-	 * A caller with no person behind them cannot propose at all. There is nobody
-	 * to prompt and no device that could ever sign it, so the honest answer is a
-	 * refusal at creation rather than a record nothing can consume.
+	 * A caller who is not a person cannot propose at all — an ordinary tenant
+	 * user, including one whose tenant-scoped subject happens to end in a
+	 * person's XID. There is nobody to prompt and no device that could ever sign
+	 * it, so the honest answer is a refusal at creation rather than a record
+	 * nothing can consume.
 	 */
 	@Test
-	void aCallerWithNoLinkedPersonCannotPropose() {
-		ProtoException ex = assertThrows(ProtoException.class, () -> propose(
+	void aCallerWhoIsNotAPersonCannotPropose() {
+		for (Caller notAPerson : List.of(
 				owner(TENANT_NAMESPACE, "jody@drpepper.example"),
-				requestHash("transfer 5 to alice")));
-
-		assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+				owner(TENANT_NAMESPACE, Spiffe.userSpiffeId(TRUST_DOMAIN, TENANT_NAMESPACE, xid(APPLE_SUB))))) {
+			ProtoException ex = assertThrows(ProtoException.class, () -> propose(
+					notAPerson, requestHash("transfer 5 to alice")));
+			assertEquals(ProtoException.PERMISSION_DENIED, ex.getCode());
+		}
 	}
 
 	/** A hash that is not a SHA-256 digest pins the approval to nothing. */
@@ -622,43 +621,20 @@ class PendingApprovalTest {
 
 	/** The person an Apple login resolved to, found through the link index. */
 	private String personSubject(String appleSub) {
-		String xid = principalMap.getIdentityLinks(
-				IdentityServiceImpl.identityLinkKey("apple", appleSub)).getXid();
-		return SpiffeIds.userSubject(TRUST_DOMAIN, xid);
+		return SpiffeIds.userSubject(TRUST_DOMAIN, xid(appleSub));
+	}
+
+	private String xid(String appleSub) {
+		return principalMap.getIdentityLinks(IdentityServiceImpl.identityLinkKey("apple", appleSub)).getXid();
 	}
 
 	private String personKey() {
 		return PeopleTenant.NAMESPACE + "|" + personSubject();
 	}
 
-	/** The device registered by {@link #setUp()}'s link — always the first row. */
-	private String deviceNamespace() throws ProtoException {
-		return "/" + Spiffe.PEOPLE_SEGMENT + "/"
-				+ principalByCredential(passkey.credentialId).getPrincipalId();
-	}
-
-	private String deviceSubject() throws ProtoException {
-		String namespace = deviceNamespace();
-		return Spiffe.userSpiffeId(TRUST_DOMAIN, namespace,
-				principalByCredential(passkey.credentialId).getPrincipalId());
-	}
-
-	private Kernel.PersonalPrincipal principalByCredential(String credentialId)
-			throws ProtoException {
-		for (Kernel.PersonalPrincipal principal : principalMap.proto().getPersonalPrincipalsList()) {
-			for (Kernel.PersonalCredential credential : principal.getCredentialsList()) {
-				if (credentialId.equals(credential.getCredentialId())) {
-					return principal;
-				}
-			}
-		}
-		throw new IllegalStateException("no principal holds " + credentialId);
-	}
-
 	/**
 	 * The §3 ceremony, for real: one passkey and one Apple login whose nonce is
-	 * that key's thumbprint register the device, create the person, and link them
-	 * in both directions.
+	 * that key's thumbprint create the person and enrol the device on their XID.
 	 */
 	private void link(Passkey key, String appleSub) throws Exception {
 		String nonce = WebauthnProof.thumbprint(key.publicJwk);

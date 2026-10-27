@@ -19,7 +19,8 @@ import java.util.function.Predicate;
  * kernel's own state, so moving the graph is swapping the implementation, not
  * changing a caller. Every write here is one of the record's: the first-login
  * create, a membership the first time an org routes a person, Link (merge),
- * Unlink, delete account and sign out everywhere. Everything else kernel does
+ * Unlink, delete account and sign out everywhere, and a device enrolled on or
+ * revoked from a person. Everything else kernel does
  * with identity — the session credential, its proofs, Merge and Unmerge, the
  * per-tenant exchange — is stateless and stays in kernel.
  *
@@ -69,4 +70,27 @@ interface IdentityGraph {
 
 	/** Sign out everywhere: one bump of the person's generation. */
 	Kernel.Person bumpGeneration(String xid) throws IdentityServiceImpl.StatusException;
+
+	/**
+	 * The person holding the device credential {@code credentialId} (revoked or
+	 * not), or the default (empty) instance when no person does. One key belongs
+	 * to at most one person.
+	 */
+	Kernel.Person deviceOwner(String credentialId);
+
+	/**
+	 * Enrols a device credential on the person. Enrolling one the person already
+	 * holds changes nothing; one held by another person, a revoked one, or one
+	 * past the per-person cap is refused.
+	 */
+	Kernel.Person addDevice(String xid, Kernel.PersonalCredential credential)
+			throws IdentityServiceImpl.StatusException;
+
+	/**
+	 * Marks one of the person's device credentials revoked and returns it;
+	 * NOT_FOUND when the person holds no such credential. Revoking twice returns
+	 * the mark already there.
+	 */
+	Kernel.PersonalCredential revokeDevice(String xid, String credentialId)
+			throws IdentityServiceImpl.StatusException;
 }

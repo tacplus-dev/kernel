@@ -57,14 +57,14 @@ class SelfAuthenticatingRpcSkipTest {
 
 	/**
 	 * kernel.Mint RPCs carrying no exemption flag — the interceptor must still enforce.
-	 * CreatePersonalPrincipal proves the registering key inside the handler but is
+	 * CreateTenantUserLink verifies its device assertion inside the handler but is
 	 * declared {@code auth_services: ["*"]} with no RPC_FLAG_SELF_AUTHENTICATES, so the
 	 * calling service's bearer is still required at the interceptor.
 	 */
 	private static final String[] ENFORCED = {
 		"kernel.Mint/MintUserToken",
 		"kernel.Mint/MintExternalToken",
-		"kernel.Mint/CreatePersonalPrincipal",
+		"kernel.Mint/CreateTenantUserLink",
 	};
 
 	private static final MethodDescriptor.Marshaller<String> STRINGS =

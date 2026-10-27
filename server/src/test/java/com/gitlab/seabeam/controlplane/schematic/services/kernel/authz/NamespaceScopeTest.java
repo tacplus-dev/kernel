@@ -74,7 +74,7 @@ class NamespaceScopeTest {
 	/**
 	 * Goal B item 4 inverted the default: root is now a closed list ("/" and
 	 * "/system…"), so a namespace root nobody has taught this class about — the
-	 * "/people/<pid>" a personal principal will carry — is confined, not unconfined.
+	 * retired "/people/<pid>", say — is confined, not unconfined.
 	 */
 	@Test
 	void anUnrecognizedNamespaceRootIsConfinedNotRoot() throws Exception {

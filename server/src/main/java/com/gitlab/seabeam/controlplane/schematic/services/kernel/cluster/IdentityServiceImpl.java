@@ -98,14 +98,23 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			"iss", "sub", "aud", "exp", "nbf", "iat", "jti");
 
 	/**
-	 * The claim names kernel synthesizes for OPA (the device arm and the
-	 * personal-principal tenant exchange), which a policy may decide roles
-	 * from. A relayed claim set must never carry them: oauth forwards any
-	 * non-well-known IdP claim under its own name, so a tenant IdP could
-	 * otherwise put {@code tenant_namespace} in an id_token.
+	 * The claim that makes a person's token a DEVICE token: the credential id of
+	 * the device credential ({@code Person.devices}) whose proof minted it.
+	 */
+	static final String CLAIM_DEVICE = "device";
+
+	/**
+	 * The claim names kernel synthesizes (the device arm's {@code principal_id}
+	 * and {@code device}, and the names the retired personal-principal tenant
+	 * exchange handed OPA), which a policy may decide roles from and which
+	 * {@code device} names a device token by. A relayed claim set must never
+	 * carry them: oauth forwards any non-well-known IdP claim under its own
+	 * name, so a tenant IdP could otherwise put {@code device} in an id_token
+	 * and have its token read as a device's.
 	 */
 	static final Set<String> SYNTHESIZED_CLAIMS = Set.of(
-			"principal_id", "tenant_namespace", "proof_kind", "customer");
+			"principal_id", CLAIM_DEVICE, "tenant_namespace", "proof_kind", "customer");
+
 
 	// Legacy typ claim value — kept for backwards compatibility during rollout.
 	private static final String TOKEN_TYPE_REFRESH = Helpers.tokenUseToString(TokenUse.TOKEN_USE_REFRESH);
@@ -206,18 +215,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	static final long EXTERNAL_SERVICE_TOKEN_MAX_TTL_SECONDS = 600;
 
 	/**
-	 * The registry's own ceiling — {@code PrincipalState.personal_principals}
-	 * carries {@code (spec.assert_max_size) = 65536}. It is repeated here because
-	 * {@code PrincipalMap.putPersonalPrincipals} validates the ROW it is handed
-	 * and nothing validates the collection on the way in: the cap is only checked
-	 * by {@code Helpers.validateKernelDiskState}, inside {@code IdentitySnapshot.save()},
-	 * which logs and swallows. Over the cap without this check, registration would
-	 * appear to succeed and every subsequent snapshot — signing keys, CAs, tenants,
-	 * grants and all — would be silently lost. Refuse the registration instead.
-	 */
-	private static final int MAX_PERSONAL_PRINCIPALS = 65536;
-
-	/**
 	 * Cap on one user's links, matching {@code TenantUserLinks.links}'s
 	 * {@code assert_max_size} for the same reason the people registry's cap matches its
 	 * own: a row grown past the bound fails validation on the way into the disk
@@ -230,9 +227,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * SPIFFE id may contain it, so the pair can never be ambiguous.
 	 */
 	private static final String LINK_KEY_SEPARATOR = "|";
-
-	/** Canonical root of the personal-principal subtree ({@code /people/<pid>}). */
-	private static final String PEOPLE_PREFIX = "/" + Spiffe.PEOPLE_SEGMENT + "/";
 
 	/**
 	 * Schematic-internal claim key names (all JwtPayloadType names) that must not be
@@ -296,9 +290,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private final java.util.concurrent.ConcurrentMap<String, Long> seenProofJtis =
 			new java.util.concurrent.ConcurrentHashMap<>();
-
-	/** Serializes CreatePersonalPrincipal's read-check-write; see the call site. */
-	private final Object personalPrincipalRegistryLock = new Object();
 
 	/**
 	 * The identity graph — XIDs, links, memberships — behind the people
@@ -394,9 +385,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private final Runnable writeIdentitySnapshot;
 	/**
-	 * PrincipalState boundary access — the personal-principal registry that
-	 * {@code CreatePersonalPrincipal} writes and the {@code AUTH_BROKER_KIND_DEVICE}
-	 * mint reads. Required, never null, for the same reason as {@link #workloadMap}:
+	 * PrincipalState boundary access — the people registry whose device
+	 * credentials the {@code AUTH_BROKER_KIND_DEVICE} mint reads. Required, never null, for the same reason as {@link #workloadMap}:
 	 * a kernel that cannot read the registry would refuse every device login as an
 	 * unknown credential, which is indistinguishable from a real refusal.
 	 */
@@ -763,17 +753,19 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	}
 
 	/**
-	 * The {@code AUTH_BROKER_KIND_DEVICE} arm: possession of a personal
-	 * principal's device key, verified by kernel, mints that principal's own
-	 * {@code /people/<pid>} token and nothing else.
+	 * The {@code AUTH_BROKER_KIND_DEVICE} arm: possession of a device key
+	 * enrolled on a person ({@code Person.devices}), verified by kernel, mints
+	 * that PERSON's token — {@code sub = spiffe://<td>/users/<xid>}, namespace
+	 * {@code /tenants/people}, the people tenant every person belongs to — with
+	 * the device named by the {@code device} claim. A device is a credential of
+	 * the XID, not a principal of its own (tacplus#131 retired {@code /people}).
 	 *
 	 * <p>Everything identifying comes out of the proof, not out of the request.
 	 * {@code request.subject} is an IdP-path field and is deliberately ignored
-	 * here — a broker naming principal B while relaying a proof signed by
-	 * principal A's key mints for A, because A's kid resolves to A's row and the
-	 * signature is checked against the key stored ON that row. There is no field
-	 * an attacker can point at somebody else, which is the same property
-	 * {@code GetMyIdentity} gets by taking no arguments at all.
+	 * here — a broker naming person B while relaying a proof signed by person
+	 * A's device key mints for A, because the kid resolves to A's credential and
+	 * the signature is checked against the key stored ON it. There is no field
+	 * an attacker can point at somebody else.
 	 *
 	 * <p>The claims are synthesized, not relayed, for the same reason: the broker
 	 * attests nothing on this path, so letting it hand OPA a claim set would put
@@ -782,16 +774,21 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private Tokenrequest.TokenMintResponse mintDevicePersonalToken(
 			Tokenrequest.MintUserTokenRequest request, String callerSub) throws StatusException {
-		Kernel.PersonalPrincipal principal = verifyDeviceProof(request.getProofToken());
-		String principalId = principal.getPrincipalId();
-		String namespace = PEOPLE_PREFIX + principalId;
+		EnrolledDevice device = verifyDeviceProof(request.getProofToken());
+		String xid = device.person().getXid();
+		// The person's generation rides the token, as it rides a session
+		// credential, so signing out everywhere reaches a device token too.
 		Struct claims = Struct.newBuilder()
-				.putFields("principal_id", Value.newBuilder().setStringValue(principalId).build())
+				.putFields("principal_id", Value.newBuilder().setStringValue(xid).build())
+				.putFields(CLAIM_DEVICE, Value.newBuilder()
+						.setStringValue(device.credential().getCredentialId()).build())
+				.putFields(SessionCredential.CLAIM_GENERATION, Value.newBuilder()
+						.setStringValue(Long.toString(device.person().getGeneration())).build())
 				.build();
 		return mintUserTokenInternal(
-				Spiffe.userSpiffeId(trustDomainReader.get(), namespace, principalId),
+				SpiffeIds.userSubject(trustDomainReader.get(), xid),
 				claims, request.getExp(), request.getTraceId(), callerSub,
-				request.getOfflineAccess(), namespace);
+				request.getOfflineAccess(), PeopleTenant.NAMESPACE);
 	}
 
 	/**
@@ -1351,6 +1348,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					.setXid(person.getXid())
 					.addAllLinks(person.getLinksList())
 					.addAllMemberships(person.getMembershipsList())
+					.addAllDevices(person.getDevicesList())
 					.build();
 		} catch (StatusException e) {
 			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
@@ -1398,6 +1396,28 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			}
 			identityGraph.deleteAccount(person.getXid());
 			return Kernel.DeleteAccountResponse.getDefaultInstance();
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		}
+	}
+
+	/**
+	 * Removes a device from the caller's person: the credential is marked
+	 * revoked, so it mints no device token and approves nothing from now on. No
+	 * proof from the device is asked — it is most often removed because it is
+	 * lost — but the caller's own session credential is, as for every write here.
+	 */
+	@Override
+	public Kernel.RevokeDeviceCredentialResponse revokeDeviceCredential(Caller caller,
+			Kernel.RevokeDeviceCredentialRequest request) throws ProtoException {
+		try {
+			TokenWrapper credential = verifiedSessionCredential(request.getCredential());
+			requireCallerIs(caller, credential.getSubject());
+			Kernel.PersonalCredential revoked =
+					identityGraph.revokeDevice(livePersonOf(credential).getXid(), request.getCredentialId());
+			return Kernel.RevokeDeviceCredentialResponse.newBuilder()
+					.setRevokedAtMs(revoked.getRevokedAtMs())
+					.build();
 		} catch (StatusException e) {
 			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
 		}
@@ -1561,9 +1581,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				: Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_IDP);
 
 		// Every binding check runs before anything is resolved, because resolving a
-		// side can CREATE a row — a person on the people side, a personal principal
+		// side can CREATE a row — a person on the people side, a device credential
 		// on a device side. An unbound proof must write nothing at all.
 		bindSides(request.getA(), request.getB(), broker);
+		if (deviceLink) {
+			return enrolDevice(request.getA().hasDeviceAssertion() ? request.getA() : request.getB(),
+					request.getA().hasDeviceAssertion() ? request.getB() : request.getA());
+		}
 
 		LinkedUser a = resolveLinkSide(request.getA(), broker, request.getTraceId(), "a");
 		LinkedUser b = resolveLinkSide(request.getB(), broker, request.getTraceId(), "b");
@@ -1611,14 +1635,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private LinkedUser resolveLinkSide(Kernel.TenantUserLinkSide side, Kernel.Delegate broker,
 			String traceId, String which) throws StatusException {
-		if (side.hasDeviceAssertion()) {
-			// A device side names no login and reaches no OPA: its identity is the
-			// personal principal that holds the credential the assertion is signed
-			// by, which is exactly what the DEVICE mint arm resolves from a proof.
-			// bindSides has already verified the assertion, so by here the caller is
-			// known to hold the private half.
-			return resolveDeviceSide(side);
-		}
 		Struct claims = side.getClaims();
 		String issuer = claimString(claims, "origin_iss");
 		String providerSubject = claimString(claims, "origin_sub");
@@ -1733,21 +1749,22 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		}
 	}
 
-	/** The credential a device side presents: its id, and the key to check against. */
+	/**
+	 * The credential a device side presents: its id, the key to check against,
+	 * and the person it is already enrolled on (null on a first enrolment).
+	 */
 	private record DeviceCredential(String credentialId, JwkOuterClass.Jwk publicKey,
-			@Nullable Kernel.PersonalPrincipal principal) {
+			@Nullable Kernel.Person owner) {
 	}
 
 	/**
 	 * The credential id a device side names, and the key its assertion must
 	 * verify under.
 	 *
-	 * <p>The STORED key once the credential is registered, and the key out of the
-	 * request only on a first link. That is the same bootstrap split
-	 * {@code CreatePersonalPrincipal} already makes — the request's copy is
-	 * consulted exactly once, when there is no row to consult instead, and never
-	 * again. Without it a broker could re-present an existing credential id under
-	 * a key of its own choosing.
+	 * <p>The STORED key once the credential is enrolled, and the key out of the
+	 * request only on a first enrolment, when there is no stored key to consult
+	 * instead. Without that split a broker could re-present an existing
+	 * credential id under a key of its own choosing.
 	 */
 	private DeviceCredential deviceCredential(Kernel.TenantUserLinkSide side)
 			throws StatusException {
@@ -1756,16 +1773,14 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			throw new StatusException(Status.INVALID_ARGUMENT,
 					"device assertion names no credential");
 		}
-		Kernel.PersonalPrincipal principal = findPrincipalByCredentialId(credentialId);
-		if (principal != null) {
-			for (Kernel.PersonalCredential credential : principal.getCredentialsList()) {
-				if (credentialId.equals(credential.getCredentialId())) {
-					if (credential.getRevokedAtMs() != 0) {
-						throw new StatusException(Status.PERMISSION_DENIED,
-								"device assertion refused: the credential is revoked");
-					}
-					return new DeviceCredential(credentialId, credential.getPublicKey(), principal);
+		Kernel.Person owner = identityGraph.deviceOwner(credentialId);
+		for (Kernel.PersonalCredential credential : owner.getDevicesList()) {
+			if (credentialId.equals(credential.getCredentialId())) {
+				if (credential.getRevokedAtMs() != 0) {
+					throw new StatusException(Status.PERMISSION_DENIED,
+							"device assertion refused: the credential is revoked");
 				}
+				return new DeviceCredential(credentialId, credential.getPublicKey(), owner);
 			}
 		}
 		if (!side.hasDevicePublicKey()) {
@@ -1776,96 +1791,58 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	}
 
 	/**
-	 * The personal principal a device side is, registering the credential on a
-	 * first link.
+	 * Device enrolment (kernel#18): the device side's credential goes onto the
+	 * XID the login side resolves to. Called once {@link #bindSides} has verified
+	 * both bindings, so the caller holds the device's private half AND that
+	 * person's login, obtained together.
 	 *
-	 * <p>Registration is folded into the link rather than given an RPC of its own,
-	 * and that is a decision, not a shortcut: a passkey nobody has linked
-	 * authorizes nothing and belongs to nobody, so a standalone registration
-	 * would be an unauthenticated write with no owner to attribute it to. Here
-	 * the row is written only once both halves of §3's proof hold.
-	 *
-	 * <p>The namespace is {@code /people/<pid>} — the shape
-	 * {@link #mintDevicePersonalToken} already mints — so the device logs in the
-	 * way every other registered device does, and what the link adds is the
-	 * {@code linked: /tenants/people} claim on that token.
+	 * <p>A device is a credential of the person, not an identity of its own: no
+	 * link edge is written, and its token is the person's (see
+	 * {@link #mintDevicePersonalToken}). Enrolling a device the person already
+	 * holds changes nothing. A device already enrolled on ANOTHER person is
+	 * refused before anything is written — the login's person included — since
+	 * moving a key between people is a merge, not an enrolment.
 	 */
-	private LinkedUser resolveDeviceSide(Kernel.TenantUserLinkSide side) throws StatusException {
-		String principalId;
-		synchronized (personalPrincipalRegistryLock) {
-			DeviceCredential credential = deviceCredential(side);
-			if (credential.principal() != null) {
-				if (credential.principal().getDisabledAtMs() != 0) {
-					throw new StatusException(Status.PERMISSION_DENIED,
-							"device assertion refused: the principal is disabled");
-				}
-				principalId = credential.principal().getPrincipalId();
-			} else {
-				principalId = registerWebauthnPrincipal(credential, side);
-			}
+	private Kernel.CreateTenantUserLinkResponse enrolDevice(Kernel.TenantUserLinkSide device,
+			Kernel.TenantUserLinkSide login) throws StatusException {
+		Struct claims = login.getClaims();
+		String issuer = claimString(claims, "origin_iss");
+		Kernel.PeopleIdpProvider provider = PeopleTenant.providerForIssuer(issuer);
+		String providerSubject = PeopleTenant.providerSubject(provider, issuer, key -> claimString(claims, key));
+		if (providerSubject == null) {
+			throw new StatusException(Status.UNAUTHENTICATED,
+					"the login side of a device link carries no verified subject claims for its provider");
 		}
-		String namespace = PEOPLE_PREFIX + principalId;
-		return new LinkedUser(namespace,
-				Spiffe.userSpiffeId(trustDomainReader.get(), namespace, principalId));
-	}
+		String idpId = PeopleTenant.idpId(provider);
+		DeviceCredential credential = deviceCredential(device);
+		if (credential.owner() != null
+				&& !credential.owner().getXid().equals(identityGraph.xidForLink(idpId, providerSubject))) {
+			throw new StatusException(Status.PERMISSION_DENIED, "that device belongs to another account");
+		}
 
-	/** Call under {@link #personalPrincipalRegistryLock}. */
-	private String registerWebauthnPrincipal(DeviceCredential credential,
-			Kernel.TenantUserLinkSide side) throws StatusException {
-		Kernel.PrincipalState registry;
-		try {
-			registry = principalMap.proto();
-		} catch (ProtoException e) {
-			throw new StatusException(Status.INTERNAL, "principal registry unavailable");
-		}
-		if (registry.getPersonalPrincipalsCount() >= MAX_PERSONAL_PRINCIPALS) {
-			throw new StatusException(Status.RESOURCE_EXHAUSTED,
-					"personal principal registry is full");
-		}
-		String principalId = UUID.randomUUID().toString();
+		Kernel.Person person = resolveOrCreatePerson(idpId, providerSubject);
 		long nowMs = System.currentTimeMillis();
-		try {
-			principalMap.putPersonalPrincipals(principalId, Kernel.PersonalPrincipal.newBuilder()
-					.setPrincipalId(principalId)
-					.addCredentials(Kernel.PersonalCredential.newBuilder()
-							.setCredentialId(credential.credentialId())
-							.setPublicKey(credential.publicKey())
-							.setLabel(side.getDeviceLabel())
-							.setPlatformSynced(side.getDevicePlatformSynced())
-							.setCreatedAtMs(nowMs))
-					.setCreatedAtMs(nowMs)
-					.build());
-		} catch (ProtoException e) {
-			throw new StatusException(Status.INTERNAL,
-					"device credential could not be registered: " + e.getMessage());
-		}
-		logger.info("Registered WebAuthn device principal: principal_id={} platform_synced={}",
-				principalId, side.getDevicePlatformSynced());
-		return principalId;
-	}
-
-	/**
-	 * The personal principal holding a credential id, or null. One key, one
-	 * person: {@code registerPersonalPrincipal} refuses a duplicate id precisely
-	 * so this never has to choose between two rows.
-	 */
-	@Nullable
-	private Kernel.PersonalPrincipal findPrincipalByCredentialId(String credentialId)
-			throws StatusException {
-		Kernel.PrincipalState registry;
-		try {
-			registry = principalMap.proto();
-		} catch (ProtoException e) {
-			throw new StatusException(Status.INTERNAL, "principal registry unavailable");
-		}
-		for (Kernel.PersonalPrincipal principal : registry.getPersonalPrincipalsList()) {
-			for (Kernel.PersonalCredential credential : principal.getCredentialsList()) {
-				if (credentialId.equals(credential.getCredentialId())) {
-					return principal;
-				}
+		Kernel.Person enrolled = identityGraph.addDevice(person.getXid(), Kernel.PersonalCredential.newBuilder()
+				.setCredentialId(credential.credentialId())
+				.setPublicKey(credential.publicKey())
+				.setLabel(device.getDeviceLabel())
+				.setPlatformSynced(device.getDevicePlatformSynced())
+				.setCreatedAtMs(nowMs)
+				.build());
+		long enrolledAt = nowMs;
+		for (Kernel.PersonalCredential held : enrolled.getDevicesList()) {
+			if (held.getCredentialId().equals(credential.credentialId())) {
+				enrolledAt = held.getCreatedAtMs();
 			}
 		}
-		return null;
+		String personKey = linkKey(PeopleTenant.NAMESPACE,
+				SpiffeIds.userSubject(trustDomainReader.get(), person.getXid()));
+		logger.info("Device enrolled: xid={} platform_synced={}", person.getXid(), device.getDevicePlatformSynced());
+		return Kernel.CreateTenantUserLinkResponse.newBuilder()
+				.setAUserKey(personKey)
+				.setBUserKey(personKey)
+				.setCreatedAtMs(enrolledAt)
+				.build();
 	}
 
 	/**
@@ -1979,43 +1956,22 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	// ========================================================================
 
 	/**
-	 * The person a caller is, or is linked to — the key
-	 * {@code PendingApproval.person_user_key} holds, and the key the approving
-	 * device's own link edges are compared against.
+	 * The person a caller is — the key {@code PendingApproval.person_user_key}
+	 * holds: {@code "/tenants/people|<sub>"} for a caller whose {@code sub} is a
+	 * person, {@code spiffe://<td>/users/<xid>}, in whichever tenant the token is
+	 * for (a person's subject is the same XID in every tenant). Null for any other
+	 * caller: a tenant user who is not an XID has no devices to approve with.
 	 *
-	 * <p>A caller already standing in the people tenant IS the person. Anybody
-	 * else — a tenant user, or a {@code /people/<pid>} device — is the person at
-	 * the far end of their live link into {@code /tenants/people}, which is the
-	 * only thing in the platform that says two identities are one human.
-	 *
-	 * <p>Returns null when there is not EXACTLY ONE such person: none, because an
-	 * unlinked user has no device to approve with anyway, and more than one,
-	 * because "which human approved this" cannot be answered by picking. Both are
-	 * one refusal at each call site, deliberately: a caller cannot tell from the
-	 * answer whether somebody else's link exists.
+	 * <p>No link registry is read. Which person a device belongs to is the
+	 * person's own record ({@code Person.devices}), so the approving device is
+	 * checked against the XID directly (kernel#18).
 	 */
 	@Nullable
-	static String personUserKey(PrincipalMap principalMap, String namespace, String subject) {
-		if (namespace == null || namespace.isEmpty() || subject == null || subject.isEmpty()) {
+	static String personUserKey(String subject) {
+		if (SpiffeIds.xidOf(subject) == null) {
 			return null;
 		}
-		if (PeopleTenant.NAMESPACE.equals(namespace)) {
-			return linkKey(namespace, subject);
-		}
-		String person = null;
-		for (Kernel.TenantUserLink link
-				: principalMap.getTenantUserLinks(linkKey(namespace, subject)).getLinksList()) {
-			if (link.getRevokedAtMs() != 0
-					|| !PeopleTenant.NAMESPACE.equals(link.getPeerNamespace())) {
-				continue;
-			}
-			String candidate = linkKey(link.getPeerNamespace(), link.getPeerSubject());
-			if (person != null && !person.equals(candidate)) {
-				return null;
-			}
-			person = candidate;
-		}
-		return person;
+		return linkKey(PeopleTenant.NAMESPACE, subject);
 	}
 
 	/**
@@ -2082,8 +2038,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			// approval was created for. Without it a service could spend an
 			// approval one of its users proposed on a call it is serving for
 			// another.
-			String callerPerson = personUserKey(principalMap,
-					request.getCallerNamespace(), request.getCallerSubject());
+			String callerPerson = personUserKey(request.getCallerSubject());
 			if (callerPerson == null || !callerPerson.equals(approval.getPersonUserKey())) {
 				throw new StatusException(Status.PERMISSION_DENIED,
 						"that approval belongs to a different person");
@@ -2099,35 +2054,35 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 						"approval could not be consumed: " + e.getMessage());
 			}
 			logger.info("Device approval accepted: rpc={} person={} device={}",
-					approval.getRpcMethod(), approval.getPersonUserKey(), approver.namespace());
+					approval.getRpcMethod(), approval.getPersonUserKey(), approver.credentialId());
 			return Kernel.BrokerPendingApprovalResponse.newBuilder()
 					.setConsumedAtMs(nowMs)
 					.setPersonUserKey(approval.getPersonUserKey())
-					.setDeviceNamespace(approver.namespace())
+					.setDeviceCredentialId(approver.credentialId())
 					.build();
 		}
 	}
 
-	/** The device an approval was signed by: its identity, once it has stood up. */
-	private record DeviceApprover(String namespace, String subject) {
+	/** The device an approval was signed by: its credential, once it has stood up. */
+	private record DeviceApprover(String credentialId) {
 	}
 
 	/**
-	 * Verifies the tap: this assertion, under a credential kernel stores, by a
-	 * device linked to the person the approval names.
+	 * Verifies the tap: this assertion, under a credential kernel stores, of the
+	 * XID the approval names.
 	 *
-	 * <p><b>The stored key, and only the stored key.</b> A first device→person
-	 * link has a bootstrap moment where the request's copy of the key is the only
-	 * thing there is to check against ({@code deviceCredential}); an approval has
-	 * no such moment, because an approving device is by definition already
-	 * registered and linked. A key out of this request would let its sender choose
-	 * what the signature is verified with, so none is accepted — the proto carries
-	 * no field for one.
+	 * <p><b>The stored key, and only the stored key.</b> A first enrolment has a
+	 * bootstrap moment where the request's copy of the key is the only thing
+	 * there is to check against ({@code deviceCredential}); an approval has no
+	 * such moment, because an approving device is by definition already
+	 * enrolled. A key out of this request would let its sender choose what the
+	 * signature is verified with, so none is accepted — the proto carries no
+	 * field for one.
 	 *
-	 * <p><b>The device-link check</b> is the last step and the one §5 is about:
-	 * "signed by a key linked to the caller's person. Nothing else counts." A
-	 * registered device that is not linked to this person — or was unlinked — gets
-	 * as far as a valid signature and no further.
+	 * <p><b>The ownership check</b> is the last step and the one §5 is about:
+	 * "signed by a key of the caller's person. Nothing else counts." A device
+	 * enrolled on somebody else — or revoked — gets as far as a valid signature
+	 * and no further.
 	 */
 	private DeviceApprover verifyApprovingDevice(Kernel.BrokerPendingApprovalRequest request,
 			Kernel.PendingApproval approval) throws StatusException {
@@ -2136,21 +2091,18 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			throw new StatusException(Status.INVALID_ARGUMENT,
 					"device assertion names no credential");
 		}
-		Kernel.PersonalPrincipal principal = findPrincipalByCredentialId(credentialId);
+		Kernel.Person owner = identityGraph.deviceOwner(credentialId);
 		Kernel.PersonalCredential credential = null;
-		if (principal != null) {
-			for (Kernel.PersonalCredential candidate : principal.getCredentialsList()) {
-				if (credentialId.equals(candidate.getCredentialId())) {
-					credential = candidate;
-					break;
-				}
+		for (Kernel.PersonalCredential candidate : owner.getDevicesList()) {
+			if (credentialId.equals(candidate.getCredentialId())) {
+				credential = candidate;
+				break;
 			}
 		}
 		// One refusal for every way the credential does not stand — unknown,
-		// revoked, disabled principal — so this is not an oracle for which
+		// revoked, a person no longer live — so this is not an oracle for which
 		// credentials exist, the same rule verifyDeviceProof states.
-		if (principal == null || credential == null
-				|| credential.getRevokedAtMs() != 0 || principal.getDisabledAtMs() != 0) {
+		if (credential == null || credential.getRevokedAtMs() != 0 || !isLive(owner)) {
 			throw new StatusException(Status.PERMISSION_DENIED, "device approval refused");
 		}
 		try {
@@ -2163,39 +2115,72 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					"device approval refused: " + e.getMessage());
 		}
 
-		String namespace = PEOPLE_PREFIX + principal.getPrincipalId();
-		String subject = Spiffe.userSpiffeId(trustDomainReader.get(), namespace,
-				principal.getPrincipalId());
-		for (Kernel.TenantUserLink link
-				: principalMap.getTenantUserLinks(linkKey(namespace, subject)).getLinksList()) {
-			if (link.getRevokedAtMs() == 0 && approval.getPersonUserKey()
-					.equals(linkKey(link.getPeerNamespace(), link.getPeerSubject()))) {
-				return new DeviceApprover(namespace, subject);
+		if (!approval.getPersonUserKey().equals(
+				personUserKey(SpiffeIds.userSubject(trustDomainReader.get(), owner.getXid())))) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"that device is not one of the devices of the person the approval names");
+		}
+		return new DeviceApprover(credentialId);
+	}
+
+	/**
+	 * A device token ({@code device} claim set) is exchangeable only while the
+	 * credential it names is still enrolled, unrevoked, on the live person its
+	 * {@code sub} names, at the generation it was minted under — so removing the
+	 * device, deleting the account and signing out everywhere all reach a device
+	 * token already out, at its next exchange. Any other token passes untouched.
+	 */
+	private void assertDeviceStillEnrolled(TokenWrapper token) throws StatusException {
+		String credentialId = token.getCustomField(CLAIM_DEVICE);
+		if (credentialId == null) {
+			return;
+		}
+		Kernel.Person person = identityGraph.deviceOwner(credentialId);
+		boolean enrolled = isLive(person)
+				&& person.getXid().equals(SpiffeIds.xidOf(token.getSubject()))
+				&& Long.toString(person.getGeneration())
+						.equals(token.getCustomField(SessionCredential.CLAIM_GENERATION));
+		for (Kernel.PersonalCredential device : person.getDevicesList()) {
+			if (credentialId.equals(device.getCredentialId()) && device.getRevokedAtMs() != 0) {
+				enrolled = false;
 			}
 		}
-		throw new StatusException(Status.PERMISSION_DENIED,
-				"that device is not linked to the person the approval names");
+		if (!enrolled) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"this device is no longer signed in to this account");
+		}
+	}
+
+	/** A person who may still authenticate: present, not disabled, deleted or merged away. */
+	private static boolean isLive(Kernel.Person person) {
+		return !person.getXid().isEmpty() && person.getDisabledAtMs() == 0 && person.getDeletedAtMs() == 0
+				&& person.getMergedIntoXid().isEmpty();
+	}
+
+	/** A device credential that has just proved possession, and the person it is enrolled on. */
+	private record EnrolledDevice(Kernel.Person person, Kernel.PersonalCredential credential) {
 	}
 
 	/**
 	 * The four steps {@code MintClientToken} already runs for a cred_pair, against
-	 * {@code PersonalPrincipal.credentials} instead of
+	 * the people's device credentials ({@code Person.devices}) instead of
 	 * {@code KernelTenantConfig.cred_pairs}: parse the proof, read its {@code kid},
 	 * find the credential the kid names, verify the signature against that
 	 * credential's stored public key.
 	 *
 	 * <p>The {@code kid} is the only pre-verification handle there is, and it is
 	 * the right one: a second device holding the same platform-synced key knows
-	 * the key and nothing else — not the principal id — and §5.4 requires it to
-	 * present the same principal with no sign-in.
+	 * the key and nothing else — not the XID — and §5.4 requires it to present
+	 * the same person with no sign-in.
 	 *
 	 * <p>Every failure — malformed proof, missing or unknown kid, revoked
-	 * credential, disabled principal, bad signature — is one PERMISSION_DENIED
-	 * with one message. Distinguishing them would turn this into an oracle for
-	 * which credentials exist, and the mint path does not enumerate anywhere else
-	 * either (see {@code doMintDelegatedToken}'s missing-grant refusal).
+	 * credential, a person no longer live, bad signature — is one
+	 * PERMISSION_DENIED with one message. Distinguishing them would turn this
+	 * into an oracle for which credentials exist, and the mint path does not
+	 * enumerate anywhere else either (see {@code doMintDelegatedToken}'s
+	 * missing-grant refusal).
 	 */
-	private Kernel.PersonalPrincipal verifyDeviceProof(String proofToken) throws StatusException {
+	private EnrolledDevice verifyDeviceProof(String proofToken) throws StatusException {
 		TokenWrapper proof;
 		try {
 			proof = TokenWrapper.parse(proofToken);
@@ -2206,35 +2191,28 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		if (credentialId == null || credentialId.isEmpty()) {
 			throw deviceProofRefused();
 		}
-		Kernel.PrincipalState registry;
-		try {
-			registry = principalMap.proto();
-		} catch (ProtoException e) {
-			throw new StatusException(Status.INTERNAL, "principal registry unavailable");
+		Kernel.Person person = identityGraph.deviceOwner(credentialId);
+		if (!isLive(person)) {
+			throw deviceProofRefused();
 		}
-		for (Kernel.PersonalPrincipal principal : registry.getPersonalPrincipalsList()) {
-			if (principal.getDisabledAtMs() != 0) {
+		for (Kernel.PersonalCredential credential : person.getDevicesList()) {
+			if (!credentialId.equals(credential.getCredentialId())
+					|| credential.getRevokedAtMs() != 0) {
 				continue;
 			}
-			for (Kernel.PersonalCredential credential : principal.getCredentialsList()) {
-				if (!credentialId.equals(credential.getCredentialId())
-						|| credential.getRevokedAtMs() != 0) {
-					continue;
-				}
-				try {
-					proof.verify(ImmutableJwk.from(credential.getPublicKey()));
-				} catch (Exception e) {
-					throw deviceProofRefused();
-				}
-				// Same anti-replay binding MintClientToken applies to a cred_pair
-				// proof. Folded into the single refusal for the same reason every
-				// other failure here is: distinguishing them turns this into an
-				// oracle for which credentials exist.
-				if (proofReplayRefusal(proof, Instant.now().getEpochSecond()) != null) {
-					throw deviceProofRefused();
-				}
-				return principal;
+			try {
+				proof.verify(ImmutableJwk.from(credential.getPublicKey()));
+			} catch (Exception e) {
+				throw deviceProofRefused();
 			}
+			// Same anti-replay binding MintClientToken applies to a cred_pair
+			// proof. Folded into the single refusal for the same reason every
+			// other failure here is: distinguishing them turns this into an
+			// oracle for which credentials exist.
+			if (proofReplayRefusal(proof, Instant.now().getEpochSecond()) != null) {
+				throw deviceProofRefused();
+			}
+			return new EnrolledDevice(person, credential);
 		}
 		throw deviceProofRefused();
 	}
@@ -2387,8 +2365,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// they belong to. A policy that cannot name one refuses the mint.
 		//
 		// A stampedNamespace short-circuits that entirely, and must: it is set only
-		// where kernel authorized the identity itself (the device arm's
-		// /people/<pid>), and there OPA sees no IdP claims at all, so asking it for
+		// where kernel authorized the identity itself (the device arm's person, in
+		// /tenants/people), and there OPA sees no IdP claims at all, so asking it for
 		// a namespace would be asking it to guess. OPA still supplies the
 		// entitlements below — it remains the sole entitlement authority — it just
 		// does not get to name the subtree kernel already resolved.
@@ -3448,6 +3426,10 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// Grant is only exchangeable while that Grant is still live.
 		assertGrantStillActive(inputToken);
 
+		// And for devices: a device token buys more only while its device is
+		// still enrolled on the live person it names.
+		assertDeviceStillEnrolled(inputToken);
+
 		// Session-credential arm (identity decision record 2026-10-25). Selected by
 		// claim SHAPE — the xid_gen and proofs claims — never by token_use, so a
 		// legacy refresh token can never be read as a proof set, and a credential
@@ -3457,33 +3439,14 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			return mintFromSessionCredential(request, inputToken);
 		}
 
-		// Personal-principal arm. Placed here — after verification, before the
-		// bootstrap/offline/access routing below — because a personal token can
-		// arrive as an RT, an OT or an AT and the tenant exchange is the same
-		// mint for all three; and because tenant_namespace has to be refused on
-		// a service token whatever its token_use is.
-		if (isPersonalPrincipalToken(inputToken)) {
-			if (!request.getTenantNamespace().isEmpty()) {
-				return mintTenantTokenForPersonalPrincipal(request, inputToken);
-			}
-			// No tenant named. A personal token may still be refreshed into a
-			// personal AT (design-session §2.2 step 1's parenthetical) — that
-			// keeps /people/<pid> and falls through to the normal exchange below.
-			// It may NOT reach a service without naming the tenant it is acting
-			// in: a service token stamped /people/<pid> would arrive at a tenant
-			// service as an identity that is at-or-below no tenant at all.
-			if (!request.getAud().isEmpty() || !request.getServiceAudsList().isEmpty()) {
-				throw new StatusException(Status.INVALID_ARGUMENT,
-						"tenant_namespace is required to mint a service token from a personal-principal token");
-			}
-		} else if (!request.getTenantNamespace().isEmpty()) {
+		if (!request.getTenantNamespace().isEmpty()) {
 			// DECISIONS.md item 2: a service's tenant comes from its SPIFFE
 			// subject and from nothing else. tenant_namespace is a selector among
-			// a PERSON'S memberships; honouring it here — or even ignoring it
-			// silently — would be the tenant escape the whole field is designed
-			// not to be.
+			// a PERSON'S proofs, read by the session-credential arm above;
+			// honouring it here — or even ignoring it silently — would be the
+			// tenant escape the whole field is designed not to be.
 			throw new StatusException(Status.INVALID_ARGUMENT,
-					"tenant_namespace is only meaningful on a personal-principal token; "
+					"tenant_namespace is only meaningful on a session credential; "
 							+ "a service's tenant comes from its SPIFFE subject");
 		}
 
@@ -3747,207 +3710,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		return Tokenrequest.TokenMintResponse.newBuilder()
 				.setAccessToken(newToken.getProto())
 				.build();
-	}
-
-	/**
-	 * Whether a verified kernel-signed token is a personal principal's own token:
-	 * {@code sub_type=user} AND a namespace under {@code /people/}. Both halves
-	 * are required — {@code sub_type} alone is every IdP user, and the namespace
-	 * alone would let a claim shape decide the arm.
-	 *
-	 * <p>The namespace claim is the right source here, not the subject: it is
-	 * stamped by kernel on a mint kernel itself authorized (the device arm), and
-	 * it is also what changes on the tenant token this arm produces — a
-	 * {@code /tenants/<t>} token minted below keeps the person's {@code sub} and
-	 * so would still look "personal" if this read the subject, which would let a
-	 * tenant token be re-exchanged into a different tenant.
-	 */
-	private static boolean isPersonalPrincipalToken(TokenWrapper token) {
-		return SUB_TYPE_USER.equals(token.getSubType())
-				&& token.getNamespace().startsWith(PEOPLE_PREFIX);
-	}
-
-	/**
-	 * The personal-principal arm of {@code MintToken} (design-session §2.2): one
-	 * person, N per-tenant tokens. The presented personal token names a tenant;
-	 * kernel authorizes that against the person's own {@code TenantMembership}
-	 * records and mints an access token — plus one service token per requested
-	 * audience — stamped with the tenant's namespace.
-	 *
-	 * <p>No refresh or offline token comes back. The personal RT/OT the device
-	 * holds stays the only long-lived credential; a tenant token is re-minted
-	 * from it, so a revoked membership stops working at the next exchange rather
-	 * than at a tenant refresh token's natural expiry.
-	 */
-	private Tokenrequest.TokenMintResponse mintTenantTokenForPersonalPrincipal(
-			Tokenrequest.TokenMintRequest request, TokenWrapper inputToken) throws StatusException {
-
-		// Step 1: a tenant must be named, and it may not be the authorization-tree
-		// root. "/" is at-or-below every namespace in the fleet (Spiffe.isAtOrBelow),
-		// so a personal token exchanged for one would satisfy every tenant-targeted
-		// level-or-below check there is.
-		String tenantNamespace = request.getTenantNamespace();
-		if (SpiffeIds.namespaceRoot().equals(tenantNamespace)) {
-			throw new StatusException(Status.INVALID_ARGUMENT,
-					"tenant_namespace must name a tenant, not the authorization-tree root");
-		}
-		// service_auds is the batch mechanism this exchange uses (§2.1); a single
-		// aud has no meaning here and dropping it silently would hand back an
-		// access token where the caller asked for a service token. Same refusal
-		// the offline-token arm gives for the same reason.
-		if (!request.getAud().isEmpty()) {
-			throw new StatusException(Status.INVALID_ARGUMENT,
-					"a personal-principal tenant exchange requests services via service_auds, not aud");
-		}
-
-		// Step 2: the principal comes out of the presented token's sub, never out
-		// of a request field — the same construction PersonalIdentity.GetMyIdentity
-		// gets by taking no arguments at all.
-		String principalId = personalPrincipalIdFromSubject(inputToken.getSubject());
-		Kernel.PersonalPrincipal principal = principalMap.getPersonalPrincipals(principalId);
-
-		// Step 3: a live membership of the named tenant, or nothing. Every miss —
-		// no such row, the row under the key is not this principal, the person is
-		// disabled, no membership of this tenant, revoked, expired — collapses to
-		// ONE PERMISSION_DENIED with ONE message, the same non-enumerating shape
-		// doMintDelegatedToken's missing-grant refusal uses. Distinguishing them
-		// would turn the mint into an oracle for which tenants a person belongs to.
-		Kernel.TenantMembership membership = null;
-		if (principal.getPrincipalId().equals(principalId) && principal.getDisabledAtMs() == 0) {
-			long nowMs = System.currentTimeMillis();
-			for (Kernel.TenantMembership candidate : principal.getMembershipsList()) {
-				if (tenantNamespace.equals(candidate.getTenantNamespace())
-						&& candidate.getRevokedAtMs() == 0
-						&& (candidate.getExpiresAtMs() == 0 || candidate.getExpiresAtMs() > nowMs)) {
-					membership = candidate;
-					break;
-				}
-			}
-		}
-		if (membership == null) {
-			throw new StatusException(Status.PERMISSION_DENIED,
-					"no usable membership of " + tenantNamespace + " for this principal");
-		}
-
-		// Step 4: narrow by designation. The tenant's customer-facing service list
-		// comes from per-tenant login configuration (§6 item 4), which does not
-		// exist yet — so for a customer membership the list is EMPTY and the
-		// intersection is empty. Design-session §4 states the interim behaviour
-		// rather than leaving it to chance: a customer membership with no
-		// configured customer service mints NO service tokens (an empty
-		// service_tokens list, not an error). Fail closed, and visibly inert
-		// rather than silently permissive — the access token is still issued, so
-		// the person is inside the tenant; they just cannot reach a service until
-		// item 4 lands.
-		boolean customerNarrowed = membership.getCustomer();
-
-		// Step 5: entitlements come from OPA, through the same pair every other
-		// mint uses. The claims are SYNTHESIZED from the membership, not relayed
-		// from the request — the caller is a person's runtime, and letting it hand
-		// OPA a claim set would put its own entitlements under its own control.
-		Struct claims = Struct.newBuilder()
-				.putFields("principal_id", Value.newBuilder().setStringValue(principalId).build())
-				.putFields("tenant_namespace", Value.newBuilder().setStringValue(tenantNamespace).build())
-				.putFields("proof_kind", Value.newBuilder().setStringValue(membership.getProofKind().name()).build())
-				.putFields("customer", Value.newBuilder().setBoolValue(membership.getCustomer()).build())
-				.build();
-		Userentitlements.EntitlementEvalResult opaResult =
-				resolveEntitlementsViaOpa(claims, request.getTraceId());
-		Entitlements.TokenEntitlements expanded = expandEntitlements(opaResult);
-
-		long now = Instant.now().getEpochSecond();
-		long maxExp = now + maxTokenLifetimeSeconds;
-		long exp;
-		if (request.getExp() == 0) {
-			exp = now + accessTokenLifetimeSeconds;
-		} else {
-			exp = request.getExp();
-			if (exp <= now) {
-				throw new StatusException(Status.INVALID_ARGUMENT,
-						"exp must be a future Unix timestamp, got " + exp + " (now is " + now + ")");
-			}
-			if (exp > maxExp) {
-				throw new StatusException(Status.INVALID_ARGUMENT,
-						"requested exp " + exp + " exceeds max token lifetime ceiling " + maxExp);
-			}
-		}
-		// The tenant token never outlives the personal token presented for it.
-		exp = Math.min(exp, inputToken.getExpiration());
-
-		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
-		if (signingKey == null) {
-			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
-		}
-
-		// Step 7: sub and azp are preserved from the presented token — the tenant
-		// sees WHICH PERSON is acting, and (spec.store_principal) rows written in
-		// the tenant attribute to that person.
-		TokenWrapper newToken = TokenWrapper.create()
-				.setIssuer(tokenIssuer)
-				.setSubject(inputToken.getSubject())
-				.setAudience(Kernel.getDescriptor().getPackage())
-				.setIssuedAt(now)
-				.setExpiration(exp)
-				.setJTI(UUID.randomUUID().toString());
-		newToken.setAzp(inputToken.getAzp());
-		newToken.setSubType(SUB_TYPE_USER);
-		newToken.setTokenUse(TOKEN_USE_ACCESS);
-		// Step 6: kernel stamps the namespace from the authorization it just
-		// performed. OPA is deliberately NOT consulted for it — OPA sees no IdP
-		// claims on this path at all, so it could only ever refuse
-		// (design-session §0.2).
-		newToken.setNamespace(membership.getTenantNamespace());
-		newToken.setClaimsFromStruct(claims, STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
-		setFlatServiceEntitlements(newToken, expanded);
-		newToken.sign(signingKey);
-
-		logger.info("MintToken (personal principal): principal={}, tenant={}, exp={}",
-				principalId, tenantNamespace, exp);
-
-		Tokenrequest.TokenMintResponse.Builder resp = Tokenrequest.TokenMintResponse.newBuilder()
-				.setAccessToken(newToken.getProto());
-		// service_auds is the existing batch mechanism, used unchanged: each
-		// service token is minted through the normal access->service exchange from
-		// the tenant AT just issued, so the chain stays personal -> tenant AT -> ST
-		// and the ST inherits the tenant namespace rather than being stamped again.
-		if (!customerNarrowed && !request.getServiceAudsList().isEmpty()) {
-			TokenWrapper accessWrapper = TokenWrapper.from(newToken.getProto());
-			for (String svcAud : request.getServiceAudsList()) {
-				if (svcAud.isEmpty()) {
-					throw new StatusException(Status.INVALID_ARGUMENT,
-							"service_auds entries must be non-empty");
-				}
-				Tokenrequest.TokenMintRequest svcReq = Tokenrequest.TokenMintRequest.newBuilder()
-						.setAud(svcAud)
-						.setExp(request.getExp())
-						.build();
-				resp.addServiceTokens(exchangeKernelToken(svcReq, accessWrapper).getAccessToken());
-			}
-		}
-		return resp.build();
-	}
-
-	/**
-	 * The personal principal id inside a person's SPIFFE subject
-	 * ({@code spiffe://<td>/people/<pid>/users/<pid>}). Mirrors
-	 * {@code PersonalIdentityServiceImpl.callerPrincipalId} — same grammar, same
-	 * refusal — because both answer the same question from the same field.
-	 */
-	private static String personalPrincipalIdFromSubject(String subject) throws StatusException {
-		String namespace;
-		try {
-			namespace = SpiffeIds.namespaceFromSpiffe(subject);
-		} catch (IllegalArgumentException e) {
-			throw new StatusException(Status.PERMISSION_DENIED, "caller is not a personal principal");
-		}
-		if (!namespace.startsWith(PEOPLE_PREFIX)) {
-			throw new StatusException(Status.PERMISSION_DENIED, "caller is not a personal principal");
-		}
-		String principalId = namespace.substring(PEOPLE_PREFIX.length());
-		if (principalId.isEmpty() || principalId.contains("/")) {
-			throw new StatusException(Status.PERMISSION_DENIED, "caller is not a personal principal");
-		}
-		return principalId;
 	}
 
 	/**
@@ -5636,149 +5398,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		TokenOuterClass.Token proto = token.getProto();
 		return Tokenrequest.TokenMintResponse.newBuilder()
 				.setAccessToken(proto)
-				.build();
-	}
-
-	// ========================================================================
-	// CreatePersonalPrincipal RPC (device-first registration; no session yet)
-	// ========================================================================
-
-	/**
-	 * First-launch registration. The request is self-attesting: it carries a JWT
-	 * signed by the key being registered and the public half of that same key, and
-	 * kernel verifies the one against the other. That is the whole of the
-	 * authentication, and it is deliberate — anyone may create a personal
-	 * principal (device-first, no signup), so the only thing worth proving is that
-	 * the caller actually holds the private half of the key it is asking kernel to
-	 * trust from here on.
-	 *
-	 * <p>This is the bootstrap case {@code MintClientToken} does not have: there is
-	 * no stored credential to look the key up by, so the key comes out of the
-	 * request. Once the row exists, every later proof is checked against the STORED
-	 * key ({@link #verifyDeviceProof}) and the request's copy is never consulted
-	 * again.
-	 *
-	 * <p>No token is issued. The device's next call is MintUserToken with
-	 * AUTH_BROKER_KIND_DEVICE, which is where {@code Delegate.auth_broker_kinds}
-	 * gates who may broker a human login; minting here would route around that gate.
-	 *
-	 * <p>The body proof is not the whole story any more. Registration is no longer
-	 * reachable from outside the cluster — the RPC dropped
-	 * {@code RPC_FLAG_SELF_AUTHENTICATES}, so tacplus emits no NoAuth gateway proxy
-	 * route for it — and the CALLER must additionally be an authenticated delegate
-	 * carrying {@code AUTH_BROKER_KIND_DEVICE}, i.e. a device broker. Two
-	 * independent facts are required and neither replaces the other: the broker is
-	 * a device broker, and whoever is registering holds the private half. Without
-	 * the caller check a client could skip the broker and register against kernel
-	 * directly, and azp provenance and rate limiting would land on a path nobody
-	 * has to use.
-	 */
-	@Override
-	public Kernel.CreatePersonalPrincipalResponse createPersonalPrincipal(Caller caller,
-			Kernel.CreatePersonalPrincipalRequest request) throws ProtoException {
-		// Authenticate the calling broker. `caller` is not consulted: every RPC in
-		// this file re-parses RAW_AUTH_TOKEN_KEY itself, and a second way to
-		// identify a caller is a second thing to keep correct.
-		try {
-			requireBrokerDelegate(verifiedCallerToken("CreatePersonalPrincipal").getSubject(),
-					Tokenrequest.AuthBrokerKind.AUTH_BROKER_KIND_DEVICE);
-		} catch (StatusException e) {
-			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
-		}
-
-		TokenWrapper proof;
-		try {
-			proof = TokenWrapper.parse(request.getProofToken());
-		} catch (Exception e) {
-			throw new ProtoException(ProtoException.INVALID_ARGUMENT,
-					"invalid proof_token: " + e.getMessage());
-		}
-		String credentialId = proof.getKid();
-		if (credentialId == null || credentialId.isEmpty()) {
-			throw new ProtoException(ProtoException.INVALID_ARGUMENT,
-					"proof_token missing kid (credential_id)");
-		}
-		// Verify against the key carried in THIS request. A proof that does not
-		// verify registers nothing — otherwise the row would record a public key
-		// whose holder never demonstrated possession.
-		try {
-			proof.verify(ImmutableJwk.from(request.getPublicKey()));
-		} catch (Exception e) {
-			throw new ProtoException(ProtoException.UNAUTHENTICATED,
-					"proof_token verification failed: " + e.getMessage());
-		}
-
-		// Read-check-write, serialized. The cap check and the credential-uniqueness
-		// scan below both read principalMap, then the write puts a FRESH random key,
-		// so nothing collides and nothing made the three steps atomic: two concurrent
-		// registrations of the same credential both saw it absent and both created a
-		// principal. verifyDeviceProof would then resolve whichever the map's
-		// iteration order yielded first, and the person would silently become two
-		// people, which is exactly what the comment below says is forbidden. The cap
-		// could be overshot the same way, and that one is worse than it looks — see
-		// MAX_PERSONAL_PRINCIPALS for why an over-cap registry loses every later
-		// snapshot.
-		//
-		// Node-local, like the other guards in this file that want a cluster lock and
-		// have none: it closes concurrent registrations reaching one kernel, not two
-		// pods at once. A cross-node CAS would need either a Hazelcast handle these
-		// services are not given or a credential-id index boundary in the proto;
-		// tracked as a follow-up.
-		synchronized (personalPrincipalRegistryLock) {
-			return registerPersonalPrincipal(request, credentialId);
-		}
-	}
-
-	private Kernel.CreatePersonalPrincipalResponse registerPersonalPrincipal(
-			Kernel.CreatePersonalPrincipalRequest request, String credentialId) throws ProtoException {
-		Kernel.PrincipalState registry = principalMap.proto();
-		if (registry.getPersonalPrincipalsCount() >= MAX_PERSONAL_PRINCIPALS) {
-			throw new ProtoException(ProtoException.RESOURCE_EXHAUSTED,
-					"personal principal registry is full");
-		}
-		// One key, one person. Without this, a second registration of the same
-		// platform-synced key would create a second principal, and the credential
-		// id — the only handle the device mint has — would name two rows. Which one
-		// verifyDeviceProof found would then depend on map iteration order, and the
-		// person would silently become two people, which is exactly what §5.4's
-		// "a synced key presented from a phone and from an iPad is ONE credential
-		// presented twice" forbids.
-		//
-		// This is a correctness guard, not abuse control (§11 QUESTION 3 is open
-		// and deliberately untouched here). It does make the RPC an existence
-		// oracle for credential ids; accepted, because a credential id is opaque
-		// and useless without the private half, and narrowing it further is the
-		// broader abuse-prevention design this item does not do.
-		for (Kernel.PersonalPrincipal existing : registry.getPersonalPrincipalsList()) {
-			for (Kernel.PersonalCredential credential : existing.getCredentialsList()) {
-				if (credentialId.equals(credential.getCredentialId())) {
-					throw new ProtoException(ProtoException.ALREADY_EXISTS,
-							"credential is already registered");
-				}
-			}
-		}
-
-		String principalId = UUID.randomUUID().toString();
-		long nowMs = System.currentTimeMillis();
-		Kernel.PersonalPrincipal principal = Kernel.PersonalPrincipal.newBuilder()
-				.setPrincipalId(principalId)
-				.addCredentials(Kernel.PersonalCredential.newBuilder()
-						.setCredentialId(credentialId)
-						.setPublicKey(request.getPublicKey())
-						.setLabel(request.getLabel())
-						.setPlatformSynced(request.getPlatformSynced())
-						.setCreatedAtMs(nowMs))
-				.setCreatedAtMs(nowMs)
-				.build();
-		principalMap.putPersonalPrincipals(principalId, principal);
-		// The registry's durability is the disk snapshot, and nothing else on this
-		// path triggers one — the same reason RevokeWorkload fires it.
-		writeIdentitySnapshot.run();
-
-		logger.info("Registered personal principal: principal_id={} credential={} platform_synced={}",
-				principalId, credentialId, request.getPlatformSynced());
-		return Kernel.CreatePersonalPrincipalResponse.newBuilder()
-				.setPrincipalId(principalId)
 				.build();
 	}
 

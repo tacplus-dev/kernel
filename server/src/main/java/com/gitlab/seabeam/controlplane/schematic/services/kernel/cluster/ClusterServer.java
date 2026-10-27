@@ -468,9 +468,9 @@ public class ClusterServer {
 		// un-revoke or roll back what the cluster did while it was down.
 		Kernel.KernelDiskState snapshot = identitySnapshot.load();
 		rehydrateFromSnapshot(snapshot, identityState, caState, workloadState, kernelConfigMap);
-		restorePersonalPrincipals(snapshot, principalState);
 		restorePeople(snapshot, principalState);
 		restoreTenantUserLinks(snapshot, principalState);
+		migratePersonalPrincipals(snapshot, principalState);
 		restoreGrantRevocations(snapshot, liveGrants);
 		keyRotator.restore(snapshot != null ? snapshot.getSigningKeysList() : List.of());
 
@@ -956,17 +956,16 @@ public class ClusterServer {
 			serverBuilder.addService(tenantAdminWrapper);
 			logger.info("TenantAdminService registered on gRPC server");
 
-			// A personal principal's own view of itself. auth_any_user: the
-			// wrapper verifies the token and nothing else, and the handler scopes
-			// the read to the caller's own PrincipalState row by resolving the
-			// principal from the verified token subject.
+			// A user's own links and approvals. auth_any_user: the wrapper
+			// verifies the token and nothing else, and the handler scopes every
+			// call to the caller's own rows by reading the verified token.
 			//
 			// The authenticate func is token-only (authenticateWithToken), NOT the
 			// generated ServiceManager's authenticateAtOrBelowWithToken: the
 			// wrapper passes the fixed target "/" for an auth_any_user RPC with no
 			// target_namespace_field, and the at-or-below rule against "/" admits
-			// only a root-namespace caller — which would refuse every
-			// /people/<pid> caller this RPC exists for. See the item's decision doc.
+			// only a root-namespace caller — which would refuse every tenant
+			// caller this service exists for. See the item's decision doc.
 			var personalIdentityImpl = new PersonalIdentityServiceImpl(
 					backendServers.services().getPrincipalMap(),
 					this::saveIdentitySnapshot);
@@ -1265,57 +1264,153 @@ public class ClusterServer {
 		}
 	}
 
+	/** What {@link #migratePersonalPrincipals} did, for its log line and its test. */
+	record PersonalPrincipalMigration(int migrated, int credentials, int dropped, int deviceEdges) {
+	}
+
 	/**
-	 * Restores the registered personal principals from the disk snapshot into the
-	 * live {@code PrincipalState} boundary.
+	 * The one-time migration of kernel#18: the retired {@code /people/<pid>}
+	 * device principals a pre-#18 snapshot still carries move onto the XIDs their
+	 * device links name, and the device link edges go.
 	 *
-	 * <p>Unlike grants (seeded from Config.grants at every boot), a personal
-	 * principal exists only because someone registered at runtime — the snapshot
-	 * is its ONLY source, so the whole row is restored, not just a mutated field.
-	 * Rows are written through the generated {@code putPersonalPrincipals}
-	 * accessor, so the same validation the write path enforces applies here.
+	 * <p>A principal is migrated when its live link edges into
+	 * {@code /tenants/people} name exactly one person who is still live
+	 * (following a merge's redirect to the survivor): its credentials become that
+	 * person's {@code Person.devices}, keeping their ids, keys and revocation
+	 * marks. Every other principal — no live link, a link to more than one
+	 * person, a disabled principal, a person deleted since — is DROPPED, and
+	 * counted: a device nobody linked authorized nothing, and only a personal
+	 * login may anchor an XID. Its tenant memberships are dropped either way; the
+	 * exchange that read them is retired. A credential some person already
+	 * holds is not copied a second time.
 	 *
-	 * <p>Package-private and static so the restart half of the durability proof can
-	 * exercise the real boot path rather than a copy of it (same reason as
-	 * {@link #restoreGrantRevocations}).
+	 * <p>Then every {@code TenantUserLinks} edge naming a {@code /people/...}
+	 * identity is removed, both directions, so no person's {@code linked} claim
+	 * names the retired root. Runs after the people and the links are restored,
+	 * and writes nothing back to disk itself: until the next identity write the
+	 * old snapshot still holds the rows, and replaying it gives the same result.
 	 *
-	 * <p>Fails closed, like {@link IdentitySnapshot#load()}: a row that cannot be
-	 * applied aborts the restore and the node refuses to boot. Continuing would
-	 * bring the kernel up with an arbitrary prefix of the registered people —
-	 * someone who registered is simply gone, and silently.
+	 * <p>Fails closed like the restores around it: a migration that cannot be
+	 * applied refuses the boot rather than lose devices silently.
 	 */
-	static void restorePersonalPrincipals(
+	static PersonalPrincipalMigration migratePersonalPrincipals(
 			Kernel.KernelDiskState snapshot,
 			com.gitlab.seabeam.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap principalState) {
-		if (snapshot == null || snapshot.getPersonalPrincipalsCount() == 0) {
-			return;
-		}
+		String peoplePrefix = "/" + PEOPLE_ROOT_SEGMENT + "/";
+		int migrated = 0;
+		int credentials = 0;
+		int dropped = 0;
+		int deviceEdges = 0;
 		try {
-			for (Kernel.PersonalPrincipal p : snapshot.getPersonalPrincipalsList()) {
-				principalState.putPersonalPrincipals(
-						Objects.requireNonNull(p.getPrincipalId(), "principal.principal_id"), p);
+			List<Kernel.TenantUserLinks> rows = principalState.proto().getTenantUserLinksList();
+			for (Kernel.PersonalPrincipal principal
+					: snapshot == null ? List.<Kernel.PersonalPrincipal>of() : snapshot.getPersonalPrincipalsList()) {
+				String xid = principal.getDisabledAtMs() != 0 ? null
+						: linkedPerson(rows, peoplePrefix + principal.getPrincipalId() + "|", principalState);
+				if (xid == null) {
+					dropped++;
+					continue;
+				}
+				Kernel.Person person = principalState.getPeople(xid);
+				Kernel.Person.Builder updated = person.toBuilder();
+				for (Kernel.PersonalCredential credential : principal.getCredentialsList()) {
+					if (updated.getDevicesCount() < MAX_DEVICES_PER_PERSON
+							&& !deviceHeld(principalState, credential.getCredentialId())) {
+						updated.addDevices(credential);
+						credentials++;
+					}
+				}
+				principalState.putPeople(xid, updated.build());
+				migrated++;
 			}
-			logger.info("Restored {} personal principal(s) from the disk snapshot",
-					snapshot.getPersonalPrincipalsCount());
+			for (Kernel.TenantUserLinks row : rows) {
+				if (row.getUserKey().startsWith(peoplePrefix)) {
+					principalState.deleteTenantUserLinks(row.getUserKey());
+					deviceEdges += row.getLinksCount();
+					continue;
+				}
+				Kernel.TenantUserLinks.Builder kept = row.toBuilder().clearLinks();
+				for (Kernel.TenantUserLink link : row.getLinksList()) {
+					if (!link.getPeerNamespace().startsWith(peoplePrefix)) {
+						kept.addLinks(link);
+					}
+				}
+				if (kept.getLinksCount() != row.getLinksCount()) {
+					principalState.putTenantUserLinks(row.getUserKey(), kept.build());
+				}
+			}
 		} catch (Exception e) {
-			logger.error("Failed to restore personal principals from the disk snapshot — refusing "
-					+ "to start with a partial restore: {}", e.getMessage(), e);
+			logger.error("Failed to migrate the /people device principals onto their XIDs — refusing "
+					+ "to start with a partial migration: {}", e.getMessage(), e);
 			throw new IllegalStateException(
-					"kernel refuses to start: personal principals could not be restored from the "
-							+ "disk snapshot", e);
+					"kernel refuses to start: /people device principals could not be migrated", e);
 		}
+		if (migrated + dropped + deviceEdges > 0) {
+			logger.info("Migrated {} /people device principal(s) ({} credential(s)) onto their XIDs; "
+					+ "dropped {} with no live link to exactly one person; removed {} device link edge(s)",
+					migrated, credentials, dropped, deviceEdges);
+		}
+		return new PersonalPrincipalMigration(migrated, credentials, dropped, deviceEdges);
+	}
+
+	/** The retired device root's first segment; tacplus#131 removed it from the SPIFFE grammar. */
+	private static final String PEOPLE_ROOT_SEGMENT = "people";
+
+	/** {@code Person.devices}'s {@code assert_max_size}. */
+	private static final int MAX_DEVICES_PER_PERSON = 16;
+
+	/**
+	 * The XID a device principal's live edges into {@code /tenants/people} name,
+	 * following merge redirects, when they name exactly one live person; else null.
+	 */
+	private static String linkedPerson(List<Kernel.TenantUserLinks> rows, String deviceKeyPrefix,
+			com.gitlab.seabeam.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap principalState) {
+		String found = null;
+		for (Kernel.TenantUserLinks row : rows) {
+			if (!row.getUserKey().startsWith(deviceKeyPrefix)) {
+				continue;
+			}
+			for (Kernel.TenantUserLink link : row.getLinksList()) {
+				if (link.getRevokedAtMs() != 0 || !PeopleTenant.NAMESPACE.equals(link.getPeerNamespace())) {
+					continue;
+				}
+				String xid = SpiffeIds.xidOf(link.getPeerSubject());
+				Kernel.Person person = xid == null ? Kernel.Person.getDefaultInstance() : principalState.getPeople(xid);
+				for (int hops = 0; hops < 16 && !person.getMergedIntoXid().isEmpty(); hops++) {
+					person = principalState.getPeople(person.getMergedIntoXid());
+				}
+				if (person.getXid().isEmpty() || person.getDisabledAtMs() != 0 || person.getDeletedAtMs() != 0
+						|| !person.getMergedIntoXid().isEmpty()) {
+					continue;
+				}
+				if (found != null && !found.equals(person.getXid())) {
+					return null;
+				}
+				found = person.getXid();
+			}
+		}
+		return found;
+	}
+
+	/** Whether any person already holds the device credential {@code credentialId}. */
+	private static boolean deviceHeld(
+			com.gitlab.seabeam.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap principalState,
+			String credentialId) throws ProtoException {
+		for (Kernel.Person person : principalState.proto().getPeopleList()) {
+			for (Kernel.PersonalCredential device : person.getDevicesList()) {
+				if (credentialId.equals(device.getCredentialId())) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	/**
 	 * Restores the XID-keyed people and their link index from the disk snapshot
 	 * into the live {@code PrincipalState} boundary.
 	 *
-	 * <p>Separate from {@link #restorePersonalPrincipals} rather than folded into
-	 * it because the two collections are independently populated: a cluster can
-	 * hold people and no personal principals, and that method returns early on an
-	 * empty principal list.
-	 *
-	 * <p>Fails closed for the same reason, and a sharper one: a person whose row
+	 * <p>Fails closed: a person whose row
 	 * or link does not come back is not merely absent, they are minted a NEW XID
 	 * on their next login — and the XID is the one thing about a person that
 	 * must never change.

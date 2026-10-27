@@ -19,7 +19,8 @@ import org.slf4j.LoggerFactory;
  * kernel's OWN whole-state snapshot ({@code KernelDiskState}) — signing keys,
  * the public verifying set, the cluster CA + per-service intermediate CAs, the
  * tenant/project tree, workload revocations, standing delegation grants, and
- * the registered personal principals — written as one atomic object on the
+ * the people registry (people, their devices, the link index and the tenant
+ * user links) — written as one atomic object on the
  * kernel's local volume. Ephemeral, rebuilt-at-runtime state (cluster
  * membership, service health, localities, FQDN, trusted CAs from Config) is
  * deliberately NOT snapshotted.
@@ -66,8 +67,7 @@ public final class IdentitySnapshot {
      * @param configStateReader    current ConfigState (tenants + tenant_configs + project_configs)
      * @param revocationsReader    current workload revocations (WorkloadState.revocations)
      * @param grantsReader         current standing delegation grants
-     * @param principalStateReader current PrincipalState: the registered personal
-     *                             principals and the `people` tenant's user rows
+     * @param principalStateReader current PrincipalState: people, their devices and links
      */
     public IdentitySnapshot(
             String diskDir,
@@ -143,7 +143,7 @@ public final class IdentitySnapshot {
      *
      * <p>Throws on any failure to build or write the snapshot. Callers invoke
      * this on the mutating-RPC path (RevokeWorkload, RevokeGrant,
-     * CreatePersonalPrincipal, TenantAdmin writes), where the exception becomes
+     * device enrolment, TenantAdmin writes), where the exception becomes
      * a non-OK status: a caller must never be told its write is durable when
      * the snapshot it depends on did not land.
      *
@@ -178,7 +178,8 @@ public final class IdentitySnapshot {
             }
             if (principalStateReader != null) {
                 Kernel.PrincipalState principals = principalStateReader.get();
-                b.addAllPersonalPrincipals(principals.getPersonalPrincipalsList());
+                // personal_principals is never written: the retired /people/<pid>
+                // rows are read once at boot and migrated (kernel#18).
                 b.addAllPeople(principals.getPeopleList());
                 b.addAllIdentityLinks(principals.getIdentityLinksList());
                 b.addAllTenantUserLinks(principals.getTenantUserLinksList());

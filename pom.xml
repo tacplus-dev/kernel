@@ -25,6 +25,11 @@
 		<!-- bcprov, bcpkix and bcutil move together: bcpkix pulls in bcutil, whose
 		     transitive version would otherwise drift from the other two. -->
 		<bouncycastle.version>1.86</bouncycastle.version>
+		<!-- Jackson is never a direct dependency: opa pulls in 2.x (com.fasterxml)
+		     and mcp 3.x (tools.jackson). Both BOMs are imported below so neither
+		     line is left at whatever version those libraries were built with. -->
+		<jackson2.version>2.21.8</jackson2.version>
+		<jackson3.version>3.1.8</jackson3.version>
 		<junit.version>6.0.2</junit.version>
 		<maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
 		<hazelcast.version>5.5.0</hazelcast.version>
@@ -176,6 +181,20 @@
 				<groupId>org.bouncycastle</groupId>
 				<artifactId>bcutil-jdk18on</artifactId>
 				<version>${bouncycastle.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>com.fasterxml.jackson</groupId>
+				<artifactId>jackson-bom</artifactId>
+				<version>${jackson2.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+			<dependency>
+				<groupId>tools.jackson</groupId>
+				<artifactId>jackson-bom</artifactId>
+				<version>${jackson3.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
 			</dependency>
 			<dependency>
 				<groupId>com.github.tacplusdev.kernel</groupId>

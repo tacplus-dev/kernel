@@ -13,5 +13,7 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **An advisory check in the gates or CI** (2026-10-27, #12): Bouncy Castle 1.80 carried two CRITICAL
   advisories until a nightly scan found them. An OSV check of the resolved `mvn dependency:list` (or the
   OWASP dependency-check plugin) in CI would fail the build when it happens, not the next scan.
+  #13 is the same story for transitive Jackson (2.17.0 via opa, 3.1.4 via mcp), now pinned by BOM in the
+  root pom: a pin only holds until the next advisory, so the check is what keeps it honest.
 
 ## Promoted / declined

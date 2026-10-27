@@ -277,6 +277,20 @@
         <version>${bouncycastle.version}</version>
       </dependency>
       <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson2.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>tools.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson3.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
         <groupId>com.github.tacplusdev.kernel</groupId>
         <artifactId>kernel-model</artifactId>
         <version>${project.version}</version>
@@ -290,7 +304,9 @@
     <bouncycastle.version>1.86</bouncycastle.version>
     <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
     <ratis.version>3.2.1</ratis.version>
+    <jackson2.version>2.21.8</jackson2.version>
     <tacplus.bin>tacplus</tacplus.bin>
+    <jackson3.version>3.1.8</jackson3.version>
     <spotless-maven-plugin.version>3.2.1</spotless-maven-plugin.version>
     <hazelcast.version>5.5.0</hazelcast.version>
     <gson.version>2.13.2</gson.version>

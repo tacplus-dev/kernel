@@ -955,7 +955,8 @@ public class ClusterServer {
 					},
 					() -> spiffeTrustDomain,
 					allKeysSupplier,
-					workloadState);
+					workloadState,
+					kernelConfigMap);
 			serverBuilder.addService(tlsCertService);
 			logger.info("TlsCertService registered (ManageCert auto-TLS, cert lifetime={}s)",
 					cfg.getTlsCertLifetimeSeconds() > 0 ? cfg.getTlsCertLifetimeSeconds() : 86400);
@@ -970,8 +971,11 @@ public class ClusterServer {
 			// shared kernelAuthorizer enforces the entitlement + level-or-below
 			// check (target_namespace_field) declaratively per the generated
 			// wrapper. Mutating writes trigger a fresh disk snapshot.
+			// DeleteTenant removes the rest of what kernel holds for the tenant
+			// (memberships, grants, localities) through the identity service.
 			var tenantAdminImpl = new TenantAdminServiceImpl(
-					kernelConfigMap, () -> spiffeTrustDomain, this::saveIdentitySnapshot);
+					kernelConfigMap, () -> spiffeTrustDomain, this::saveIdentitySnapshot,
+					identityService::purgeDeletedTenant);
 			var tenantAdminWrapper = new TenantAdmin(tenantAdminImpl, kernelAuthorizer);
 			serverBuilder.addService(tenantAdminWrapper);
 			logger.info("TenantAdminService registered on gRPC server");

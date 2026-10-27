@@ -10,6 +10,7 @@ import com.github.tacplusdev.kernel.model.types.sys.key.KeyOuterClass;
 import com.github.tacplusdev.kernel.model.types.sys.x509.X509;
 import com.github.tacplusdev.kernel.model.types.sys.tlscert.Tlscert;
 import com.github.tacplusdev.kernel.model.types.sys.tlscert.TlsCertServiceGrpc;
+import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.ConfigMap;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -23,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,6 +61,8 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 	 * kernel that cannot see revocations must refuse to issue, not issue blind.
 	 */
 	private final WorkloadMap workloadMap;
+	@Nullable
+	private final ConfigMap configMap;
 	private final ScheduledExecutorService scheduler;
 
 	/**
@@ -78,6 +82,25 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			Supplier<String> trustDomainReader,
 			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
 			WorkloadMap workloadMap) {
+		this(certLifetimeSeconds, signingCa, serviceCaReader, serviceCaWriter, trustDomainReader,
+				verifyingKeysReader, workloadMap, null);
+	}
+
+	/**
+	 * @param configMap            the tenant records, so a deleted tenant's
+	 *                             services get no new certificate (kernel#19);
+	 *                             null checks nothing
+	 */
+	public TlsCertServiceImpl(
+			long certLifetimeSeconds,
+			ImmutableCertChain signingCa,
+			Function<String, X509.X509CertChain> serviceCaReader,
+			BiConsumer<String, X509.X509CertChain> serviceCaWriter,
+			Supplier<String> trustDomainReader,
+			Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
+			WorkloadMap workloadMap,
+			@Nullable ConfigMap configMap) {
+		this.configMap = configMap;
 		this.certLifetimeSeconds = certLifetimeSeconds;
 		this.signingCa = signingCa;
 		this.serviceCaReader = serviceCaReader;
@@ -312,6 +335,8 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			// identity for as long as it holds the stream open.
 			try {
 				IdentityServiceImpl.assertNotRevoked(workloadMap, spiffeId, "workload");
+				// And a tenant deleted mid-stream stops it the same way.
+				IdentityServiceImpl.refuseDeletedTenant(configMap, SpiffeIds.namespaceFromSpiffe(spiffeId));
 			} catch (IdentityServiceImpl.StatusException e) {
 				responseObserver.onError(e.toGrpcStatus().asRuntimeException());
 				return;

@@ -19,10 +19,11 @@ import java.util.function.Predicate;
  * kernel's own state, so moving the graph is swapping the implementation, not
  * changing a caller. Every write here is one of the record's: the first-login
  * create, a membership the first time an org routes a person, Link (merge),
- * Unlink, delete account and sign out everywhere, and a device enrolled on or
- * revoked from a person. Everything else kernel does
- * with identity — the session credential, its proofs, Merge and Unmerge, the
- * per-tenant exchange — is stateless and stays in kernel.
+ * Unlink, delete account and sign out everywhere, a device enrolled on or
+ * revoked from a person, and a deleted tenant's memberships removed (the
+ * tenant-deletion record). Everything else kernel does with identity — the
+ * session credential, its proofs, Merge and Unmerge, the per-tenant exchange —
+ * is stateless and stays in kernel.
  *
  * <p>Each operation is atomic on its own. The invariants are per entry: a link
  * key resolves to at most one XID, and an XID is never reused.
@@ -46,6 +47,14 @@ interface IdentityGraph {
 	 * refused, never revived.
 	 */
 	Kernel.Person addMembership(String xid, String tenantNamespace) throws IdentityServiceImpl.StatusException;
+
+	/**
+	 * A deleted tenant's memberships (kernel#19): removed from every person who
+	 * holds one, at or below {@code tenantNamespace}, tombstoned people
+	 * included. The people stay; a person exists outside every tenant. Returns
+	 * how many people held one.
+	 */
+	int removeTenantMemberships(String tenantNamespace) throws IdentityServiceImpl.StatusException;
 
 	/** The person with this XID, or the default (empty) instance when there is none. */
 	Kernel.Person person(String xid);

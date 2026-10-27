@@ -74,9 +74,22 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     /** Ceiling on a page limit; matches the generated wrapper's ceiling. */
     private static final int MAX_PAGE_LIMIT = 10000;
 
+    /**
+     * Removes what kernel holds for a deleted tenant outside ConfigState: its
+     * memberships, grants, workload localities and the like (kernel#19). Runs
+     * after the tenant's records are gone and its tid is tombstoned, so nothing
+     * can mint into it meanwhile; it is idempotent.
+     */
+    @FunctionalInterface
+    interface DeletedTenantPurge {
+        /** Returns one line per kind of state found, saying what was removed. */
+        List<String> purge(String tenantNamespace) throws ProtoException;
+    }
+
     private final ConfigMap configMap;
     private final Supplier<String> trustDomainReader;
     private final Runnable writeIdentitySnapshot;
+    private final DeletedTenantPurge deletedTenantPurge;
 
     /**
      * @param configMap              kernel ConfigState accessor (tenants / tenant_configs / project_configs)
@@ -87,9 +100,21 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
             ConfigMap configMap,
             Supplier<String> trustDomainReader,
             Runnable writeIdentitySnapshot) {
+        this(configMap, trustDomainReader, writeIdentitySnapshot, ns -> List.of());
+    }
+
+    /**
+     * @param deletedTenantPurge     removes the rest of a deleted tenant's state; see {@link DeletedTenantPurge}
+     */
+    public TenantAdminServiceImpl(
+            ConfigMap configMap,
+            Supplier<String> trustDomainReader,
+            Runnable writeIdentitySnapshot,
+            DeletedTenantPurge deletedTenantPurge) {
         this.configMap = configMap;
         this.trustDomainReader = trustDomainReader;
         this.writeIdentitySnapshot = writeIdentitySnapshot != null ? writeIdentitySnapshot : () -> {};
+        this.deletedTenantPurge = deletedTenantPurge;
         logger.info("TenantAdminServiceImpl initialised");
     }
 
@@ -176,8 +201,14 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         for (String projectNs : childProjectKeys(ns)) {
             configMap.deleteProjectConfigs(projectNs);
         }
+        // From here the tenant mints nothing (TenantIds.deletedTenantOf). The
+        // rest of what kernel holds for it goes next; the people stay.
+        List<String> purged = deletedTenantPurge.purge(ns);
         writeIdentitySnapshot.run();
-        logger.info("DeleteTenant ns={}", ns);
+        logger.info("DeleteTenant ns={} tid={}", ns, tenant.getTid());
+        for (String line : purged) {
+            logger.info("DeleteTenant ns={}: {}", ns, line);
+        }
         return Kernel.DeleteTenantResponse.getDefaultInstance();
     }
 

@@ -624,3 +624,70 @@ its own namespaces is the thing being removed. The tacplus side, the generated b
   `PendingApprovalTest` (enrolment, device tokens, approvals) pass unchanged apart from the removed
   registry assertions.
 - Gates on tacplus 2.4.
+
+## 2026-10-27 — Deleting a tenant is complete for what kernel owns (#19)
+
+Jody, 2026-10-27 (tacplus-dev/roadmap decisions/tenant-deletion-2026-10-27.md): deleting a tenant is destructive
+and complete. Nothing it owned is left orphaned, the people stay, and the tenant can no longer mint access or
+service tokens. Tokens already issued are not chased. This entry covers kernel's part; Stratum data and the
+Kubernetes namespace belong to the restore tenant, the operator and nsproxy.
+
+### What changed
+
+- **A deleted tenant mints nothing.** A tenant is deleted when its tid is tombstoned and no live tenant record holds
+  its namespace (`TenantIds.deletedTenantOf`). Every token kernel signs carries the namespace it is for, so the check
+  sits at the signature (`IdentityServiceImpl.signLive`): every mint path is refused with `PERMISSION_DENIED`
+  ("tenant /tenants/<t> was deleted: it mints no tokens"), and so is any path added later. That covers the
+  session-credential exchange, a people login routed into the tenant, a tenant IdP login, the refresh-to-access and
+  access-to-service exchanges, the Kubernetes and cloud-proof service mints, delegated (grant) and delegate offline
+  tokens, workloads, cred-pair client tokens and external service tokens. Three paths sign without going through it
+  and check on their own: `MintExternalToken` (the user token's namespace), `X509Mint` (the subject's) and
+  ManageCert, which checks on every CSR so a stream that is already open stops renewing.
+- **A login routed into a deleted tenant writes nothing.** A claim matcher left behind in policy creates no person
+  and no membership: the check runs before `IdentityGraph.resolveOrCreate`.
+- **Memberships are removed; the people stay.** `IdentityGraph.removeTenantMemberships` removes the tenant's
+  membership from every person, tombstoned people included, and keeps the person, their XID, links, devices and
+  other memberships. It is part of the people service's contract, so it carries over when the graph moves.
+- **The rest of the tenant goes.** `DeleteTenant` first removes the records and tombstones the tid, so nothing mints
+  into the tenant from then on. It then runs the purge (`IdentityServiceImpl.purgeDeletedTenant`) and logs one line
+  for each kind of state:
+
+  | Found | Done |
+  |---|---|
+  | Tenant record, `tenant_config`, project configs | Deleted (as before) |
+  | The tid's `TenantIdRow` | Kept, tombstoned (#3): the one row left that names the tenant |
+  | `Person.memberships` of the tenant | Removed from every person |
+  | `PendingApproval`s naming it | Deleted. An approval is keyed to the person (`/tenants/people\|<sub>`), so there are none |
+  | Grants whose delegate is the tenant's | Revoked. They come from `Config.grants`; the revocation rides the snapshot, so they stay revoked when the boot reseeds them |
+  | Workload localities of the tenant's services | Deleted |
+  | Workload revocations of the tenant's workloads | Kept. They are a deny list, and dropping one would un-revoke the workload if a tenant of the same name came back |
+  | Withheld delegate offline tokens for it | Dropped, so no code redeems one |
+  | Delegates and their Kubernetes service-account matchers for it | Counted only. They are `Config.delegates`, the deployment's; every mint through one is refused |
+
+### Decided here (issue silent)
+
+- **"Removed" means removed.** `PersonMembership.revoked_at_ms` marks and never deletes, but the issue asks for no
+  trace of the tenant in kernel state, so the membership row goes. The tid tombstone is the record that the tenant
+  existed.
+- **A tenant created again under the same name mints.** It is a new tenant with a new tid. The refusal belongs to the
+  deleted tenant, not to the name. Kernel cannot tell the two tenants' tokens apart until SPIFFE paths and grants
+  name the tid (#3 left that out); see PROPOSALS.md.
+- **A namespace kernel has no record of is not deleted.** Delegates may name a tenant kernel never recorded (the
+  operator's tenants, before it renders `Config.tenants`). Only a tombstone makes a tenant deleted, so those still
+  mint.
+- **The session exchange's refusal keeps its one shape.** With the membership gone, it answers "no live proof
+  vouches for ..." as for any other miss, so the exchange cannot be used to probe which tenants a person belonged to.
+
+### Proof
+
+- `TenantDeletionTest`: for a person routed into acme, acme's Kubernetes-matched `docmanager` and two grants, every
+  mint path into acme that worked before `DeleteTenant` is refused after it, and people and beta still mint. The
+  paths are the exchange, a people login, a tenant IdP login, RT to AT, the Kubernetes mint, AT to ST, both grants
+  and X509Mint. The person keeps their XID and links, and loses only the acme membership. A login routed into acme
+  writes no membership back. A walk of `PrincipalState` and `ConfigState` finds acme only in its tombstoned tid, and
+  beta's rows are unchanged. Localities are deleted, revocations kept, acme's grant is revoked and the /system one
+  is not. Withheld offline tokens for acme are dropped. Acme created again mints under a new tid. A record-less
+  tenant still mints. All six fail with the check and the purge taken out.
+- `TlsCertRevocationTest.aDeletedTenantsServiceCannotRenewItsCert`: an open ManageCert stream is refused its next
+  renewal once its tenant is deleted.
+- Gates on tacplus 2.4.

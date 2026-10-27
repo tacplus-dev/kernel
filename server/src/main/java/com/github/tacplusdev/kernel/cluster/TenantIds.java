@@ -41,6 +41,9 @@ final class TenantIds {
 	/** The reserved {@code restore} tenant's tid (see {@link RestoreTenant}). */
 	static final String RESTORE = "00000002";
 
+	/** Every tenant namespace lies under it. */
+	private static final String TENANTS_PREFIX = "/tenants/";
+
 	private static final int LENGTH = 8;
 	private static final Pattern WELL_FORMED = Pattern.compile("^[0-9a-z]{8}$");
 	private static final Pattern RESERVED = Pattern.compile("^[0-9]{8}$");
@@ -132,6 +135,52 @@ final class TenantIds {
 				.setTombstonedAtMs(System.currentTimeMillis())
 				.build());
 		logger.info("Tombstoned tid {} of {}", tid, held.getTenantNamespace());
+	}
+
+	/**
+	 * The deleted tenant {@code namespace} lies in, or null when it lies in none
+	 * (kernel#19). A tenant is deleted when its tid is tombstoned and no live
+	 * tenant record holds its namespace: a tenant created again under the same
+	 * name is a new, live tenant, and the loser of a backfill race (a tombstoned
+	 * tid beside a live record) is no deletion at all.
+	 *
+	 * <p>{@code namespace} is a token's: a tenant, a project, or one nested below
+	 * them, so every {@code /tenants/...} prefix of it is checked. A prefix with
+	 * a live tenant or project record is live and costs one keyed read; only
+	 * when some prefix has neither (a deleted tenant, or one a deployment names
+	 * in its delegates without a kernel record) are the tid rows read.
+	 */
+	static String deletedTenantOf(ConfigMap configMap, String namespace) throws ProtoException {
+		if (configMap == null || namespace == null || !namespace.startsWith(TENANTS_PREFIX)) {
+			return null;
+		}
+		java.util.Set<String> unrecorded = new java.util.HashSet<>();
+		for (int end = namespace.indexOf('/', TENANTS_PREFIX.length()); ;
+				end = namespace.indexOf('/', end + 1)) {
+			String prefix = end < 0 ? namespace : namespace.substring(0, end);
+			if (configMap.getTenants(prefix).getName().isEmpty()
+					&& configMap.getProjectConfigs(prefix).getProjectNamespace().isEmpty()) {
+				unrecorded.add(prefix);
+			}
+			if (end < 0) {
+				break;
+			}
+		}
+		if (unrecorded.isEmpty()) {
+			return null;
+		}
+		for (Kernel.TenantIdRow row : configMap.proto().getTenantIdsList()) {
+			if (row.getTombstonedAtMs() != 0 && unrecorded.contains(row.getTenantNamespace())) {
+				return row.getTenantNamespace();
+			}
+		}
+		return null;
+	}
+
+	/** True when {@code namespace} is {@code tenantNamespace} or lies below it. */
+	static boolean isWithin(String namespace, String tenantNamespace) {
+		return namespace != null
+				&& (namespace.equals(tenantNamespace) || namespace.startsWith(tenantNamespace + "/"));
 	}
 
 	/**

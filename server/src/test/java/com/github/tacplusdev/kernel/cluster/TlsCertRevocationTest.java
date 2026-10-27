@@ -13,6 +13,7 @@ import com.github.tacplusdev.kernel.model.types.sys.key.KeyOuterClass;
 import com.github.tacplusdev.kernel.model.types.sys.tlscert.Tlscert;
 import com.github.tacplusdev.kernel.model.types.sys.tlscert.TlsCertServiceGrpc;
 import com.github.tacplusdev.kernel.model.types.sys.x509.X509;
+import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.ConfigMap;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import io.grpc.Context;
 import io.grpc.Contexts;
@@ -75,6 +76,7 @@ class TlsCertRevocationTest {
 
 	private KeyRotator keyRotator;
 	private WorkloadMap workloadMap;
+	private ConfigMap configMap;
 	private TlsCertServiceImpl tlsCertService;
 	private Server server;
 	private ManagedChannel channel;
@@ -90,6 +92,7 @@ class TlsCertRevocationTest {
 		keyRotator.start();
 
 		workloadMap = new WorkloadMap(new InMemoryManager());
+		configMap = new ConfigMap(new InMemoryManager());
 		workloadSpiffe = Spiffe.workloadSpiffeId(
 				Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", PARENT_SERVICE), WORKLOAD_NAME);
 
@@ -100,7 +103,8 @@ class TlsCertRevocationTest {
 				serviceCas::put,
 				() -> TRUST_DOMAIN,
 				() -> verifyingKeys,
-				workloadMap);
+				workloadMap,
+				configMap);
 
 		server = ServerBuilder.forPort(0)
 				.addService(ServerInterceptors.interceptForward(tlsCertService, rawAuthInterceptor()))
@@ -201,6 +205,34 @@ class TlsCertRevocationTest {
 		recorder.reset();
 		client.onNext(csr());
 		assertNotNull(recorder.awaitCert(), "renewal for a live workload must still be served");
+	}
+
+	/**
+	 * A tenant deleted while one of its services holds the stream stops that
+	 * service's renewals too (kernel#19): a deleted tenant mints nothing.
+	 */
+	@Test
+	void aDeletedTenantsServiceCannotRenewItsCert() throws Exception {
+		String acme = "/tenants/acme";
+		TenantAdminServiceImpl admin = new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, () -> { });
+		admin.createTenant(null, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(acme).build());
+		workloadSpiffe = Spiffe.namespaceSpiffeId(TRUST_DOMAIN, acme) + "/" + Spiffe.SERVICES_SEGMENT + "/docmanager";
+		Recorder recorder = new Recorder();
+		StreamObserver<Tlscert.TlsCertClientMsg> client = openStream(recorder);
+
+		client.onNext(init());
+		client.onNext(csr());
+		assertNotNull(recorder.awaitCert(), "a live tenant's service is issued its cert");
+
+		admin.deleteTenant(null, Kernel.DeleteTenantRequest.newBuilder().setTenantNamespace(acme).build());
+		recorder.reset();
+		client.onNext(csr());
+
+		StatusRuntimeException e = recorder.awaitError();
+		assertEquals(Status.Code.PERMISSION_DENIED, e.getStatus().getCode());
+		assertTrue(e.getStatus().getDescription().contains("tenant " + acme + " was deleted"),
+				"description should name the deleted tenant, got: " + e.getStatus().getDescription());
+		assertEquals(0, recorder.certCount());
 	}
 
 	// ---- Wire helpers ------------------------------------------------------

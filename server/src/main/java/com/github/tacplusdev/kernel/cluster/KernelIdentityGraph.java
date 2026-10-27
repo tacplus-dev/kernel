@@ -152,6 +152,39 @@ final class KernelIdentityGraph implements IdentityGraph {
 	}
 
 	@Override
+	public int removeTenantMemberships(String tenantNamespace) throws StatusException {
+		synchronized (lock) {
+			java.util.List<Kernel.Person> updated = new java.util.ArrayList<>();
+			try {
+				for (Kernel.Person person : principalMap.proto().getPeopleList()) {
+					Kernel.Person.Builder kept = person.toBuilder().clearMemberships();
+					for (Kernel.PersonMembership membership : person.getMembershipsList()) {
+						if (!TenantIds.isWithin(membership.getTenantNamespace(), tenantNamespace)) {
+							kept.addMemberships(membership);
+						}
+					}
+					if (kept.getMembershipsCount() != person.getMembershipsCount()) {
+						updated.add(kept.build());
+					}
+				}
+			} catch (ProtoException e) {
+				throw new StatusException(Status.INTERNAL, "principal registry unavailable");
+			}
+			if (updated.isEmpty()) {
+				return 0;
+			}
+			write(() -> {
+				for (Kernel.Person person : updated) {
+					principalMap.putPeople(person.getXid(), person);
+				}
+			}, "membership removal");
+			logger.info("Removed the memberships of deleted tenant {} from {} person(s)",
+					tenantNamespace, updated.size());
+			return updated.size();
+		}
+	}
+
+	@Override
 	public Kernel.Person person(String xid) {
 		return principalMap.getPeople(xid);
 	}

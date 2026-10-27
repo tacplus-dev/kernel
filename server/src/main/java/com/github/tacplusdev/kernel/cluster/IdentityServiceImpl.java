@@ -812,6 +812,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				resolveEntitlementsViaOpa(claims, request.getTraceId());
 		String routedTenant = opaResult.getNamespace();
 		String namespace = routedTenant.isEmpty() ? PeopleTenant.NAMESPACE : routedTenant;
+		// Before any write: a login routed into a deleted tenant (a claim matcher
+		// left behind in policy) creates no person and no membership.
+		refuseDeletedTenant(routedTenant);
 
 		IdentityGraph.Resolved resolved = identityGraph.resolveOrCreate(idpId, providerSubject);
 		Kernel.Person person = resolved.person();
@@ -929,8 +932,44 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	}
 
 	/** Signs a credential: the identity, its generation and the proofs; the tenant is the exchange's to choose. */
+	/**
+	 * Signs {@code token} unless its namespace lies in a deleted tenant
+	 * (kernel#19, tenant-deletion record): a deleted tenant mints no new token,
+	 * by any path. Every kernel-signed token carries the namespace it is for, so
+	 * this one check at the signature covers every mint path, the ones to come
+	 * included. Tokens issued before the deletion are left to expire.
+	 */
+	private void signLive(TokenWrapper token, ImmutableKey signingKey) throws StatusException {
+		refuseDeletedTenant(token.getNamespace());
+		token.sign(signingKey);
+	}
+
+	/** PERMISSION_DENIED when {@code namespace} lies in a deleted tenant; see {@link #signLive}. */
+	private void refuseDeletedTenant(String namespace) throws StatusException {
+		refuseDeletedTenant(configMap, namespace);
+	}
+
+	/**
+	 * PERMISSION_DENIED when {@code namespace} lies in a deleted tenant, for the
+	 * paths that do not sign a token (ManageCert); see {@link #signLive}.
+	 */
+	static void refuseDeletedTenant(@Nullable ConfigMap configMap, String namespace) throws StatusException {
+		String deleted;
+		try {
+			deleted = TenantIds.deletedTenantOf(configMap, namespace);
+		} catch (ProtoException e) {
+			throw new StatusException(Status.UNAVAILABLE, "tenant records unavailable: " + e.getMessage());
+		}
+		if (deleted != null) {
+			logger.info("Refused a mint into deleted tenant {} (namespace {})", deleted, namespace);
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"tenant " + deleted + " was deleted: it mints no tokens");
+		}
+	}
+
 	private TokenWrapper signCredential(String subject, long generation, String azp, boolean offline,
-			List<SessionCredential.Proof> proofs, long now, long exp, ImmutableKey signingKey) {
+			List<SessionCredential.Proof> proofs, long now, long exp, ImmutableKey signingKey)
+			throws StatusException {
 		TokenWrapper credential = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
 				.setSubject(subject)
@@ -952,7 +991,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		}
 		credential.setCustomField(SessionCredential.CLAIM_GENERATION, Long.toString(generation));
 		credential.setCustomField(SessionCredential.CLAIM_PROOFS, SessionCredential.encode(proofs));
-		credential.sign(signingKey);
+		signLive(credential, signingKey);
 		return credential;
 	}
 
@@ -966,7 +1005,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	private TokenOuterClass.Token accessTokenFromProof(TokenWrapper credential,
 			SessionCredential.Proof proof, String tenantNamespace,
 			Userentitlements.EntitlementEvalResult opaResult, long now, long exp,
-			ImmutableKey signingKey) {
+			ImmutableKey signingKey) throws StatusException {
 		TokenWrapper accessToken = TokenWrapper.create()
 				.setIssuer(tokenIssuer)
 				.setSubject(credential.getSubject())
@@ -981,7 +1020,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		accessToken.setClaimsFromStruct(proof.claims(), STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
 		accessToken.setCustomField("parent_jti", credential.getJTI());
 		setFlatServiceEntitlements(accessToken, expandEntitlements(opaResult));
-		accessToken.sign(signingKey);
+		signLive(accessToken, signingKey);
 		return accessToken.getProto();
 	}
 
@@ -2157,7 +2196,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// exchanges can scope/switch the AT's project without re-login.
 		stampProjectClaims(newToken, opaResult);
 
-		newToken.sign(signingKey);
+		signLive(newToken, signingKey);
 
 		logger.info("MintUserToken: sub={}, azp={}, exp={}, offline={}",
 				subject, delegate.getName(), exp, offlineAccess);
@@ -2345,7 +2384,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// the derived tokens on their next use instead of at their natural expiry.
 		newToken.setCustomField(CLAIM_GRANT_ID, grantId);
 
-		newToken.sign(signingKey);
+		signLive(newToken, signingKey);
 
 		logger.info("MintDelegatedToken: grant_id={}, sub={}, act={}, azp=kernel, exp={}",
 				grantId, grant.getSubject(), grant.getDelegateName(), exp);
@@ -2537,7 +2576,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		newToken.setClaimsFromStruct(buildClaimsStruct(callerToken),
 				STANDARD_JWT_CLAIMS, WELL_KNOWN_JWT_CLAIMS);
 		setFlatServiceEntitlements(newToken, scoped);
-		newToken.sign(signingKey);
+		signLive(newToken, signingKey);
 
 		// Withhold it. Entries live at most the TTL, so the map is bounded by the
 		// mint rate over that window; purge the dead ones rather than let a burst
@@ -3089,7 +3128,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			newToken.setCustomField(entry.getKey(), entry.getValue());
 		}
 
-		newToken.sign(signingKey);
+		signLive(newToken, signingKey);
 
 		logger.info("Minted refresh token: sub={}, exp={}", subject, exp);
 
@@ -3466,7 +3505,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					subject, newToken.getAudience(), exp, newToken.getProfiles());
 		}
 
-		newToken.sign(signingKey);
+		signLive(newToken, signingKey);
 		return Tokenrequest.TokenMintResponse.newBuilder()
 				.setAccessToken(newToken.getProto())
 				.build();
@@ -3529,7 +3568,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		if (accessEntitlements != null) {
 			setFlatServiceEntitlements(accessToken, accessEntitlements);
 		}
-		accessToken.sign(signingKey);
+		signLive(accessToken, signingKey);
 		return accessToken.getProto();
 	}
 
@@ -3672,7 +3711,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				.setExpiration(exp)
 				.setJTI(UUID.randomUUID().toString());
 		freshOt.setTokenUse(TOKEN_USE_OFFLINE);
-		freshOt.sign(signingKey);
+		signLive(freshOt, signingKey);
 
 		// Also hand back a fresh short-lived AT for immediate data-plane use.
 		TokenOuterClass.Token at = mintAccessFromRefresh(freshOt, signingKey, now, accessExp,
@@ -3977,6 +4016,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					"X509Mint requires a kernel-minted service token; sub is not a SPIFFE URI: " + spiffeId);
 		}
 
+		// A deleted tenant's services get no new certificate either.
+		refuseDeletedTenant(SpiffeIds.namespaceFromSpiffe(spiffeId));
+
 		// Intermediate CA state is keyed by bare service name, matching the
 		// ManageCert path. The full SPIFFE URI remains the leaf cert identity.
 		String serviceName = SpiffeIds.serviceName(spiffeId);
@@ -4271,7 +4313,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// Service namespace = path component of the SPIFFE-URI childSub.
 		bootstrapToken.setNamespace(SpiffeIds.namespaceFromSpiffe(childSub));
 
-		bootstrapToken.sign(signingKey);
+		signLive(bootstrapToken, signingKey);
 
 		logger.info("WorkloadMint: parent={}, child={}, terminal={}, broker={}",
 				parentSub, childSub, request.getTerminal(), parentSub.equals(callerSub) ? "" : callerSub);
@@ -4314,7 +4356,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		if (parentSub != null) refreshToken.setCustomField(PARENT_SUB, parentSub);
 		if (terminal != null) refreshToken.setCustomField(TERMINAL, terminal);
 
-		refreshToken.sign(signingKey);
+		signLive(refreshToken, signingKey);
 
 		// Mint access token.
 		TokenOuterClass.Token accessProto = mintAccessFromRefresh(refreshToken, signingKey, now, exp);
@@ -4510,6 +4552,103 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		logger.info("RevokeGrant: grant_id={}, caller={}, subject={}, delegate={}, revoked_at_ms={}",
 				grantId, rawCallerSub, grant.getSubject(), grant.getDelegateName(), revokedAtMs);
+	}
+
+	// ========================================================================
+	// Tenant deletion (kernel#19, tenant-deletion record)
+	// ========================================================================
+
+	/**
+	 * Removes what this service holds for {@code tenantNamespace}, a tenant
+	 * {@code TenantAdmin.DeleteTenant} has just deleted (its records gone, its
+	 * tid tombstoned, so nothing mints into it from then on; see
+	 * {@link #signLive}). Idempotent. Returns one line per kind of state, what
+	 * was found and what was done with it:
+	 *
+	 * <ul>
+	 *   <li><b>Memberships</b>: removed from every person, through the identity
+	 *       graph. The people stay: a person exists outside every tenant.</li>
+	 *   <li><b>Pending approvals</b> naming the tenant: deleted. An approval is
+	 *       keyed to a person, never a tenant, so there are none today.</li>
+	 *   <li><b>Grants</b> whose delegate is the tenant's: revoked. They come
+	 *       from {@code Config.grants}, which the deployment owns and kernel
+	 *       reseeds at every boot; the revocation rides the snapshot, so they
+	 *       stay revoked.</li>
+	 *   <li><b>Workload localities</b> of the tenant's services: deleted.
+	 *       Workload revocations are kept: they are a deny list, and dropping
+	 *       one would un-revoke the workload if a tenant of the same name came
+	 *       back.</li>
+	 *   <li><b>Withheld offline tokens</b> for the tenant: dropped, so no code
+	 *       redeems one.</li>
+	 *   <li><b>Delegates</b> (and their Kubernetes service-account matchers)
+	 *       for the tenant: counted only. They are {@code Config.delegates},
+	 *       the deployment's; every mint through one is refused.</li>
+	 * </ul>
+	 */
+	List<String> purgeDeletedTenant(String tenantNamespace) throws ProtoException {
+		List<String> report = new java.util.ArrayList<>();
+		try {
+			int people = identityGraph.removeTenantMemberships(tenantNamespace);
+			report.add("memberships: removed from " + people + " person(s); the people are kept");
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(),
+					"memberships of " + tenantNamespace + " could not be removed: " + e.getMessage());
+		}
+
+		int approvals = 0;
+		for (Kernel.PendingApproval approval : principalMap.proto().getPendingApprovalsList()) {
+			if (approval.getPersonUserKey().startsWith(tenantNamespace + LINK_KEY_SEPARATOR)) {
+				principalMap.deletePendingApprovals(approval.getApprovalId());
+				approvals++;
+			}
+		}
+		report.add("pending approvals: deleted " + approvals);
+
+		int grants = 0;
+		long nowMs = Instant.now().toEpochMilli();
+		for (Kernel.Grant grant : grantsReader.get()) {
+			if (grant.getRevokedAtMs() != 0
+					|| !TenantIds.isWithin(grant.getDelegateNamespace(), tenantNamespace)) {
+				continue;
+			}
+			if (grantsWriter == null) {
+				throw new ProtoException(ProtoException.UNIMPLEMENTED,
+						"grant " + grant.getId() + " of " + tenantNamespace
+								+ " cannot be revoked: this kernel has no writable grants store");
+			}
+			grantsWriter.accept(grant.toBuilder().setRevokedAtMs(nowMs).build());
+			grants++;
+		}
+		report.add("grants: revoked " + grants + " (Config.grants is the deployment's to edit)");
+
+		int localities = 0;
+		for (Kernel.WorkloadLocality locality : workloadMap.proto().getLocalitiesList()) {
+			if (SpiffeIds.isSpiffeUri(locality.getSpiffeId()) && TenantIds.isWithin(
+					SpiffeIds.namespaceFromSpiffe(locality.getSpiffeId()), tenantNamespace)) {
+				workloadMap.deleteLocalities(locality.getSpiffeId());
+				localities++;
+			}
+		}
+		report.add("workload localities: deleted " + localities + "; workload revocations are kept");
+
+		int withheld = 0;
+		for (Map.Entry<String, WithheldOfflineToken> entry : withheldOfflineTokens.entrySet()) {
+			if (TenantIds.isWithin(entry.getValue().token.getNamespace(), tenantNamespace)
+					&& withheldOfflineTokens.remove(entry.getKey(), entry.getValue())) {
+				withheld++;
+			}
+		}
+		report.add("withheld offline tokens: dropped " + withheld);
+
+		int delegates = 0;
+		for (Kernel.Delegate delegate : delegatesReader.get()) {
+			if (TenantIds.isWithin(delegate.getTenantNamespace(), tenantNamespace)) {
+				delegates++;
+			}
+		}
+		report.add("delegates: " + delegates + " in Config.delegates (the deployment's to remove); "
+				+ "every mint through them is refused");
+		return report;
 	}
 
 	/**
@@ -4722,6 +4861,14 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		} catch (Exception e) {
 			throw ProtoException.newErrPermissionDenied(null,
 					"user_token verification failed: " + e.getMessage());
+		}
+
+		// The external token is minted for the user token's namespace; a deleted
+		// tenant's mints none (see signLive, which this one does not go through).
+		try {
+			refuseDeletedTenant(userToken.getNamespace());
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
 		}
 
 		// Build a Struct from the user token payload to pass to OPA.
@@ -5017,7 +5164,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// TokenWrapper.sign refuses a token with no namespace; carry the verified
 		// caller's own, which kernel stamped when it minted the input token.
 		externalToken.setNamespace(inputToken.getNamespace());
-		externalToken.sign(signingKey);
+		signLive(externalToken, signingKey);
 
 		logger.info("external service token minted: sub={}, aud={}, exp={}", subject, request.getAud(), exp);
 
@@ -5151,7 +5298,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				.setJTI(UUID.randomUUID().toString());
 		token.setNamespace(namespace);
 		setFlatServiceEntitlements(token, matched.getEntitlements());
-		token.sign(signingKey);
+		try {
+			signLive(token, signingKey);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		}
 
 		logger.info("Minted cred_pair token: cred_pair={} namespace={} exp={}",
 				credPairId, namespace, exp);

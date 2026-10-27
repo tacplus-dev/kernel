@@ -32,5 +32,28 @@ the looper then marks it `promoted` or `declined` here with the date.
   java25-debian13, but an ERROR on every boot is noise: quote the id, or a peer id without `:`.
 - **Raise `maven.compiler.release` to 25, platform-wide** (2026-10-27, #17): the image now runs Java 25;
   the compile target stays 21 because tacplus may set the Java line for every service. Decide it there.
+- **A deleted tenant's old tokens must not reach a new tenant of the same name** (2026-10-27, #19): DeleteTenant
+  now refuses every mint into the deleted tenant, but the refusal ends when a tenant of the same name is created:
+  tokens, grants and delegates name the tenant by name, not by tid (#3 left SPIFFE paths and grants on the name).
+  A refresh token (24h) or offline token (90 days) issued in the old tenant would then mint in the new one. Either
+  name the tid in token namespaces and SPIFFE paths, or refuse a token whose `iat` predates the latest tombstone
+  of its namespace (the `TenantIdRow.tombstoned_at_ms` is already there).
+- **The operator drops a deleted tenant's delegates and grants** (2026-10-27, #19): kernel refuses every mint
+  through a deleted tenant's `Config.delegates` (and their Kubernetes service-account matchers) and revokes its
+  `Config.grants`, but both are the deployment's config and stay in it. The decision's flow (kernel, then
+  operator, then nsproxy) should end with the operator no longer rendering them. That is an operator issue.
+- **Index tombstoned tids by namespace if the mint check shows up in profiles** (2026-10-27, #19):
+  `TenantIds.deletedTenantOf` costs one keyed read per namespace segment when the tenant and project records exist,
+  but reads every `TenantIdRow` (`ConfigMap.proto()`) on each mint for a namespace kernel has no record of. Those
+  are deleted tenants, and tenants the deployment names only in its delegates. A namespace-keyed view of the
+  tombstones would make that one read too.
+- **`just gates` fails on any change to `proto/services/kernel.proto`** (2026-10-27, #19): `tacplus build`
+  resolves kernel's proto again as a dependency of a dependency (`tacplus-dev/kernel` at `latest`, which is
+  origin/main) and refuses the merge: `proto file "services/kernel.proto" conflicts between sources
+  ".../checkout/proto" and "/tmp/tacplus-dep-…": same path, different contents`. A comment-only edit is enough.
+  So no kernel contract change can pass the gates before it is pushed, which rule 5 forbids. #19 took its two
+  proto comment edits back out (PersonMembership's no-delete rule and DeleteTenant's scope; IDENTITY.md says
+  both). tacplus could let the local `src` win over a dependency's copy of the same repository, or skip a
+  dependency whose repository is the one being built.
 
 ## Promoted / declined

@@ -279,6 +279,26 @@ message Config {
   // optional ConfigMap kernel-config-override there; kernel only reads it. An
   // absent file is no override.
   string config_override_path = 40 [(spec.assert_max_size) = 1024, (spec.default_string) = "/config-override/override.json"];
+
+  // tenants are the tenants the deployment lists before kernel starts (the
+  // operator renders operator.yaml's tenants here, with their tids). Kernel
+  // seeds each at every boot as /tenants/<name>: a listed tid is taken as
+  // given, so a tenant whose Kubernetes namespace (tac-<deployment>-<tid>) was
+  // rendered before kernel ran keeps that id; an absent one is minted once and
+  // kept. A tenant that already exists keeps its record — the tid of a tenant
+  // is immutable, so a listed tid that differs from the record's is refused.
+  repeated BootstrapTenant tenants = 41 [(spec.assert_max_size) = 64];
+}
+
+// BootstrapTenant is one tenant listed in the deployment's bootstrap config
+// (Config.tenants).
+message BootstrapTenant {
+  // name is the bare tenant name; the tenant is /tenants/<name>.
+  string name = 1 [(spec.assert_required) = true, (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
+  // tid is the tenant's id when the deployment already gave it one: exactly 8
+  // of [0-9a-z], not all digits (that range is the platform's). Empty: kernel
+  // mints one.
+  string tid = 2 [(spec.assert_max_size) = 8];
 }
 
 // ConfigOverride is the runtime write path for a service's Config, and for
@@ -2047,6 +2067,9 @@ enum TenantStatus {
 // Tenant is the core identity record for a tenant in the cluster.
 // `name` is unique, immutable, and becomes the tenant's SPIFFE segment:
 //   spiffe://<trust-domain>/tenants/<name>/...
+// `tid` is the tenant's fixed-size id, which names its Kubernetes namespace
+// (tac-<deployment>-<tid>): a namespace cannot be renamed, so the name is not
+// usable there.
 message Tenant {
   string                    name        = 1 [(spec.indexed) = true, (spec.assert_required) = true, (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
   TenantStatus              status      = 2;
@@ -2055,6 +2078,25 @@ message Tenant {
   Constraints               constraints = 3;
   google.protobuf.Timestamp created_at  = 4;
   google.protobuf.Timestamp updated_at  = 5;
+  // tid: exactly 8 characters of [0-9a-z], minted once (CreateTenant, or the
+  // boot seed), immutable, and never reused — a deleted tenant's tid stays in
+  // ConfigState.tenant_ids, tombstoned. Every all-digit tid is reserved for the
+  // platform: `people` is 00000001 and `restore` is 00000002 in every
+  // deployment. A minted tid always starts with a letter (then 7 of [0-9a-z]),
+  // so it can never fall in the reserved range.
+  string                    tid         = 6 [(spec.assert_max_size) = 8];
+}
+
+// TenantIdRow is one tid ever issued, keyed by tid in ConfigState.tenant_ids.
+// A tid is claimed by inserting its row if absent, which is what makes it
+// unique; the row is never deleted, so a tid is never reused.
+message TenantIdRow {
+  string tid              = 1 [(spec.indexed) = true, (spec.assert_required) = true, (spec.assert_max_size) = 8];
+  // tenant_namespace is the canonical /tenants/<...> the tid was issued to.
+  string tenant_namespace = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
+  int64  created_at_ms    = 3;
+  // tombstoned_at_ms is when that tenant was deleted; 0 while it lives.
+  int64  tombstoned_at_ms = 4;
 }
 
 // TenantConfigEntry maps a tenant_name to its full TenantConfig (the tacplus
@@ -2101,6 +2143,13 @@ message ConfigState {
   repeated ProjectConfigEntry project_configs = 3 [
     (spec.persistence) = true,
     (spec.assert_max_size) = 4096
+  ];
+
+  // tenant_ids is every tid ever issued, keyed by TenantIdRow.tid, live and
+  // tombstoned alike (see Tenant.tid).
+  repeated TenantIdRow tenant_ids = 4 [
+    (spec.persistence) = true,
+    (spec.assert_max_size) = 65536
   ];
 }
 
@@ -2263,6 +2312,10 @@ message KernelDiskState {
   // identity_links is the link index (PrincipalState.identity_links). Carried
   // with people, and for the same reason: without it no login finds its person.
   repeated IdentityLinkRow identity_links = 13 [(spec.assert_max_size) = 65536];
+
+  // tenant_ids mirrors ConfigState.tenant_ids. Carried with the tenants: a
+  // snapshot that dropped it would free every tombstoned tid for reuse.
+  repeated TenantIdRow tenant_ids = 14 [(spec.assert_max_size) = 65536];
 
   // tenant_user_links are the link rows (PrincipalState.tenant_user_links).
   // Carried for the same reason people is, and more sharply: a link is proven

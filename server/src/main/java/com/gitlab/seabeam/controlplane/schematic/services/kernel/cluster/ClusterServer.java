@@ -675,6 +675,26 @@ public class ClusterServer {
 			} catch (Exception e) {
 				logger.warn("Failed to seed the reserved people tenant: {}", e.getMessage());
 			}
+			// The RESERVED `restore` tenant, which hosts redo: seeded as `people` is.
+			try {
+				RestoreTenant.seed(kernelConfigMap);
+			} catch (Exception e) {
+				logger.warn("Failed to seed the reserved restore tenant: {}", e.getMessage());
+			}
+			// The tenants the deployment lists, under the tids it gave them (the
+			// operator names their Kubernetes namespaces by tid before kernel
+			// runs). Then every tenant still without a tid — written by a kernel
+			// from before tids — gets one.
+			try {
+				TenantAdminServiceImpl.seedBootstrapTenants(kernelConfigMap, cfg.getTenantsList());
+			} catch (Exception e) {
+				logger.error("Failed to seed bootstrap tenants: {}", e.getMessage());
+			}
+			try {
+				TenantIds.backfill(kernelConfigMap);
+			} catch (Exception e) {
+				logger.warn("Failed to backfill tenant ids: {}", e.getMessage());
+			}
 
 			// Mandatory, fail-closed Authorizer shared by the kernel's token-auth
 			// gRPC wrappers. The kernel is the JWKS authority, so it uses a LOCAL
@@ -1568,6 +1588,10 @@ public class ClusterServer {
 			}
 			for (Kernel.ProjectConfigEntry e : snapshot.getProjectConfigsList()) {
 				configMap.putProjectConfigs(e.getProjectNamespace(), e);
+			}
+			// Every tid ever issued, tombstones included, so none is issued twice.
+			for (Kernel.TenantIdRow row : snapshot.getTenantIdsList()) {
+				configMap.putTenantIds(row.getTid(), row);
 			}
 			// snapshotConfigState stamps Tenant.name with the full namespace, so
 			// each record maps to exactly one key. The live boundary holds the

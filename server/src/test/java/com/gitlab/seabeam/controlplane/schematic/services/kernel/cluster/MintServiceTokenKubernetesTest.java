@@ -116,8 +116,13 @@ class MintServiceTokenKubernetesTest {
 
     /** Mints a service access token for whichever delegate claims {@code sa}. */
     private TokenWrapper mintAccessForSa(String sa) throws Exception {
+        return mintAccessFor(K8S_NAMESPACE, sa);
+    }
+
+    /** Mints a service access token for whichever delegate claims {@code sa} in {@code k8sNamespace}. */
+    private TokenWrapper mintAccessFor(String k8sNamespace, String sa) throws Exception {
         IdentityServiceImpl svc = newService(FakeKubernetesTokenVerifier.returning(
-                FakeKubernetesTokenVerifier.identity(K8S_NAMESPACE, sa, List.of(KERNEL_AUDIENCE))));
+                FakeKubernetesTokenVerifier.identity(k8sNamespace, sa, List.of(KERNEL_AUDIENCE))));
         Tokenrequest.TokenMintResponse resp = svc.mintServiceToken(CALLER, k8sReq(fakeJwt()));
         return TokenWrapper.parse(resp.getAccessToken().getBase64());
     }
@@ -424,6 +429,31 @@ class MintServiceTokenKubernetesTest {
         assertEquals(ACME_NS, acme.getNamespace());
         assertEquals(BETA_NS, beta.getNamespace());
         assertFalse(acme.getSubject().equals(beta.getSubject()));
+    }
+
+    /**
+     * Each tenant gets a Kubernetes namespace of its own, named by its tid:
+     * tac-<deployment>-<tid> (kernel#3). The matcher already names a
+     * namespace, so a tenant-owned instance there is matched as itself, and
+     * the same service account in another tenant's namespace is not.
+     */
+    @Test
+    void aTenantOwnedInstanceIsMatchedInItsTenantsOwnNamespace() throws Exception {
+        String acmeK8sNs = "tac-dev-q1w2e3r4";
+        String betaK8sNs = "tac-dev-z9x8c7v6";
+        addDelegate(TENANT_DELEGATE_NAME, ACME_NS, acmeK8sNs, TENANT_DELEGATE_NAME);
+        addDelegate(TENANT_DELEGATE_NAME, BETA_NS, betaK8sNs, TENANT_DELEGATE_NAME);
+
+        TokenWrapper acme = mintAccessFor(acmeK8sNs, TENANT_DELEGATE_NAME);
+        TokenWrapper beta = mintAccessFor(betaK8sNs, TENANT_DELEGATE_NAME);
+
+        assertEquals(tenantDelegateSpiffe(ACME_NS, TENANT_DELEGATE_NAME), acme.getSubject());
+        assertEquals(ACME_NS, acme.getNamespace());
+        assertEquals(tenantDelegateSpiffe(BETA_NS, TENANT_DELEGATE_NAME), beta.getSubject());
+        assertEquals(BETA_NS, beta.getNamespace());
+        assertEquals(ProtoException.PERMISSION_DENIED,
+                codeOf(() -> mintAccessFor("tac-dev-a1s2d3f4", TENANT_DELEGATE_NAME)),
+                "the service account of a namespace no tenant's delegate names matches nothing");
     }
 
     @Test

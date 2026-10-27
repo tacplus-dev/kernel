@@ -147,7 +147,8 @@ final class PeopleTenant {
 	}
 
 	/**
-	 * Creates the tenant record and writes the fixed Apple/Google provider set
+	 * Creates the tenant record under its fixed tid ({@value TenantIds#PEOPLE},
+	 * the same in every deployment) and writes the fixed Apple/Google provider set
 	 * into its {@code oauth} config slice. Kernel runs this at every boot, after
 	 * the disk snapshot is rehydrated, the same shape and for the same reason as
 	 * {@code TenantAdminServiceImpl.seedRootCredPairs}: the bundle stays
@@ -184,11 +185,13 @@ final class PeopleTenant {
 					.setEnable(true));
 		}
 
+		TenantIds.claim(configMap, TenantIds.PEOPLE, NAMESPACE);
 		Kernel.Tenant existing = configMap.getTenants(NAMESPACE);
 		Timestamp now = Timestamp.newBuilder()
 				.setSeconds(Instant.now().getEpochSecond()).build();
 		configMap.putTenants(NAMESPACE, Kernel.Tenant.newBuilder()
 				.setName(NAME)
+				.setTid(TenantIds.PEOPLE)
 				.setStatus(Kernel.TenantStatus.TENANT_STATUS_ACTIVE)
 				.setCreatedAt(existing.getName().isEmpty() ? now : existing.getCreatedAt())
 				.setUpdatedAt(now)

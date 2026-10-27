@@ -128,6 +128,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         Timestamp now = nowTs();
         Kernel.Tenant tenant = Kernel.Tenant.newBuilder()
                 .setName(leaf)
+                .setTid(TenantIds.mint(configMap, ns))
                 .setStatus(Kernel.TenantStatus.TENANT_STATUS_ACTIVE)
                 .setConstraints(constraints)
                 .setCreatedAt(now)
@@ -141,7 +142,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         putEmptyProject(ns + "/default");
 
         writeIdentitySnapshot.run();
-        logger.info("CreateTenant ns={} leaf={}", ns, leaf);
+        logger.info("CreateTenant ns={} leaf={} tid={}", ns, leaf, tenant.getTid());
         return tenant;
     }
 
@@ -150,7 +151,8 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
             throws ProtoException {
         String ns = require(request.getTenantNamespace(), "tenant_namespace");
         rejectReserved(ns);
-        if (configMap.getTenants(ns).getName().isEmpty()) {
+        Kernel.Tenant tenant = configMap.getTenants(ns);
+        if (tenant.getName().isEmpty()) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
         }
         // Refuse to orphan a subtree. Deleting only this level left every nested
@@ -163,7 +165,11 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
             throw new ProtoException(ProtoException.FAILED_PRECONDITION,
                     "tenant at " + ns + " still has nested tenants: " + String.join(", ", nested));
         }
-        // Remove the tenant + its tenant_config + child project_configs.
+        // Remove the tenant + its tenant_config + child project_configs. Its
+        // tid is tombstoned, not freed: it is never issued again.
+        if (!tenant.getTid().isEmpty()) {
+            TenantIds.tombstone(configMap, tenant.getTid());
+        }
         configMap.deleteTenants(ns);
         configMap.deleteTenantConfigs(ns);
         for (String projectNs : childProjectKeys(ns)) {
@@ -772,20 +778,102 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
     }
 
     /**
+     * Seeds the tenants the deployment's bootstrap config lists
+     * ({@code kernel.Config.tenants}) at every boot, after the disk snapshot is
+     * rehydrated.
+     *
+     * <p>A listed tenant that does not exist is created as {@code CreateTenant}
+     * would create a top-level one (active, unconstrained, with its empty
+     * {@code default} project), under the tid the entry carries or, without
+     * one, a freshly minted tid. One that exists keeps its record: a tid is
+     * immutable, so an entry whose tid differs from the record's is refused,
+     * and a record from before tids existed takes the listed tid. Each entry is
+     * seeded on its own; the ones refused are reported together at the end.
+     */
+    static void seedBootstrapTenants(ConfigMap configMap, List<Kernel.BootstrapTenant> tenants)
+            throws ProtoException {
+        List<String> refused = new ArrayList<>();
+        for (Kernel.BootstrapTenant t : tenants) {
+            String ns = TENANTS_PREFIX + t.getName();
+            try {
+                seedBootstrapTenant(configMap, ns, t);
+            } catch (ProtoException e) {
+                refused.add(ns + ": " + e.getMessage());
+            }
+        }
+        if (!refused.isEmpty()) {
+            throw new ProtoException(ProtoException.FAILED_PRECONDITION,
+                    "bootstrap tenant(s) not seeded: " + String.join("; ", refused));
+        }
+    }
+
+    private static void seedBootstrapTenant(ConfigMap configMap, String ns, Kernel.BootstrapTenant t)
+            throws ProtoException {
+        if (t.getName().isEmpty() || t.getName().indexOf('/') >= 0) {
+            throw new ProtoException(ProtoException.INVALID_ARGUMENT, "name must be one bare segment");
+        }
+        rejectReserved(ns);
+        String given = t.getTid();
+        if (!given.isEmpty() && (!TenantIds.isWellFormed(given) || TenantIds.isReserved(given))) {
+            throw new ProtoException(ProtoException.INVALID_ARGUMENT,
+                    "tid \"" + given + "\" must be 8 of [0-9a-z] and not all digits");
+        }
+        Kernel.Tenant existing = configMap.getTenants(ns);
+        if (!existing.getName().isEmpty()) {
+            if (!existing.getTid().isEmpty()) {
+                if (!given.isEmpty() && !given.equals(existing.getTid())) {
+                    throw new ProtoException(ProtoException.FAILED_PRECONDITION,
+                            "tenant has tid " + existing.getTid() + "; a tid is immutable");
+                }
+                return;
+            }
+            if (given.isEmpty()) {
+                return; // TenantIds.backfill mints it
+            }
+            TenantIds.claim(configMap, given, ns);
+            configMap.putTenants(ns, existing.toBuilder().setTid(given).build());
+            logger.info("Bootstrap tenant {} takes tid {}", ns, given);
+            return;
+        }
+        String tid;
+        if (given.isEmpty()) {
+            tid = TenantIds.mint(configMap, ns);
+        } else {
+            TenantIds.claim(configMap, given, ns);
+            tid = given;
+        }
+        Timestamp now = nowTs();
+        configMap.putTenants(ns, Kernel.Tenant.newBuilder()
+                .setName(t.getName())
+                .setTid(tid)
+                .setStatus(Kernel.TenantStatus.TENANT_STATUS_ACTIVE)
+                .setConstraints(Kernel.Constraints.getDefaultInstance())
+                .setCreatedAt(now)
+                .setUpdatedAt(now)
+                .build());
+        configMap.putIfAbsentProjectConfigs(ns + "/default", Kernel.ProjectConfigEntry.newBuilder()
+                .setProjectNamespace(ns + "/default")
+                .setConfig(Kernel.ProjectConfig.getDefaultInstance())
+                .build());
+        logger.info("Seeded bootstrap tenant {} with tid {}", ns, tid);
+    }
+
+    /**
      * Refuses any write to a RESERVED tenant namespace.
      *
-     * <p>{@code /tenants/people} is the one reserved name (see {@link
-     * PeopleTenant}). Kernel creates it at boot and owns its fixed IdP set, so
-     * there is nothing here for an admin to create, reconfigure or delete — and
-     * this tenant deliberately has no admin, so the refusal is what makes that
-     * true rather than merely intended. A root-entitled caller passes the
+     * <p>{@code /tenants/people} and {@code /tenants/restore} are the reserved
+     * names (see {@link PeopleTenant}, {@link RestoreTenant}). Kernel creates
+     * them at boot under their fixed tids, so there is nothing here for an
+     * admin to create, reconfigure or delete — and these tenants deliberately
+     * have no admin, so the refusal is what makes that true rather than merely
+     * intended. A root-entitled caller passes the
      * generated level-or-below check like any other namespace, which is exactly
      * why the check cannot live in the authorizer.
      */
     private static void rejectReserved(String ns) throws ProtoException {
-        if (PeopleTenant.NAMESPACE.equals(ns)) {
+        if (PeopleTenant.NAMESPACE.equals(ns) || RestoreTenant.NAMESPACE.equals(ns)) {
             throw new ProtoException(ProtoException.PERMISSION_DENIED,
-                    PeopleTenant.NAMESPACE + " is a reserved tenant and is not administrable");
+                    ns + " is a reserved tenant and is not administrable");
         }
     }
 

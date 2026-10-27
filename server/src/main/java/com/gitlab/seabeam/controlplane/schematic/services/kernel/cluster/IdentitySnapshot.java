@@ -169,6 +169,7 @@ public final class IdentitySnapshot {
                 b.addAllTenants(cfg.getTenantsList());
                 b.addAllTenantConfigs(cfg.getTenantConfigsList());
                 b.addAllProjectConfigs(cfg.getProjectConfigsList());
+                b.addAllTenantIds(cfg.getTenantIdsList());
             }
             if (revocationsReader != null) {
                 b.addAllWorkloadRevocations(revocationsReader.get());

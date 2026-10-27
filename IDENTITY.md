@@ -518,3 +518,54 @@ count is zero rows of either kind: the fleet runs no device broker, and nothing 
   written; fail-closed). Mutation-checked: disabling the approval ownership check, the cross-person enrolment
   refusal, the `device` strip or the exchange re-check fails exactly the test written for it.
 - Gates on tacplus 2.4 (kernel#1's floor). See the issue for how they were run before that floor is on main.
+
+## 2026-10-27 — Tenant ids (#3)
+
+A tenant's Kubernetes namespace cannot be renamed, so it is named by an immutable, fixed-size id rather than the
+tenant's name: `tac-<deployment>` for the platform services, `tac-<deployment>-<tid>` for each tenant (Jody,
+2026-10-26). SPIFFE paths and grants still name the tenant; moving them to the tid is not part of this.
+
+### What changed
+
+- **`Tenant.tid`**: exactly 8 of `[0-9a-z]`, minted once, immutable, never reused. `CreateTenant` mints it and
+  returns it on the `Tenant`; `ListTenants` and the record carry it.
+- **Unique by insert-if-absent.** `ConfigState.tenant_ids` (`TenantIdRow`, keyed by tid) holds every tid ever
+  issued. Minting draws a random tid and inserts its row only if absent (`TenantIds.mint`); a taken one is just
+  another draw. `DeleteTenant` tombstones the row (`tombstoned_at_ms`) and never deletes it, so a deleted tenant's
+  tid is never issued again. The rows ride the disk snapshot (`KernelDiskState.tenant_ids`).
+- **Reserved range.** Every all-digit tid is the platform's. `people` is `00000001` and `restore` is `00000002`, the
+  same in every deployment. A minted tid is a letter then 7 of `[0-9a-z]` (about 41 bits), so it never falls in
+  that range.
+- **The `restore` tenant** (`RestoreTenant`) hosts redo (tacplus-dev/redo#1) and has no human members. It is seeded
+  at every boot as `people` is, and `TenantAdmin` refuses to create, reconfigure or delete it.
+- **Bootstrap tenants.** `Config.tenants` (`BootstrapTenant{name, tid}`) lists the tenants the deployment renders
+  before kernel starts. Kernel seeds each at every boot as `/tenants/<name>`: under the listed tid as given, or a
+  minted one when it lists none (kept from then on through the snapshot). A tenant that already exists keeps its
+  record; a listed tid that differs from the record's is refused, and so is one that is malformed, all digits,
+  tombstoned or another tenant's. Each entry is seeded on its own; the boot log names every refused one.
+- **Backfill.** A tenant record written before tids gets one minted at boot (`TenantIds.backfill`), with a
+  compare-and-set on the record, so of two kernels booting at once one tid lands and the other is tombstoned.
+- Kubernetes service-account matchers are unchanged: they already name a namespace. A test shows a tenant-owned
+  instance matched in its tenant's own `tac-<deployment>-<tid>`.
+
+### Decided here (issue silent)
+
+- **The bootstrap list is a new `kernel.Config.tenants`.** Kernel's Config had no tenant list. operator.yaml's
+  `tenants` (bare names) are rendered into per-tenant pods and delegates but were never kernel records. The
+  operator rendering `Config.tenants`, with the tids it names namespaces by, is the operator's side and is not
+  done here.
+- **A bootstrap tid may not be all digits.** The reserved range is the platform's, and kernel seeds the platform's
+  tenants itself.
+- **A refused bootstrap entry does not stop kernel.** It is logged at error with the reason, like the other boot
+  seeds, and the remaining entries are still seeded.
+
+### Proof
+
+- `TenantIdTest`: format (10 000 mints match `^[a-z][0-9a-z]{7}$`, none in the reserved range); uniqueness (a taken
+  draw is skipped, a held tid cannot be claimed, 200 tenants get 200 tids); immutability (a bootstrap entry cannot
+  change a tid; tid and tombstones survive a restart; delete-then-recreate gets a new tid, and the old one cannot be
+  drawn or claimed); reserved (`people` is `00000001`, `restore` is `00000002`, both survive a restart, `restore`
+  cannot be deleted, created or reconfigured); the seeded case (a listed tid is seeded as given and kept on every
+  boot, a missing one is minted once, reserved/malformed/another tenant's/reserved-name entries are refused while
+  the rest are seeded, a record from before tids takes the listed tid); backfill.
+  `MintServiceTokenKubernetesTest.aTenantOwnedInstanceIsMatchedInItsTenantsOwnNamespace`.

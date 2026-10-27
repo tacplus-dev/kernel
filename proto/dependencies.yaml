@@ -64,8 +64,9 @@ lang:
             org.slf4j:slf4j-simple: 2.0.17
             org.yaml:snakeyaml: "2.5"
             javax.annotation:javax.annotation-api: 1.3.2
-            org.bouncycastle:bcprov-jdk18on: 1.80
-            org.bouncycastle:bcpkix-jdk18on: 1.80
+            org.bouncycastle:bcprov-jdk18on: 1.86
+            org.bouncycastle:bcpkix-jdk18on: 1.86
+            org.bouncycastle:bcutil-jdk18on: 1.86
             org.apache.maven.plugins:maven-antrun-plugin: 3.1.0
             org.codehaus.mojo:build-helper-maven-plugin: 3.6.0
             org.apache.commons:commons-compress: 1.28.0

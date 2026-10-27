@@ -37,8 +37,8 @@ lang:
             gopkg.in/yaml.v3: v3.0.1
     java:
         dependencies:
-            ch.qos.logback:logback-classic: 1.5.29
-            ch.qos.logback:logback-core: 1.5.29
+            ch.qos.logback:logback-classic: 1.5.38
+            ch.qos.logback:logback-core: 1.5.38
             com.google.code.gson:gson: 2.13.2
             com.google.protobuf:protobuf-java: 4.36.2
             com.google.protobuf:protobuf-java-util: 4.36.2

@@ -128,7 +128,7 @@ class PendingApprovalTest {
 				null,            // kubernetesTokenVerifier
 				KERNEL_AUDIENCE,
 				RELYING_PARTY);
-		personalIdentity = new PersonalIdentityServiceImpl(principalMap, null);
+		personalIdentity = new PersonalIdentityServiceImpl(principalMap);
 		passkey = Passkey.generate();
 		// The §3 ceremony: this passkey and this Apple login become a person with
 		// this device enrolled on their XID.

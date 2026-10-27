@@ -569,3 +569,58 @@ tenant's name: `tac-<deployment>` for the platform services, `tac-<deployment>-<
   boot, a missing one is minted once, reserved/malformed/another tenant's/reserved-name entries are refused while
   the rest are seeded, a record from before tids takes the listed tid); backfill.
   `MintServiceTokenKubernetesTest.aTenantOwnedInstanceIsMatchedInItsTenantsOwnNamespace`.
+
+## 2026-10-27 — The `linked` claim is retired (#4)
+
+Jody, 2026-10-26: retire the `linked` claim. XIDs (one person, `spiffe://<td>/users/<xid>`) and
+request-named routing (tacplus#170) replace it. Who the caller is comes from the person, which tenant a
+call is for comes from the request, and whether it is allowed is policy at the target. A token that widens
+its own namespaces is the thing being removed. The tacplus side, the generated backstop that accepts
+`linked` namespaces, is tacplus-dev/tacplus#171.
+
+### What changed
+
+- **No token kernel mints carries `linked`.** The session credential's access tokens
+  (`accessTokenFromProof`) and the legacy user mint (`mintUserTokenInternal`, the device token included)
+  no longer stamp it, and `linkedNamespaces` is gone. A relayed `linked` claim was already dropped,
+  because `linked` is a platform claim name (`JWT_PAYLOAD_TYPE_LINKED`). A test now covers that.
+- **The tenant-user link registry is retired.** `PrincipalState.tenant_user_links` (3) is reserved and
+  is no longer restored (`ClusterServer.restoreTenantUserLinks` is gone) or written to the snapshot.
+  `PersonalIdentity.RevokeTenantUserLink` and its messages are gone. `CreateTenantUserLink` now only enrols
+  a device. A request with no device side is refused with `INVALID_ARGUMENT` before either side is
+  resolved, so it writes nothing, not even a person. The nonce-pair proof, the OPA-named tenant side and
+  the per-user link cap went with it.
+- **An old snapshot still boots.** `TenantUserLink`/`TenantUserLinks` survive only as the shape of
+  `KernelDiskState.tenant_user_links` (12), the same way `PersonalPrincipal` survives for field 10.
+  `migratePersonalPrincipals` reads the device edges straight from the snapshot to find each pre-#18
+  principal's person. It no longer reads them from live state. Every other edge is ignored. The boot log
+  counts the ignored rows (`Ignored N retired tenant-user link row(s) in the disk snapshot (kernel#4)`).
+  The next snapshot written carries none.
+
+### Decided here
+
+- **#4's open question was already answered by #18.** Device approvals check the approving credential
+  against `Person.devices` of the XID the approval names. `personUserKey` reads no link, and the
+  `/people/<pid>` principal is gone. Nothing but the `linked` claim and the #18 migration read the link
+  records, so they go.
+- **The RPC keeps its name.** `CreateTenantUserLink` is the device broker's enrolment call. Renaming it
+  would break that caller's contract for no behavioural gain. `TenantUserLinkSide.subject` and
+  `CreateTenantUserLinkRequest.trace_id` are now ignored but not reserved, so a broker that still sets
+  them keeps compiling.
+- **Field 12 stays readable rather than reserved.** Reserving it would make the #18 migration drop every
+  pre-#18 device principal, because their edges are the only record of whose devices they were. The
+  expected count on seatrials is zero rows either way (see #18), but keeping the field readable costs
+  nothing.
+
+### Proof
+
+- `TenantUserLinkTest`: a person with an enrolled device and tenant links in both directions, booted
+  from a pre-#4 snapshot, mints tenant refresh and access tokens and the people session credential and
+  access token. None of them carries `linked`. A relayed `linked` claim never reaches a token. Two IdP
+  logins are refused and write nothing. The next snapshot holds no link rows and the same person with the
+  same device. The first and third of these failed before the change.
+- `PersonalPrincipalMigrationTest`: the migration finds the person through the snapshot's edges, counts
+  them as ignored, and writes none back. `DeviceWebauthnLinkTest`, `DevicePrincipalTest` and
+  `PendingApprovalTest` (enrolment, device tokens, approvals) pass unchanged apart from the removed
+  registry assertions.
+- Gates on tacplus 2.4.

@@ -1,5 +1,13 @@
 # Tenant-user ↔ tenant-user links: store, prove, and the `linked` claim at mint
 
+**SUPERSEDED 2026-10-27** by kernel#4 (Jody, 2026-10-26: retire the `linked` claim). XIDs (one
+person, `spiffe://<td>/users/<xid>`) and request-named routing (tacplus#170) replace it: who the
+caller is comes from the person, which tenant a call is for from the request, and whether it is
+allowed is policy at the target. Kernel no longer stamps `linked`, and the link registry, the
+tenant-user arm of `CreateTenantUserLink` and `RevokeTenantUserLink` are gone. Devices moved onto
+the XID in kernel#18. See IDENTITY.md, "2026-10-27 — The `linked` claim is retired (#4)". Left below
+for historical record.
+
 Slice owner: schematic looper (kernel + platform proto), 2026-09-21.
 Authority: `looper/schematic/decisions/identity-people-tenant-devices-private-2026-09-21.md`
 §2, plus tacplus's 2026-09-21 13:48 MDT inbox note pinning the claim's shape.

@@ -469,7 +469,6 @@ public class ClusterServer {
 		Kernel.KernelDiskState snapshot = identitySnapshot.load();
 		rehydrateFromSnapshot(snapshot, identityState, caState, workloadState, kernelConfigMap);
 		restorePeople(snapshot, principalState);
-		restoreTenantUserLinks(snapshot, principalState);
 		migratePersonalPrincipals(snapshot, principalState);
 		restoreGrantRevocations(snapshot, liveGrants);
 		keyRotator.restore(snapshot != null ? snapshot.getSigningKeysList() : List.of());
@@ -987,8 +986,7 @@ public class ClusterServer {
 			// only a root-namespace caller — which would refuse every tenant
 			// caller this service exists for. See the item's decision doc.
 			var personalIdentityImpl = new PersonalIdentityServiceImpl(
-					backendServers.services().getPrincipalMap(),
-					this::saveIdentitySnapshot);
+					backendServers.services().getPrincipalMap());
 			var personalIdentityWrapper = new PersonalIdentity(personalIdentityImpl, kernelAuthorizer);
 			personalIdentityWrapper.setAuthenticateFunc((PersonalIdentity.Authenticator) targetNamespace ->
 					com.gitlab.seabeam.controlplane.schematic.services.kernel.model.chassis.grpcserver.Authorizer
@@ -1285,13 +1283,13 @@ public class ClusterServer {
 	}
 
 	/** What {@link #migratePersonalPrincipals} did, for its log line and its test. */
-	record PersonalPrincipalMigration(int migrated, int credentials, int dropped, int deviceEdges) {
+	record PersonalPrincipalMigration(int migrated, int credentials, int dropped, int ignoredLinkRows) {
 	}
 
 	/**
 	 * The one-time migration of kernel#18: the retired {@code /people/<pid>}
 	 * device principals a pre-#18 snapshot still carries move onto the XIDs their
-	 * device links name, and the device link edges go.
+	 * device links name.
 	 *
 	 * <p>A principal is migrated when its live link edges into
 	 * {@code /tenants/people} name exactly one person who is still live
@@ -1304,11 +1302,14 @@ public class ClusterServer {
 	 * exchange that read them is retired. A credential some person already
 	 * holds is not copied a second time.
 	 *
-	 * <p>Then every {@code TenantUserLinks} edge naming a {@code /people/...}
-	 * identity is removed, both directions, so no person's {@code linked} claim
-	 * names the retired root. Runs after the people and the links are restored,
-	 * and writes nothing back to disk itself: until the next identity write the
-	 * old snapshot still holds the rows, and replaying it gives the same result.
+	 * <p>The link edges are read from the snapshot itself: the tenant-user link
+	 * registry is retired with the {@code linked} claim (kernel#4), so they are
+	 * never restored into live state. Beyond naming a device's person they are
+	 * IGNORED, and counted: an old snapshot holding them boots, and the next one
+	 * written carries none.
+	 * Runs after the people are restored, and writes nothing back to disk
+	 * itself: until the next identity write the old snapshot still holds the
+	 * rows, and replaying it gives the same result.
 	 *
 	 * <p>Fails closed like the restores around it: a migration that cannot be
 	 * applied refuses the boot rather than lose devices silently.
@@ -1320,9 +1321,9 @@ public class ClusterServer {
 		int migrated = 0;
 		int credentials = 0;
 		int dropped = 0;
-		int deviceEdges = 0;
+		List<Kernel.TenantUserLinks> rows =
+				snapshot == null ? List.of() : snapshot.getTenantUserLinksList();
 		try {
-			List<Kernel.TenantUserLinks> rows = principalState.proto().getTenantUserLinksList();
 			for (Kernel.PersonalPrincipal principal
 					: snapshot == null ? List.<Kernel.PersonalPrincipal>of() : snapshot.getPersonalPrincipalsList()) {
 				String xid = principal.getDisabledAtMs() != 0 ? null
@@ -1343,34 +1344,22 @@ public class ClusterServer {
 				principalState.putPeople(xid, updated.build());
 				migrated++;
 			}
-			for (Kernel.TenantUserLinks row : rows) {
-				if (row.getUserKey().startsWith(peoplePrefix)) {
-					principalState.deleteTenantUserLinks(row.getUserKey());
-					deviceEdges += row.getLinksCount();
-					continue;
-				}
-				Kernel.TenantUserLinks.Builder kept = row.toBuilder().clearLinks();
-				for (Kernel.TenantUserLink link : row.getLinksList()) {
-					if (!link.getPeerNamespace().startsWith(peoplePrefix)) {
-						kept.addLinks(link);
-					}
-				}
-				if (kept.getLinksCount() != row.getLinksCount()) {
-					principalState.putTenantUserLinks(row.getUserKey(), kept.build());
-				}
-			}
 		} catch (Exception e) {
 			logger.error("Failed to migrate the /people device principals onto their XIDs — refusing "
 					+ "to start with a partial migration: {}", e.getMessage(), e);
 			throw new IllegalStateException(
 					"kernel refuses to start: /people device principals could not be migrated", e);
 		}
-		if (migrated + dropped + deviceEdges > 0) {
+		if (migrated + dropped > 0) {
 			logger.info("Migrated {} /people device principal(s) ({} credential(s)) onto their XIDs; "
-					+ "dropped {} with no live link to exactly one person; removed {} device link edge(s)",
-					migrated, credentials, dropped, deviceEdges);
+					+ "dropped {} with no live link to exactly one person",
+					migrated, credentials, dropped);
 		}
-		return new PersonalPrincipalMigration(migrated, credentials, dropped, deviceEdges);
+		if (!rows.isEmpty()) {
+			logger.info("Ignored {} retired tenant-user link row(s) in the disk snapshot (kernel#4)",
+					rows.size());
+		}
+		return new PersonalPrincipalMigration(migrated, credentials, dropped, rows.size());
 	}
 
 	/** The retired device root's first segment; tacplus#131 removed it from the SPIFFE grammar. */
@@ -1457,35 +1446,6 @@ public class ClusterServer {
 					+ "a partial restore: {}", e.getMessage(), e);
 			throw new IllegalStateException(
 					"kernel refuses to start: people could not be restored from the disk snapshot", e);
-		}
-	}
-
-	/**
-	 * Restores the tenant-user link registry from the disk snapshot, fail-closed
-	 * like its {@link #restorePeople} neighbour and more sharply than it: a link
-	 * is proved once, by two live IdP logins sharing a nonce, and nothing kernel
-	 * holds can re-derive it. A partial restore silently unlinks users, and the
-	 * only symptom is a {@code linked} claim that stops appearing.
-	 */
-	static void restoreTenantUserLinks(
-			Kernel.KernelDiskState snapshot,
-			com.gitlab.seabeam.controlplane.schematic.services.kernel.tacplusbackend.services.kernel.PrincipalMap principalState) {
-		if (snapshot == null || snapshot.getTenantUserLinksCount() == 0) {
-			return;
-		}
-		try {
-			for (Kernel.TenantUserLinks links : snapshot.getTenantUserLinksList()) {
-				principalState.putTenantUserLinks(
-						Objects.requireNonNull(links.getUserKey(), "tenant_user_links.user_key"), links);
-			}
-			logger.info("Restored {} tenant-user link row(s) from the disk snapshot",
-					snapshot.getTenantUserLinksCount());
-		} catch (Exception e) {
-			logger.error("Failed to restore tenant user links from the disk snapshot — refusing to "
-					+ "start with a partial restore: {}", e.getMessage(), e);
-			throw new IllegalStateException(
-					"kernel refuses to start: tenant user links could not be restored from the "
-							+ "disk snapshot", e);
 		}
 	}
 

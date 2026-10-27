@@ -179,8 +179,6 @@ class DeviceWebauthnLinkTest {
 		assertEquals(personKey, resp.getAUserKey());
 		assertEquals(personKey, resp.getBUserKey());
 		assertEquals(device.getCreatedAtMs(), resp.getCreatedAtMs());
-		assertEquals(0, principalMap.proto().getTenantUserLinksCount(),
-				"a device is a credential of the person, not a link edge");
 	}
 
 	/**
@@ -639,8 +637,6 @@ class DeviceWebauthnLinkTest {
 
 	private void assertNothingWritten() {
 		try {
-			assertEquals(0, principalMap.proto().getTenantUserLinksCount(),
-					"an unbound proof must link nothing");
 			assertEquals(0, principalMap.proto().getPeopleCount(),
 					"an unbound proof must create nobody");
 		} catch (ProtoException e) {

@@ -179,11 +179,12 @@ public final class IdentitySnapshot {
             }
             if (principalStateReader != null) {
                 Kernel.PrincipalState principals = principalStateReader.get();
-                // personal_principals is never written: the retired /people/<pid>
-                // rows are read once at boot and migrated (kernel#18).
+                // personal_principals and tenant_user_links are never written:
+                // the retired /people/<pid> rows are read once at boot and
+                // migrated (kernel#18), and the link rows only feed that
+                // migration (kernel#4).
                 b.addAllPeople(principals.getPeopleList());
                 b.addAllIdentityLinks(principals.getIdentityLinksList());
-                b.addAllTenantUserLinks(principals.getTenantUserLinksList());
             }
 
             DiskStores.saveKernelDiskState(base, NS, b.build(), Snapshot.Opts.defaults());

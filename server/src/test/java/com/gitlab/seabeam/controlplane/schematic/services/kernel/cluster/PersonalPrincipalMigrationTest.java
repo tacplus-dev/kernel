@@ -20,13 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The one-time migration of kernel#18: a snapshot written before it holds
  * {@code /people/<pid>} device principals, the tenant-user link edges that tie
  * each to a person, and people without devices. Booting it must leave every
- * linked device's credentials on its person's XID, drop (and count) the rest,
- * and leave no edge naming the retired root.
+ * linked device's credentials on its person's XID and drop (and count) the
+ * rest. The link edges themselves are retired (kernel#4): read from the
+ * snapshot for this migration, never restored, never written again.
  *
  * <p>Driven through the real boot entry points in the order the
  * {@code ClusterServer} constructor calls them — {@code restorePeople},
- * {@code restoreTenantUserLinks}, {@code migratePersonalPrincipals} — and, for
- * the restart half, the real {@link IdentitySnapshot} over a temp dir.
+ * {@code migratePersonalPrincipals} — and, for the restart half, the real
+ * {@link IdentitySnapshot} over a temp dir.
  */
 class PersonalPrincipalMigrationTest {
 
@@ -104,7 +105,6 @@ class PersonalPrincipalMigrationTest {
 	private static PrincipalMap boot(Kernel.KernelDiskState snapshot) {
 		PrincipalMap map = new PrincipalMap(new InMemoryManager());
 		ClusterServer.restorePeople(snapshot, map);
-		ClusterServer.restoreTenantUserLinks(snapshot, map);
 		ClusterServer.migratePersonalPrincipals(snapshot, map);
 		return map;
 	}
@@ -112,8 +112,8 @@ class PersonalPrincipalMigrationTest {
 	/**
 	 * The migration's purpose: a device principal linked to a person becomes
 	 * that person's devices — every credential, its key, label and revocation
-	 * mark kept — and both directions of the device edge go, while the person's
-	 * other links are untouched.
+	 * mark kept. The three link rows it was found through, the person's tenant
+	 * link included, are counted as ignored.
 	 */
 	@Test
 	void aLinkedDevicePrincipalMovesOntoItsPersonsXid() throws Exception {
@@ -128,18 +128,13 @@ class PersonalPrincipalMigrationTest {
 
 		PrincipalMap map = new PrincipalMap(new InMemoryManager());
 		ClusterServer.restorePeople(snapshot.build(), map);
-		ClusterServer.restoreTenantUserLinks(snapshot.build(), map);
 		ClusterServer.PersonalPrincipalMigration result =
 				ClusterServer.migratePersonalPrincipals(snapshot.build(), map);
 
-		assertEquals(new ClusterServer.PersonalPrincipalMigration(1, 2, 0, 1), result);
+		assertEquals(new ClusterServer.PersonalPrincipalMigration(1, 2, 0, 2), result);
 		Kernel.Person alice = map.getPeople(ALICE);
 		assertEquals(List.of(credential("cred-1", 0), credential("cred-2", 1_700_000_500_000L)),
 				alice.getDevicesList());
-		assertEquals(1, map.proto().getTenantUserLinksCount(), "the device's own row is gone");
-		assertEquals(List.of(edge("/tenants/acme|jody@acme.example", 0)),
-				map.getTenantUserLinks(personKey(ALICE)).getLinksList(),
-				"the person's edge to the device is gone, its tenant link is not");
 	}
 
 	/**
@@ -167,7 +162,6 @@ class PersonalPrincipalMigrationTest {
 
 		PrincipalMap map = new PrincipalMap(new InMemoryManager());
 		ClusterServer.restorePeople(snapshot.build(), map);
-		ClusterServer.restoreTenantUserLinks(snapshot.build(), map);
 		ClusterServer.PersonalPrincipalMigration result =
 				ClusterServer.migratePersonalPrincipals(snapshot.build(), map);
 
@@ -176,7 +170,6 @@ class PersonalPrincipalMigrationTest {
 		for (Kernel.Person person : map.proto().getPeopleList()) {
 			assertEquals(0, person.getDevicesCount(), person.getXid());
 		}
-		assertEquals(0, map.proto().getTenantUserLinksCount(), "no edge names the retired root");
 	}
 
 	/**
@@ -219,9 +212,9 @@ class PersonalPrincipalMigrationTest {
 
 	/**
 	 * The restart half. The next snapshot written carries no device principals
-	 * and keeps the devices on the person, and booting it migrates nothing more;
-	 * until that snapshot is written, booting the old one again gives the same
-	 * result, so a crash in between loses nothing.
+	 * and no link rows, keeps the devices on the person, and booting it
+	 * migrates nothing more; until that snapshot is written, booting the old one
+	 * again gives the same result, so a crash in between loses nothing.
 	 */
 	@Test
 	void theNextSnapshotCarriesTheDevicesAndNoPrincipals(@TempDir Path dir) throws Exception {
@@ -247,9 +240,9 @@ class PersonalPrincipalMigrationTest {
 		Kernel.KernelDiskState written = persistence.load();
 
 		assertEquals(0, written.getPersonalPrincipalsCount());
+		assertEquals(0, written.getTenantUserLinksCount());
 		PrincipalMap afterRestart = new PrincipalMap(new InMemoryManager());
 		ClusterServer.restorePeople(written, afterRestart);
-		ClusterServer.restoreTenantUserLinks(written, afterRestart);
 		assertEquals(new ClusterServer.PersonalPrincipalMigration(0, 0, 0, 0),
 				ClusterServer.migratePersonalPrincipals(written, afterRestart));
 		assertEquals(migrated.getPeople(ALICE), afterRestart.getPeople(ALICE),

@@ -48,9 +48,8 @@ import javax.annotation.Nullable;
  * </ol>
  *
  * <p>The two orderings are why the binding is not circular and why neither half
- * can be lifted onto another ceremony. Replaying the WHOLE request re-proves the
- * same link, which {@code recordLink} makes idempotent — the same position §2
- * took on the two-IdP proof, for the same reason.
+ * can be lifted onto another ceremony. Replaying the WHOLE request re-enrols the
+ * same device on the same person, which changes nothing.
  *
  * <p><b>The third binding: the relying party.</b> The RP ID hash in
  * {@code authenticatorData} and the {@code origin} in {@code clientDataJSON} are

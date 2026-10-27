@@ -530,31 +530,26 @@ service Mint {
   // the one other anchor, is deferred). A device is enrolled onto the XID by
   // CreateTenantUserLink below, a device side beside that person's login.
 
-  // CreateTenantUserLink records that two tenant-user identities are the same human.
-  // Both sides are proved in ONE request: the caller is an IdP broker that has
-  // just verified BOTH id_tokens, and both carry the same `nonce` — the value
-  // the client generated once and sent into both logins. The shared nonce is
-  // the whole proof: without it a stolen token for one side could be replayed
-  // on its own to fabricate a link to somebody else's account.
+  // CreateTenantUserLink ENROLS A DEVICE onto a person's XID (identity decision
+  // doc §3). One side is a WebAuthn assertion — see
+  // TenantUserLinkSide.device_assertion — and the other is that person's login
+  // through one of the people tenant's providers, both in ONE request from a
+  // device broker. The two are bound by a pair of checks in opposite
+  // directions: the id_token's `nonce` is the device key's RFC 7638
+  // thumbprint, and the assertion's challenge names that exact login. Kernel
+  // verifies the assertion itself, so the device rests on no broker's word at
+  // all.
   //
-  // Neither side's namespace is taken from the request. The people side is
-  // derived from the verified issuer/subject, exactly as MintUserToken's people
-  // arm derives it; any other side's namespace comes from OPA, the same
-  // authority that names it at mint. A broker therefore cannot name a tenant it
-  // did not just authenticate a login into.
+  // It writes no link edge. The credential goes onto Person.devices of the XID
+  // the login resolves to, and a device token is that person's (sub =
+  // /users/<xid>, the device named by its `device` claim). A credential already
+  // on another person's XID is refused.
   //
-  // A DEVICE SIDE (identity decision doc §3) replaces one of the two logins
-  // with a WebAuthn assertion — see TenantUserLinkSide.device_assertion. The
-  // proof is the same shape and the same strength, with the shared nonce
-  // replaced by a pair of bindings in opposite directions: the id_token's
-  // `nonce` is the device key's RFC 7638 thumbprint, and the assertion's
-  // challenge names that exact login. Kernel verifies the assertion itself, so
-  // a device side rests on no broker's word at all.
-  //
-  // A device link writes no link edge: it ENROLS the device. The credential
-  // goes onto Person.devices of the XID the login resolves to, and a device
-  // token is that person's (sub = /users/<xid>, the device named by its
-  // `device` claim). A credential already on another person's XID is refused.
+  // 2026-10-27 (kernel#4): linking two tenant users (two IdP logins sharing a
+  // nonce) is retired with the `linked` claim it fed. Who the caller is comes
+  // from the person, which tenant a call is for from the request, and whether
+  // it is allowed is policy at the target. A request with no device side is
+  // refused. The RPC keeps its name because the device broker calls it.
   //
   // auth_services: ["*"] for the same reason MintUserToken carries it — which
   // delegates may attest a human login is per-delegate runtime config
@@ -1570,51 +1565,28 @@ message PersonalPrincipal {
   int64 disabled_at_ms = 5 [(spec.assert_ge) = 0];
 }
 
-// TenantUserLink is one edge out of a linked tenant user: which identity in
-// another tenant is the same human. Linking is GENERIC — any two tenants, not
-// `people` and one other. The first use is drpepper's `jody` linked to that
-// human's `people` row, but a contractor in two companies and a tenant
-// migrating IdPs are the same record.
-//
-// peer_namespace, not a peer user path, is what the token's `linked` claim
-// carries. The generated namespace backstop compares that claim against
-// (spec.store_namespace), which holds a NAMESPACE, so a user path would never
-// compare equal and a linked caller's read would never be accepted.
+// TenantUserLink and TenantUserLinks are the RETIRED tenant-user link registry
+// (kernel#4): the edges that fed the `linked` claim, which no token carries
+// any more. They survive only as the shape of KernelDiskState.tenant_user_links,
+// so a snapshot written before kernel#4 can still be read: its device edges
+// name the person each pre-kernel#18 /people/<pid> principal migrates onto
+// (ClusterServer.migratePersonalPrincipals), and every other edge is ignored.
+// Nothing writes one.
 message TenantUserLink {
-  // peer_namespace is the canonical /tenants/<t> the linked identity lives in.
+  // peer_namespace is the canonical /tenants/<t> (or retired /people/<pid>) of
+  // the linked identity.
   string peer_namespace = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
-  // peer_subject is the linked identity's `sub` as kernel mints it. Kernel
-  // keeps it because peer_namespace alone does not identify a human, and
-  // because a re-key has to find and rewrite the edge that names one user.
+  // peer_subject is the linked identity's `sub` as kernel minted it.
   string peer_subject = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 1024];
   int64 created_at_ms = 3 [(spec.assert_ge) = 0];
-  // revoked_at_ms is the unlink mark. Marks, never deletes — the same audit rule
-  // Grant.revoked_at_ms and PersonalCredential.revoked_at_ms state, and for the
-  // stronger reason here that a link is proved once by live credentials and
-  // nothing kernel holds can re-derive it: a deleted edge is indistinguishable
-  // from one that was never proved.
-  //
-  // A revoked edge contributes no `linked` claim at mint. Re-proving the same
-  // link clears the mark rather than adding a second edge, because the same two
-  // credentials presented again are the same fact.
+  // revoked_at_ms is the unlink mark; a revoked edge names nobody.
   int64 revoked_at_ms = 4 [(spec.assert_ge) = 0];
 }
 
-// TenantUserLinks is ONE tenant user's links.
-//
-// Keyed per user, and written on BOTH sides of every link, deliberately: this
-// is read on every user mint, so it must be one O(1) keyed lookup and not a
-// scan of every row for one that mentions the caller.
+// TenantUserLinks is ONE tenant user's retired links, keyed as
+// "<namespace>|<sub>" — the namespace and sub claims kernel minted for them.
 message TenantUserLinks {
-  // user_key identifies the linked user as "<namespace>|<sub>" — the exact
-  // namespace and sub claims kernel mints for them. Deliberately the minted
-  // pair rather than a derived path: an ordinary tenant's `sub` is whatever its
-  // IdP broker supplies (an email, today) and is not required to be a SPIFFE
-  // id, so there is no path to derive. The namespace half is what keeps two
-  // tenants' identically-named users apart.
-  string user_key = 1 [
-    (spec.indexed) = true, (spec.assert_required) = true,
-    (spec.assert_min_size) = 1, (spec.assert_max_size) = 1024];
+  string user_key = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 1024];
   repeated TenantUserLink links = 2 [(spec.assert_max_size) = 64];
 }
 
@@ -1645,14 +1617,10 @@ message PrincipalState {
     (spec.assert_max_size) = 65536
   ];
 
-  // tenant_user_links is the link registry, keyed by TenantUserLinks.user_path.
-  // It lives in THIS boundary for the same reason people does: a link is
-  // identity, not user data, so it belongs in kernel's own registry of who
-  // exists — kernel-only and unexported.
-  repeated TenantUserLinks tenant_user_links = 3 [
-    (spec.persistence) = true,
-    (spec.assert_max_size) = 65536
-  ];
+  // 2026-10-27 (kernel#4): tenant_user_links (3), the link registry that fed
+  // the `linked` claim, is retired with that claim.
+  reserved 3;
+  reserved "tenant_user_links";
 
   // pending_approvals is the device-only-approval registry, keyed by
   // PendingApproval.approval_id. It is in THIS boundary because an approval is
@@ -1670,33 +1638,20 @@ message PrincipalState {
   ];
 }
 
-// PersonalIdentity is a user's own view of their links and approvals. It
-// exists because kernel state RPCs are service-only (checkAccess denies user
-// tokens on every policed graph), so a person cannot read or write their own
-// registry rows over the state plane.
+// PersonalIdentity is a user's own view of their approvals. It exists because
+// kernel state RPCs are service-only (checkAccess denies user tokens on every
+// policed graph), so a person cannot read or write their own registry rows
+// over the state plane.
 //
 // 2026-10-27 (kernel#18): GetMyIdentity, the /people/<pid> principal's
 // memberships, is retired with that principal; a person's own view is
 // UserMint.GetLinkedAccounts.
+//
+// 2026-10-27 (kernel#4): RevokeTenantUserLink, unlinking two tenant users, is
+// retired with the links and the `linked` claim. A device is removed by
+// UserMint.RevokeDeviceCredential.
 service PersonalIdentity {
   option (spec.service_c2s) = {auth_entitled_users: true};
-
-  // RevokeTenantUserLink is UNLINK. It takes no owner argument: the owning
-  // side of the edge is the CALLER'S OWN namespace and sub, out of the verified
-  // token, so there is no field pointing at somebody else's link. The request
-  // names only the peer to unlink from. Either side may unlink.
-  //
-  // NO RE-PROOF IS REQUIRED. Linking demands both credentials at once because
-  // it GRANTS reach into another namespace; unlinking only withdraws it.
-  // (A device is no longer a link edge: removing one is
-  // UserMint.RevokeDeviceCredential.)
-  rpc RevokeTenantUserLink(RevokeTenantUserLinkRequest) returns (RevokeTenantUserLinkResponse) {
-    option (spec.rpc) = {
-      principal: RPC_PRINCIPAL_USER,
-      exposure: RPC_EXPOSURE_EXTERNAL,
-      flags: [RPC_FLAG_AUTH_ANY_USER]
-    };
-  }
 
   // CreatePendingApproval PROPOSES something that will need a device tap
   // (identity decision doc §5). The caller is the person — any token whose sub
@@ -1722,25 +1677,6 @@ service PersonalIdentity {
       flags: [RPC_FLAG_AUTH_ANY_USER]
     };
   }
-}
-
-// RevokeTenantUserLinkRequest names the PEER to unlink from, and nothing else.
-// The owning side is the caller's own token — see the RPC comment.
-message RevokeTenantUserLinkRequest {
-  // peer_namespace is the canonical /tenants/<t> of the edge to revoke, as
-  // TenantUserLink.peer_namespace holds it.
-  string peer_namespace = 1 [(spec.assert_required) = true, (spec.assert_max_size) = 512];
-  // peer_subject is that identity's `sub`, as TenantUserLink.peer_subject holds
-  // it. Both halves are required: peer_namespace alone would revoke every edge
-  // into a tenant, which is not what unlinking one device means.
-  string peer_subject = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 1024];
-}
-
-message RevokeTenantUserLinkResponse {
-  // revoked_at_ms is the mark written on BOTH directions of the edge. Zero
-  // never comes back: an edge that was already revoked returns the mark it
-  // already carried, so unlinking twice is the same fact, not an error.
-  int64 revoked_at_ms = 1 [(spec.assert_ge) = 0];
 }
 
 // WebauthnAssertion is one WebAuthn (passkey) assertion, exactly as the
@@ -1781,42 +1717,40 @@ message WebauthnAssertion {
   bytes signature = 4 [(spec.assert_required) = true, (spec.assert_max_size) = 2048];
 }
 
-// TenantUserLinkSide is one half of a link: either one IdP login the calling
-// broker has just verified, or one device that has just signed a WebAuthn
-// assertion. Exactly one of the two shapes is set.
+// TenantUserLinkSide is one half of a device enrolment: either the person's IdP
+// login the calling broker has just verified, or the device that has just
+// signed a WebAuthn assertion. Exactly one of the two shapes is set.
 message TenantUserLinkSide {
   // claims are the verified IdP claims, the same shape MintUserToken carries —
   // the IdP's own iss/sub/nonce under origin_*, copied verbatim out of the
   // id_token the broker verified. origin_iss, origin_sub and origin_nonce are
-  // all required ON AN IdP SIDE: a side with no nonce cannot be bound to the
-  // other side. Absent on a device side, which carries no login at all.
+  // all required ON THE LOGIN SIDE: a side with no nonce cannot be bound to
+  // the device. Absent on a device side, which carries no login at all.
   //
   // NOT assert_required, because a device side has no claims to carry. The
   // handler requires exactly one of (claims, device_assertion) per side and
   // refuses a side that sets both or neither — a check a field-level assertion
   // cannot express.
   google.protobuf.Struct claims = 1;
-  // subject is the SPIFFE user id this login resolves to, as
-  // MintUserTokenRequest.subject carries it. Required for an ordinary tenant
-  // side, where it is what names the user; IGNORED on a `people` side, which
-  // derives its user id from the verified claims and takes nothing from the
-  // request, and IGNORED on a device side, which is enrolled onto the person
-  // the other side's login resolves to.
+  // subject is IGNORED. It named an ordinary tenant side's user, and that side
+  // went with the tenant-user links (kernel#4); a people login derives its
+  // person from the verified claims, and a device is enrolled onto that person.
+  // Kept so a broker that still sets it is not broken by the field's removal.
   string subject = 2 [(spec.assert_max_size) = 1024];
 
   // ---- The device shape (identity decision doc §3, WebAuthn/passkey arm) ----
 
   // device_assertion is a WebAuthn assertion signed by the device's passkey.
   // Setting it makes this a DEVICE side: the peer side must then be a `people`
-  // side, and the two are bound by the pair of checks the §3 design names —
+  // login, and the two are bound by the pair of checks the §3 design names —
   // the peer's id_token `nonce` is this key's RFC 7638 thumbprint, and this
   // assertion's challenge names that exact login. Neither half alone is
   // accepted and nothing can be replayed onto a different device.
   WebauthnAssertion device_assertion = 3;
   // device_public_key is the public half of the passkey, as a jwk.Jwk. Kernel
-  // verifies device_assertion against THIS key on a first link — the key must
-  // come out of the request because no stored credential exists yet — and
-  // against the STORED key on every link after that. The request's copy is
+  // verifies device_assertion against THIS key on a first enrolment — the key
+  // must come out of the request because no stored credential exists yet — and
+  // against the STORED key on every enrolment after that. The request's copy is
   // never consulted again once the credential is enrolled.
   jwk.Jwk device_public_key = 4;
   // device_label is human-facing ("Jody's ThinkPad"), stored on the credential.
@@ -1830,16 +1764,17 @@ message TenantUserLinkSide {
 message CreateTenantUserLinkRequest {
   TenantUserLinkSide a = 1 [(spec.assert_required) = true];
   TenantUserLinkSide b = 2 [(spec.assert_required) = true];
-  // trace_id is threaded into the OPA evaluations, as MintUserToken threads it.
+  // trace_id is IGNORED: it was threaded into the OPA evaluation of an ordinary
+  // tenant side, which went with the tenant-user links (kernel#4). Enrolment
+  // consults no policy.
   string trace_id = 3 [(spec.assert_max_size) = 128];
 }
 
 message CreateTenantUserLinkResponse {
-  // The two linked identities, as the "<namespace>|<sub>" keys the registry
-  // holds them under. Returned so the caller can see what it actually linked —
-  // neither is echoed from the request. A device side is not an identity of
-  // its own: on a device link both keys are the person's
-  // ("/tenants/people|<sub>"), and created_at_ms is when the device was enrolled.
+  // The person the device was enrolled onto, as "/tenants/people|<sub>", in
+  // both keys: a device is not an identity of its own. Returned so the caller
+  // can see which person it enrolled onto — neither is echoed from the
+  // request. created_at_ms is when the device was enrolled.
   string a_user_key = 1 [(spec.assert_max_size) = 1024];
   string b_user_key = 2 [(spec.assert_max_size) = 1024];
   int64 created_at_ms = 3 [(spec.assert_ge) = 0];
@@ -1860,7 +1795,7 @@ message CreateTenantUserLinkResponse {
 // lets the generated (spec.rpc).requires_device check say WHAT was approved and
 // not merely that somebody tapped something.
 //
-// It lives in kernel, beside Person and TenantUserLink, because it is identity:
+// It lives in kernel, beside Person, because it is identity:
 // the proof that one human, holding one device, consented to one call. It is
 // generated against and never reimplemented per product.
 //
@@ -1868,7 +1803,7 @@ message CreateTenantUserLinkResponse {
 // PrincipalState that is deliberately ephemeral. KernelDiskState's own rule is
 // that only state which must survive a restart is persisted; an approval lives
 // for minutes, and losing one fails CLOSED (the id is simply not found) with
-// the person proposing again at the cost of one more tap. TenantUserLink is
+// the person proposing again at the cost of one more tap. Person is
 // snapshotted precisely because losing IT fails silently instead.
 message PendingApproval {
   // approval_id is kernel-minted and opaque. Never derived from the request: two
@@ -2317,12 +2252,10 @@ message KernelDiskState {
   // snapshot that dropped it would free every tombstoned tid for reuse.
   repeated TenantIdRow tenant_ids = 14 [(spec.assert_max_size) = 65536];
 
-  // tenant_user_links are the link rows (PrincipalState.tenant_user_links).
-  // Carried for the same reason people is, and more sharply: a link is proven
-  // once, by two live IdP logins sharing a nonce, and is never re-derivable
-  // from anything kernel holds. A snapshot that dropped it would silently
-  // unlink every user and there would be nothing to notice it by except a
-  // `linked` claim that stopped appearing.
+  // tenant_user_links are the RETIRED tenant-user link rows (kernel#4),
+  // written by kernels before it and never since. Read once at boot, only for
+  // the device edges ClusterServer.migratePersonalPrincipals follows; every
+  // other edge is ignored. The next snapshot carries none.
   repeated TenantUserLinks tenant_user_links = 12 [(spec.assert_max_size) = 65536];
 }
 

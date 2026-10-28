@@ -67,5 +67,11 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The people service takes over XID ageing** (2026-10-27, #20): `IdentityGraph.ageOut` and the sign-in time that
   `resolveOrCreate` and `mergePeople` record are part of the graph's contract now. tacplus-dev/people#1 should carry
   both, and `Person.last_signed_in_at_ms` with them, so the sweep (`XidAgeing`) keeps working when the graph moves.
+- **Tenant-owned service identity carries the tid** (2026-10-28, #23): mint tenant-owned instances as
+  `spiffe://<td>/tenants/<tid>/services/<svc>`, not `/tenants/<name>/…`, so the gateway matches a request's
+  target-tenant tid to an instance with no lookup, and the identity survives a rename (Jody's decision on
+  gateway#3). Kernel derives the service token's `namespace` claim and the delegate and grant keys from the subject,
+  so the proposal keeps those name-based through one tid → tenant resolver, with `Delegate.tenant_namespace`
+  unchanged. Design and questions on #23.
 
 ## Promoted / declined

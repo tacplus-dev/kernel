@@ -17,6 +17,7 @@ import com.github.tacplusdev.kernel.model.s2sm.internal.grpc.clients.vservices.u
 import com.github.tacplusdev.kernel.model.types.sys.tokenrequest.Tokenrequest;
 import com.github.tacplusdev.kernel.model.types.vservices.userentitlements.OpaEvalGrpc;
 import com.github.tacplusdev.kernel.model.types.vservices.userentitlements.Userentitlements;
+import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.ConfigMap;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import io.grpc.Context;
@@ -59,8 +60,10 @@ class WorkloadBrokerTest {
 
 	private static final String TRUST_DOMAIN = "test.schematic.io";
 	private static final String PARENT_SERVICE = "coop";
-	/** The dog a pigeon is minted for: another service, in a tenant. */
-	private static final String DOG_SPIFFE = "spiffe://" + TRUST_DOMAIN + "/tenants/acme/services/tenantecho";
+	private static final String ACME_NS = "/tenants/acme";
+	private static final String ACME_TID = "q1w2e3r4";
+	/** The dog a pigeon is minted for: another service, in a tenant, rooted at its tid. */
+	private static final String DOG_SPIFFE = "spiffe://" + TRUST_DOMAIN + "/tenants/" + ACME_TID + "/services/tenantecho";
 	private static final String ISSUER = "https://kernel.test/oidc";
 	private static final Metadata.Key<String> AUTHORIZATION =
 			Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
@@ -86,6 +89,8 @@ class WorkloadBrokerTest {
 		keyRotator.start();
 
 		workloadMap = new WorkloadMap(new InMemoryManager());
+		ConfigMap configMap = new ConfigMap(new InMemoryManager());
+		TenantIds.claim(configMap, ACME_TID, ACME_NS);
 		parentSpiffe = Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", PARENT_SERVICE);
 
 		// refresh -> access resolves entitlements through uncleopa. Stand up a real
@@ -122,7 +127,7 @@ class WorkloadBrokerTest {
 				ISSUER,
 				opaClient,
 				null,            // proxyPolicyOpaClient
-				null,            // configMap
+				configMap,
 				workloadMap,
 				new PrincipalMap(new InMemoryManager()),
 				null,            // writeIdentitySnapshot (no disk snapshot in-test)
@@ -275,6 +280,7 @@ class WorkloadBrokerTest {
 						.setWorkloadName("pigeon-01run").setTerminal(true).setParentSpiffeId(DOG_SPIFFE).build());
 		TokenWrapper bootstrap = TokenWrapper.from(minted.getBootstrapToken());
 		assertEquals(DOG_SPIFFE + "/workloads/pigeon-01run", bootstrap.getSubject());
+		assertEquals(ACME_NS, bootstrap.getNamespace(), "the pigeon acts in its dog's tenant, by name");
 		assertEquals(DOG_SPIFFE, bootstrap.getCustomField("parent_sub"));
 		assertEquals("/tenants/acme", bootstrap.getNamespace());
 

@@ -336,7 +336,7 @@ public class TlsCertServiceImpl extends TlsCertServiceGrpc.TlsCertServiceImplBas
 			try {
 				IdentityServiceImpl.assertNotRevoked(workloadMap, spiffeId, "workload");
 				// And a tenant deleted mid-stream stops it the same way.
-				IdentityServiceImpl.refuseDeletedTenant(configMap, SpiffeIds.namespaceFromSpiffe(spiffeId));
+				IdentityServiceImpl.namespaceOfSubject(configMap, spiffeId);
 			} catch (IdentityServiceImpl.StatusException e) {
 				responseObserver.onError(e.toGrpcStatus().asRuntimeException());
 				return;

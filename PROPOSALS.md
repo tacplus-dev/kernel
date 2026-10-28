@@ -42,6 +42,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   A refresh token (24h) or offline token (90 days) issued in the old tenant would then mint in the new one. Either
   name the tid in token namespaces and SPIFFE paths, or refuse a token whose `iat` predates the latest tombstone
   of its namespace (the `TenantIdRow.tombstoned_at_ms` is already there).
+  #23 closed the service-token half: a tenant-owned service's subject names its tid, and a tombstoned tid is refused.
+  User and session tokens still name the tenant only by its name.
 - **The operator drops a deleted tenant's delegates and grants** (2026-10-27, #19): kernel refuses every mint
   through a deleted tenant's `Config.delegates` (and their Kubernetes service-account matchers) and revokes its
   `Config.grants`, but both are the deployment's config and stay in it. The decision's flow (kernel, then
@@ -67,11 +69,20 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **The people service takes over XID ageing** (2026-10-27, #20): `IdentityGraph.ageOut` and the sign-in time that
   `resolveOrCreate` and `mergePeople` record are part of the graph's contract now. tacplus-dev/people#1 should carry
   both, and `Person.last_signed_in_at_ms` with them, so the sweep (`XidAgeing`) keeps working when the graph moves.
-- **Tenant-owned service identity carries the tid** (2026-10-28, #23): mint tenant-owned instances as
-  `spiffe://<td>/tenants/<tid>/services/<svc>`, not `/tenants/<name>/…`, so the gateway matches a request's
-  target-tenant tid to an instance with no lookup, and the identity survives a rename (Jody's decision on
-  gateway#3). Kernel derives the service token's `namespace` claim and the delegate and grant keys from the subject,
-  so the proposal keeps those name-based through one tid → tenant resolver, with `Delegate.tenant_namespace`
-  unchanged. Design and questions on #23.
+- **Check that no generated service reads the caller's tenant from the SAN** (2026-10-28, #23): a tenant-owned
+  instance's SPIFFE ID now names its tenant's tid (`/tenants/<tid>/services/<svc>`), while its token's `namespace`
+  claim keeps the name. Kernel's own generated `SecurityAuthenticator` took a service caller's namespace from the
+  subject and had to be changed (codegen `callerNamespace`); the Java chassis `Authorizer` reads the claim, and
+  `ServiceConnection` matches peers on the service path only. The Go and Rust chassis, the generated policy
+  (`target_namespace_field`, tacplus-dev/tacplus#170) and any hand-written service were not checked here. A tacplus
+  issue should check that each takes the caller's tenant from the `namespace` claim, never from
+  `Spiffe.namespaceFromSpiffe` of the peer's SAN or `sub`.
+- **Carry the tid subject into `kernel.proto`'s comments** (2026-10-28, #23): the `Delegate` and `tenant_namespace`
+  comments still say a tenant-owned instance is `spiffe://<td>/tenants/<tenant>/services/<name>` and takes its
+  namespace claim from it. #23 left `kernel.proto` alone because any edit fails the gates before the push (the #19
+  proposal above); IDENTITY.md records the change. The next contract change should carry the comment fix.
 
 ## Promoted / declined
+- **Tenant-owned service identity carries the tid** (2026-10-28, #23): promoted 2026-10-28 (kernel ROADMAP.md, Next),
+  built in #23 as proposed: the subject names the tid, and the namespace claim, delegate keys and grants stay on
+  the name through `TenantIds.namespaceOfSubject`.

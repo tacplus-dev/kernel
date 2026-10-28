@@ -132,6 +132,26 @@ class FleetWideDiscoveryTest extends StateChrootTestBase {
 		assertEquals(3, tenantX.sizeInstances(Servicehealth.InstancesSizeRequest.getDefaultInstance()).getSize());
 	}
 
+	/**
+	 * A tenant-owned instance as kernel mints it (kernel#23): its subject is
+	 * rooted at its tenant's tid, and its token acts in the tenant's name. The
+	 * chroot follows the namespace claim, so it is discovered beside its
+	 * tenant's other instances, under the name.
+	 */
+	@Test
+	void aTidRootedInstanceIsDiscoveredUnderItsTenantsName() {
+		ServiceHealthStateServiceGrpc.ServiceHealthStateServiceBlockingStub tidRooted =
+				ServiceHealthStateServiceGrpc.newBlockingStub(channel).withInterceptors(bearer(tokenFor(
+						SpiffeIds.build(TRUST_DOMAIN, "/tenants/q1w2e3r4", "docmanager"),
+						"/tenants/x", "docmanager", "dm-x2")));
+		publishHealthy(tidRooted);
+
+		assertEquals(Set.of("eventbus@eb-1", "blobstore@bs-1", "docmanager@dm-x", "docmanager@dm-x2"),
+				getAll(tenantX));
+		assertEquals(getAll(tenantX), getAll(tidRooted));
+		assertTrue(getAll(eventbus).contains("/tenants/x/docmanager@dm-x2"));
+	}
+
 	@Test
 	void tenantWritesStayChrootedAndSystemReadsAreUnchanged() {
 		// /system is the root scope: it sees every entry, tenants' under their

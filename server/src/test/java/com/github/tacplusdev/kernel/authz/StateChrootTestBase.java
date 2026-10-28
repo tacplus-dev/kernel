@@ -105,9 +105,12 @@ abstract class StateChrootTestBase {
 
 	/**
 	 * Mints a valid, kernel-signed S2S token whose subject is {@code subject}.
-	 * The namespace claim is derived from the subject exactly as
-	 * {@code IdentityServiceImpl.mintRefreshToken} derives it for a real mint,
-	 * so the fixture cannot be more permissive than a real token.
+	 * The namespace claim is the namespace the subject's path spells, which is
+	 * what {@code IdentityServiceImpl.mintRefreshToken} stamps for a
+	 * {@code /system} service, so the fixture cannot be more permissive than a
+	 * real token. A real tenant-owned instance is rooted at its tenant's tid
+	 * and acts in its tenant's name (kernel#23): see
+	 * {@link #tokenFor(String, String, String, String)}.
 	 */
 	String tokenFor(String subject, String serviceName) {
 		return tokenFor(subject, serviceName, null);
@@ -119,6 +122,11 @@ abstract class StateChrootTestBase {
 	 * A null {@code instanceId} leaves the claim out.
 	 */
 	String tokenFor(String subject, String serviceName, String instanceId) {
+		return tokenFor(subject, Spiffe.namespaceFromSpiffe(subject), serviceName, instanceId);
+	}
+
+	/** {@link #tokenFor(String, String, String)} acting in {@code namespace}. */
+	String tokenFor(String subject, String namespace, String serviceName, String instanceId) {
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		long now = Instant.now().getEpochSecond();
 		TokenWrapper t = TokenWrapper.create()
@@ -130,7 +138,7 @@ abstract class StateChrootTestBase {
 				.setJTI(UUID.randomUUID().toString());
 		t.setSubType("service");
 		t.setServiceName(serviceName);
-		t.setNamespace(Spiffe.namespaceFromSpiffe(subject));
+		t.setNamespace(namespace);
 		if (instanceId != null) {
 			t.setInstanceId(instanceId);
 		}

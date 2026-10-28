@@ -80,6 +80,8 @@ class TenantDeletionTest {
 	private WorkloadMap workloadMap;
 	private IdentityServiceImpl svc;
 	private TenantAdminServiceImpl admin;
+	/** Each tenant's tid as created, kept past its deletion: what its service subjects name. */
+	private final java.util.Map<String, String> tids = new java.util.HashMap<>();
 
 	@BeforeEach
 	void setUp() throws Exception {
@@ -137,6 +139,8 @@ class TenantDeletionTest {
 				svc::purgeDeletedTenant);
 		admin.createTenant(CALLER, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(ACME_NS).build());
 		admin.createTenant(CALLER, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(BETA_NS).build());
+		tids.put(ACME_NS, configMap.getTenants(ACME_NS).getTid());
+		tids.put(BETA_NS, configMap.getTenants(BETA_NS).getTid());
 	}
 
 	/**
@@ -225,10 +229,13 @@ class TenantDeletionTest {
 	@Test
 	void noTenantScopedStateIsLeft() throws Exception {
 		personLogin();
-		String acmeService = Spiffe.namespaceSpiffeId(TRUST_DOMAIN, ACME_NS)
-				+ "/" + Spiffe.SERVICES_SEGMENT + "/" + SERVICE_NAME;
+		String acmeService = SpiffeIds.build(TRUST_DOMAIN, SpiffeIds.tenantRoot(tids.get(ACME_NS)), SERVICE_NAME);
 		workloadMap.putLocalities(acmeService, Kernel.WorkloadLocality.newBuilder()
 				.setSpiffeId(acmeService).setLocalityToken("locality").build());
+		// One registered by an instance minted before kernel#23, by the tenant's name.
+		String nameFormService = SpiffeIds.build(TRUST_DOMAIN, ACME_NS, SERVICE_NAME);
+		workloadMap.putLocalities(nameFormService, Kernel.WorkloadLocality.newBuilder()
+				.setSpiffeId(nameFormService).setLocalityToken("locality").build());
 		workloadMap.putRevocations(acmeService + "/pigeon", Kernel.WorkloadRevocation.newBuilder()
 				.setSpiffeId(acmeService + "/pigeon").setRevokedBy(acmeService).build());
 		String acmeTid = configMap.getTenants(ACME_NS).getTid();
@@ -282,6 +289,8 @@ class TenantDeletionTest {
 	@Test
 	void aTenantCreatedAgainUnderTheSameNameMints() throws Exception {
 		String oldTid = configMap.getTenants(ACME_NS).getTid();
+		TokenWrapper oldService = accessToken(svc.mintServiceToken(CALLER,
+				Tokenrequest.MintServiceTokenRequest.newBuilder().setKubernetesToken(fakeJwt()).build()));
 		deleteAcme();
 		assertDeleted(this::tenantIdpLogin);
 
@@ -290,6 +299,14 @@ class TenantDeletionTest {
 
 		assertNotEquals(oldTid, again.getTid());
 		assertEquals(ACME_NS, accessToken(tenantIdpLogin()).getNamespace());
+		// The old tenant's service identity names its tombstoned tid (kernel#23),
+		// so it does not reach the new tenant of the same name.
+		assertRefused(() -> serviceTokenFor(oldService));
+		TokenWrapper newService = accessToken(svc.mintServiceToken(CALLER,
+				Tokenrequest.MintServiceTokenRequest.newBuilder().setKubernetesToken(fakeJwt()).build()));
+		assertEquals(SpiffeIds.build(TRUST_DOMAIN, SpiffeIds.tenantRoot(again.getTid()), SERVICE_NAME),
+				newService.getSubject());
+		assertEquals(ACME_NS, accessToken(serviceTokenFor(newService)).getNamespace());
 	}
 
 	/**
@@ -434,13 +451,16 @@ class TenantDeletionTest {
 		}
 	}
 
-	/** A kernel-signed S2S token for the delegate {@code name} rooted at {@code namespace} ("" = /system). */
+	/**
+	 * A kernel-signed S2S token for the delegate {@code name} of the tenant {@code namespace}
+	 * ("" = /system), its subject rooted at the tenant's tid.
+	 */
 	private String serviceToken(String namespace, String name) {
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		long now = Instant.now().getEpochSecond();
 		String subject = namespace.isEmpty()
 				? Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", name)
-				: Spiffe.namespaceSpiffeId(TRUST_DOMAIN, namespace) + "/" + Spiffe.SERVICES_SEGMENT + "/" + name;
+				: SpiffeIds.build(TRUST_DOMAIN, SpiffeIds.tenantRoot(tids.get(namespace)), name);
 		TokenWrapper t = TokenWrapper.create()
 				.setIssuer(ISSUER)
 				.setSubject(subject)
@@ -448,7 +468,7 @@ class TenantDeletionTest {
 				.setIssuedAt(now)
 				.setExpiration(now + 3600)
 				.setJTI(UUID.randomUUID().toString());
-		t.setNamespace(Spiffe.namespaceFromSpiffe(subject));
+		t.setNamespace(namespace.isEmpty() ? Spiffe.namespaceFromSpiffe(subject) : namespace);
 		t.sign(signingKey);
 		return t.getBase64();
 	}

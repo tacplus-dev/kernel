@@ -737,3 +737,67 @@ with a tenant. An XID that has not signed in for about a year is aged out: delet
 - Gates on tacplus 2.4. The `kernel.proto` change cannot pass `just generate` before it is on origin/main (PROPOSALS.md,
   #19). Before the push the gates ran with the kernel dependency redirected to a local clone holding this commit,
   and after it they ran plain on main.
+
+## 2026-10-28 — A tenant-owned service identity carries the tid (#23)
+
+Jody, deciding tacplus-dev/gateway#3 (tacplus-dev/roadmap decisions/tenant-routing-2026-10-26.md, addendum
+2026-10-28): a tenant-owned service instance is identified by its tenant's tid, not its name, so the gateway matches
+a request's target-tenant tid to the instance with no lookup, and the identity survives a rename. Jody approved the
+design on #23 (2026-10-28).
+
+### What changed
+
+- **The subject names the tid.** Kernel mints a tenant-owned instance as
+  `spiffe://<td>/tenants/<tid>/services/<svc>` (`IdentityServiceImpl.serviceSubject`). That is the service token's
+  `sub`, the X509Mint leaf's URI SAN (copied from `sub`), and every workload child under it. `Delegate.tenant_namespace`
+  is unchanged (`/tenants/<name>`): kernel reads the tid from that tenant's record at mint. A delegate whose tenant
+  kernel holds no record of, with a tid, mints nothing. `/system` services, users and sessions are unchanged.
+- **The namespace stays the name.** A tenant-owned instance acts in `/tenants/<name>`, as its tenant's users do.
+  One resolver, `TenantIds.namespaceOfSubject`, reads the tid's `TenantIdRow` (one keyed read) and gives its
+  `tenant_namespace`. Every place that took a namespace from a service subject uses it
+  (`IdentityServiceImpl.namespaceOfSubject`): the namespace claim of the Kubernetes mint, the S2S exchange and the
+  workload broker; the delegate key `(name, namespace)` (`findDelegateBySubject`) and with it the grant match and
+  `RevokeGrant`; X509Mint and ManageCert. Grants, `MintDelegateOfflineToken.delegate_namespace` and the
+  authorization tree stay name-based.
+- **Kernel's state chroot follows.** The generated `SecurityAuthenticator` (`codegen`, `callerNamespace`) took a
+  service caller's namespace from its subject's path. For a subject under `/tenants/` it now takes the namespace
+  claim kernel stamped, which must itself lie under `/tenants/` (otherwise `UNAUTHENTICATED`). So a tenant instance's
+  state and its discovery keys (`/tenants/<name>/<svc>@<instance>`) stay where they were. The generated
+  `Authorizer` every other service runs already reads the claim, not the subject.
+- **A tid that names no live tenant is refused.** A tombstoned tid is refused as a deleted tenant is ("tenant
+  /tenants/<t> was deleted"). A tenant created again under the same name has a new tid, so the deleted tenant's
+  service tokens no longer reach it (the service-token half of the #19 proposal). A subject spelled by name, as
+  kernel minted before this, names no tid and is refused (`PERMISSION_DENIED`, "names no live tenant by its tid").
+- **The DeleteTenant sweep** finds a tenant's workload localities by the tid, tombstoned included
+  (`TenantIds.mintedNamespaceOfSubject`), and by the name for localities registered before this.
+
+### Decided here (the design on #23, approved)
+
+- **Sub-tenants are flat.** `/tenants/acme/prod` has its own tid, so its instances are
+  `/tenants/<prod-tid>/services/<svc>`. The hierarchy is in the namespace claim, not the subject.
+- **Name-form subjects after the deploy.** Accepted only as a continuity token on the Kubernetes mint, and logged, so
+  an instance keeps its `instance_id` across the deploy; refused everywhere else. A Kubernetes-path instance
+  re-mints on its own when its old token is refused.
+- **Discovery keys stay name-based**, resolved like the namespace.
+- **`kernel.proto` is not edited.** The `Delegate` comment still describes the name-form subject. Any `kernel.proto`
+  edit fails `just gates` until it is on origin/main (PROPOSALS.md, #19), so this entry is the record until the
+  next contract change carries the comment.
+
+### Proof
+
+- `TenantServiceSubjectTest`: a tid subject, and a workload under it, act in the tenant's name; a sub-tenant's
+  instance hangs flat from its own tid; `people`'s reserved tid (`00000001`) is legal in the generated grammar and
+  resolves; `/system` and user subjects keep the namespace their path spells; a tombstoned tid, a tid nobody was
+  issued and a name-form subject name no live tenant, also once a tenant of the same name is created again.
+- `MintServiceTokenKubernetesTest`: the tenant mint's subject is `/tenants/<tid>/services/docmanager` with
+  `namespace=/tenants/acme`; two tenants' same-named delegates, and #3's per-tenant Kubernetes namespaces, still
+  mint apart; a name-form continuity token of the same delegate keeps its `instance_id` and one of another tenant is
+  refused; a delegate whose tenant has no record mints nothing; a sub-tenant's instance is rooted at its own tid.
+- `TenantDeletionTest`: every path is still refused after DeleteTenant, the grant held by a tid-rooted instance still
+  matches before it, localities of both subject forms are swept, and the deleted tenant's service token does not
+  reach a new tenant of the same name, which mints under its new tid.
+- `WorkloadBrokerTest`: a pigeon minted under a tid-rooted dog acts in the dog's tenant, by name.
+- `FleetWideDiscoveryTest`, `CallerNamespaceContextTest`: a tid-rooted instance is chrooted, and discovered, under
+  its tenant's name; a tenant subject whose claim is no tenant's is refused.
+- The new tests fail with the change taken out.
+- Gates on tacplus 2.4.

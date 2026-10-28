@@ -589,11 +589,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		}
 
 		String delegateName = matchedDelegate.getName();
-		// The subject's root comes from the delegate's tenant_namespace: /system
-		// for a shared platform service, /tenants/<tenant> for a tenant-owned
-		// instance. The service path segment is the delegate name either way.
-		String spiffeId = SpiffeIds.build(
-				trustDomainReader.get(), matchedDelegate.getTenantNamespace(), delegateName);
+		String spiffeId = serviceSubject(matchedDelegate);
 
 		// Capture pod extras for audit (advisory for the service-token path).
 		if (!identity.podExtras().isEmpty()) {
@@ -608,7 +604,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			// canonical SPIFFE subject (what the prior refresh token actually
 			// carries), NOT to anything derived from the presented K8s token.
 			instanceId = resolveInstanceIdFromContinuityToken(
-					request.getContinuityToken(), spiffeId);
+					request.getContinuityToken(), spiffeId, nameFormSubject(matchedDelegate));
 		} else {
 			instanceId = UUID.randomUUID().toString();
 			logger.info("Generated new instance_id={} for sub={}", instanceId, delegateName);
@@ -629,6 +625,48 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				.setLocalityToken(request.getLocalityToken())
 				.build();
 		return mintRefreshToken(spiffeId, Kernel.getDescriptor().getPackage(), mintShape, extraClaims);
+	}
+
+	/**
+	 * The subject kernel mints for {@code delegate}. Its root comes from the
+	 * delegate's tenant_namespace: {@code /system} for a shared platform
+	 * service, and for a tenant-owned instance the tenant's tid,
+	 * {@code /tenants/<tid>} (kernel#23), read from the tenant's record, so the
+	 * gateway matches a request's target tid to the instance with no lookup and
+	 * the identity outlives a rename. The service path segment is the delegate
+	 * name either way. A delegate whose tenant kernel holds no record of, with a
+	 * tid, mints nothing.
+	 */
+	private String serviceSubject(Kernel.Delegate delegate) throws StatusException {
+		String tenantNamespace = delegate.getTenantNamespace();
+		if (tenantNamespace.isEmpty()) {
+			return SpiffeIds.build(trustDomainReader.get(), "", delegate.getName());
+		}
+		refuseDeletedTenant(tenantNamespace);
+		String tid;
+		try {
+			tid = configMap == null ? "" : configMap.getTenants(tenantNamespace).getTid();
+		} catch (ProtoException e) {
+			throw new StatusException(Status.UNAVAILABLE, "tenant records unavailable: " + e.getMessage());
+		}
+		if (tid.isEmpty()) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"delegate " + delegate.getName() + " names tenant " + tenantNamespace
+							+ ", which has no tenant record with a tid: it mints nothing");
+		}
+		return SpiffeIds.build(trustDomainReader.get(), SpiffeIds.tenantRoot(tid), delegate.getName());
+	}
+
+	/**
+	 * The subject kernel minted for a tenant-owned {@code delegate} before
+	 * kernel#23, rooted at the tenant's name, or null for a {@code /system}
+	 * delegate, whose subject did not change. Only a continuity token may still
+	 * carry it.
+	 */
+	@Nullable
+	private String nameFormSubject(Kernel.Delegate delegate) {
+		return delegate.getTenantNamespace().isEmpty() ? null
+				: SpiffeIds.build(trustDomainReader.get(), delegate.getTenantNamespace(), delegate.getName());
 	}
 
 	/** Resolves a Delegate by a verified (K8s namespace, service account) pair. */
@@ -970,6 +1008,36 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"tenant " + deleted + " was deleted: it mints no tokens");
 		}
+	}
+
+	/** The namespace {@code subject} acts in; see {@link #namespaceOfSubject(ConfigMap, String)}. */
+	private String namespaceOfSubject(String subject) throws StatusException {
+		return namespaceOfSubject(configMap, subject);
+	}
+
+	/**
+	 * The authorization namespace {@code subject} acts in (kernel#23): a
+	 * tenant-owned service or workload is rooted at its tenant's tid, and acts in
+	 * that tenant's name, {@code /tenants/<name>} ({@link TenantIds#namespaceOfSubject}).
+	 * PERMISSION_DENIED when the tid names no live tenant: a deleted tenant is
+	 * refused as {@link #signLive} refuses it, and a tenant-owned subject spelled
+	 * by name, as kernel minted before kernel#23, is refused too.
+	 */
+	static String namespaceOfSubject(@Nullable ConfigMap configMap, String subject) throws StatusException {
+		String namespace;
+		try {
+			namespace = TenantIds.namespaceOfSubject(configMap, subject);
+			if (namespace == null) {
+				refuseDeletedTenant(configMap, TenantIds.mintedNamespaceOfSubject(configMap, subject));
+			}
+		} catch (ProtoException e) {
+			throw new StatusException(Status.UNAVAILABLE, "tenant records unavailable: " + e.getMessage());
+		}
+		if (namespace == null) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					subject + " names no live tenant by its tid");
+		}
+		return namespace;
 	}
 
 	private TokenWrapper signCredential(String subject, long generation, String azp, boolean offline,
@@ -2303,7 +2371,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		String callerDelegateName = callerIsSpiffe
 				? SpiffeIds.serviceName(rawCallerSub) : rawCallerSub;
 		String callerDelegateNamespace = callerIsSpiffe
-				? SpiffeIds.namespaceFromSpiffe(rawCallerSub) : SpiffeIds.SYSTEM_NAMESPACE;
+				? namespaceOfSubject(rawCallerSub) : SpiffeIds.SYSTEM_NAMESPACE;
 
 		// Paired negative control: no live Grant record authorizes the
 		// (caller identity, grant_id) pair presented. Three candidate misses —
@@ -3126,7 +3194,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// Namespace: services derive from their SPIFFE-URI subject; users live at root.
 		boolean isServiceMint = SUB_TYPE_SERVICE.equals(extraClaims.get("sub_type"));
 		newToken.setNamespace(isServiceMint
-				? SpiffeIds.namespaceFromSpiffe(subject)
+				? namespaceOfSubject(subject)
 				: SpiffeIds.namespaceRoot());
 
 		for (Map.Entry<String, Object> entry : extraClaims.entrySet()) {
@@ -3438,8 +3506,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			newToken.setAzp(!inputAzp.isEmpty() ? inputAzp : Kernel.getDescriptor().getPackage());
 			newToken.setPrincipal(subject);
 			newToken.setSubType(SUB_TYPE_SERVICE);
-			// Service namespace = path component of the SPIFFE-URI subject.
-			newToken.setNamespace(SpiffeIds.namespaceFromSpiffe(subject));
+			// Service namespace = the tenant the SPIFFE-URI subject names.
+			newToken.setNamespace(namespaceOfSubject(subject));
 			newToken.setTokenUse(
 					request.getAud().isEmpty() ? TOKEN_USE_ACCESS : TOKEN_USE_SERVICE);
 
@@ -3737,12 +3805,19 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * binding is the H5 confused-deputy fix: a continuity token minted for
 	 * delegate A cannot be replayed by a caller who authenticates as delegate B.
 	 *
+	 * <p>A tenant-owned instance whose prior refresh token was minted before
+	 * kernel#23 carries the subject rooted at its tenant's name, not its tid.
+	 * That token is still bound to the same delegate, so it keeps the instance's
+	 * {@code instance_id} once; the name form is accepted here and nowhere else.
+	 *
 	 * @param rawContinuityToken the raw continuity (prior refresh) token.
 	 * @param resolvedSubject    the resolved delegate's canonical SPIFFE subject
 	 *                           (what the prior refresh token's {@code sub} carries).
+	 * @param nameFormSubject    the same delegate's subject as minted before
+	 *                           kernel#23, or null when it did not change.
 	 */
 	private String resolveInstanceIdFromContinuityToken(String rawContinuityToken,
-			String resolvedSubject) throws StatusException {
+			String resolvedSubject, @Nullable String nameFormSubject) throws StatusException {
 
 		TokenWrapper continuityToken;
 		try {
@@ -3795,7 +3870,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					Status.UNAUTHENTICATED, "continuity_token verification failed: " + e.getMessage());
 		}
 
-		if (!resolvedSubject.equals(continuityToken.getSubject())) {
+		boolean nameForm = nameFormSubject != null && nameFormSubject.equals(continuityToken.getSubject());
+		if (!resolvedSubject.equals(continuityToken.getSubject()) && !nameForm) {
 			throw new StatusException(
 					Status.INVALID_ARGUMENT,
 					"continuity_token subject '" + continuityToken.getSubject()
@@ -3805,6 +3881,10 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		String instanceId = continuityToken.getCustomField("instance_id");
 		if (instanceId == null || instanceId.isEmpty()) {
 			throw new StatusException(Status.INVALID_ARGUMENT, "continuity_token missing instance_id claim");
+		}
+		if (nameForm) {
+			logger.info("Continuity token for sub={} carries the name-form subject {} minted before kernel#23",
+					resolvedSubject, nameFormSubject);
 		}
 		logger.info("Preserved instance_id={} via continuity token for sub={}", instanceId, resolvedSubject);
 		return instanceId;
@@ -3830,13 +3910,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * form — can only ever name a {@code /system} delegate, since nothing in it
 	 * could address a tenant.
 	 */
-	private Kernel.Delegate findDelegateBySubject(String subject) {
+	private Kernel.Delegate findDelegateBySubject(String subject) throws StatusException {
 		String name;
 		String namespace;
 		if (SpiffeIds.isSpiffeUri(subject)) {
 			try {
 				name = SpiffeIds.serviceName(subject);
-				namespace = SpiffeIds.namespaceFromSpiffe(subject);
+				namespace = namespaceOfSubject(subject);
 			} catch (IllegalArgumentException e) {
 				// A SPIFFE URI that names something other than a service/workload
 				// — a user subject, spiffe://<td>/system/users/<n>, is the one a
@@ -4022,7 +4102,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		}
 
 		// A deleted tenant's services get no new certificate either.
-		refuseDeletedTenant(SpiffeIds.namespaceFromSpiffe(spiffeId));
+		namespaceOfSubject(spiffeId);
 
 		// Intermediate CA state is keyed by bare service name, matching the
 		// ManageCert path. The full SPIFFE URI remains the leaf cert identity.
@@ -4315,8 +4395,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		bootstrapToken.setCustomField(TERMINAL, request.getTerminal() ? "true" : "false");
 		bootstrapToken.setTokenUse(TOKEN_USE_BOOTSTRAP);
 		bootstrapToken.setSubType(SUB_TYPE_SERVICE);
-		// Service namespace = path component of the SPIFFE-URI childSub.
-		bootstrapToken.setNamespace(SpiffeIds.namespaceFromSpiffe(childSub));
+		// Service namespace = the tenant the SPIFFE-URI childSub names.
+		bootstrapToken.setNamespace(namespaceOfSubject(childSub));
 
 		signLive(bootstrapToken, signingKey);
 
@@ -4354,8 +4434,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		refreshToken.setTokenUse(TOKEN_USE_REFRESH);
 		refreshToken.setCustomField("typ", TOKEN_TYPE_REFRESH); // backwards compat
 		refreshToken.setSubType(SUB_TYPE_SERVICE);
-		// Service namespace = path component of the SPIFFE-URI sub (validated above).
-		refreshToken.setNamespace(SpiffeIds.namespaceFromSpiffe(sub));
+		// Service namespace = the tenant the SPIFFE-URI sub (validated above) names.
+		refreshToken.setNamespace(namespaceOfSubject(sub));
 		refreshToken.setAzp(Kernel.getDescriptor().getPackage());
 		refreshToken.setInstanceId(instanceId);
 		if (parentSub != null) refreshToken.setCustomField(PARENT_SUB, parentSub);
@@ -4520,7 +4600,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		String callerDelegateName = callerIsSpiffe
 				? SpiffeIds.serviceName(rawCallerSub) : rawCallerSub;
 		String callerDelegateNamespace = callerIsSpiffe
-				? SpiffeIds.namespaceFromSpiffe(rawCallerSub) : SpiffeIds.SYSTEM_NAMESPACE;
+				? namespaceOfSubject(rawCallerSub) : SpiffeIds.SYSTEM_NAMESPACE;
 
 		String grantId = request.getGrantId();
 		if (grantId == null || grantId.isEmpty()) {
@@ -4629,7 +4709,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		int localities = 0;
 		for (Kernel.WorkloadLocality locality : workloadMap.proto().getLocalitiesList()) {
 			if (SpiffeIds.isSpiffeUri(locality.getSpiffeId()) && TenantIds.isWithin(
-					SpiffeIds.namespaceFromSpiffe(locality.getSpiffeId()), tenantNamespace)) {
+					TenantIds.mintedNamespaceOfSubject(configMap, locality.getSpiffeId()), tenantNamespace)) {
 				workloadMap.deleteLocalities(locality.getSpiffeId());
 				localities++;
 			}

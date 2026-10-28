@@ -74,6 +74,7 @@ class TenantUserLinkTest {
 	private final List<Struct> opaClaims = new CopyOnWriteArrayList<>();
 	private KeyRotator keyRotator;
 	private PrincipalMap principalMap;
+	private final ConfigMap configMap = new ConfigMap(new InMemoryManager());
 	private IdentityServiceImpl svc;
 
 	@BeforeEach
@@ -112,7 +113,7 @@ class TenantUserLinkTest {
 				ISSUER,
 				new FakeOpaEvalGrpcClient(opaClaims),
 				null,            // proxyPolicyOpaClient
-				new ConfigMap(new InMemoryManager()),
+				configMap,
 				new WorkloadMap(new InMemoryManager()),
 				principalMap,
 				null,            // writeIdentitySnapshot
@@ -374,8 +375,7 @@ class TenantUserLinkTest {
 		long now = Instant.now().getEpochSecond();
 		String subject = brokerNamespace.isEmpty()
 				? Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", BROKER_NAME)
-				: Spiffe.namespaceSpiffeId(TRUST_DOMAIN, brokerNamespace)
-						+ "/" + Spiffe.SERVICES_SEGMENT + "/" + BROKER_NAME;
+				: TenantServiceSubjects.of(configMap, TRUST_DOMAIN, brokerNamespace, BROKER_NAME);
 		TokenWrapper t = TokenWrapper.create()
 				.setIssuer(ISSUER)
 				.setSubject(subject)

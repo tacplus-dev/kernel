@@ -461,11 +461,19 @@ public class SecurityAuthenticator {
     }
 
     /**
-     * The caller's authorization namespace, from the same subject
+     * The caller's authorization namespace, classified by the same subject
      * {@link TokenWrapper#servicePath()} reads. {@code Spiffe.namespaceFromSpiffe}
-     * is the one classifier for this — {@code /system[/location...]} for a shared
-     * service, {@code /tenants/<tenant>} for a tenant-owned instance — and a bare
-     * (non-SPIFFE) subject, the broker/CLI form, names a {@code /system} service.
+     * is the one classifier for this: {@code /system[/location...]} for a shared
+     * service, and a bare (non-SPIFFE) subject, the broker/CLI form, names a
+     * {@code /system} service.
+     *
+     * <p>A tenant-owned instance's subject is rooted at its tenant's tid,
+     * {@code /tenants/<tid>/services/<svc>} (kernel#23), while it acts in its
+     * tenant's name, {@code /tenants/<name>}, exactly as the tenant's users do.
+     * Kernel resolves the name from the tid at mint and stamps it as the
+     * namespace claim, so for a tenant subject the claim is the namespace, and it
+     * must be a tenant's: a claim outside {@code /tenants} is refused, never
+     * widened to it.
      */
     private static String callerNamespace(TokenWrapper tw) {
         String sub = tw.getSubject();
@@ -475,7 +483,17 @@ public class SecurityAuthenticator {
         if (sub == null || sub.isEmpty() || !sub.contains("://")) {
             return "/" + Spiffe.SYSTEM_SEGMENT;
         }
-        return Spiffe.namespaceFromSpiffe(sub);
+        String fromSubject = Spiffe.namespaceFromSpiffe(sub);
+        String tenants = "/" + Spiffe.TENANTS_SEGMENT + "/";
+        if (!fromSubject.startsWith(tenants)) {
+            return fromSubject;
+        }
+        String claimed = tw.namespacePath();
+        if (!claimed.startsWith(tenants)) {
+            throw new IllegalArgumentException("tenant-owned service " + sub
+                    + " carries the namespace claim \"" + claimed + "\", which is not a tenant's");
+        }
+        return claimed;
     }
 
     /**

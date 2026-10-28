@@ -16,8 +16,11 @@ import com.github.tacplusdev.kernel.model.chassis.spiffe.Spiffe;
  * <ul>
  *   <li>Kernel-minted token subjects are location-agnostic service identities:
  *       {@code spiffe://<td>/system/services/<svc>} for a shared platform
- *       service, {@code spiffe://<td>/tenants/<tenant>/services/<svc>} for a
- *       tenant-owned instance.</li>
+ *       service, {@code spiffe://<td>/tenants/<tid>/services/<svc>} for a
+ *       tenant-owned instance, rooted at its tenant's tid (kernel#23). The
+ *       instance still acts in its tenant's name, {@code /tenants/<name>}:
+ *       its token's namespace claim is resolved from the tid
+ *       ({@link TenantIds#namespaceOfSubject}), never read off the path.</li>
  *   <li>The authorization-tree root is {@code "/"}, at-or-above every
  *       {@code /system...} and {@code /tenants...} namespace.</li>
  * </ul>
@@ -41,7 +44,7 @@ public final class SpiffeIds {
 	/**
 	 * Builds a kernel-minted service subject rooted at {@code namespace}: an
 	 * empty namespace is the shared {@code /system} root, a tenant-owned
-	 * service instance passes its canonical {@code /tenants/<tenant>}. The
+	 * service instance passes its tenant's {@link #tenantRoot}. The
 	 * service name is the same location-agnostic service path either way, so
 	 * {@code auth_services} patterns match a tenant instance exactly as they
 	 * match the shared one.
@@ -52,6 +55,11 @@ public final class SpiffeIds {
 		}
 		return Spiffe.namespaceSpiffeId(trustDomain, namespace)
 				+ "/" + Spiffe.SERVICES_SEGMENT + "/" + Spiffe.normalizeSegment(serviceName);
+	}
+
+	/** The root a tenant-owned instance's subject hangs from: {@code /tenants/<tid>}. */
+	public static String tenantRoot(String tid) {
+		return "/tenants/" + tid;
 	}
 
 	/**
@@ -89,7 +97,11 @@ public final class SpiffeIds {
 		return value != null && value.startsWith(Spiffe.SCHEME + "://");
 	}
 
-	/** Normalized authorization namespace of a SPIFFE URI, for example /system. */
+	/**
+	 * Normalized namespace path of a SPIFFE URI, for example /system. For a
+	 * tenant-owned service this is {@code /tenants/<tid>}, not the namespace it
+	 * acts in: use {@link TenantIds#namespaceOfSubject} for that.
+	 */
 	public static String namespaceFromSpiffe(String spiffeId) {
 		return Spiffe.namespaceFromSpiffe(spiffeId);
 	}

@@ -551,8 +551,7 @@ class PeopleTenantMintTest {
 		long now = Instant.now().getEpochSecond();
 		String subject = brokerNamespace.isEmpty()
 				? Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", BROKER_NAME)
-				: Spiffe.namespaceSpiffeId(TRUST_DOMAIN, brokerNamespace)
-						+ "/" + Spiffe.SERVICES_SEGMENT + "/" + BROKER_NAME;
+				: TenantServiceSubjects.of(configMap, TRUST_DOMAIN, brokerNamespace, BROKER_NAME);
 		TokenWrapper t = TokenWrapper.create()
 				.setIssuer(ISSUER)
 				.setSubject(subject)

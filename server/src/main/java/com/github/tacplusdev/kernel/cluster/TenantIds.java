@@ -3,6 +3,7 @@
 
 package com.github.tacplusdev.kernel.cluster;
 
+import com.github.tacplusdev.kernel.model.chassis.spiffe.Spiffe;
 import com.github.tacplusdev.kernel.model.types.services.kernel.Kernel;
 import com.github.tacplusdev.kernel.model.types.sys.errors.ProtoException;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.ConfigMap;
@@ -175,6 +176,61 @@ final class TenantIds {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * The authorization namespace of a subject, or null when it names no live
+	 * tenant (kernel#23). A tenant-owned service or workload subject is rooted
+	 * at its tenant's tid, {@code spiffe://<td>/tenants/<tid>/services/<svc>},
+	 * and its namespace is the tenant's name, {@code /tenants/<name>}, read from
+	 * the tid's {@code TenantIdRow}: the namespace claim, the delegate key and
+	 * the grants stay on the name, as every user token's do. A tid that is not
+	 * issued, or is tombstoned, names no live tenant. Every other subject, a
+	 * {@code /system} service or a user, keeps the namespace its path spells.
+	 *
+	 * @throws IllegalArgumentException when {@code subject} is not a SPIFFE ID the grammar accepts
+	 */
+	static String namespaceOfSubject(ConfigMap configMap, String subject) throws ProtoException {
+		Kernel.TenantIdRow row = tidRowOf(configMap, subject);
+		if (row == null) {
+			return Spiffe.namespaceFromSpiffe(subject);
+		}
+		return row.getTid().isEmpty() || row.getTombstonedAtMs() != 0 ? null : row.getTenantNamespace();
+	}
+
+	/**
+	 * The tenant namespace a tenant-owned service subject was minted for, live
+	 * or deleted, for the sweep that removes a deleted tenant's state: the tid's
+	 * row outlives the tenant. A subject whose tenant segment is no issued tid
+	 * (one minted before kernel#23, by name) keeps the namespace its path spells.
+	 *
+	 * @throws IllegalArgumentException when {@code subject} is not a SPIFFE ID the grammar accepts
+	 */
+	static String mintedNamespaceOfSubject(ConfigMap configMap, String subject) throws ProtoException {
+		Kernel.TenantIdRow row = tidRowOf(configMap, subject);
+		return row == null || row.getTid().isEmpty()
+				? Spiffe.namespaceFromSpiffe(subject) : row.getTenantNamespace();
+	}
+
+	/**
+	 * The {@code TenantIdRow} a tenant-owned service or workload subject's tid
+	 * keys (empty when no such tid was issued), or null when the subject is not
+	 * one: a {@code /system} service, or a user. A tenant segment that is not a
+	 * well-formed tid, or a path nested below it, keys an empty row.
+	 */
+	private static Kernel.TenantIdRow tidRowOf(ConfigMap configMap, String subject) throws ProtoException {
+		Spiffe.ParsedSpiffeId parsed = Spiffe.parseSpiffeId(subject);
+		String namespace = Spiffe.normalizeNamespace(parsed.namespace);
+		if (!namespace.startsWith(TENANTS_PREFIX)
+				|| (parsed.subjectKind != Spiffe.SubjectKind.SERVICE
+						&& parsed.subjectKind != Spiffe.SubjectKind.WORKLOAD)) {
+			return null;
+		}
+		String tid = namespace.substring(TENANTS_PREFIX.length());
+		if (!isWellFormed(tid) || configMap == null) {
+			return Kernel.TenantIdRow.getDefaultInstance();
+		}
+		return configMap.getTenantIds(tid);
 	}
 
 	/** True when {@code namespace} is {@code tenantNamespace} or lies below it. */

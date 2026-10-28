@@ -91,6 +91,7 @@ class PendingApprovalTest {
 	private final List<Kernel.Delegate> delegates = new ArrayList<>();
 	private KeyRotator keyRotator;
 	private PrincipalMap principalMap;
+	private final ConfigMap configMap = new ConfigMap(new InMemoryManager());
 	private IdentityServiceImpl svc;
 	private PersonalIdentityServiceImpl personalIdentity;
 	private Passkey passkey;
@@ -122,7 +123,7 @@ class PendingApprovalTest {
 				ISSUER,
 				new FakeOpaEvalGrpcClient(),
 				null,            // proxyPolicyOpaClient
-				new ConfigMap(new InMemoryManager()),
+				configMap,
 				new WorkloadMap(new InMemoryManager()),
 				principalMap,
 				null,            // writeIdentitySnapshot
@@ -679,8 +680,7 @@ class PendingApprovalTest {
 	private String brokerToken() {
 		ImmutableKey signingKey = keyRotator.getActiveSigningKey(KeyRotator.SigAlg.ED25519);
 		long now = Instant.now().getEpochSecond();
-		String subject = Spiffe.namespaceSpiffeId(TRUST_DOMAIN, PeopleTenant.NAMESPACE)
-				+ "/" + Spiffe.SERVICES_SEGMENT + "/" + BROKER_NAME;
+		String subject = TenantServiceSubjects.of(configMap, TRUST_DOMAIN, PeopleTenant.NAMESPACE, BROKER_NAME);
 		TokenWrapper t = TokenWrapper.create()
 				.setIssuer(ISSUER)
 				.setSubject(subject)

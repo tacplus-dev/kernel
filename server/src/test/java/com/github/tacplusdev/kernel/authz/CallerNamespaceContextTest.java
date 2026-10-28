@@ -13,11 +13,14 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.ServerInterceptors;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Goal A item 3 prerequisite: {@code SecurityAuthenticator.CALLER_NAMESPACE_KEY}.
@@ -39,6 +42,10 @@ class CallerNamespaceContextTest extends StateChrootTestBase {
 	}
 
 	private Captured callAs(String subject) throws Exception {
+		return callWith(tokenFor(subject, "opa"));
+	}
+
+	private Captured callWith(String token) throws Exception {
 		AtomicReference<Captured> seen = new AtomicReference<>();
 		ServerInterceptor capture = new ServerInterceptor() {
 			@Override
@@ -58,7 +65,7 @@ class CallerNamespaceContextTest extends StateChrootTestBase {
 				stateServer.bindService(), authenticator.callerInterceptor(), capture));
 
 		OpaStateServiceGrpc.newBlockingStub(channel)
-				.withInterceptors(bearer(tokenFor(subject, "opa")))
+				.withInterceptors(bearer(token))
 				.sizeTenantEntitlementsPolicies(
 						Opa.TenantEntitlementsPoliciesSizeRequest.newBuilder().build());
 		return seen.get();
@@ -80,5 +87,28 @@ class CallerNamespaceContextTest extends StateChrootTestBase {
 		// The service path is unchanged by the tenant, which is what keeps the
 		// generated auth_services / checkAccess policies matching per service name.
 		assertEquals("opa", c.servicePath);
+	}
+
+	/**
+	 * A tenant-owned instance is rooted at its tenant's tid and acts in its
+	 * tenant's name, which kernel stamps as the namespace claim (kernel#23): its
+	 * state is chrooted under the name, beside its tenant's users'.
+	 */
+	@Test
+	void aTidRootedCallerGetsItsTenantsNameFromTheClaim() throws Exception {
+		Captured c = callWith(tokenFor(
+				SpiffeIds.build(TRUST_DOMAIN, "/tenants/q1w2e3r4", "opa"), "/tenants/acme", "opa", null));
+
+		assertEquals("/tenants/acme", c.namespace);
+		assertEquals("opa", c.servicePath);
+	}
+
+	/** A tenant-owned caller's claim must name a tenant: it is never widened to /system. */
+	@Test
+	void aTenantCallerWhoseClaimIsNoTenantIsRefused() {
+		StatusRuntimeException e = assertThrows(StatusRuntimeException.class, () -> callWith(tokenFor(
+				SpiffeIds.build(TRUST_DOMAIN, "/tenants/q1w2e3r4", "opa"), "/system", "opa", null)));
+
+		assertEquals(Status.Code.UNAUTHENTICATED, e.getStatus().getCode());
 	}
 }

@@ -17,6 +17,7 @@ import com.github.tacplusdev.kernel.model.types.vservices.userentitlements.Usere
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import com.github.tacplusdev.kernel.authz.InMemoryManager;
+import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.ConfigMap;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 import io.grpc.Channel;
@@ -71,6 +72,7 @@ class MintDelegatedTokenTest {
     private final List<JwkOuterClass.Jwk> verifyingKeys = new CopyOnWriteArrayList<>();
     private final List<Kernel.Delegate> delegates = new ArrayList<>();
     private final List<Kernel.Grant> grants = new CopyOnWriteArrayList<>();
+    private final ConfigMap configMap = new ConfigMap(new InMemoryManager());
     private KeyRotator keyRotator;
 
     private IdentityServiceImpl newService(OpaEvalGrpcClient opaEvalClient) {
@@ -96,7 +98,7 @@ class MintDelegatedTokenTest {
                 "https://kernel.test/oidc",
                 opaEvalClient,
                 null,            // proxyPolicyOpaClient
-                null,            // configMap
+                configMap,
                 new WorkloadMap(new InMemoryManager()),
                 new PrincipalMap(new InMemoryManager()),
                 null,            // writeIdentitySnapshot
@@ -120,8 +122,7 @@ class MintDelegatedTokenTest {
         long now = Instant.now().getEpochSecond();
         String subject = tenantNamespace.isEmpty()
                 ? Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", delegateName)
-                : Spiffe.namespaceSpiffeId(TRUST_DOMAIN, tenantNamespace)
-                        + "/" + Spiffe.SERVICES_SEGMENT + "/" + delegateName;
+                : TenantServiceSubjects.of(configMap, TRUST_DOMAIN, tenantNamespace, delegateName);
         TokenWrapper t = TokenWrapper.create()
                 .setIssuer("https://kernel.test/oidc")
                 .setSubject(subject)
@@ -129,8 +130,8 @@ class MintDelegatedTokenTest {
                 .setIssuedAt(now)
                 .setExpiration(now + 3600)
                 .setJTI(UUID.randomUUID().toString());
-        // A service token's namespace claim is derived from its SPIFFE subject.
-        t.setNamespace(Spiffe.namespaceFromSpiffe(subject));
+        // A service token acts in its tenant's name (kernel#23).
+        t.setNamespace(tenantNamespace.isEmpty() ? Spiffe.namespaceFromSpiffe(subject) : tenantNamespace);
         t.sign(signingKey);
         return t.getBase64();
     }

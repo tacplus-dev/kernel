@@ -11,6 +11,7 @@ import com.github.tacplusdev.kernel.model.types.sys.jwk.JwkOuterClass;
 import com.github.tacplusdev.kernel.model.types.sys.token.TokenOuterClass;
 import com.github.tacplusdev.kernel.model.types.services.kernel.Kernel;
 import com.github.tacplusdev.kernel.model.types.sys.tokenrequest.Tokenrequest;
+import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.ConfigMap;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import com.github.tacplusdev.kernel.authz.InMemoryManager;
@@ -20,6 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -55,7 +57,21 @@ class MintServiceTokenKubernetesTest {
     /** In-memory verifying-key store; doubles as KeyRotator publisher + reader. */
     private final List<JwkOuterClass.Jwk> verifyingKeys = new CopyOnWriteArrayList<>();
     private final List<Kernel.Delegate> delegates = new ArrayList<>();
+    private final ConfigMap configMap = new ConfigMap(new InMemoryManager());
     private KeyRotator keyRotator;
+
+    /** The tenants the tenant-owned delegates name: kernel holds a record, with a tid, for each. */
+    @BeforeEach
+    void createTenants() throws Exception {
+        TenantAdminServiceImpl admin = new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, () -> { });
+        for (String ns : List.of(ACME_NS, BETA_NS)) {
+            admin.createTenant(CALLER, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(ns).build());
+        }
+    }
+
+    private String tidOf(String tenantNamespace) throws ProtoException {
+        return configMap.getTenants(tenantNamespace).getTid();
+    }
 
     private IdentityServiceImpl newService(KubernetesTokenVerifier verifier) {
         keyRotator = new KeyRotator(
@@ -80,7 +96,7 @@ class MintServiceTokenKubernetesTest {
                 "https://kernel.test/oidc",
                 null,            // opaEvalClient
                 null,            // proxyPolicyOpaClient
-                null,            // configMap
+                configMap,
                 new WorkloadMap(new InMemoryManager()),
                 new PrincipalMap(new InMemoryManager()),
                 null,            // writeIdentitySnapshot
@@ -109,8 +125,14 @@ class MintServiceTokenKubernetesTest {
         return Spiffe.serviceSpiffeId(TRUST_DOMAIN, "", delegateName);
     }
 
-    /** {@code spiffe://<td>/tenants/<tenant>/services/<svc>}. */
-    private String tenantDelegateSpiffe(String tenantNamespace, String delegateName) {
+    /** {@code spiffe://<td>/tenants/<tid>/services/<svc>}, rooted at the tenant's tid (kernel#23). */
+    private String tenantDelegateSpiffe(String tenantNamespace, String delegateName) throws ProtoException {
+        return Spiffe.namespaceSpiffeId(TRUST_DOMAIN, "/tenants/" + tidOf(tenantNamespace))
+                + "/" + Spiffe.SERVICES_SEGMENT + "/" + delegateName;
+    }
+
+    /** {@code spiffe://<td>/tenants/<name>/services/<svc>}: the subject kernel minted before kernel#23. */
+    private String nameFormSpiffe(String tenantNamespace, String delegateName) {
         return Spiffe.namespaceSpiffeId(TRUST_DOMAIN, tenantNamespace)
                 + "/" + Spiffe.SERVICES_SEGMENT + "/" + delegateName;
     }
@@ -139,8 +161,7 @@ class MintServiceTokenKubernetesTest {
                 .setIssuedAt(now)
                 .setExpiration(now + 3600)
                 .setJTI(UUID.randomUUID().toString());
-        // Service mints derive the namespace claim from the SPIFFE subject, so a
-        // continuity token for a tenant-owned instance carries /tenants/<t>.
+        // The continuity check binds the subject only; the claim is not read.
         t.setNamespace(Spiffe.namespaceFromSpiffe(subject));
         t.setTokenUse(com.github.tacplusdev.kernel.model.types.sys.token.Helpers
                 .tokenUseToString(TokenOuterClass.TokenUse.TOKEN_USE_REFRESH));
@@ -401,11 +422,12 @@ class MintServiceTokenKubernetesTest {
         assertEquals("/system", shared.getNamespace());
 
         TokenWrapper tenant = mintAccessForSa(ACME_SA);
-        assertEquals("spiffe://" + TRUST_DOMAIN + "/tenants/acme/services/" + TENANT_DELEGATE_NAME,
-                tenant.getSubject());
+        assertEquals("spiffe://" + TRUST_DOMAIN + "/tenants/" + tidOf(ACME_NS) + "/services/"
+                + TENANT_DELEGATE_NAME, tenant.getSubject());
         Spiffe.ParsedSpiffeId tenantId = Spiffe.parseSpiffeId(tenant.getSubject());
         assertEquals(Spiffe.SubjectKind.SERVICE, tenantId.subjectKind);
-        assertEquals(ACME_NS, tenantId.namespace);
+        // The subject names the tenant by its tid; the token acts in its name.
+        assertEquals("/tenants/" + tidOf(ACME_NS), tenantId.namespace);
         // The service path is the bare service name for both shapes, so
         // auth_services patterns match a tenant instance exactly as they match
         // the shared one.
@@ -495,6 +517,70 @@ class MintServiceTokenKubernetesTest {
                         .build());
 
         assertEquals("instance-acme", TokenWrapper.parse(resp.getAccessToken().getBase64()).getInstanceId());
+    }
+
+    /**
+     * An instance whose refresh token was minted before kernel#23 carries the
+     * name-form subject. It is the same delegate, so it keeps its instance_id
+     * once, and its new token names the tid.
+     */
+    @Test
+    void aNameFormContinuityTokenOfTheSameDelegatePreservesInstanceId() throws Exception {
+        addDelegate(TENANT_DELEGATE_NAME, ACME_NS, K8S_NAMESPACE, ACME_SA);
+        IdentityServiceImpl svc = newService(FakeKubernetesTokenVerifier.returning(
+                FakeKubernetesTokenVerifier.identity(K8S_NAMESPACE, ACME_SA, List.of(KERNEL_AUDIENCE))));
+
+        String continuity = mintContinuityToken(nameFormSpiffe(ACME_NS, TENANT_DELEGATE_NAME), "instance-acme");
+
+        TokenWrapper access = TokenWrapper.parse(svc.mintServiceToken(CALLER,
+                Tokenrequest.MintServiceTokenRequest.newBuilder()
+                        .setKubernetesToken(fakeJwt())
+                        .setContinuityToken(continuity)
+                        .build()).getAccessToken().getBase64());
+
+        assertEquals("instance-acme", access.getInstanceId());
+        assertEquals(tenantDelegateSpiffe(ACME_NS, TENANT_DELEGATE_NAME), access.getSubject());
+        assertEquals(ACME_NS, access.getNamespace());
+    }
+
+    @Test
+    void aNameFormContinuityTokenOfAnotherTenantIsRejected() {
+        addDelegate(TENANT_DELEGATE_NAME, ACME_NS, K8S_NAMESPACE, ACME_SA);
+        addDelegate(TENANT_DELEGATE_NAME, BETA_NS, K8S_NAMESPACE, BETA_SA);
+        IdentityServiceImpl svc = newService(FakeKubernetesTokenVerifier.returning(
+                FakeKubernetesTokenVerifier.identity(K8S_NAMESPACE, ACME_SA, List.of(KERNEL_AUDIENCE))));
+
+        String continuity = mintContinuityToken(nameFormSpiffe(BETA_NS, TENANT_DELEGATE_NAME), "instance-beta");
+
+        assertEquals(ProtoException.INVALID_ARGUMENT,
+                codeOf(() -> svc.mintServiceToken(CALLER,
+                        Tokenrequest.MintServiceTokenRequest.newBuilder()
+                                .setKubernetesToken(fakeJwt())
+                                .setContinuityToken(continuity)
+                                .build())));
+    }
+
+    /** No tenant record, no tid: the delegate's tenant cannot be named, so it mints nothing. */
+    @Test
+    void aDelegateWhoseTenantHasNoRecordMintsNothing() {
+        addDelegate(TENANT_DELEGATE_NAME, "/tenants/unrecorded", K8S_NAMESPACE, ACME_SA);
+
+        assertEquals(ProtoException.PERMISSION_DENIED, codeOf(() -> mintAccessForSa(ACME_SA)));
+    }
+
+    /** A sub-tenant has a tid of its own, and its instances hang flat from it. */
+    @Test
+    void aSubTenantsInstanceIsRootedAtItsOwnTid() throws Exception {
+        String prodNs = ACME_NS + "/prod";
+        new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, () -> { }).createTenant(CALLER,
+                Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(prodNs).build());
+        addDelegate(TENANT_DELEGATE_NAME, prodNs, K8S_NAMESPACE, ACME_SA);
+
+        TokenWrapper prod = mintAccessForSa(ACME_SA);
+
+        assertEquals("spiffe://" + TRUST_DOMAIN + "/tenants/" + tidOf(prodNs) + "/services/"
+                + TENANT_DELEGATE_NAME, prod.getSubject());
+        assertEquals(prodNs, prod.getNamespace());
     }
 
     // ---- helpers -----------------------------------------------------------

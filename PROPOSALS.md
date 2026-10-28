@@ -55,5 +55,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   proto comment edits back out (PersonMembership's no-delete rule and DeleteTenant's scope; IDENTITY.md says
   both). tacplus could let the local `src` win over a dependency's copy of the same repository, or skip a
   dependency whose repository is the one being built.
+  #20 needed two new fields (`Person.last_signed_in_at_ms`, `Config.xid_ageing_period_seconds`), so it could not
+  take them out. It ran the gates before the push with a private tacplus HOME whose `.gitconfig` points
+  `https://github.com/tacplus-dev/kernel.git` at a local clone holding the change (`url.<clone>.insteadOf`;
+  `LOOPER_WORK=<dir> just gates`), and ran them plain on main after it. That works for any contract change until
+  tacplus handles it.
+- **The people service takes over XID ageing** (2026-10-27, #20): `IdentityGraph.ageOut` and the sign-in time that
+  `resolveOrCreate` and `mergePeople` record are part of the graph's contract now. tacplus-dev/people#1 should carry
+  both, and `Person.last_signed_in_at_ms` with them, so the sweep (`XidAgeing`) keeps working when the graph moves.
 
 ## Promoted / declined

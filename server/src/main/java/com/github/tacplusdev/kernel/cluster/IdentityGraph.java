@@ -5,6 +5,7 @@ package com.github.tacplusdev.kernel.cluster;
 
 import com.github.tacplusdev.kernel.model.types.services.kernel.Kernel;
 
+import java.util.List;
 import java.util.function.Predicate;
 
 /**
@@ -20,8 +21,9 @@ import java.util.function.Predicate;
  * changing a caller. Every write here is one of the record's: the first-login
  * create, a membership the first time an org routes a person, Link (merge),
  * Unlink, delete account and sign out everywhere, a device enrolled on or
- * revoked from a person, and a deleted tenant's memberships removed (the
- * tenant-deletion record). Everything else kernel does with identity — the
+ * revoked from a person, a deleted tenant's memberships removed (the
+ * tenant-deletion record), a sign-in's time and an XID aged out (the same
+ * record's XID ageing). Everything else kernel does with identity — the
  * session credential, its proofs, Merge and Unmerge, the per-tenant exchange —
  * is stateless and stays in kernel.
  *
@@ -76,6 +78,17 @@ interface IdentityGraph {
 
 	/** Delete account: every link revoked, the generation bumped, the person tombstoned. */
 	void deleteAccount(String xid) throws IdentityServiceImpl.StatusException;
+
+	/**
+	 * XID ageing (kernel#20): every live person whose last sign-in
+	 * ({@code Person.last_signed_in_at_ms}) is before {@code signedInBeforeMs} is
+	 * deleted as {@link #deleteAccount} deletes. Each person is read again under
+	 * the write, so a sign-in during the sweep keeps them. A person with no
+	 * recorded sign-in is left, and their clock starts now. A disabled,
+	 * deleted or merged person is left as it is. Returns the XIDs aged out;
+	 * throws, aging out nobody, when the people cannot be read.
+	 */
+	List<String> ageOut(long signedInBeforeMs) throws IdentityServiceImpl.StatusException;
 
 	/** Sign out everywhere: one bump of the person's generation. */
 	Kernel.Person bumpGeneration(String xid) throws IdentityServiceImpl.StatusException;

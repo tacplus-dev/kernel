@@ -691,3 +691,49 @@ Kubernetes namespace belong to the restore tenant, the operator and nsproxy.
 - `TlsCertRevocationTest.aDeletedTenantsServiceCannotRenewItsCert`: an open ManageCert stream is refused its next
   renewal once its tenant is deleted.
 - Gates on tacplus 2.4.
+
+## 2026-10-27 — XIDs that have not signed in for about a year are aged out (#20)
+
+Jody, 2026-10-27 (tacplus-dev/roadmap decisions/tenant-deletion-2026-10-27.md, "XID ageing"): XIDs are not deleted
+with a tenant. An XID that has not signed in for about a year is aged out: deleted as DeleteAccount deletes it.
+
+### What changed
+
+- **The last sign-in is recorded.** `Person.last_signed_in_at_ms` is written by `IdentityGraph.resolveOrCreate` (a
+  people login, and a device enrolment's login side: every call presents a verified IdP proof) and by
+  `IdentityGraph.mergePeople` (the survivor). A token refresh, the session-credential exchange and a device token do
+  not go through either, so they do not count. A sign-in rewrites the time only when the recorded one is an hour old
+  or more (`KernelIdentityGraph.SIGN_IN_RECORD_GRANULARITY_MS`), so a login is not one identity-snapshot write.
+- **The period is config.** `Config.xid_ageing_period_seconds`, default 31536000 (365 days). A period below one day
+  is taken as one day (logged), since the time is recorded to the hour.
+- **A periodic sweep ages people out.** `XidAgeing` runs on every node, hourly, the first an hour after boot, and
+  calls `IdentityGraph.ageOut(now - period)`. That deletes each live person last signed in before the cutoff, as
+  `deleteAccount` does: links and devices removed and the link index rows deleted, the generation bumped (every
+  session credential stops minting), the row kept with `deleted_at_ms`, so the XID is never reused. The same sign-in
+  later starts a new XID. Each person is read again under the graph's lock before the write, so a sign-in during the
+  sweep keeps them and a person is aged out once.
+- **Behind `IdentityGraph`.** `ageOut` is part of the people service's contract (tacplus-dev/people#1); the sweep
+  only computes the cutoff, so it carries over unchanged when the graph moves.
+
+### Decided here (issue silent)
+
+- **Fail closed.** A sweep that cannot read the people ages out nobody. A person with no recorded sign-in (every
+  person from before this change) is not aged out on a time kernel never read: the sweep starts their clock at that
+  sweep, so they age out a period after it unless they sign in.
+- **Disabled, deleted and merged people are left as they are.** A deleted or merged person is already a tombstone; a
+  disabled one carries an operator's mark that ageing should not overwrite.
+- **Every node sweeps.** Kernel has no leader for this, and the graph's re-read makes concurrent sweeps safe. The
+  graph's lock is node-local, like every other graph write today.
+
+### Proof
+
+- `XidAgeingTest`: a person past the period is aged out with links, index row and generation as DeleteAccount
+  leaves them; one exactly at the period is kept; a sign-in, and a merge for the survivor, reset the clock, and a
+  sign-in within the hour writes nothing; a 30-day period ages out at 30 days while the default keeps the person, and a
+  one-minute period is a day; the same sign-in after ageing gets a new XID while the aged-out row stays; a person with
+  no recorded time is kept and their clock started; disabled, deleted and merged people are untouched.
+- Not covered by a test: a sweep failing to read the registry (`InMemoryManager` cannot be made to fail); `ageOut`
+  throws before writing anything.
+- Gates on tacplus 2.4. The `kernel.proto` change cannot pass `just generate` before it is on origin/main (PROPOSALS.md,
+  #19). Before the push the gates ran with the kernel dependency redirected to a local clone holding this commit,
+  and after it they ran plain on main.

@@ -221,6 +221,8 @@ public class ClusterServer {
 	private final RatisFencedLock fencedLock;
 	/** The runtime write path for a service's Config; see {@link ConfigOverrides}. */
 	private final ConfigOverrides configOverrides;
+	/** The XID ageing sweep (kernel#20); see {@link XidAgeing}. */
+	private final XidAgeing xidAgeing;
 	/**
 	 * The kernel Authorizer's key source, assigned during construction (below the
 	 * KeyRotator) and refreshed by {@link #onSigningKeysChanged}.
@@ -865,6 +867,8 @@ public class ClusterServer {
 					kubernetesTokenAudience,
 					webauthnRelyingParty());
 			identityService.setPeopleSignupsPaused(configOverrides::peopleSignupsPaused);
+			this.xidAgeing = new XidAgeing(identityService.identityGraph(), cfg.getXidAgeingPeriodSeconds(),
+					System::currentTimeMillis);
 
 			Mint mintWrapper = new Mint(identityService, kernelAuthorizer);
 			// minter.Minter: the sys minting contract every service's generated
@@ -1617,6 +1621,7 @@ public class ClusterServer {
 			keyRotator.start();
 		}
 		configOverrides.start();
+		xidAgeing.start();
 		// SERVING only now that :5000 accepts. The kubelet probes the separate
 		// 8444 listener, so reporting SERVING during construction left a pod Ready
 		// while startup was still blocked ahead of grpcServer.start().
@@ -1630,6 +1635,7 @@ public class ClusterServer {
 		}
 		clusterPublisher.stop();
 		configOverrides.stop();
+		xidAgeing.stop();
 		healthManager.enterTerminalState();
 		if (healthProbeServer != null) {
 			healthProbeServer.shutdown();

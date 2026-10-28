@@ -442,6 +442,11 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				: WebauthnProof.RelyingParty.NONE;
 	}
 
+	/** The identity graph this service writes through; XID ageing sweeps it ({@link XidAgeing}). */
+	IdentityGraph identityGraph() {
+		return identityGraph;
+	}
+
 	/** Wires the sign-ups kill switch; see {@link IdentityGraph#resolveOrCreate}. */
 	void setPeopleSignupsPaused(java.util.function.BooleanSupplier peopleSignupsPaused) {
 		this.peopleSignupsPaused = peopleSignupsPaused;

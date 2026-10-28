@@ -289,6 +289,17 @@ message Config {
   // kept. A tenant that already exists keeps its record — the tid of a tenant
   // is immutable, so a listed tid that differs from the record's is refused.
   repeated BootstrapTenant tenants = 41 [(spec.assert_max_size) = 64];
+
+  // xid_ageing_period_seconds is how long a person may go without signing in
+  // before their XID is aged out: deleted as UserMint.DeleteAccount deletes it
+  // (links revoked, generation bumped, person tombstoned, XID never reused).
+  // Every kernel sweeps periodically; a person whose last sign-in
+  // (Person.last_signed_in_at_ms) kernel cannot read is left. A period below
+  // one day is taken as one day. Default: 31536000 (365 days).
+  int64 xid_ageing_period_seconds = 42 [
+    (spec.default_int) = 31536000,
+    (spec.assert_duration) = DURATION_TYPE_POSITIVE
+  ];
 }
 
 // BootstrapTenant is one tenant listed in the deployment's bootstrap config
@@ -1516,6 +1527,12 @@ message Person {
   // by its `device` claim; an approval is signed under one of these. One key
   // belongs to at most one person. Revoked ones stay, marked.
   repeated PersonalCredential devices = 11 [(spec.assert_max_size) = 16];
+  // last_signed_in_at_ms is the person's last sign-in that presented an IdP
+  // proof (a login, a device enrolment's login side) or merged two people; a
+  // token refresh or exchange is not one. Recorded to the hour. XID ageing
+  // (Config.xid_ageing_period_seconds) reads it; 0 is not recorded yet, and the
+  // ageing sweep starts the clock at that sweep rather than ageing the person.
+  int64 last_signed_in_at_ms = 12 [(spec.assert_ge) = 0];
 }
 
 // ============================================================================

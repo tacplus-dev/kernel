@@ -10,8 +10,12 @@ import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.PrincipalMap;
 
 import io.grpc.Status;
 import java.security.SecureRandom;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,9 +51,17 @@ final class KernelIdentityGraph implements IdentityGraph {
 
 	private static final SecureRandom XID_RANDOM = new SecureRandom();
 
+	/**
+	 * How stale {@code Person.last_signed_in_at_ms} may get before a sign-in
+	 * rewrites it. XID ageing counts in days, so an hour costs it nothing and
+	 * spares the identity snapshot a write on every login.
+	 */
+	static final long SIGN_IN_RECORD_GRANULARITY_MS = 3_600_000L;
+
 	private final PrincipalMap principalMap;
 	private final Runnable persist;
 	private final BooleanSupplier signupsPaused;
+	private final LongSupplier clock;
 	private final Object lock = new Object();
 
 	/**
@@ -58,9 +70,16 @@ final class KernelIdentityGraph implements IdentityGraph {
 	 * @param signupsPaused the sign-ups kill switch, read on every create
 	 */
 	KernelIdentityGraph(PrincipalMap principalMap, Runnable persist, BooleanSupplier signupsPaused) {
+		this(principalMap, persist, signupsPaused, System::currentTimeMillis);
+	}
+
+	/** As above, with the clock every recorded time is read from (epoch ms). */
+	KernelIdentityGraph(PrincipalMap principalMap, Runnable persist, BooleanSupplier signupsPaused,
+			LongSupplier clock) {
 		this.principalMap = principalMap;
 		this.persist = persist;
 		this.signupsPaused = signupsPaused;
+		this.clock = clock;
 	}
 
 	/** The link index key: {@code <idp_id>|<provider_subject>}. */
@@ -84,7 +103,13 @@ final class KernelIdentityGraph implements IdentityGraph {
 				if (existing.getDisabledAtMs() != 0 || existing.getDeletedAtMs() != 0) {
 					throw new StatusException(Status.PERMISSION_DENIED, "person is disabled");
 				}
-				return new Resolved(existing, false);
+				long nowMs = clock.getAsLong();
+				if (nowMs - existing.getLastSignedInAtMs() < SIGN_IN_RECORD_GRANULARITY_MS) {
+					return new Resolved(existing, false);
+				}
+				Kernel.Person signedIn = existing.toBuilder().setLastSignedInAtMs(nowMs).build();
+				write(() -> principalMap.putPeople(bound, signedIn), "sign-in time");
+				return new Resolved(signedIn, false);
 			}
 			// The sign-ups kill switch refuses the create half only: everyone with a
 			// row signed in above, and a link kernel has never seen mints nothing.
@@ -105,10 +130,11 @@ final class KernelIdentityGraph implements IdentityGraph {
 				candidate = newXid();
 			}
 			String xid = candidate;
-			long nowMs = System.currentTimeMillis();
+			long nowMs = clock.getAsLong();
 			Kernel.Person person = Kernel.Person.newBuilder()
 					.setXid(xid)
 					.setCreatedAtMs(nowMs)
+					.setLastSignedInAtMs(nowMs)
 					.addLinks(Kernel.IdentityLink.newBuilder()
 							.setIdpId(idpId)
 							.setProviderSubject(providerSubject)
@@ -143,7 +169,7 @@ final class KernelIdentityGraph implements IdentityGraph {
 			Kernel.Person updated = person.toBuilder()
 					.addMemberships(Kernel.PersonMembership.newBuilder()
 							.setTenantNamespace(tenantNamespace)
-							.setCreatedAtMs(System.currentTimeMillis()))
+							.setCreatedAtMs(clock.getAsLong()))
 					.build();
 			write(() -> principalMap.putPeople(xid, updated), "membership");
 			logger.info("Recorded membership: xid={} tenant={}", xid, tenantNamespace);
@@ -224,6 +250,8 @@ final class KernelIdentityGraph implements IdentityGraph {
 			// The loser's devices are the survivor's now: one key, one person, so
 			// they leave the tombstone rather than being copied.
 			merged.addAllDevices(loser.getDevicesList());
+			// A merge presents both people's sign-ins: the survivor signed in now.
+			merged.setLastSignedInAtMs(clock.getAsLong());
 			if (merged.getDevicesCount() > MAX_DEVICES_PER_PERSON) {
 				throw new StatusException(Status.RESOURCE_EXHAUSTED,
 						"the merged account would hold more than " + MAX_DEVICES_PER_PERSON + " devices");
@@ -275,25 +303,73 @@ final class KernelIdentityGraph implements IdentityGraph {
 	public void deleteAccount(String xid) throws StatusException {
 		synchronized (lock) {
 			Kernel.Person person = requirePerson(xid);
-			// The devices go with the links: a deleted person's keys authenticate
-			// nobody, and the same key may be enrolled on a new person later.
-			Kernel.Person tombstone = person.toBuilder()
-					.clearLinks()
-					.clearDevices()
-					.setGeneration(person.getGeneration() + 1)
-					.setDeletedAtMs(System.currentTimeMillis())
-					.build();
-			write(() -> {
-				for (Kernel.IdentityLink link : person.getLinksList()) {
-					String key = linkKey(link.getIdpId(), link.getProviderSubject());
-					if (xid.equals(principalMap.getIdentityLinks(key).getXid())) {
-						principalMap.deleteIdentityLinks(key);
-					}
-				}
-				principalMap.putPeople(xid, tombstone);
-			}, "account deletion");
+			tombstone(person, "account deletion");
 			logger.info("Deleted account: xid={} ({} link(s) revoked)", xid, person.getLinksCount());
 		}
+	}
+
+	@Override
+	public List<String> ageOut(long signedInBeforeMs) throws StatusException {
+		List<Kernel.Person> people;
+		try {
+			people = principalMap.proto().getPeopleList();
+		} catch (ProtoException e) {
+			// Fail closed: a sweep that cannot read the people ages out nobody.
+			throw new StatusException(Status.INTERNAL, "principal registry unavailable");
+		}
+		List<String> agedOut = new ArrayList<>();
+		for (Kernel.Person listed : people) {
+			synchronized (lock) {
+				// Read again under the lock: a sign-in since the listing resets the clock.
+				Kernel.Person person = principalMap.getPeople(listed.getXid());
+				if (person.getXid().isEmpty() || person.getDisabledAtMs() != 0 || person.getDeletedAtMs() != 0
+						|| !person.getMergedIntoXid().isEmpty()) {
+					continue;
+				}
+				if (person.getLastSignedInAtMs() == 0) {
+					// No recorded sign-in (a person from before kernel#20): the
+					// clock starts now rather than the person being aged out on a
+					// time kernel never read.
+					Kernel.Person started = person.toBuilder().setLastSignedInAtMs(clock.getAsLong()).build();
+					write(() -> principalMap.putPeople(person.getXid(), started), "sign-in time");
+					continue;
+				}
+				if (person.getLastSignedInAtMs() >= signedInBeforeMs) {
+					continue;
+				}
+				tombstone(person, "XID ageing");
+				agedOut.add(person.getXid());
+				logger.info("Aged out: xid={} last signed in at {} ({} link(s) revoked)",
+						person.getXid(), Instant.ofEpochMilli(person.getLastSignedInAtMs()),
+						person.getLinksCount());
+			}
+		}
+		return agedOut;
+	}
+
+	/**
+	 * Delete account's write: every link revoked, the generation bumped, the
+	 * person tombstoned (the row kept, so the XID is never reused). The devices
+	 * go with the links: a deleted person's keys authenticate nobody, and the
+	 * same key may be enrolled on a new person later.
+	 */
+	private void tombstone(Kernel.Person person, String what) throws StatusException {
+		String xid = person.getXid();
+		Kernel.Person tombstone = person.toBuilder()
+				.clearLinks()
+				.clearDevices()
+				.setGeneration(person.getGeneration() + 1)
+				.setDeletedAtMs(clock.getAsLong())
+				.build();
+		write(() -> {
+			for (Kernel.IdentityLink link : person.getLinksList()) {
+				String key = linkKey(link.getIdpId(), link.getProviderSubject());
+				if (xid.equals(principalMap.getIdentityLinks(key).getXid())) {
+					principalMap.deleteIdentityLinks(key);
+				}
+			}
+			principalMap.putPeople(xid, tombstone);
+		}, what);
 	}
 
 	@Override
@@ -363,7 +439,7 @@ final class KernelIdentityGraph implements IdentityGraph {
 					return device;
 				}
 				Kernel.PersonalCredential revoked = device.toBuilder()
-						.setRevokedAtMs(System.currentTimeMillis()).build();
+						.setRevokedAtMs(clock.getAsLong()).build();
 				Kernel.Person updated = person.toBuilder().setDevices(i, revoked).build();
 				write(() -> principalMap.putPeople(xid, updated), "device revocation");
 				logger.info("Revoked device: xid={}", xid);

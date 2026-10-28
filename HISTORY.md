@@ -10,3 +10,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-10-27 looper issue Jetty 11.0.25 (via Javalin 6.7.0) has HIGH advisories; no fixed Jetty 11 on Maven Central (#16, 604be82)
 - 2026-10-27 looper issue Base image distroless/java21-debian12 is behind the latest line (java25-debian13) (#17, b447775)
 - 2026-10-27 looper issue DeleteTenant is complete: no new AT/ST, memberships removed (XIDs kept), nothing tenant-scoped left (#19, 7983b2f)
+- 2026-10-28 looper issue Age out XIDs that have not signed in for about a year (#20, 52c48d4)

@@ -15,6 +15,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   OWASP dependency-check plugin) in CI would fail the build when it happens, not the next scan.
   #13 is the same story for transitive Jackson (2.17.0 via opa, 3.1.4 via mcp), now pinned by BOM in the
   root pom: a pin only holds until the next advisory, so the check is what keeps it honest.
+  #21 is the third: Guava 33.5.0-android via gRPC 1.79.0 (GHSA-xxph-c9ww-hj94), now pinned at 33.7.2-android.
+- **Drop the Guava pin with the next gRPC bump** (2026-10-28, #21): `guava.version` in the root pom overrides
+  what gRPC asks for. Once a gRPC release depends on Guava `>= 33.7.2` and kernel moves to it, remove the
+  property and its `dependencyManagement` entry, or the pin will later hold Guava *below* what gRPC needs.
 - **Drop Javalin from the generated Java chassis, in tacplus** (2026-10-27, #16): kernel moved Javalin
   6.7.0 -> 7.2.4 because Jetty 11 has HIGH advisories and no fixed 11.x on Maven Central. But nothing
   serves HTTP through it: the tacplus-generated `GrpcServer` declares a `Javalin httpServer` that is never

@@ -18,6 +18,8 @@
 		<!-- Dependency versions -->
 		<protobuf.version>4.36.2</protobuf.version>
 		<grpc.version>1.79.0</grpc.version>
+		<!-- Guava is never a direct dependency: it comes in through gRPC (#21). -->
+		<guava.version>33.7.2-android</guava.version>
 		<snakeyaml.version>2.5</snakeyaml.version>
 		<toml4j.version>0.7.2</toml4j.version>
 		<gson.version>2.13.2</gson.version>
@@ -73,6 +75,11 @@
 				<groupId>io.grpc</groupId>
 				<artifactId>grpc-services</artifactId>
 				<version>${grpc.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>com.google.guava</groupId>
+				<artifactId>guava</artifactId>
+				<version>${guava.version}</version>
 			</dependency>
 			<dependency>
 				<groupId>javax.annotation</groupId>

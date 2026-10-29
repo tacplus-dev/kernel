@@ -7,6 +7,7 @@ The fleet's state host and token authority (Java, tacplus service). Unreleased; 
 Built inside the fleet build from a manifest, not standalone. Ported from SeaBeam through `1672d4d4`; the private schematic kernel is not kept in sync.
 
 ## Next
+- Sign-in and linking: binding step, kernel-owned pairwise mappings, account classification, proof age (#26)
 - Tenant-owned service identity carries the tid: `spiffe://<td>/tenants/<tid>/services/<svc>` (#23; for tacplus-dev/gateway#3)
 - Age out XIDs that have not signed in for about a year (#20)
 - DeleteTenant is complete: no new AT/ST, memberships removed, XIDs kept, nothing tenant-scoped left (#19)

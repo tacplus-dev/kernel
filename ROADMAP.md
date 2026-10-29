@@ -22,6 +22,7 @@ Built inside the fleet build from a manifest, not standalone. Ported from SeaBea
 - Retire the `linked` claim (#4; landed in 5199fea, issue still open)
 
 ## Later
+- Key-pair credentials for workloads that can't federate: tenant-managed CredPair keys, disabled after 90 days unused, configurable per tenant (#28)
 - External workload identity: deployments as OIDC issuers trusted by GCP, Azure and AWS, for workloads only; users later (#27)
 - Release: tag from v0.1.0 and publish the image (#7; blocked on tacplus-dev/looper#12)
 - Move the identity graph to the people service (#2; blocked on tacplus-dev/people#1, tacplus-dev/tacplus#170)

@@ -22,6 +22,7 @@ Built inside the fleet build from a manifest, not standalone. Ported from SeaBea
 - Retire the `linked` claim (#4; landed in 5199fea, issue still open)
 
 ## Later
+- External workload identity: deployments as OIDC issuers trusted by GCP, Azure and AWS, for workloads only; users later (#27)
 - Release: tag from v0.1.0 and publish the image (#7; blocked on tacplus-dev/looper#12)
 - Move the identity graph to the people service (#2; blocked on tacplus-dev/people#1, tacplus-dev/tacplus#170)
 - Stratum as identity's durable record; nothing new in kernel depends on Hazelcast (tacplus-dev/roadmap:decisions/platform-direction-2026-10-23.md, tacplus-dev/roadmap:decisions/stratum-per-tenant-2026-10-25.md)

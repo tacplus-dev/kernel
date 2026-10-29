@@ -81,6 +81,21 @@ the looper then marks it `promoted` or `declined` here with the date.
   comments still say a tenant-owned instance is `spiffe://<td>/tenants/<tenant>/services/<name>` and takes its
   namespace claim from it. #23 left `kernel.proto` alone because any edit fails the gates before the push (the #19
   proposal above); IDENTITY.md records the change. The next contract change should carry the comment fix.
+- **Kernel's Hazelcast members admit any peer: give them the member admission Stratum gets** (2026-10-29, #24):
+  kernel's member traffic is plain, unauthenticated Hazelcast (`KernelMemberTransportTest`). Anything that reaches
+  the member port (5001) and knows the cluster name joins, and reads and writes every map, signing keys and
+  identity state included. Open-source Hazelcast has no member TLS. Until #24, the SeaBeam
+  `hazelcast.internal.override.enterprise` flag hid this: it got an `SSLConfig` past the Enterprise check, and the
+  open-source pipeline then ignored it. The `SSLConfig` was also only in the unused `HazelcastFactory`. The
+  admission design being settled for Stratum (tacplus-dev/stratum#17: member mTLS with a root of trust per tenant
+  on Jody's direction, falling back to option A, an in-process TLS forwarder, because open source can't do it)
+  should cover kernel's members too. Until then, a NetworkPolicy on kernel's member port (operator) would admit
+  only kernel pods. ROADMAP Later removes Hazelcast from kernel; this is the exposure until then.
+- **`kernel.proto` claims Hazelcast mTLS that does not exist** (2026-10-29, #24): the `tls` and `cluster_ca`
+  comments say they are used for "Hazelcast mTLS" and its trust, and the `option (spec.smb)` comment says kernel
+  uses its SMB member cert "for Hazelcast peer mTLS". Kernel has never configured member TLS that works, and
+  nothing implements `Handler.newSmbCert`. Fix the comments with the next contract change (the #19 proposal), or
+  with the admission work above.
 
 ## Promoted / declined
 - **Tenant-owned service identity carries the tid** (2026-10-28, #23): promoted 2026-10-28 (kernel ROADMAP.md, Next),

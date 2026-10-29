@@ -28,8 +28,6 @@ public class Bootstrap {
 	 * Resolves configuration from args and environment, then starts the server.
 	 */
 	public static void run(String[] args) throws Exception {
-		System.setProperty("hazelcast.internal.override.enterprise", "true");
-
 		// Install credential redaction and transport-logger pins as the FIRST action,
 		// before any gRPC channel exists. kernel does not reach the generated
 		// GrpcConfigLoader (it resolves its own Kernel.Config below), so the install

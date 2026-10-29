@@ -248,33 +248,7 @@ public class ClusterServer {
 				? "node-" + hostname
 				: "node-" + hzPort;
 
-		var hzConfig = new com.hazelcast.config.Config();
-		hzConfig.setClusterName(Objects.requireNonNull(cfg.getClusterName(), "clusterName"));
-		hzConfig.setInstanceName(Objects.requireNonNull(instanceName, "instanceName"));
-		hzConfig.setProperty(
-				"hazelcast.partition.count",
-				Objects.requireNonNull(String.valueOf(cfg.getPartitionCount()), "hazelcast.partition.count"));
-		hzConfig.setProperty("hazelcast.logging.type", "slf4j");
-		hzConfig.setProperty("hazelcast.phone.home.enabled", "false");
-
-		// Network configuration
-		var networkConfig = hzConfig.getNetworkConfig();
-		networkConfig.setPort(hzPort);
-		networkConfig.setPortAutoIncrement(false);
-
-		var joinConfig = networkConfig.getJoin();
-		joinConfig.getMulticastConfig().setEnabled(false);
-		TcpIpConfig tcp = joinConfig.getTcpIpConfig();
-		tcp.setEnabled(true);
-		for (var member : members) {
-			String memberHost = Objects.requireNonNull(member.getHost(), "member.host");
-			tcp.addMember(memberHost + ":" + hzPort);
-		}
-
-		hzConfig.getRestConfig().setEnabled(false);
-
-		SerializerRegistry.register(hzConfig);
-		this.hazelcast = com.hazelcast.core.Hazelcast.newHazelcastInstance(hzConfig);
+		this.hazelcast = com.hazelcast.core.Hazelcast.newHazelcastInstance(hazelcastConfig(cfg, instanceName));
 
 		logger.info(
 				"Hazelcast {} started (cluster size={})",
@@ -1045,6 +1019,44 @@ public class ClusterServer {
 		return builder
 				.permitKeepAliveTime(10, java.util.concurrent.TimeUnit.SECONDS)
 				.permitKeepAliveWithoutCalls(true);
+	}
+
+	/**
+	 * The Hazelcast member config for a defaulted kernel config. Member traffic is
+	 * plain Hazelcast over TCP: open-source Hazelcast has no member TLS or member
+	 * authentication (an enabled SSLConfig is refused at start with "SSL/TLS
+	 * requires Hazelcast Enterprise Edition"), so none is configured (kernel#24).
+	 */
+	static com.hazelcast.config.Config hazelcastConfig(Kernel.Config cfg, String instanceName) {
+		int hzPort = cfg.getHazelcastListener().getPort();
+
+		var hzConfig = new com.hazelcast.config.Config();
+		hzConfig.setClusterName(Objects.requireNonNull(cfg.getClusterName(), "clusterName"));
+		hzConfig.setInstanceName(Objects.requireNonNull(instanceName, "instanceName"));
+		hzConfig.setProperty(
+				"hazelcast.partition.count",
+				Objects.requireNonNull(String.valueOf(cfg.getPartitionCount()), "hazelcast.partition.count"));
+		hzConfig.setProperty("hazelcast.logging.type", "slf4j");
+		hzConfig.setProperty("hazelcast.phone.home.enabled", "false");
+
+		// Network configuration
+		var networkConfig = hzConfig.getNetworkConfig();
+		networkConfig.setPort(hzPort);
+		networkConfig.setPortAutoIncrement(false);
+
+		var joinConfig = networkConfig.getJoin();
+		joinConfig.getMulticastConfig().setEnabled(false);
+		TcpIpConfig tcp = joinConfig.getTcpIpConfig();
+		tcp.setEnabled(true);
+		for (var member : cfg.getMembersList()) {
+			String memberHost = Objects.requireNonNull(member.getHost(), "member.host");
+			tcp.addMember(memberHost + ":" + hzPort);
+		}
+
+		hzConfig.getRestConfig().setEnabled(false);
+
+		SerializerRegistry.register(hzConfig);
+		return hzConfig;
 	}
 
 	/**

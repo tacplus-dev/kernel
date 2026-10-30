@@ -13,7 +13,7 @@ import java.util.Map;
  * what the kernel maps to a {@code Delegate} via
  * {@code Delegate.kubernetes_service_accounts}. The remaining fields are
  * advisory for the service-token path (the kernel maps SA -> delegate; it does
- * not pod-bind the way kmaker's cert path does) but are captured so a future
+ * not pod-bind the caller) but are captured so a future
  * replay / pod-binding policy can use them without a proto change.
  *
  * @param kubernetesNamespace      K8s namespace of the service account (e.g. {@code "schematic"}).

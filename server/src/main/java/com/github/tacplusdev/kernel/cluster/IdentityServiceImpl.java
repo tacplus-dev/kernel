@@ -349,8 +349,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	// is a swappable seam (TokenReview vs local JWKS — review M1 / plan Q6); it
 	// defaults to UnwiredKubernetesTokenVerifier (fails UNIMPLEMENTED) until the
 	// real impl lands with operator Phase 3. The audience is the configured
-	// kernel/Schematic workload audience the projected token must carry — never the
-	// kmaker audience (plan invariant lines 341-349).
+	// kernel/Schematic workload audience the projected token must carry, never
+	// another audience the same pod's projected tokens may hold.
 	private final KubernetesTokenVerifier kubernetesTokenVerifier;
 	private final String kubernetesTokenAudience;
 	@Nullable
@@ -579,7 +579,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		// Belt-and-suspenders audience re-check (review M4): even though the
 		// verifier was asked for kubernetesTokenAudience, re-assert the returned
-		// audiences actually contain it, so a kmaker-only token cannot slip through.
+		// audiences actually contain it, so a token for another audience cannot slip through.
 		if (!kubernetesTokenAudience.isEmpty() && !identity.audiences().contains(kubernetesTokenAudience)) {
 			throw new StatusException(Status.UNAUTHENTICATED,
 					"kubernetes_token audiences " + identity.audiences()

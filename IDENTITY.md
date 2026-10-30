@@ -7,11 +7,15 @@ separate is what makes the trust model auditable.
 
 1. **The operator deploys.** It provisions clusters and workloads and is the
    only component that wires environment-specific verifiers (e.g. the live
-   Kubernetes token verifier — see below). The operator does not mint identity.
-2. **kmaker makes kernels only.** kmaker signs kernel certificates
-   (`MintKernelCert`) bound to verified pod facts. It is the certificate
-   authority for *kernels*; it does not mint Schematic tokens or ordinary service
-   identities.
+   Kubernetes token verifier — see below). Apart from kernel's own serving
+   certificate (item 2), the operator does not mint identity.
+2. **Kernel's own certificate comes from the deploy.** The operator provisions
+   each kernel node's serving certificate (`Kernel.Config.tls`,
+   `spiffe://<td>/kernel`), signed by the cluster CA at deploy time. Nothing
+   signs kernel certificates at runtime, and no separate kernel certificate
+   authority exists in this design: kmaker, which once held that role and is
+   called by nothing, is being retired (kernel#29; tacplus-dev/operator#16
+   stops rendering it).
 3. **Kernel mints Schematic tokens and ordinary service certs.** Kernel is the
    signing authority for all S2S/C2S tokens and for ordinary service TLS
    certificates (the SPIFFE-keyed leaf+intermediate chain issued from
@@ -27,8 +31,7 @@ separate is what makes the trust model auditable.
 > `MintServiceTokenRequest` accepts flat credential fields:
 > `input_token = 1`, `cloud_proof = 2`, `kubernetes_token = 8`, and
 > `Delegate.kubernetes_service_accounts = 5` (repeated
-> `KubernetesServiceAccountMatcher`). The kernel-side cert RPC keeps its
-> existing name `MintKernelCert` (it is not being renamed to `SignKernelCert`).
+> `KubernetesServiceAccountMatcher`).
 
 ## S2S (Service-to-Service) Tokens
 

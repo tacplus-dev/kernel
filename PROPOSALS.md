@@ -112,6 +112,12 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Workload keys in the CLI and the gateway** (2026-10-30, #28): `CreateWorkloadKey`, `ListWorkloadKeys` and
   `RevokeWorkloadKey` are new external `TenantAdmin` RPCs. Whatever fronts `TenantAdmin` and `MintClientToken` for
   external clients (the gateway's C2S routes, an admin CLI) should carry them; docs/workload-keys.md uses `grpcurl`.
+- **Kernel issues its own serving certificate** (2026-10-30, #29): `Kernel.Config.tls` (field 11, `assert_required`)
+  is signed by the operator with the cluster CA key at deploy time (`Pki.NodeTls`, operator `deploycrypto.go`). Kernel
+  could issue it to itself from its node intermediate (`signing_ca`), the way it issues every service's certificate,
+  which removes one more deploy-time use of the cluster CA key. It changes a public config contract (`tls` optional or
+  gone) and the operator must stop minting `NodeTls`, so it needs its own roadmap entry. Kept out of #29 (Jody's answer
+  on the issue): kmaker's retirement does not need it.
 
 ## Promoted / declined
 - **Tenant-owned service identity carries the tid** (2026-10-28, #23): promoted 2026-10-28 (kernel ROADMAP.md, Next),

@@ -34,7 +34,7 @@ public interface KubernetesTokenVerifier {
      * @param token            the raw projected service-account JWT.
      * @param requiredAudience the audience the kernel requires the token to be
      *                         valid for (the configured kernel/Schematic workload
-     *                         audience — never the {@code kmaker} audience).
+     *                         audience, never another audience).
      *                         Implementations must both request this audience
      *                         and re-check that the returned audiences contain
      *                         it (belt-and-suspenders, review finding M4).

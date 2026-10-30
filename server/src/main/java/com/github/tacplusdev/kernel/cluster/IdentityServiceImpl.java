@@ -186,6 +186,12 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	// can only ever deny an exchange, never widen authority.
 	private static final String CLAIM_GRANT_ID = "gid";
 
+	// Workload-key lineage (kernel#28). A token minted from a tenant's workload
+	// key carries the key's id here, so each exchange re-checks that the key is
+	// still active and allows the requested audience — see
+	// assertWorkloadKeyStillLive. Kernel-only, like gid.
+	private static final String CLAIM_WORKLOAD_KEY_ID = "wkid";
+
 
 	private static final long DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 900; // 15 minutes
 	private static final long DEFAULT_REFRESH_TOKEN_LIFETIME_SECONDS = 86400; // 24 hours
@@ -2140,15 +2146,26 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	@Nullable
 	private String proofReplayRefusal(TokenWrapper proof, long now) {
+		return proofReplayRefusal(proof, now, MAX_PROOF_LIFETIME_SECONDS);
+	}
+
+	/**
+	 * {@link #proofReplayRefusal(TokenWrapper, long)} with the lifetime cap
+	 * {@code maxLifetimeSeconds}: a workload key's assertion may live up to
+	 * {@link WorkloadKeys#MAX_ASSERTION_LIFETIME_SECONDS}. The {@code jti} is
+	 * remembered until the latest {@code exp} the cap admits.
+	 */
+	@Nullable
+	private String proofReplayRefusal(TokenWrapper proof, long now, long maxLifetimeSeconds) {
 		if (!Kernel.getDescriptor().getPackage().equals(proof.getAudience())) {
 			return "proof audience is not " + Kernel.getDescriptor().getPackage();
 		}
 		// verify() has already established exp > 0 and not-yet-expired; this bounds
 		// the other end. The skew allowance is the same 60s TokenWrapper.verify
 		// applies, so a client whose clock runs fast is not refused for it.
-		long expCeiling = now + MAX_PROOF_LIFETIME_SECONDS + PROOF_CLOCK_SKEW_SECONDS;
+		long expCeiling = now + maxLifetimeSeconds + PROOF_CLOCK_SKEW_SECONDS;
 		if (proof.getExpiration() > expCeiling) {
-			return "proof lifetime exceeds the " + MAX_PROOF_LIFETIME_SECONDS + "s cap";
+			return "proof lifetime exceeds the " + maxLifetimeSeconds + "s cap";
 		}
 		String jti = proof.getJTI();
 		if (jti == null || jti.isEmpty()) {
@@ -3301,6 +3318,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// And for devices: a device token buys more only while its device is
 		// still enrolled on the live person it names.
 		assertDeviceStillEnrolled(inputToken);
+
+		// And for workload keys (kernel#28): a token minted from one buys more
+		// only while the key is active, and only for the key's audiences.
+		WorkloadKeys.Owned workloadKey = assertWorkloadKeyStillLive(inputToken);
+		if (workloadKey != null) {
+			return mintFromWorkloadKeyToken(request, inputToken, workloadKey);
+		}
 
 		// Session-credential arm (identity decision record 2026-10-25). Selected by
 		// claim SHAPE — the xid_gen and proofs claims — never by token_use, so a
@@ -5302,8 +5326,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			}
 		}
 		if (matched == null) {
-			throw new ProtoException(ProtoException.UNAUTHENTICATED,
-					"unknown cred_pair: " + credPairId);
+			// Not a cred_pair: a tenant's workload key (kernel#28), or nothing.
+			return mintFromWorkloadKey(proof, credPairId, request);
 		}
 		if (owningTenants.size() > 1) {
 			logger.error("cred_pair {} is configured under {} tenants: {} — refusing to mint",
@@ -5395,6 +5419,225 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		return Tokenrequest.TokenMintResponse.newBuilder()
 				.setAccessToken(proto)
 				.build();
+	}
+
+	/**
+	 * The workload-key arm of {@code MintClientToken} (kernel#28): a tenant's
+	 * workload that cannot federate presents an assertion signed with a key the
+	 * tenant registered ({@code KernelTenantConfig.workload_keys}), and gets an
+	 * ordinary short-lived service access token for exactly the key's subject.
+	 * It exchanges that (MintToken with {@code aud}) for service tokens to the
+	 * key's audiences only; see {@link #mintFromWorkloadKeyToken}.
+	 *
+	 * <p>The assertion: {@code kid} the key's id; signed by it (Ed25519 or
+	 * ES256); {@code aud} kernel; {@code iat} set and {@code exp} at most
+	 * {@link WorkloadKeys#MAX_ASSERTION_LIFETIME_SECONDS} after it; a fresh
+	 * {@code jti}, remembered until {@code exp} and refused on reuse. The key
+	 * must be active: not revoked, not past the tenant's maximum lifetime, not
+	 * unused for longer than its inactivity window. Each mint is audited and
+	 * records the key's {@code last_used_at}.
+	 */
+	private Tokenrequest.TokenMintResponse mintFromWorkloadKey(TokenWrapper proof, String keyId,
+			Tokenrequest.MintClientTokenRequest request) throws ProtoException {
+		List<WorkloadKeys.Owned> owners = WorkloadKeys.findById(configMap, keyId);
+		if (owners.isEmpty()) {
+			throw new ProtoException(ProtoException.UNAUTHENTICATED, "unknown cred_pair: " + keyId);
+		}
+		if (owners.size() > 1) {
+			logger.error("workload key {} is held by {} tenant configs — refusing to mint", keyId, owners.size());
+			throw new ProtoException(ProtoException.FAILED_PRECONDITION,
+					"workload key " + keyId + " is configured under more than one tenant");
+		}
+		WorkloadKeys.Owned owned = owners.get(0);
+		Credentials.WorkloadKey key = owned.key();
+		long now = Instant.now().getEpochSecond();
+
+		try {
+			proof.verify(ImmutableJwk.from(key.getPublicKey()));
+		} catch (Exception e) {
+			throw new ProtoException(ProtoException.UNAUTHENTICATED,
+					"workload key assertion verification failed: " + e.getMessage());
+		}
+		// The 5-minute cap is the assertion's own lifetime, iat to exp; the replay
+		// check below bounds exp against kernel's clock as well.
+		if (proof.getIssuedAt() <= 0) {
+			throw new ProtoException(ProtoException.UNAUTHENTICATED,
+					"workload key assertion verification failed: assertion has no iat");
+		}
+		if (proof.getExpiration() - proof.getIssuedAt() > WorkloadKeys.MAX_ASSERTION_LIFETIME_SECONDS) {
+			throw new ProtoException(ProtoException.UNAUTHENTICATED,
+					"workload key assertion verification failed: proof lifetime exceeds the "
+							+ WorkloadKeys.MAX_ASSERTION_LIFETIME_SECONDS + "s cap");
+		}
+		// The key's state is checked after the signature, so only its holder
+		// learns that it is revoked or disabled; and before the jti is spent.
+		Kernel.WorkloadKeyState state = owned.state(now);
+		if (state != Kernel.WorkloadKeyState.WORKLOAD_KEY_STATE_ACTIVE) {
+			logger.info("audit: workload key mint refused: tenant={} key={} state={}",
+					owned.tenantNamespace(), keyId, state);
+			throw new ProtoException(ProtoException.UNAUTHENTICATED,
+					"workload key " + keyId + " is " + workloadKeyStateWord(state));
+		}
+		String replayRefusal = proofReplayRefusal(proof, now, WorkloadKeys.MAX_ASSERTION_LIFETIME_SECONDS);
+		if (replayRefusal != null) {
+			throw new ProtoException(ProtoException.UNAUTHENTICATED,
+					"workload key assertion verification failed: " + replayRefusal);
+		}
+
+		long maxExp = Math.min(now + accessTokenLifetimeSeconds,
+				WorkloadKeys.expiresAt(key, owned.policy()));
+		long exp;
+		if (request.getExp() > 0) {
+			exp = request.getExp();
+			if (exp <= now) {
+				throw new ProtoException(ProtoException.INVALID_ARGUMENT, "exp must be in the future");
+			}
+			if (exp > maxExp) {
+				throw new ProtoException(ProtoException.INVALID_ARGUMENT,
+						"requested exp " + exp + " exceeds the workload token ceiling " + maxExp);
+			}
+		} else {
+			exp = maxExp;
+		}
+
+		TokenWrapper token;
+		try {
+			token = workloadKeyServiceToken(key, owned.tenantNamespace(), Kernel.getDescriptor().getPackage(),
+					TOKEN_USE_ACCESS, now, exp);
+		} catch (StatusException e) {
+			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
+		}
+		WorkloadKeys.recordUse(configMap, owned.tenantNamespace(), keyId, now);
+		logger.info("audit: workload key mint: tenant={} key={} sub={} assertion_jti={} jti={} exp={}",
+				owned.tenantNamespace(), keyId, key.getSubject(), proof.getJTI(), token.getJTI(), exp);
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setAccessToken(token.getProto())
+				.build();
+	}
+
+	/**
+	 * The exchange of a workload-key token (MintToken): a service token for
+	 * {@code aud}, which must be one of the key's audiences, or the access
+	 * token and one service token per {@code service_auds} entry. The key's
+	 * liveness has already been re-checked ({@link #assertWorkloadKeyStillLive}).
+	 * Nothing here widens the token: same subject, never a later {@code exp}.
+	 */
+	private Tokenrequest.TokenMintResponse mintFromWorkloadKeyToken(Tokenrequest.TokenMintRequest request,
+			TokenWrapper inputToken, WorkloadKeys.Owned owned) throws StatusException {
+		if (!request.getServiceAudsList().isEmpty()) {
+			if (!request.getAud().isEmpty()) {
+				throw new StatusException(Status.INVALID_ARGUMENT, "set aud or service_auds, not both");
+			}
+			Tokenrequest.TokenMintResponse.Builder batch =
+					Tokenrequest.TokenMintResponse.newBuilder().setAccessToken(inputToken.getProto());
+			for (String svcAud : request.getServiceAudsList()) {
+				batch.addServiceTokens(mintFromWorkloadKeyToken(Tokenrequest.TokenMintRequest.newBuilder()
+						.setAud(svcAud)
+						.setExp(request.getExp())
+						.build(), inputToken, owned).getAccessToken());
+			}
+			return batch.build();
+		}
+		Credentials.WorkloadKey key = owned.key();
+		String aud = request.getAud();
+		if (aud.isEmpty()) {
+			throw new StatusException(Status.INVALID_ARGUMENT,
+					"a workload key's token is exchanged for a service token: aud is required");
+		}
+		if (!key.getAudiencesList().contains(aud)) {
+			logger.info("audit: workload key exchange refused: tenant={} key={} aud={}",
+					owned.tenantNamespace(), key.getId(), aud);
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"workload key " + key.getId() + " is not allowed audience " + aud);
+		}
+		long now = Instant.now().getEpochSecond();
+		long exp = inputToken.getExpiration();
+		if (request.getExp() > 0) {
+			if (request.getExp() <= now) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"exp must be a future Unix timestamp, got " + request.getExp() + " (now is " + now + ")");
+			}
+			exp = Math.min(exp, request.getExp());
+		}
+		TokenWrapper token = workloadKeyServiceToken(key, owned.tenantNamespace(), aud, TOKEN_USE_SERVICE, now, exp);
+		logger.info("audit: workload key exchange: tenant={} key={} sub={} aud={} jti={} exp={}",
+				owned.tenantNamespace(), key.getId(), key.getSubject(), aud, token.getJTI(), exp);
+		return Tokenrequest.TokenMintResponse.newBuilder()
+				.setAccessToken(token.getProto())
+				.build();
+	}
+
+	/**
+	 * An identity-only S2S token for a workload key's subject, as every S2S
+	 * token is (authorization is the receiver's): {@code sub} and principal the
+	 * key's subject, {@code sub_type} service, the namespace its tid resolves
+	 * to, which must still be the tenant holding the key. Carries the key's id
+	 * ({@link #CLAIM_WORKLOAD_KEY_ID}) so each exchange re-checks the key.
+	 */
+	private TokenWrapper workloadKeyServiceToken(Credentials.WorkloadKey key, String tenantNamespace,
+			String aud, String tokenUse, long now, long exp) throws StatusException {
+		String namespace = namespaceOfSubject(key.getSubject());
+		if (!namespace.equals(tenantNamespace)) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"workload key " + key.getId() + " names a subject outside " + tenantNamespace);
+		}
+		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
+		if (signingKey == null) {
+			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
+		}
+		TokenWrapper token = TokenWrapper.create()
+				.setIssuer(tokenIssuer)
+				.setSubject(key.getSubject())
+				.setAudience(aud)
+				.setIssuedAt(now)
+				.setExpiration(exp)
+				.setJTI(UUID.randomUUID().toString());
+		token.setAzp(Kernel.getDescriptor().getPackage());
+		token.setPrincipal(key.getSubject());
+		token.setSubType(SUB_TYPE_SERVICE);
+		token.setNamespace(namespace);
+		token.setTokenUse(tokenUse);
+		token.setCustomField(CLAIM_WORKLOAD_KEY_ID, key.getId());
+		signLive(token, signingKey);
+		return token;
+	}
+
+	/**
+	 * The exchange choke point's check for a workload-key token: the key it was
+	 * minted from must still be active, held by one tenant, for the token's own
+	 * subject. Null for any other token.
+	 */
+	@Nullable
+	private WorkloadKeys.Owned assertWorkloadKeyStillLive(TokenWrapper token) throws StatusException {
+		String keyId = token.getCustomField(CLAIM_WORKLOAD_KEY_ID);
+		if (keyId == null || keyId.isEmpty()) {
+			return null;
+		}
+		List<WorkloadKeys.Owned> owners;
+		try {
+			owners = WorkloadKeys.findById(configMap, keyId);
+		} catch (ProtoException e) {
+			throw new StatusException(Status.UNAVAILABLE, "tenant configs unavailable: " + e.getMessage());
+		}
+		Kernel.WorkloadKeyState state = owners.size() == 1
+				? owners.get(0).state(Instant.now().getEpochSecond())
+				: Kernel.WorkloadKeyState.WORKLOAD_KEY_STATE_UNSPECIFIED;
+		if (state != Kernel.WorkloadKeyState.WORKLOAD_KEY_STATE_ACTIVE
+				|| !owners.get(0).key().getSubject().equals(token.getSubject())) {
+			logger.warn("Rejected exchange of a token whose workload key is no longer active: key={}, sub={}, state={}",
+					keyId, token.getSubject(), state);
+			throw new StatusException(Status.PERMISSION_DENIED, "workload key " + keyId + " is no longer active");
+		}
+		return owners.get(0);
+	}
+
+	private static String workloadKeyStateWord(Kernel.WorkloadKeyState state) {
+		return switch (state) {
+			case WORKLOAD_KEY_STATE_REVOKED -> "revoked";
+			case WORKLOAD_KEY_STATE_EXPIRED -> "past its tenant's maximum key lifetime";
+			case WORKLOAD_KEY_STATE_DISABLED -> "disabled: unused for longer than its tenant's inactivity window";
+			default -> "not active";
+		};
 	}
 
 	// ========================================================================

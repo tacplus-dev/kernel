@@ -109,12 +109,13 @@ message Config {
 
   // --- Node TLS & PKI (immutable after boot) ---
 
-  // tls is the node's X.509 certificate and private key, used for
-  // gRPC server TLS and Hazelcast mTLS.
+  // tls is the node's X.509 certificate and private key, used for gRPC server
+  // TLS. Hazelcast member traffic is plain: open-source Hazelcast has no member
+  // TLS (kernel#24).
   x509.X509CertChain tls = 11 [(spec.assert_required) = true];
 
   // cluster_ca holds the cluster root CA certificate(s) for populating
-  // Ca.ca_certs on startup and for Hazelcast mTLS trust.
+  // Ca.ca_certs on startup.
   // These are the trust anchors for all cert chain validation in the cluster.
   repeated x509.X509Cert cluster_ca = 12 [(spec.assert_max_size) = 16];
 
@@ -452,8 +453,9 @@ service Mint {
   option (spec.smb_authority) = {};
   // Kernel's own instances peer over Hazelcast (the black box), so kernel is
   // itself an SMB member: it obtains an isolated per-SMB CA + member cert from
-  // its own authority (above) and uses them for Hazelcast peer mTLS. Generates
-  // the instance-side member-cert seam (Handler.newSmbCert).
+  // its own authority (above). Generates the instance-side member-cert seam
+  // (Handler.newSmbCert), which nothing implements: kernel's Hazelcast member
+  // traffic is plain (kernel#24).
   option (spec.smb) = {};
 
 
@@ -1078,8 +1080,8 @@ message KubernetesServiceAccountMatcher {
 // Each delegate carries a name, which becomes the service path segment in the
 // issued token's SPIFFE URI, and the namespace that URI is rooted at:
 // spiffe://<trust-domain>/system/<location>/services/<delegate_name> for a
-// shared platform service, spiffe://<trust-domain>/tenants/<tenant>/services/<delegate_name>
-// for a tenant-owned instance (see tenant_namespace).
+// shared platform service, spiffe://<trust-domain>/tenants/<tid>/services/<delegate_name>
+// for a tenant-owned instance, rooted at its tenant's tid (see tenant_namespace).
 // Authenticates via a projected Kubernetes service-account token or cloud identity.
 //
 // Two authorization models:
@@ -1103,8 +1105,9 @@ message Delegate {
   // service uses — means the /system root, so the minted subject is
   // spiffe://<td>/system/services/<name>. A tenant-owned service instance sets
   // the canonical tenant namespace /tenants/<tenant>, and the minted subject
-  // becomes spiffe://<td>/tenants/<tenant>/services/<name>, from which every
-  // token minted for it takes its namespace claim.
+  // becomes spiffe://<td>/tenants/<tid>/services/<name>, rooted at that
+  // tenant's tid (kernel#23). Every token minted for it takes its namespace
+  // claim, /tenants/<tenant>, from the tid's record.
   //
   // This is the ONLY place a service's tenant is configured. Nothing a service
   // sends can influence it: the tenant reaches the rest of the fleet solely as
@@ -2331,7 +2334,37 @@ service TenantAdmin {
   //     entitled to administer the tenant (always on);
   //   - self-lockout guard: when acting on its own tenant, the result must
   //     still contain the authenticating cred_pair (two-step rotation).
+  // The kernel slice's workload_keys are not written here: the stored list is
+  // kept whatever the request carries (CreateWorkloadKey and
+  // RevokeWorkloadKey below write it). Its workload_key_policy is.
   rpc UpdateTenantConfig(SetTenantConfigRequest) returns (tenant_config.TenantConfig) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "tenant_namespace"};
+  }
+
+  // --- Workload keys (kernel#28) ---
+
+  // CreateWorkloadKey registers the PUBLIC half of a key pair for one of the
+  // tenant's own workloads that cannot federate (credentials.WorkloadKey).
+  // Kernel assigns the id, which is the kid the workload's assertions carry.
+  // The subject must be a SPIFFE service or workload ID rooted at this
+  // tenant's tid; the key must be Ed25519 or EC P-256, and not already
+  // registered. A workload may hold several keys, for rotation.
+  rpc CreateWorkloadKey(CreateWorkloadKeyRequest) returns (credentials.WorkloadKey) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "tenant_namespace"};
+  }
+
+  // ListWorkloadKeys returns the tenant's workload keys, revoked and disabled
+  // ones included, each with its state, one bounded page at a time.
+  rpc ListWorkloadKeys(ListWorkloadKeysRequest) returns (ListWorkloadKeysResponse) {
+    option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "tenant_namespace"};
+    option (spec.method_collection) = {mode: COLLECTION_MODE_PAGE, order_by: ["id"], default_page_size: 100};
+    option (spec.rest_method) = {methods: [REST_METHOD_GET]};
+  }
+
+  // RevokeWorkloadKey revokes one of the tenant's workload keys at once: it
+  // mints nothing more, and the tokens it minted buy nothing more. The key is
+  // marked (revoked_at), not deleted. Revoking a revoked key changes nothing.
+  rpc RevokeWorkloadKey(RevokeWorkloadKeyRequest) returns (credentials.WorkloadKey) {
     option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "tenant_namespace"};
   }
 
@@ -2397,6 +2430,53 @@ message GetTenantConfigRequest {
 message SetTenantConfigRequest {
   string                     tenant_namespace = 1 [(spec.assert_required) = true];
   tenant_config.TenantConfig config           = 2 [(spec.assert_required) = true];
+}
+
+message CreateWorkloadKeyRequest {
+  string   tenant_namespace = 1 [(spec.assert_required) = true];
+  // public_key is the workload key's public half (OKP Ed25519 or EC P-256).
+  jwk.Jwk  public_key       = 2 [(spec.assert_required) = true];
+  // subject is the SPIFFE ID the key mints for, rooted at this tenant's tid.
+  string   subject          = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 1024];
+  // audiences are the service audiences its tokens may be exchanged for.
+  repeated string audiences = 4 [(spec.assert_max_size) = 64];
+  string   description      = 5 [(spec.assert_max_size) = 256];
+}
+
+// WorkloadKeyState is what a workload key may do now.
+enum WorkloadKeyState {
+  WORKLOAD_KEY_STATE_UNSPECIFIED = 0;
+  // ACTIVE: it mints.
+  WORKLOAD_KEY_STATE_ACTIVE      = 1;
+  // REVOKED: an admin revoked it.
+  WORKLOAD_KEY_STATE_REVOKED     = 2;
+  // DISABLED: unused for longer than the tenant's inactivity window.
+  WORKLOAD_KEY_STATE_DISABLED    = 3;
+  // EXPIRED: older than the tenant's maximum key lifetime.
+  WORKLOAD_KEY_STATE_EXPIRED     = 4;
+}
+
+// WorkloadKeyListing is one workload key and its state.
+message WorkloadKeyListing {
+  string                  id    = 1 [(spec.assert_max_size) = 128];
+  credentials.WorkloadKey key   = 2;
+  WorkloadKeyState        state = 3;
+}
+
+message ListWorkloadKeysRequest {
+  string tenant_namespace = 1 [(spec.assert_required) = true];
+  int32  page_size        = 2;
+  string page_token       = 3;
+}
+message ListWorkloadKeysResponse {
+  repeated WorkloadKeyListing keys            = 1 [(spec.assert_max_size) = 4096];
+  string                      next_page_token = 2;
+  int64                       total_count     = 3;
+}
+
+message RevokeWorkloadKeyRequest {
+  string tenant_namespace = 1 [(spec.assert_required) = true];
+  string id               = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 128];
 }
 
 message GetProjectConfigRequest { string project_namespace = 1 [(spec.assert_required) = true]; }

@@ -11,6 +11,7 @@ import com.github.tacplusdev.kernel.model.types.common.credentials.Credentials;
 import com.github.tacplusdev.kernel.model.types.generated.entitlements.Entitlements;
 import com.github.tacplusdev.kernel.model.types.generated.tenant_config.TenantConfigOuterClass;
 import com.github.tacplusdev.kernel.model.types.sys.errors.ProtoException;
+import com.github.tacplusdev.kernel.model.types.sys.jwk.JwkOuterClass;
 import com.github.tacplusdev.kernel.model.types.sys.spec.Spec;
 import com.github.tacplusdev.kernel.model.types.services.kernel.Kernel;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.ConfigMap;
@@ -29,7 +30,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * TenantAdminServiceImpl is kernel's single tenant/project control plane
- * (the {@code TenantAdmin} C2S service). It implements all nine
+ * (the {@code TenantAdmin} C2S service). It implements all twelve
  * RPCs over the uniform namespace tree (ROOT "/" + tenants + projects).
  *
  * <p>Tenants/projects live in the kernel {@link ConfigMap} keyed by their full
@@ -73,6 +74,9 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
 
     /** Ceiling on a page limit; matches the generated wrapper's ceiling. */
     private static final int MAX_PAGE_LIMIT = 10000;
+
+    /** Cap on a tenant's workload keys; matches {@code KernelTenantConfig.workload_keys}' max size. */
+    private static final int MAX_WORKLOAD_KEYS = 256;
 
     /**
      * Removes what kernel holds for a deleted tenant outside ConfigState: its
@@ -282,7 +286,19 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (tenant.getName().isEmpty()) {
             throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
         }
-        TenantConfigOuterClass.TenantConfig newConfig = request.getConfig();
+        // The workload keys are kernel's to write (CreateWorkloadKey,
+        // RevokeWorkloadKey, and the mint's last_used_at): keep the stored list,
+        // so a config read before a mint or a revocation cannot write it back.
+        Credentials.WorkloadKeyPolicy policy = request.getConfig().getKernel().getWorkloadKeyPolicy();
+        if (policy.getInactiveAfterSeconds() < 0 || policy.getMaxLifetimeSeconds() < 0) {
+            throw new ProtoException(ProtoException.INVALID_ARGUMENT,
+                    "workload_key_policy durations must not be negative");
+        }
+        List<Credentials.WorkloadKey> storedKeys =
+                configMap.getTenantConfigs(ns).getConfig().getKernel().getWorkloadKeysList();
+        TenantConfigOuterClass.TenantConfig.Builder merged = request.getConfig().toBuilder();
+        merged.getKernelBuilder().clearWorkloadKeys().addAllWorkloadKeys(storedKeys);
+        TenantConfigOuterClass.TenantConfig newConfig = merged.build();
         List<Credentials.CredPair> credPairs = newConfig.getKernel().getCredPairsList();
 
         Entitlements.TokenEntitlements ceiling = tenant.getConstraints().getEntitlementsCeiling();
@@ -337,6 +353,114 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         writeIdentitySnapshot.run();
         logger.info("SetTenantConfig ns={} cred_pairs={}", ns, credPairs.size());
         return newConfig;
+    }
+
+    // ========================================================================
+    // Workload keys (kernel#28)
+    // ========================================================================
+
+    @Override
+    public Credentials.WorkloadKey createWorkloadKey(
+            Caller caller, Kernel.CreateWorkloadKeyRequest request) throws ProtoException {
+        String ns = require(request.getTenantNamespace(), "tenant_namespace");
+        rejectReserved(ns);
+        if (configMap.getTenants(ns).getName().isEmpty()) {
+            throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
+        }
+        long now = Instant.now().getEpochSecond();
+        String id = WorkloadKeys.newId();
+        while (!WorkloadKeys.findById(configMap, id).isEmpty()) {
+            id = WorkloadKeys.newId();
+        }
+        JwkOuterClass.Jwk publicKey = WorkloadKeys.storedPublicKey(request.getPublicKey(), id, now);
+        WorkloadKeys.requireSupportedPublicKey(publicKey);
+        WorkloadKeys.requireSubjectOfTenant(configMap, trustDomainReader.get(), ns, request.getSubject());
+        for (String audience : request.getAudiencesList()) {
+            if (audience.isEmpty()) {
+                throw new ProtoException(ProtoException.INVALID_ARGUMENT, "audiences entries must be non-empty");
+            }
+        }
+        // One key, one holder: a public key registered twice (here or in another
+        // tenant) would let one private key speak for two identities.
+        for (Kernel.TenantConfigEntry e : configMap.proto().getTenantConfigsList()) {
+            for (Credentials.WorkloadKey k : e.getConfig().getKernel().getWorkloadKeysList()) {
+                if (WorkloadKeys.samePublicKey(k.getPublicKey(), request.getPublicKey())) {
+                    throw new ProtoException(ProtoException.ALREADY_EXISTS,
+                            "this public key is already registered as a workload key");
+                }
+            }
+        }
+
+        Kernel.TenantConfigEntry entry = configMap.getTenantConfigs(ns);
+        if (entry.getTenantName().isEmpty()) {
+            entry = Kernel.TenantConfigEntry.newBuilder().setTenantName(ns).build();
+        }
+        Credentials.KernelTenantConfig kernel = entry.getConfig().getKernel();
+        if (kernel.getWorkloadKeysCount() >= MAX_WORKLOAD_KEYS) {
+            throw new ProtoException(ProtoException.RESOURCE_EXHAUSTED,
+                    ns + " already holds " + MAX_WORKLOAD_KEYS + " workload keys; revoked ones count too");
+        }
+        Credentials.WorkloadKey key = Credentials.WorkloadKey.newBuilder()
+                .setId(id)
+                .setPublicKey(publicKey)
+                .setSubject(request.getSubject())
+                .addAllAudiences(request.getAudiencesList())
+                .setDescription(request.getDescription())
+                .setCreatedAt(Timestamp.newBuilder().setSeconds(now))
+                .build();
+        WorkloadKeys.putKernelConfig(configMap, entry, kernel.toBuilder().addWorkloadKeys(key).build());
+        writeIdentitySnapshot.run();
+        logger.info("audit: workload key registered: tenant={} key={} sub={} audiences={}",
+                ns, id, key.getSubject(), key.getAudiencesList());
+        return key;
+    }
+
+    @Override
+    public CollectionRuntime.Page<Kernel.WorkloadKeyListing> listWorkloadKeys(
+            Caller caller, Kernel.ListWorkloadKeysRequest request, CollectionRuntime.PageParams page)
+            throws ProtoException {
+        String ns = require(request.getTenantNamespace(), "tenant_namespace");
+        if (configMap.getTenants(ns).getName().isEmpty()) {
+            throw new ProtoException(ProtoException.NOT_FOUND, "no tenant at " + ns);
+        }
+        Credentials.KernelTenantConfig kernel = configMap.getTenantConfigs(ns).getConfig().getKernel();
+        long now = Instant.now().getEpochSecond();
+        List<Kernel.WorkloadKeyListing> listings = new ArrayList<>();
+        for (Credentials.WorkloadKey key : kernel.getWorkloadKeysList()) {
+            listings.add(Kernel.WorkloadKeyListing.newBuilder()
+                    .setId(key.getId())
+                    .setKey(key)
+                    .setState(WorkloadKeys.state(key, kernel.getWorkloadKeyPolicy(), now))
+                    .build());
+        }
+        listings.sort(java.util.Comparator.comparing(Kernel.WorkloadKeyListing::getId));
+        return pageByStringKey(listings, page, Kernel.WorkloadKeyListing::getId);
+    }
+
+    @Override
+    public Credentials.WorkloadKey revokeWorkloadKey(
+            Caller caller, Kernel.RevokeWorkloadKeyRequest request) throws ProtoException {
+        String ns = require(request.getTenantNamespace(), "tenant_namespace");
+        String id = require(request.getId(), "id");
+        Kernel.TenantConfigEntry entry = configMap.getTenantConfigs(ns);
+        Credentials.KernelTenantConfig kernel = entry.getConfig().getKernel();
+        for (int i = 0; i < kernel.getWorkloadKeysCount(); i++) {
+            Credentials.WorkloadKey key = kernel.getWorkloadKeys(i);
+            if (!id.equals(key.getId())) {
+                continue;
+            }
+            if (key.hasRevokedAt()) {
+                return key;
+            }
+            Credentials.WorkloadKey revoked = key.toBuilder()
+                    .setRevokedAt(Timestamp.newBuilder().setSeconds(Instant.now().getEpochSecond()))
+                    .build();
+            WorkloadKeys.putKernelConfig(configMap, entry, kernel.toBuilder().setWorkloadKeys(i, revoked).build());
+            writeIdentitySnapshot.run();
+            logger.info("audit: workload key revoked: tenant={} key={} sub={}", ns, id, key.getSubject());
+            return revoked;
+        }
+        throw new ProtoException(ProtoException.NOT_FOUND, "no workload key " + id + " in " + ns);
     }
 
     // ========================================================================

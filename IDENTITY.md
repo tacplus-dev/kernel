@@ -801,3 +801,61 @@ design on #23 (2026-10-28).
   its tenant's name; a tenant subject whose claim is no tenant's is refused.
 - The new tests fail with the change taken out.
 - Gates on tacplus 2.4.
+
+## 2026-10-30 — Workload keys: key-pair credentials for workloads that can't federate (#28)
+
+Jody, 2026-10-29: an entity that can't federate gets a key-pair credential, by keeping and generalizing the
+`CredPair` + `MintClientToken` mechanism (RFC 7523 / `private_key_jwt`: only the public key is held). For workloads
+only, never people. How a tenant uses it: docs/workload-keys.md.
+
+### What changed
+
+- **Tenant-managed keys.** `KernelTenantConfig.workload_keys` holds `credentials.WorkloadKey`s: a kernel-assigned
+  `id` (the assertion's `kid`, `wk-` and 130 random bits), the public JWK (Ed25519 or EC P-256), one `subject`, its
+  `audiences`, `created_at`, `last_used_at`, `revoked_at`. `TenantAdmin.CreateWorkloadKey`, `ListWorkloadKeys` and
+  `RevokeWorkloadKey` manage them, authorized like `UpdateTenantConfig`. They are deleted with the tenant config.
+  `UpdateTenantConfig` keeps the stored list whatever its request carries; it writes `workload_key_policy`.
+- **Scoped.** The subject must be a SPIFFE service or workload ID rooted at the tenant's own live tid (#23), checked
+  at registration and again at every mint (`TenantIds.namespaceOfSubject` must give the tenant holding the key).
+  The same public key cannot be registered twice, in any tenant.
+- **The mint.** `MintClientToken` resolves the `kid` among cred_pairs first, as before, then among workload keys
+  (`IdentityServiceImpl.mintFromWorkloadKey`). The assertion must verify against the key, carry `iat` with `exp` at
+  most 300s after it, `aud` kernel, and a fresh `jti`; the replay set (`seenProofJtis`) remembers it until the
+  latest `exp` the cap admits. The key must be active. Kernel mints an identity-only S2S access token: `sub` and
+  principal the key's subject, `sub_type` service, the tenant's namespace, `aud` kernel, at most
+  `access_token_lifetime` and never past the key's maximum lifetime, with the key's id in a kernel-only `wkid` claim.
+- **Audiences on exchange.** `MintClientTokenRequest` is tacplus's and has no `aud`, so the audience is chosen where
+  every other service token's is: `MintToken` with `aud` (or `service_auds`). The exchange choke point re-checks a
+  `wkid` token's key (`assertWorkloadKeyStillLive`: active, one holder, same subject) and mints a service token only
+  for an audience the key lists. So revoking a key also stops its live tokens buying service tokens.
+- **Expiry.** A key's state is computed (`WorkloadKeys.state`): revoked; expired, when the tenant sets
+  `max_lifetime_seconds` and the key is older; disabled, when unused (`last_used_at`, else `created_at`) for longer
+  than `inactive_after_seconds` (0 means 90 days); else active. No forced expiry by default.
+- **Audit.** Each registration, revocation, mint, exchange and refusal is an `audit:` log line naming tenant, key,
+  subject (and audience, jtis, exp). `last_used_at` is written at most once an hour per key.
+- **Root bootstrap is unchanged.** `Config.root_cred_pairs` are seeded into the root namespace's `cred_pairs` and
+  mint `cred-pair:<id>` C2S tokens as before: root's own keys are cred_pairs.
+
+### Decided here (issue silent)
+
+- **Names.** `CreateWorkloadKey` (tacplus folds `Register` into the canonical verb `Create`), `ListWorkloadKeys`,
+  `RevokeWorkloadKey`; `WorkloadKeyPolicy.inactive_after_seconds` and `max_lifetime_seconds`, 0 meaning the default.
+- **The token endpoint audience is `kernel`**, as for every client-minted proof kernel accepts.
+- **The 5-minute cap is iat to exp**, so `iat` is required; `exp` is also bounded against kernel's clock with the
+  usual 60s skew.
+- **A disabled key is not re-enabled.** Register a new one. Revocation marks, never deletes, so the record stays.
+- **The policy is the tenant's own** (`UpdateTenantConfig`), not an ancestor constraint.
+- **`kernel.proto` comments** describing the name-form `Delegate` subject (#23) and Hazelcast mTLS (#24) are fixed
+  in this contract change.
+
+### Proof
+
+- `WorkloadKeyCredentialTest`: a valid assertion (Ed25519, ES256, and one built by hand as the docs build it) mints
+  a token for exactly the key's subject, in its tenant's namespace, exchanged for a service token to a listed
+  audience; another tenant's subject and a `/system` one are refused at registration; a wrong `aud`, an assertion
+  over 5 minutes, a replayed `jti`, a revoked key (and its live token's exchange), an unlisted audience and a deleted
+  tenant's key are refused; a key unused past 90 days is refused and one used 89 days ago is not; a tenant's own
+  inactivity window and maximum lifetime take effect (and bound the token) while another tenant keeps the defaults;
+  several keys per identity each mint and record `last_used_at`; UpdateTenantConfig keeps the stored keys; RSA keys
+  do not register; root bootstrap still mints.
+- The refusal tests fail with the audience, state and lifetime checks taken out.

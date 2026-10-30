@@ -81,6 +81,7 @@ the looper then marks it `promoted` or `declined` here with the date.
   comments still say a tenant-owned instance is `spiffe://<td>/tenants/<tenant>/services/<name>` and takes its
   namespace claim from it. #23 left `kernel.proto` alone because any edit fails the gates before the push (the #19
   proposal above); IDENTITY.md records the change. The next contract change should carry the comment fix.
+  Done in #28 (the `Delegate` and `tenant_namespace` comments name the tid).
 - **Kernel's Hazelcast members admit any peer: give them the member admission Stratum gets** (2026-10-29, #24):
   kernel's member traffic is plain, unauthenticated Hazelcast (`KernelMemberTransportTest`). Anything that reaches
   the member port (5001) and knows the cluster name joins, and reads and writes every map, signing keys and
@@ -95,7 +96,22 @@ the looper then marks it `promoted` or `declined` here with the date.
   comments say they are used for "Hazelcast mTLS" and its trust, and the `option (spec.smb)` comment says kernel
   uses its SMB member cert "for Hazelcast peer mTLS". Kernel has never configured member TLS that works, and
   nothing implements `Handler.newSmbCert`. Fix the comments with the next contract change (the #19 proposal), or
-  with the admission work above.
+  with the admission work above. Done in #28 (`tls`, `cluster_ca` and `option (spec.smb)` say member traffic is plain).
+- **A cluster-wide replay set for client-minted proofs** (2026-10-30, #28): `seenProofJtis` is per kernel node, so a
+  captured assertion can be replayed once per other node inside its window. Workload keys widen that window from 60s
+  to 300s (the issue's cap). A cluster-wide TTL map (or the FencedLock) would make "a `jti` is refused on reuse" hold
+  across nodes, for cred_pair, device and workload-key proofs alike.
+- **`aud` on `MintClientTokenRequest`, in tacplus** (2026-10-30, #28): the request (tacplus's `sys/tokenrequest.proto`)
+  has no audience, so a workload key gets a kernel access token from `MintClientToken` and then exchanges it via
+  `MintToken` for each service token: two calls where one would do. An `aud` / `service_auds` on the request would let
+  `MintClientToken` return the service tokens directly, as `MintToken` batches them.
+- **Workload-key use is a config write** (2026-10-30, #28): `last_used_at` lives in the tenant's config, as the issue
+  asks, so recording it replaces the tenant's whole config entry (at most once an hour per key). A mint racing an
+  `UpdateTenantConfig` on another node can lose one write. If that ever matters, compare-and-set on the entry, or
+  keep `last_used_at` in its own row keyed by key id.
+- **Workload keys in the CLI and the gateway** (2026-10-30, #28): `CreateWorkloadKey`, `ListWorkloadKeys` and
+  `RevokeWorkloadKey` are new external `TenantAdmin` RPCs. Whatever fronts `TenantAdmin` and `MintClientToken` for
+  external clients (the gateway's C2S routes, an admin CLI) should carry them; docs/workload-keys.md uses `grpcurl`.
 
 ## Promoted / declined
 - **Tenant-owned service identity carries the tid** (2026-10-28, #23): promoted 2026-10-28 (kernel ROADMAP.md, Next),

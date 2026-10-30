@@ -222,6 +222,16 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	static final long EXTERNAL_SERVICE_TOKEN_MAX_TTL_SECONDS = 600;
 
 	/**
+	 * The member-port audience (kernel#30, for tacplus#212): {@code member:<svc>}.
+	 * No service label contains a colon, so a gRPC token ({@code aud=<svc>}) is
+	 * never a member-port token, nor the reverse.
+	 */
+	static final String MEMBER_AUDIENCE_PREFIX = "member:";
+
+	/** Maximum lifetime of a member-port token; the port refreshes it at half-life, in-band. */
+	static final long MEMBER_TOKEN_MAX_TTL_SECONDS = 300;
+
+	/**
 	 * Separates the two halves of a person key ({@link #linkKey}). Neither a namespace nor a
 	 * SPIFFE id may contain it, so the pair can never be ambiguous.
 	 */
@@ -3430,6 +3440,16 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		// established the input token carries a live exp.
 		exp = Math.min(exp, inputToken.getExpiration());
 
+		boolean memberAudience = isMemberAudience(request.getAud());
+		if (memberAudience) {
+			long memberMaxExp = now + MEMBER_TOKEN_MAX_TTL_SECONDS;
+			if (request.getExp() > memberMaxExp) {
+				throw new StatusException(Status.INVALID_ARGUMENT,
+						"requested exp " + request.getExp() + " exceeds member-port token ceiling " + memberMaxExp);
+			}
+			exp = Math.min(exp, memberMaxExp);
+		}
+
 		ImmutableKey signingKey = keyRotator.reserve(KeyRotator.SigAlg.ED25519, exp);
 		if (signingKey == null) {
 			throw new StatusException(Status.UNAVAILABLE, "no active signing key");
@@ -3483,7 +3503,15 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					"refresh tokens cannot mint service-specific tokens; exchange for an access token first");
 		}
 
-		if (isS2S && !request.getAud().isEmpty()) {
+		// A member-port audience is the caller's own, never a delegate's
+		// authorized service: SERVICE_NAME_ANY does not reach it.
+		if (memberAudience) {
+			if (!isS2S) {
+				throw new StatusException(Status.PERMISSION_DENIED,
+						"only a service mints a member-port audience; " + subject + " is none");
+			}
+			assertOwnMemberAudience(subject, request.getAud());
+		} else if (isS2S && !request.getAud().isEmpty()) {
 			String targetAud = request.getAud();
 			boolean authorized = targetAud.equals(subject);
 			if (!authorized && delegate != null) {
@@ -3955,6 +3983,34 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			namespace = SpiffeIds.SYSTEM_NAMESPACE;
 		}
 		return findDelegateByName(name, namespace);
+	}
+
+	private static boolean isMemberAudience(String aud) {
+		return aud.startsWith(MEMBER_AUDIENCE_PREFIX);
+	}
+
+	/**
+	 * PERMISSION_DENIED unless {@code aud} is {@code member:} plus the service
+	 * label of {@code subject} itself (kernel#30). The token carries the
+	 * subject's own namespace, so the audience is its own tenant's too, and no
+	 * spelling of another tenant or service matches. A subject that is no
+	 * service, a workload below one say, has no member-port audience. A bare
+	 * name is a /system delegate's label ({@link #findDelegateBySubject}).
+	 */
+	private static void assertOwnMemberAudience(String subject, String aud) throws StatusException {
+		String label = subject;
+		if (SpiffeIds.isSpiffeUri(subject)) {
+			try {
+				Spiffe.ParsedSpiffeId parsed = Spiffe.parseSpiffeId(subject);
+				label = parsed.subjectKind == Spiffe.SubjectKind.SERVICE ? parsed.subjectPath : null;
+			} catch (IllegalArgumentException e) {
+				label = null;
+			}
+		}
+		if (label == null || !aud.equals(MEMBER_AUDIENCE_PREFIX + label)) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					subject + " may mint a member-port audience for its own service label only, not " + aud);
+		}
 	}
 
 	/**
@@ -5189,6 +5245,12 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		if (request.getAud().isEmpty()) {
 			throw new StatusException(Status.INVALID_ARGUMENT, "aud is required");
 		}
+		// A member-port audience is minted by MintToken alone, never as an
+		// external token, whatever a delegate's external_audiences list.
+		if (isMemberAudience(request.getAud())) {
+			throw new StatusException(Status.PERMISSION_DENIED,
+					"a member-port audience is not an external audience: " + request.getAud());
+		}
 
 		TokenWrapper inputToken;
 		try {
@@ -5550,6 +5612,12 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			throw new StatusException(Status.PERMISSION_DENIED,
 					"workload key " + key.getId() + " is not allowed audience " + aud);
 		}
+		// A key's audiences are the tenant's to list, but a member-port audience
+		// is still its subject's own only, and short-lived.
+		boolean memberAudience = isMemberAudience(aud);
+		if (memberAudience) {
+			assertOwnMemberAudience(key.getSubject(), aud);
+		}
 		long now = Instant.now().getEpochSecond();
 		long exp = inputToken.getExpiration();
 		if (request.getExp() > 0) {
@@ -5558,6 +5626,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 						"exp must be a future Unix timestamp, got " + request.getExp() + " (now is " + now + ")");
 			}
 			exp = Math.min(exp, request.getExp());
+		}
+		if (memberAudience) {
+			exp = Math.min(exp, now + MEMBER_TOKEN_MAX_TTL_SECONDS);
 		}
 		TokenWrapper token = workloadKeyServiceToken(key, owned.tenantNamespace(), aud, TOKEN_USE_SERVICE, now, exp);
 		logger.info("audit: workload key exchange: tenant={} key={} sub={} aud={} jti={} exp={}",

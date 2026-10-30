@@ -60,6 +60,14 @@ for itself.
 - The **access token** (`aud: "kernel"`) is used for kernel RPCs.
 - When the service needs to call another service, it exchanges its refresh token with kernel for a new access token with `aud: "<target_service>"`.
 - Kernel checks that the delegate is authorized to mint for the requested `aud` (based on the delegate's `authorized_services` list).
+- **Member-port audience** (kernel#30, for tacplus#212): a service may also mint `aud: "member:<svc>"`, where
+  `<svc>` is its **own** service label, for the generated member port (opaque member-to-member traffic). Kernel
+  mints it only for the caller's own label, never for a delegate's `authorized_services` (not even
+  `SERVICE_NAME_ANY`), never for a user or a workload, and for at most 5 minutes (an explicit `exp` beyond that is
+  refused); the port refreshes it at half-life, in-band. The token carries the caller's own namespace, so it is
+  its own tenant's. A service label has no colon, so a gRPC token (`aud: "<svc>"`) is never a member-port token,
+  nor the reverse: a token one tenant's service received over gRPC cannot be replayed into another tenant's member
+  port. `MintExternalServiceToken` never mints a `member:` audience.
 
 ### Destination Service Validation
 

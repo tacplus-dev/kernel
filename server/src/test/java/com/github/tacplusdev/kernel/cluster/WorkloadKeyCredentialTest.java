@@ -4,6 +4,7 @@ package com.github.tacplusdev.kernel.cluster;
 
 import com.github.tacplusdev.kernel.authz.InMemoryManager;
 import com.github.tacplusdev.kernel.model.chassis.key.ImmutableKey;
+import com.github.tacplusdev.kernel.model.chassis.spiffe.Spiffe;
 import com.github.tacplusdev.kernel.model.chassis.token.TokenWrapper;
 import com.github.tacplusdev.kernel.model.types.common.credentials.Credentials;
 import com.github.tacplusdev.kernel.model.types.generated.tenant_config.TenantConfigOuterClass;
@@ -171,6 +172,51 @@ class WorkloadKeyCredentialTest {
 
 		assertTrue(storedKey(ACME, first.getId()).hasLastUsedAt());
 		assertTrue(storedKey(ACME, second.getId()).hasLastUsedAt());
+	}
+
+	/**
+	 * A key may list a member-port audience (kernel#30), but it mints only its
+	 * subject's own, for five minutes at most, and none for a workload subject.
+	 */
+	@Test
+	void aKeyMintsOnlyItsOwnSubjectsMemberAudienceShortLived() throws Exception {
+		Credentials.WorkloadKey key = admin.createWorkloadKey(null, Kernel.CreateWorkloadKeyRequest.newBuilder()
+				.setTenantNamespace(ACME)
+				.setPublicKey(workloadKeyPairs.getActiveJwk(KeyRotator.SigAlg.ED25519))
+				.setSubject(acmeSubject)
+				.addAudiences("member:ingest")
+				.addAudiences("member:" + AUD)
+				.build());
+		TokenWrapper at = TokenWrapper.from(
+				identity.mintClientToken(null, request(assertion(key, KeyRotator.SigAlg.ED25519, a -> { })))
+						.getAccessToken());
+
+		TokenWrapper member = TokenWrapper.from(identity.mintToken(null, exchange(at, "member:ingest"))
+				.getAccessToken());
+		assertEquals("member:ingest", member.getAudience());
+		assertTrue(member.getExpiration() <= Instant.now().getEpochSecond() + 300, "five minutes at most");
+
+		ProtoException other = assertThrows(ProtoException.class,
+				() -> identity.mintToken(null, exchange(at, "member:" + AUD)));
+		assertEquals(ProtoException.PERMISSION_DENIED, other.getCode());
+	}
+
+	@Test
+	void aWorkloadSubjectsKeyMintsNoMemberAudience() throws Exception {
+		String pigeon = Spiffe.workloadSpiffeId(acmeSubject, "pigeon");
+		Credentials.WorkloadKey key = admin.createWorkloadKey(null, Kernel.CreateWorkloadKeyRequest.newBuilder()
+				.setTenantNamespace(ACME)
+				.setPublicKey(workloadKeyPairs.getActiveJwk(KeyRotator.SigAlg.ED25519))
+				.setSubject(pigeon)
+				.addAudiences("member:ingest")
+				.build());
+		TokenWrapper at = TokenWrapper.from(
+				identity.mintClientToken(null, request(assertion(key, KeyRotator.SigAlg.ED25519, a -> { })))
+						.getAccessToken());
+
+		ProtoException e = assertThrows(ProtoException.class,
+				() -> identity.mintToken(null, exchange(at, "member:ingest")));
+		assertEquals(ProtoException.PERMISSION_DENIED, e.getCode());
 	}
 
 	// ---- refusals -----------------------------------------------------------

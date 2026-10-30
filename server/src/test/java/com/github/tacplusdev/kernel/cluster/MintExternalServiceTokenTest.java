@@ -126,6 +126,18 @@ class MintExternalServiceTokenTest {
 		assertEquals(ProtoException.PERMISSION_DENIED, e.getCode());
 	}
 
+	/** A member-port audience (kernel#30) is MintToken's alone, even when allowlisted here. */
+	@Test
+	void rejectsAMemberPortAudienceEvenWhenAllowlisted() {
+		long now = Instant.now().getEpochSecond();
+		delegates.replaceAll(d -> d.toBuilder().addExternalAudiences("member:llmproxy").build());
+
+		ProtoException e = assertThrows(ProtoException.class, () -> identityService.mintExternalServiceToken(null,
+				request(serviceToken(SERVICE_SUB, now + 3600), "member:llmproxy", 0)));
+
+		assertEquals(ProtoException.PERMISSION_DENIED, e.getCode());
+	}
+
 	@Test
 	void rejectsACallerWithNoDelegate() {
 		long now = Instant.now().getEpochSecond();

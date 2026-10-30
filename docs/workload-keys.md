@@ -16,7 +16,9 @@ Each key is scoped to:
 - **one subject**, the workload identity it mints for: a SPIFFE service or workload ID rooted at the tenant's tid,
   `spiffe://<trust-domain>/tenants/<tid>/services/<name>` (or `.../workloads/<name>` below one). Kernel refuses a
   subject of another tenant, of `/system`, or spelled with the tenant's name in place of its tid.
-- **its audiences**, the services its tokens may be exchanged for.
+- **its audiences**, the services its tokens may be exchanged for. A member-port audience, `member:<svc>`
+  (kernel#30), is minted only for the key's own subject (a service subject, never a workload), and lives five
+  minutes at most.
 
 Keys are Ed25519 or ES256 (EC P-256). A workload may hold several active keys at once, so it can rotate: register
 the new key, move the workload to it, revoke the old one.

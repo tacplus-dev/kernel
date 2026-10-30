@@ -5,6 +5,14 @@ the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
 - **<title>** (<date>, <issue/run link>): <what and why>
+- **Refuse a foreign member-port audience when a workload key is registered** (2026-10-30, #30): `CreateWorkloadKey`
+  accepts any `member:<x>` in `audiences`; the exchange refuses every one but `member:<the subject's own svc>`
+  (and all of them for a workload subject). Refusing at registration would surface the mistake to the admin
+  instead of to the workload at its first exchange.
+- **Carry the member-port audience rule into the kernel rewrite** (2026-10-30, #30): the rewrite without Hazelcast
+  must keep `member:<svc>` own-label-only and at most 5 minutes (`IdentityServiceImpl.assertOwnMemberAudience`,
+  `MEMBER_TOKEN_MAX_TTL_SECONDS`); `MemberPortAudienceTest` is the contract to port with it. tacplus#212 and
+  stratum#17 depend on it.
 - **One source for Java dependency versions** (2026-10-27, #12): `proto/dependencies.yaml` `lang.java.dependencies`
   and the poms (root `pom.xml`, `tacplus/pom.xml`) both state versions, and `tacplus build` on 2.4 writes
   neither pom, so the two drift unless every bump edits both by hand (#12 did). Either drop the Java list

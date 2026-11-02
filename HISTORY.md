@@ -17,3 +17,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-02 looper issue Tenant names may have the shape of a tid; refuse them (tenant isolation, tacplus#284) (#31)
 - 2026-11-02 looper issue maven-shade-plugin 3.6.1 runs on plexus-utils 3.5.1 (GHSA-6fmv-xxpf-w3cw, HIGH): override it to 3.6.1 (#33, 3018def)
 - 2026-11-02 looper issue Key-pair credentials for workloads that can't federate: generalize CredPair/MintClientToken to tenant-managed keys (#28)
+- 2026-11-02 looper issue Investigate and retire kmaker: its likely purpose (Hazelcast member mTLS) is replaced by the member port (#212) (#29)

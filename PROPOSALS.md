@@ -117,6 +117,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   on Jody's direction, falling back to option A, an in-process TLS forwarder, because open source can't do it)
   should cover kernel's members too. Until then, a NetworkPolicy on kernel's member port (operator) would admit
   only kernel pods. ROADMAP Later removes Hazelcast from kernel; this is the exposure until then.
+  Settled 2026-10-29 (Jody, on #24): the generated member port (tacplus-dev/tacplus#212: server TLS plus
+  `member:<svc>` tokens, which kernel mints since #30). It is on tacplus main but in no release yet (2.5.x lacks
+  `option (spec.member_port)`), so #24 adopts it once the floor can move to 2.6 (tacplus-dev/tacplus#213). The
+  port may move onto gRPC first (tacplus-dev/tacplus#259); the adoption is the same.
 - **`kernel.proto` claims Hazelcast mTLS that does not exist** (2026-10-29, #24): the `tls` and `cluster_ca`
   comments say they are used for "Hazelcast mTLS" and its trust, and the `option (spec.smb)` comment says kernel
   uses its SMB member cert "for Hazelcast peer mTLS". Kernel has never configured member TLS that works, and

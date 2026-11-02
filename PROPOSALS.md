@@ -5,6 +5,16 @@ the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
 - **<title>** (<date>, <issue/run link>): <what and why>
+- **A grammar for tenant names** (2026-11-02, #31): `CreateTenant` checks only that the leaf is non-empty and not
+  tid-shaped (the boot seed adds "no `/`"), so upper case, dots or spaces pass, and the name becomes a SPIFFE path
+  segment and a delegate key. One rule (say `^[a-z0-9][a-z0-9-]{0,62}$`, minus the tid shape), checked in
+  `TenantIds` beside `rejectTidShapedName`, would keep create and seed from drifting apart.
+- **Gates for a contract change before tacplus#205** (2026-11-02, #31): a dependency depends back on kernel, so
+  `just gates` merges kernel's *published* proto beside the checkout's and refuses any `kernel.proto` change
+  until it is on main. #28 and #31 got past it with a private tacplus home whose `.gitconfig` points
+  `https://github.com/tacplus-dev/kernel.git` at a bare clone of the checkout's HEAD (`LOOPER_WORK` set to it, so
+  the shared home is untouched). A `just gates-contract` recipe doing that would make it one command until
+  tacplus#205 is fixed.
 - **Refuse a foreign member-port audience when a workload key is registered** (2026-10-30, #30): `CreateWorkloadKey`
   accepts any `member:<x>` in `audiences`; the exchange refuses every one but `member:<the subject's own svc>`
   (and all of them for a workload subject). Refusing at registration would surface the mistake to the admin

@@ -15,3 +15,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-10-28 looper issue Tenant-owned service identity carries the tid: spiffe://<td>/tenants/<tid>/services/<svc> (#23, 2288d36)
 - 2026-11-02 looper issue just gates fails at floor 2.4: stratum (latest) declares tacplus 2.5 (#25, 67cd397)
 - 2026-11-02 looper issue Tenant names may have the shape of a tid; refuse them (tenant isolation, tacplus#284) (#31)
+- 2026-11-02 looper issue maven-shade-plugin 3.6.1 runs on plexus-utils 3.5.1 (GHSA-6fmv-xxpf-w3cw, HIGH): override it to 3.6.1 (#33, 3018def)

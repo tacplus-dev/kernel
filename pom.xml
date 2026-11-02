@@ -226,6 +226,15 @@
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-shade-plugin</artifactId>
 					<version>${shade-plugin.version}</version>
+					<dependencies>
+						<!-- GHSA-6fmv-xxpf-w3cw: shade 3.6.1 asks for plexus-utils 3.5.1 (fleet-dev docs/java-plugins.md).
+						     Comes out once a shade release asks for plexus-utils >= 3.6.1 and fleet-dev pins it (#33). -->
+						<dependency>
+							<groupId>org.codehaus.plexus</groupId>
+							<artifactId>plexus-utils</artifactId>
+							<version>3.6.1</version>
+						</dependency>
+					</dependencies>
 				</plugin>
 				<plugin>
 					<groupId>org.codehaus.mojo</groupId>

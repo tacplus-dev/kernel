@@ -37,6 +37,13 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Drop the Guava pin with the next gRPC bump** (2026-10-28, #21): `guava.version` in the root pom overrides
   what gRPC asks for. Once a gRPC release depends on Guava `>= 33.7.2` and kernel moves to it, remove the
   property and its `dependencyManagement` entry, or the pin will later hold Guava *below* what gRPC needs.
+- **Drop the plexus-utils override on maven-shade-plugin** (2026-11-02, #33): the root `pluginManagement` gives shade
+  plexus-utils 3.6.1 (GHSA-6fmv-xxpf-w3cw); shade 3.6.1 asks for 3.5.1 and 3.6.2 for 3.6.0. Once a shade release asks
+  for `>= 3.6.1` and fleet-dev pins it, remove the override, or it will later hold plexus-utils *below* what shade
+  needs. An advisory check of plugins has to read the plugin realm (`mvn -X package`, `Populating class realm
+  plugin>...`): `dependency:resolve-plugins` reports the plugin pom's version, not the override. Not covered by #33:
+  `codegen` (a Maven plugin) compiles against plexus-utils 3.5.1, `provided` through maven-plugin-api 3.9.9; at run time
+  it gets whatever the running Maven core ships, so that one moves with the Maven version, not with a pin here.
 - **Drop Javalin from the generated Java chassis, in tacplus** (2026-10-27, #16): kernel moved Javalin
   6.7.0 -> 7.2.4 because Jetty 11 has HIGH advisories and no fixed 11.x on Maven Central. But nothing
   serves HTTP through it: the tacplus-generated `GrpcServer` declares a `Javalin httpServer` that is never

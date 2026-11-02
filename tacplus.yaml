@@ -1,4 +1,4 @@
-tacplus: "2.4"
+tacplus: "2.5"
 language: java
 pkg: com.github.tacplusdev.kernel
 output-dir: tacplus/target/generated-sources

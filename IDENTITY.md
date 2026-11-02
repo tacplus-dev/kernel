@@ -547,6 +547,8 @@ tenant's name: `tac-<deployment>` for the platform services, `tac-<deployment>-<
 - **Reserved range.** Every all-digit tid is the platform's. `people` is `00000001` and `restore` is `00000002`, the
   same in every deployment. A minted tid is a letter then 7 of `[0-9a-z]` (about 41 bits), so it never falls in
   that range.
+- **A tenant's name never has a tid's shape** (8 of `[0-9a-z]`), since #31: `CreateTenant` and the boot seed refuse
+  one. See "Tenant names may not have the shape of a tid (#31)" below.
 - **The `restore` tenant** (`RestoreTenant`) hosts redo (tacplus-dev/redo#1) and has no human members. It is seeded
   at every boot as `people` is, and `TenantAdmin` refuses to create, reconfigure or delete it.
 - **Bootstrap tenants.** `Config.tenants` (`BootstrapTenant{name, tid}`) lists the tenants the deployment renders
@@ -870,3 +872,40 @@ only, never people. How a tenant uses it: docs/workload-keys.md.
   several keys per identity each mint and record `last_used_at`; UpdateTenantConfig keeps the stored keys; RSA keys
   do not register; root bootstrap still mints.
 - The refusal tests fail with the audience, state and lifetime checks taken out.
+
+## 2026-11-02 — Tenant names may not have the shape of a tid (#31)
+
+Generated MCP-session and c2s record-reader code takes a caller's tid from the namespace claim, which holds the
+tenant's *name* (tacplus-dev/tacplus#284). A tenant named like a tid was routed as that tid: another tenant's, or
+`people`'s (`00000001`) or `restore`'s (`00000002`). Jody decided on 2026-11-02 to take tacplus#284 option 1 (#32,
+a kernel-stamped `tid` claim) plus this name guard. The guard stays after #32 lands, because a name that reads as a
+tid misleads people too.
+
+### What changed
+
+- **The rule.** A tenant's name, the leaf segment of its namespace, must not match the tid shape `^[0-9a-z]{8}$`.
+  It is refused with `INVALID_ARGUMENT`, "a tenant name must not have the shape of a tid (8 of [0-9a-z])"
+  (`TenantIds.rejectTidShapedName`). So `acmecorp`, `contoso1`, `00000001` and `abcdefgh` are refused, and `acme`,
+  `acme-corp`, `acmecorp9` and `Acmecorp` are accepted (a tid has no upper case).
+- **Where.** `CreateTenant` checks the leaf of every tenant it creates, a sub-tenant's included. The boot seed
+  (`Config.tenants`) checks each entry's name; a refused entry is logged with the others, and the remaining entries
+  are still seeded. A tenant's name is set only there: kernel has no rename.
+- **Backstop at boot.** After the seeds and the tid backfill, boot logs one error for every existing tenant whose
+  name has the tid shape (`TenantIds.tidShapedTenants`) and reports them, sorted, in the cluster status:
+  `Cluster.tenant_name_health.tid_shaped_tenants`. It changes nothing. No live deployment holds tenants yet, so this is
+  a backstop, not a migration.
+
+### Decided here (issue silent)
+
+- **"Status" is a new `Cluster.tenant_name_health` singleton** (`TenantNameHealth`), not a field of
+  `cluster_health`: `AdminClusterHealth` lives in `common/hazelcast.proto`, which a dependency shares and which must
+  stay identical to its copy. It lists tenant namespaces, so a nested tenant is named exactly. Every node computes
+  the list at boot from the same replicated config, so the last writer agrees with the others.
+- **The reserved tenants' names are not tid-shaped** (`people`, `restore`) and need no exception.
+
+### Proof
+
+- `TenantNameShapeTest`: the four tid-shaped names are refused on create (top-level and sub-tenant) and on seed,
+  and no record or tid is written; the four other names are accepted on both; one refused seed entry leaves the
+  others seeded; boot finds pre-guard records (top-level and nested) and not the reserved tenants; the cluster
+  status carries what boot found.

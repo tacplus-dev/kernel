@@ -142,6 +142,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (leaf.isEmpty()) {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT, "tenant_namespace must have a leaf segment");
         }
+        TenantIds.rejectTidShapedName(leaf);
 
         // Validate the new tenant's ceiling against the parent's ceiling. The
         // parent is the namespace one level up and must already exist (only
@@ -968,6 +969,7 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         if (t.getName().isEmpty() || t.getName().indexOf('/') >= 0) {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT, "name must be one bare segment");
         }
+        TenantIds.rejectTidShapedName(t.getName());
         rejectReserved(ns);
         String given = t.getTid();
         if (!given.isEmpty() && (!TenantIds.isWellFormed(given) || TenantIds.isReserved(given))) {

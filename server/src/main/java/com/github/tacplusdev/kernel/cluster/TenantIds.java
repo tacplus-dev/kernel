@@ -60,6 +60,20 @@ final class TenantIds {
 		return tid != null && WELL_FORMED.matcher(tid).matches();
 	}
 
+	/**
+	 * Refuses a tenant name with the shape of a tid (kernel#31). Generated code
+	 * reads a caller's tid from its namespace claim, which holds the tenant's
+	 * name (tacplus-dev/tacplus#284), so a tenant named like a tid would be
+	 * routed as that tid: another tenant's, or a reserved one. The guard stays
+	 * once the claim is the tid: a name that reads as a tid misleads people too.
+	 */
+	static void rejectTidShapedName(String name) throws ProtoException {
+		if (isWellFormed(name)) {
+			throw new ProtoException(ProtoException.INVALID_ARGUMENT,
+					"a tenant name must not have the shape of a tid (8 of [0-9a-z])");
+		}
+	}
+
 	/** All digits: the platform's range. */
 	static boolean isReserved(String tid) {
 		return tid != null && RESERVED.matcher(tid).matches();
@@ -259,6 +273,26 @@ final class TenantIds {
 				tombstone(configMap, tid);
 			}
 		}
+	}
+
+	/**
+	 * The namespaces, sorted, of every tenant whose name has the shape of a tid
+	 * ({@link #rejectTidShapedName}): records written before kernel#31, which
+	 * the guard cannot refuse. Boot logs each at error and puts them in the
+	 * cluster status; nothing renames or deletes them.
+	 */
+	static java.util.List<String> tidShapedTenants(ConfigMap configMap) throws ProtoException {
+		Kernel.ConfigState state = configMap.proto();
+		java.util.List<String> found = new java.util.ArrayList<>();
+		for (String namespace : ClusterServer.tenantNamespaces(
+				state.getTenantConfigsList(), state.getProjectConfigsList())) {
+			String name = configMap.getTenants(namespace).getName();
+			if (isWellFormed(name)) {
+				found.add(namespace);
+			}
+		}
+		java.util.Collections.sort(found);
+		return found;
 	}
 
 	private static Kernel.TenantIdRow row(String tid, String namespace) {

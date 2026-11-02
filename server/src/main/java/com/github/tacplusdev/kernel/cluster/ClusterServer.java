@@ -671,6 +671,19 @@ public class ClusterServer {
 			} catch (Exception e) {
 				logger.warn("Failed to backfill tenant ids: {}", e.getMessage());
 			}
+			// A backstop for kernel#31: a tenant name with a tid's shape is now
+			// refused, so one found here predates the guard. It is reported,
+			// not changed.
+			try {
+				List<String> tidShaped = TenantIds.tidShapedTenants(kernelConfigMap);
+				for (String namespace : tidShaped) {
+					logger.error("Tenant {} has a name with the shape of a tid (8 of [0-9a-z]): "
+							+ "generated code can route it as that tid (tacplus-dev/tacplus#284)", namespace);
+				}
+				clusterPublisher.publishTidShapedTenants(tidShaped);
+			} catch (Exception e) {
+				logger.error("Failed to check tenant names for the shape of a tid: {}", e.getMessage());
+			}
 
 			// Mandatory, fail-closed Authorizer shared by the kernel's token-auth
 			// gRPC wrappers. The kernel is the JWKS authority, so it uses a LOCAL

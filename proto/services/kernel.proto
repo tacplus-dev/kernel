@@ -1302,6 +1302,22 @@ message Cluster {
   repeated hazelcast.AdminMutationRate mutation_rates = 20 [
     (spec.assert_max_size) = 1024
   ];
+
+  // --- Tenants ---
+
+  // tenant_name_health reports the tenants whose name breaks a naming rule.
+  // Published at boot, convergent LWW: every node computes it from the same
+  // replicated config.
+  TenantNameHealth tenant_name_health = 21;
+}
+
+// TenantNameHealth reports the tenants whose name breaks a naming rule, found
+// at boot. It is a report only: nothing renames or deletes them.
+message TenantNameHealth {
+  // tid_shaped_tenants names, sorted, the namespace of every tenant whose name
+  // has the shape of a tid (8 of [0-9a-z]). Such a name is refused since
+  // kernel#31; a record from before then is reported here and logged at error.
+  repeated string tid_shaped_tenants = 1 [(spec.assert_max_size) = 1024];
 }
 
 // ============================================================================
@@ -2026,6 +2042,9 @@ enum TenantStatus {
 // `tid` is the tenant's fixed-size id, which names its Kubernetes namespace
 // (tac-<deployment>-<tid>): a namespace cannot be renamed, so the name is not
 // usable there.
+// A name never has the shape of a tid (8 of [0-9a-z]): CreateTenant and the
+// boot seed refuse one with INVALID_ARGUMENT (kernel#31), since a name that
+// reads as a tid can be routed as that tid (tacplus-dev/tacplus#284).
 message Tenant {
   string                    name        = 1 [(spec.indexed) = true, (spec.assert_required) = true, (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
   TenantStatus              status      = 2;

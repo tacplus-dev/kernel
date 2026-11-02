@@ -190,6 +190,19 @@ public class ClusterStatePublisher {
 				.build());
 	}
 
+	// ---- Tenant name health (singleton) ----
+
+	/**
+	 * Publishes the tenants boot found with a tid-shaped name (see
+	 * {@link TenantIds#tidShapedTenants}). Every node computes them from the
+	 * same replicated config, so the last writer agrees with the rest.
+	 */
+	void publishTidShapedTenants(java.util.List<String> namespaces) {
+		clusterStateMap.putTenantNameHealth(Kernel.TenantNameHealth.newBuilder()
+				.addAllTidShapedTenants(namespaces)
+				.build());
+	}
+
 	// ---- Node Metrics (per-node) ----
 
 	private void publishNodeMetrics(String nodeId) {

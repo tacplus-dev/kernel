@@ -13,3 +13,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-10-28 looper issue Age out XIDs that have not signed in for about a year (#20, 52c48d4)
 - 2026-10-28 looper issue Guava 33.5.0-android (via gRPC 1.79.0) has a HIGH advisory: pin guava 33.7.2 (#21, 62f7f66)
 - 2026-10-28 looper issue Tenant-owned service identity carries the tid: spiffe://<td>/tenants/<tid>/services/<svc> (#23, 2288d36)
+- 2026-11-02 looper issue just gates fails at floor 2.4: stratum (latest) declares tacplus 2.5 (#25, 67cd397)

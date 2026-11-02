@@ -126,6 +126,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   which removes one more deploy-time use of the cluster CA key. It changes a public config contract (`tls` optional or
   gone) and the operator must stop minting `NodeTls`, so it needs its own roadmap entry. Kept out of #29 (Jody's answer
   on the issue): kmaker's retirement does not need it.
+- **Pin the default-lifecycle Maven plugins** (2026-11-02, nightly scan): the root pom pins compiler, shade, exec,
+  antrun and build-helper, but clean (3.2.0), resources, jar, surefire (3.2.5), install, deploy and site (3.12.1) come
+  from whichever Maven runs the build (3.9.16 on the scanner). So their versions, and their advisory surface, change with
+  the runner, not with a commit here. An OSV check of `mvn dependency:resolve-plugins` finds advisories only on those
+  build-time classpaths, none on what ships in `kernel.jar`: surefire 3.2.5 brings guava 16.0.1 (GHSA-xxph-c9ww-hj94) and
+  maven-core 3.2.5, and site 3.12.1 brings Jetty 9.4.46, velocity 1.7, dom4j 1.1 and jsoup 1.10.2 (site is not
+  part of `verify`). Pinning current releases in `pluginManagement` makes the build reproducible and lets the advisory check
+  above cover plugins too.
 
 ## Promoted / declined
 - **Tenant-owned service identity carries the tid** (2026-10-28, #23): promoted 2026-10-28 (kernel ROADMAP.md, Next),

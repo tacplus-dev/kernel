@@ -52,6 +52,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   stay. os-maven-plugin is now a plugin with `<extensions>true</extensions>` rather than a build `<extension>`,
   because only a plugin takes `<dependencies>`; server declares it but nothing there reads `os.detected.*`, so it
   could go from server altogether. build-helper (3.6.2) and exec (3.6.4) moved to fleet-dev's pins and need none.
+- **Drop the plexus-archiver overrides** (2026-11-03, #37): the root `pluginManagement` gives plexus-archiver 4.15.0
+  to jar 3.5.0 (which asks for 4.10.4) and plugin-plugin 3.15.1 (4.10.0), because those load aircompressor 0.27
+  (GHSA-vx9q-rhv9-3jvg, HIGH) and 4.15.0 no longer depends on aircompressor. Remove each once a release of that
+  plugin asks for plexus-archiver 4.15.0 or later (the fixed lines are 4.0.0-beta-2 today) and fleet-dev pins it.
+  With the override, `kernel.jar` and the other module jars have the same entries with the same CRCs as without.
 - **Drop Javalin from the generated Java chassis, in tacplus** (2026-10-27, #16): kernel moved Javalin
   6.7.0 -> 7.2.4 because Jetty 11 has HIGH advisories and no fixed 11.x on Maven Central. But nothing
   serves HTTP through it: the tacplus-generated `GrpcServer` declares a `Javalin httpServer` that is never

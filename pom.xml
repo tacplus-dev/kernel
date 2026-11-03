@@ -258,6 +258,14 @@
 							<artifactId>plexus-utils</artifactId>
 							<version>4.0.3</version>
 						</dependency>
+						<!-- GHSA-vx9q-rhv9-3jvg: jar 3.5.0 brings plexus-archiver 4.10.4, which loads aircompressor 0.27 (fleet-dev
+						     docs/java-plugins.md). plexus-archiver 4.15.0 no longer depends on aircompressor. Comes out once
+						     a jar release asks for plexus-archiver >= 4.15.0 (#37). -->
+						<dependency>
+							<groupId>org.codehaus.plexus</groupId>
+							<artifactId>plexus-archiver</artifactId>
+							<version>4.15.0</version>
+						</dependency>
 					</dependencies>
 				</plugin>
 				<plugin>
@@ -285,6 +293,14 @@
 							<groupId>org.codehaus.plexus</groupId>
 							<artifactId>plexus-utils</artifactId>
 							<version>4.0.3</version>
+						</dependency>
+						<!-- GHSA-vx9q-rhv9-3jvg: plugin-plugin 3.15.1 brings plexus-archiver 4.10.0, which loads aircompressor
+						     0.27 (fleet-dev docs/java-plugins.md). plexus-archiver 4.15.0 no longer depends on aircompressor.
+						     Comes out once a plugin-plugin release asks for plexus-archiver >= 4.15.0 (#37). -->
+						<dependency>
+							<groupId>org.codehaus.plexus</groupId>
+							<artifactId>plexus-archiver</artifactId>
+							<version>4.15.0</version>
 						</dependency>
 					</dependencies>
 				</plugin>

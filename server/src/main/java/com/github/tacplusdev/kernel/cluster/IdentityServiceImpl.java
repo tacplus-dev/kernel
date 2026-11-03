@@ -253,11 +253,19 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 	/**
 	 * Claims the proxy policy's {@code extra_claims} may not set on an external
-	 * token (kernel#40): they name its tenant, which is the verified caller token's
-	 * alone. {@code tid} is the tenant's id claim (kernel#32). A policy naming one is
-	 * refused, so it can never mint into another tenant.
+	 * token: every kernel-set claim (kernel#41), {@link #EXCLUDED_CLAIM_KEYS}, plus
+	 * {@code tid}, the tenant's id claim (kernel#32). {@code extra_claims} may only add
+	 * keys outside them. A policy naming one is refused, so it can never mint into
+	 * another tenant (namespace, tid: kernel#40), widen the token's namespaces
+	 * (linked), or turn an external token into one an internal service accepts
+	 * (token_use).
 	 */
-	private static final Set<String> POLICY_REFUSED_CLAIM_KEYS = Set.of("namespace", "tid");
+	private static final Set<String> POLICY_REFUSED_CLAIM_KEYS;
+	static {
+		var keys = new java.util.HashSet<>(EXCLUDED_CLAIM_KEYS);
+		keys.add("tid");
+		POLICY_REFUSED_CLAIM_KEYS = Set.copyOf(keys);
+	}
 
 	private static final String TOKEN_USE_EXTERNAL =
 			Helpers.tokenUseToString(TokenUse.TOKEN_USE_EXTERNAL);
@@ -5135,7 +5143,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		}
 
 		// Merge extra_claims from OPA result (add-only, may override forwarded claims,
-		// never the tenant's: POLICY_REFUSED_CLAIM_KEYS).
+		// never a kernel-set one: POLICY_REFUSED_CLAIM_KEYS).
 		Struct extraClaims = opaResult.getExtraClaims();
 		if (extraClaims != null) {
 			for (Map.Entry<String, Value> entry : extraClaims.getFieldsMap().entrySet()) {

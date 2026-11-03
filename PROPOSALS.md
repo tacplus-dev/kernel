@@ -5,14 +5,20 @@ the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
 - **<title>** (<date>, <issue/run link>): <what and why>
-- **Refuse every kernel-set claim in proxy policy `extra_claims`** (2026-11-03, #40, filed as #41): #40 refuses
-  `namespace` and `tid`, but `extra_claims` is merged after `token_use = external` is stamped, so a policy can still
-  overwrite `token_use` (an external token replayable internally), `linked` (a wider namespace scope) and every other
-  `JwtPayloadType` claim. Refuse `EXCLUDED_CLAIM_KEYS` plus `tid`, unless a deployed policy needs one of them.
-  `extra_claims`'s comment in `proto/vservices/proxy-policy.proto` (and `MintExternalToken`'s in `kernel.proto`)
-  should then name the refused claims and the namespace copied from the caller token. #40 left both comments alone,
-  because a local proto edit conflicts with the copy of kernel's protos that tacplus resolves through the
-  dependencies at `latest` ("same path, different contents").
+- **Say on `extra_claims` which keys kernel refuses** (2026-11-03, #41; waits on tacplus-dev/tacplus#205): #41
+  refuses at mint every `extra_claims` key that names a kernel-set claim (`EXCLUDED_CLAIM_KEYS`, every
+  `JwtPayloadType` name and the registered JWT claims, plus `tid`). The contract does not say so yet: any edit to
+  `proto/vservices/proxy-policy.proto`, a comment included, fails `just gates` with "same path, different
+  contents" until tacplus#205 is fixed, and so would the land. The comment to add under `extra_claims`:
+  "A key may not name a claim kernel sets: every JwtPayloadType name (token_use, linked, namespace, sub, azp, exp,
+  ...), the registered JWT claims (nbf, typ) and tid. Kernel refuses a result naming one with PERMISSION_DENIED;
+  namespace is always the verified caller token's." `MintExternalToken`'s comment in `kernel.proto` could say the
+  same.
+- **Refuse a reserved `extra_claims` key when the proxy policy is loaded** (2026-11-03, #41): kernel refuses one at
+  every mint, which is where it sees the result; it never loads the Rego. A policy is loaded by opa from what the
+  deployment (operator) hands it, and `extra_claims` is computed per request, so a load-time check could only be a
+  lint of the policy's literal keys (or a test evaluation) in whichever of those owns the policy. That is an opa or
+  operator issue, once one of them is named its owner.
 - **Decide `tid` on external tokens with kernel#32** (2026-11-03, #40): #32 stamps `tid` on user, session, service
   and device tokens. It does not mention the external token. #40 makes sure no policy can set `tid` there. Once
   `tid` is a `JwtPayloadType` name, `EXCLUDED_CLAIM_KEYS` stops it being forwarded from the user token, so an external

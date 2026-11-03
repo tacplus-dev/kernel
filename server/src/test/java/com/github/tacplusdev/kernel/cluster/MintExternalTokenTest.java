@@ -8,6 +8,7 @@ import com.github.tacplusdev.kernel.model.chassis.token.TokenWrapper;
 import com.github.tacplusdev.kernel.model.types.services.kernel.Kernel;
 import com.github.tacplusdev.kernel.model.types.sys.errors.ProtoException;
 import com.github.tacplusdev.kernel.model.types.sys.jwk.JwkOuterClass;
+import com.github.tacplusdev.kernel.model.types.sys.token.Helpers;
 import com.github.tacplusdev.kernel.model.types.sys.tokenrequest.Tokenrequest;
 import com.github.tacplusdev.kernel.model.types.vservices.proxypolicy.Proxypolicy;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.PrincipalMap;
@@ -16,9 +17,13 @@ import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -28,8 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * MintExternalToken end to end (kernel#40): the external token's {@code namespace}
  * is the verified caller token's, copied by the mint and by nothing else. The proxy
  * policy cannot set it, nor {@code tid} (kernel#32): a policy-supplied namespace
- * would let a policy mint into another tenant. The fake OPA is a real gRPC server
- * behind the generated clients.
+ * would let a policy mint into another tenant. Nor any other kernel-set claim
+ * (kernel#41): {@code extra_claims} only adds keys outside the reserved set, every
+ * {@code JwtPayloadType} name and the registered JWT claims. The fake OPA is a real
+ * gRPC server behind the generated clients.
  */
 class MintExternalTokenTest {
 
@@ -116,6 +123,31 @@ class MintExternalTokenTest {
 		assertPolicyClaimRefused("tid", "abcdefgh");
 	}
 
+	/** Every reserved claim, one case each (kernel#41): a policy may only add keys outside them. */
+	@ParameterizedTest
+	@MethodSource("reservedClaims")
+	void aPolicySettingAReservedClaimIsRefused(String claim) throws Exception {
+		assertPolicyClaimRefused(claim, "policy-value");
+	}
+
+	/**
+	 * The claims kernel#41 names, spelled out so the refusal does not rest on the
+	 * generated list alone: token_use = external is what keeps an external token from
+	 * being replayed internally, and linked widens the namespaces the backstop accepts.
+	 */
+	@ParameterizedTest
+	@ValueSource(strings = {"token_use", "linked", "namespace", "tid", "sub", "iss", "aud", "exp",
+			"nbf", "iat", "jti", "typ", "azp", "sub_type", "entitlements", "act"})
+	void aPolicySettingANamedKernelClaimIsRefused(String claim) throws Exception {
+		assertPolicyClaimRefused(claim, "policy-value");
+	}
+
+	/** Setting token_use to external, the value the mint stamps, is refused too: the key is reserved. */
+	@Test
+	void aPolicySettingTokenUseToExternalIsRefused() throws Exception {
+		assertPolicyClaimRefused("token_use", "external");
+	}
+
 	@Test
 	void aPolicyAddingOtherClaimsStillMints() throws Exception {
 		opa.proxyPolicyResult = Proxypolicy.ProxyPolicyEvalResult.newBuilder()
@@ -148,6 +180,14 @@ class MintExternalTokenTest {
 	}
 
 	// ---- fixture -----------------------------------------------------------
+
+	/** Every JwtPayloadType name, the registered JWT claims the mint sets, and tid. */
+	static Stream<String> reservedClaims() {
+		return Stream.concat(
+				Helpers.jwtPayloadTypeValidValues().stream(),
+				Stream.of("iss", "sub", "aud", "exp", "nbf", "iat", "jti", "typ", "tid"))
+				.distinct().sorted();
+	}
 
 	private void assertPolicyClaimRefused(String claim, String value) throws Exception {
 		String accessToken = userAccessToken();

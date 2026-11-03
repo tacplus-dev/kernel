@@ -22,3 +22,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-03 looper issue Build plugins beyond shade load plexus-utils (GHSA-6fmv-xxpf-w3cw) and commons-io (GHSA-78wr-2p64-hpwj), both HIGH: override them (#36, f96e6a1)
 - 2026-11-03 looper issue Trace propagation: MintToken exchange, MintExternalToken and BrokerStream CompleteNonce drop the inbound trace_id on their OPA calls (#38, 26f69aa)
 - 2026-11-03 looper issue maven-jar-plugin and maven-plugin-plugin load aircompressor 0.27 (GHSA-vx9q-rhv9-3jvg, HIGH) (#37, e3c2595)
+- 2026-11-03 looper issue Trace propagation: no test asserts the inbound trace_id reaches OPA from the minting handlers (#39, 117c474)

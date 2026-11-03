@@ -22,6 +22,7 @@ Built inside the fleet build from a manifest, not standalone. Ported from SeaBea
 - Work without SeaBeam: no gitlab.com/seabeam module paths, sources or registries (#10)
 - Retire the `linked` claim (#4; landed in 5199fea, issue still open)
 - Configs in kernel state: the system config read-only to the platform (only the operator's apply path); tenant configs in each tenant's kernel state, versioned, persisted in the tenant's Stratum behind a storage interface; GetConfig for a Skipper, own tenant, redacted (#35). Agent, at Jody's request, 2026-11-02 (`tacplus-dev/roadmap:decisions/deterministic-deployments-2026-11-02.md`).
+- FencedLock's Raft traffic over the gRPC member port, in code; no separate unauthenticated Ratis port (#42). Agent, at Jody's request, 2026-11-03 (`tacplus-dev/roadmap:items/fenced-lock-consensus.md`).
 
 ## Later
 - Investigate and retire kmaker once kernel uses the member port (#29)

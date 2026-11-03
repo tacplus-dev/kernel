@@ -10,7 +10,6 @@ import com.github.tacplusdev.kernel.model.chassis.token.TokenWrapper;
 import com.github.tacplusdev.kernel.model.types.services.kernel.Kernel;
 import com.github.tacplusdev.kernel.model.types.sys.jwk.JwkOuterClass;
 import com.github.tacplusdev.kernel.model.types.sys.tokenrequest.Tokenrequest;
-import com.github.tacplusdev.kernel.model.types.vservices.proxypolicy.Proxypolicy;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import com.google.protobuf.Struct;
@@ -344,13 +343,6 @@ class OpaTracePropagationTest {
 	@Test
 	void mintExternalTokenCarriesTheRequestTraceToProxyPolicyOpa() throws Exception {
 		String accessToken = loginTokens(false).getAccessToken().getBase64();
-		// The external token takes its namespace from the policy's extra_claims
-		// alone: none is forwarded from the user token (kernel#40).
-		opa.proxyPolicyResult = Proxypolicy.ProxyPolicyEvalResult.newBuilder()
-				.setAllow(true)
-				.setExtraClaims(Struct.newBuilder()
-						.putFields("namespace", Value.newBuilder().setStringValue(TENANT_NAMESPACE).build()))
-				.build();
 
 		identityService.mintExternalToken(CALLER, Tokenrequest.ExternalTokenMintRequest.newBuilder()
 				.setUserToken(accessToken)

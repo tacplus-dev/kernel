@@ -251,6 +251,14 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		EXCLUDED_CLAIM_KEYS = Set.copyOf(keys);
 	}
 
+	/**
+	 * Claims the proxy policy's {@code extra_claims} may not set on an external
+	 * token (kernel#40): they name its tenant, which is the verified caller token's
+	 * alone. {@code tid} is the tenant's id claim (kernel#32). A policy naming one is
+	 * refused, so it can never mint into another tenant.
+	 */
+	private static final Set<String> POLICY_REFUSED_CLAIM_KEYS = Set.of("namespace", "tid");
+
 	private static final String TOKEN_USE_EXTERNAL =
 			Helpers.tokenUseToString(TokenUse.TOKEN_USE_EXTERNAL);
 
@@ -5033,10 +5041,15 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					"user_token verification failed: " + e.getMessage());
 		}
 
-		// The external token is minted for the user token's namespace; a deleted
-		// tenant's mints none (see signLive, which this one does not go through).
+		// The external token is minted for the user token's namespace, which every
+		// kernel-signed token carries (kernel#40); a deleted tenant's mints none (see
+		// signLive, which this one does not go through).
+		String namespace = userToken.getNamespace();
+		if (namespace == null || namespace.isEmpty()) {
+			throw ProtoException.newErrMissingInvalidData(null, "user_token missing namespace");
+		}
 		try {
-			refuseDeletedTenant(userToken.getNamespace());
+			refuseDeletedTenant(namespace);
 		} catch (StatusException e) {
 			throw new ProtoException(e.toGrpcStatus().getCode().value(), e.getMessage());
 		}
@@ -5111,6 +5124,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		// Stamp token_use = external — categorically rejected by all Schematic authorizers.
 		externalToken.setTokenUse(TOKEN_USE_EXTERNAL);
+		// The verified caller token's namespace, copied by the mint and nothing else (kernel#40).
+		externalToken.setNamespace(namespace);
 
 		// Forward user's non-internal custom claims (e.g. email, name) to the external token.
 		for (Map.Entry<String, String> entry : userToken.getProto().getPayloadMap().entrySet()) {
@@ -5119,10 +5134,15 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			}
 		}
 
-		// Merge extra_claims from OPA result (add-only, may override forwarded claims).
+		// Merge extra_claims from OPA result (add-only, may override forwarded claims,
+		// never the tenant's: POLICY_REFUSED_CLAIM_KEYS).
 		Struct extraClaims = opaResult.getExtraClaims();
 		if (extraClaims != null) {
 			for (Map.Entry<String, Value> entry : extraClaims.getFieldsMap().entrySet()) {
+				if (POLICY_REFUSED_CLAIM_KEYS.contains(entry.getKey())) {
+					throw ProtoException.newErrPermissionDenied(null,
+							"proxy policy may not set the %s claim", entry.getKey());
+				}
 				externalToken.setCustomField(entry.getKey(), valueToString(entry.getValue()));
 			}
 		}

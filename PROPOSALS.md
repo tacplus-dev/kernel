@@ -5,6 +5,18 @@ the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
 - **<title>** (<date>, <issue/run link>): <what and why>
+- **Refuse every kernel-set claim in proxy policy `extra_claims`** (2026-11-03, #40, filed as #41): #40 refuses
+  `namespace` and `tid`, but `extra_claims` is merged after `token_use = external` is stamped, so a policy can still
+  overwrite `token_use` (an external token replayable internally), `linked` (a wider namespace scope) and every other
+  `JwtPayloadType` claim. Refuse `EXCLUDED_CLAIM_KEYS` plus `tid`, unless a deployed policy needs one of them.
+  `extra_claims`'s comment in `proto/vservices/proxy-policy.proto` (and `MintExternalToken`'s in `kernel.proto`)
+  should then name the refused claims and the namespace copied from the caller token. #40 left both comments alone,
+  because a local proto edit conflicts with the copy of kernel's protos that tacplus resolves through the
+  dependencies at `latest` ("same path, different contents").
+- **Decide `tid` on external tokens with kernel#32** (2026-11-03, #40): #32 stamps `tid` on user, session, service
+  and device tokens. It does not mention the external token. #40 makes sure no policy can set `tid` there. Once
+  `tid` is a `JwtPayloadType` name, `EXCLUDED_CLAIM_KEYS` stops it being forwarded from the user token, so an external
+  token will carry no `tid` unless #32 derives one at mint, the way it derives the others.
 - **A grammar for tenant names** (2026-11-02, #31): `CreateTenant` checks only that the leaf is non-empty and not
   tid-shaped (the boot seed adds "no `/`"), so upper case, dots or spaces pass, and the name becomes a SPIFFE path
   segment and a delegate key. One rule (say `^[a-z0-9][a-z0-9-]{0,62}$`, minus the tid shape), checked in

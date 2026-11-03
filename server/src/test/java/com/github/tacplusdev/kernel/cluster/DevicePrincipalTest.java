@@ -454,10 +454,10 @@ class DevicePrincipalTest {
 	 * signing keys, because the proof has to verify through the same
 	 * {@code ImmutableJwk} path.
 	 */
-	private static final class DeviceKey {
-		private final String credentialId;
+	static final class DeviceKey {
+		final String credentialId;
 		private final PrivateKey privateKey;
-		private final JwkOuterClass.Jwk publicJwk;
+		final JwkOuterClass.Jwk publicJwk;
 
 		private DeviceKey(String credentialId, PrivateKey privateKey, JwkOuterClass.Jwk publicJwk) {
 			this.credentialId = credentialId;

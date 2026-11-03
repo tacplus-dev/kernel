@@ -553,6 +553,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				.setExp(request.getExp())
 				.setTokenPurpose(request.getTokenPurpose())
 				.setLocalityToken(request.getLocalityToken())
+				.setTraceId(request.getTraceId())
 				.build();
 	}
 

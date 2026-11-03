@@ -19,3 +19,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-02 looper issue Key-pair credentials for workloads that can't federate: generalize CredPair/MintClientToken to tenant-managed keys (#28)
 - 2026-11-02 looper issue Investigate and retire kmaker: its likely purpose (Hazelcast member mTLS) is replaced by the member port (#212) (#29)
 - 2026-11-02 looper issue Mint the member-port audience member:<svc> for a service's own label only, short-lived (for tacplus#212) (#30)
+- 2026-11-03 looper issue Build plugins beyond shade load plexus-utils (GHSA-6fmv-xxpf-w3cw) and commons-io (GHSA-78wr-2p64-hpwj), both HIGH: override them (#36, f96e6a1)

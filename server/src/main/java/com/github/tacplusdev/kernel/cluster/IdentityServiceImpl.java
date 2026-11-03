@@ -1201,6 +1201,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				resp.addServiceTokens(exchangeKernelToken(Tokenrequest.TokenMintRequest.newBuilder()
 						.setAud(svcAud)
 						.setExp(request.getExp())
+						.setTraceId(request.getTraceId())
 						.build(), accessWrapper).getAccessToken());
 			}
 		}
@@ -2846,9 +2847,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	}
 
 	private Entitlements.TokenEntitlements resolveCurrentAccessEntitlements(
-			TokenWrapper sessionToken) throws StatusException {
+			TokenWrapper sessionToken, String traceId) throws StatusException {
 		Userentitlements.EntitlementEvalResult opaResult =
-				resolveEntitlementsViaOpa(buildClaimsStruct(sessionToken), "");
+				resolveEntitlementsViaOpa(buildClaimsStruct(sessionToken), traceId);
 		return expandEntitlements(opaResult);
 	}
 
@@ -3261,6 +3262,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				Tokenrequest.TokenMintRequest svcReq = Tokenrequest.TokenMintRequest.newBuilder()
 						.setAud(svcAud)
 						.setExp(request.getExp())
+						.setTraceId(request.getTraceId())
 						.build();
 				resp.addServiceTokens(exchangeKernelToken(svcReq, accessWrapper).getAccessToken());
 			}
@@ -3390,7 +3392,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				throw new StatusException(Status.UNAVAILABLE, "no active signing key");
 			}
 			Entitlements.TokenEntitlements accessEntitlements =
-					resolveCurrentAccessEntitlements(inputToken);
+					resolveCurrentAccessEntitlements(inputToken, request.getTraceId());
 			TokenOuterClass.Token at = mintAccessFromRefresh(
 					inputToken, otSigningKey, otNow, otAccessExp, request.getProject(),
 					accessEntitlements);
@@ -3406,6 +3408,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					Tokenrequest.TokenMintRequest svcReq = Tokenrequest.TokenMintRequest.newBuilder()
 							.setAud(svcAud)
 							.setExp(request.getExp())
+							.setTraceId(request.getTraceId())
 							.build();
 					resp.addServiceTokens(exchangeKernelToken(svcReq, accessWrapper).getAccessToken());
 				}
@@ -3475,7 +3478,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		if (!request.getServiceAudsList().isEmpty()) {
 			TokenOuterClass.Token accessProto = isRefresh
 					? mintAccessFromRefresh(inputToken, signingKey, now, exp, request.getProject(),
-							resolveCurrentAccessEntitlements(inputToken))
+							resolveCurrentAccessEntitlements(inputToken, request.getTraceId()))
 					: inputToken.getProto();
 			TokenWrapper accessWrapper = TokenWrapper.from(accessProto);
 
@@ -3489,6 +3492,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				Tokenrequest.TokenMintRequest svcReq = Tokenrequest.TokenMintRequest.newBuilder()
 						.setAud(svcAud)
 						.setExp(request.getExp())
+						.setTraceId(request.getTraceId())
 						.build();
 				Tokenrequest.TokenMintResponse svcResp = exchangeKernelToken(svcReq, accessWrapper);
 				batch.addServiceTokens(svcResp.getAccessToken());
@@ -3539,7 +3543,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		Entitlements.TokenEntitlements refreshAccessEntitlements = null;
 		if (isRefresh && !isS2S) {
-			refreshAccessEntitlements = resolveCurrentAccessEntitlements(inputToken);
+			refreshAccessEntitlements = resolveCurrentAccessEntitlements(inputToken, request.getTraceId());
 		}
 
 		TokenWrapper newToken;
@@ -3840,7 +3844,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 		// Also hand back a fresh short-lived AT for immediate data-plane use.
 		TokenOuterClass.Token at = mintAccessFromRefresh(freshOt, signingKey, now, accessExp,
-				null, resolveCurrentAccessEntitlements(freshOt));
+				null, resolveCurrentAccessEntitlements(freshOt, request.getTraceId()));
 
 		logger.info("Renewed offline token (OT): sub={}, exp={}", freshOt.getSubject(), exp);
 		return Tokenrequest.TokenMintResponse.newBuilder()
@@ -5049,9 +5053,12 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		try {
 			var input = Proxypolicy.ProxyPolicyEvalInput.newBuilder()
 					.setClaims(claims)
-					.setMetadata(metadata)
-					.build();
-			opaResult = proxyPolicyOpaClient.evalProxyPolicy(input);
+					.setMetadata(metadata);
+			// Propagate trace_id so uncleopa appears in trace tail.
+			if (!request.getTraceId().isEmpty()) {
+				input.setTraceId(request.getTraceId());
+			}
+			opaResult = proxyPolicyOpaClient.evalProxyPolicy(input.build());
 		} catch (Exception e) {
 			throw ProtoException.newErrGeneral(null,
 					"proxy policy evaluation failed: " + e.getMessage());
@@ -5596,6 +5603,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				batch.addServiceTokens(mintFromWorkloadKeyToken(Tokenrequest.TokenMintRequest.newBuilder()
 						.setAud(svcAud)
 						.setExp(request.getExp())
+						.setTraceId(request.getTraceId())
 						.build(), inputToken, owned).getAccessToken());
 			}
 			return batch.build();

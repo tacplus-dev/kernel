@@ -160,7 +160,7 @@ public class CliTokenBrokerServiceImpl implements
 						complete.getSubject(),
 						complete.hasClaims()
 								? IdentityServiceImpl.withoutSynthesizedClaims(complete.getClaims()) : null,
-						0, "", "oauth", offlineAccess, null);
+						0, complete.getTraceId(), "oauth", offlineAccess, null);
 				return mintResponse.getRefreshToken().getBase64();
 			} catch (IdentityServiceImpl.StatusException e) {
 				logger.error("CliTokenBroker: mint failed for nonce {}", shortNonce(nonce), e);

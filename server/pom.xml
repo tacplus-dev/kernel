@@ -155,14 +155,14 @@
 	</dependencies>
 	<build>
 		<sourceDirectory>src/main/java</sourceDirectory>
-		<extensions>
-			<extension>
+		<plugins>
+			<!-- A plugin with extensions, not a build <extension>, so that it takes the root pom's
+			     plexus-utils override (#36). -->
+			<plugin>
 				<groupId>kr.motd.maven</groupId>
 				<artifactId>os-maven-plugin</artifactId>
-				<version>1.7.1</version>
-			</extension>
-		</extensions>
-		<plugins>
+				<extensions>true</extensions>
+			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
@@ -171,7 +171,7 @@
 			<plugin>
 				<groupId>org.codehaus.mojo</groupId>
 				<artifactId>build-helper-maven-plugin</artifactId>
-				<version>3.6.0</version>
+				<version>${build-helper-plugin.version}</version>
 				<executions>
 					<execution>
 						<id>add-source</id>

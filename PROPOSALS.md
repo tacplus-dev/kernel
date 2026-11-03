@@ -44,6 +44,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   plugin>...`): `dependency:resolve-plugins` reports the plugin pom's version, not the override. Not covered by #33:
   `codegen` (a Maven plugin) compiles against plexus-utils 3.5.1, `provided` through maven-plugin-api 3.9.9; at run time
   it gets whatever the running Maven core ships, so that one moves with the Maven version, not with a pin here.
+- **Drop the other build-plugin plexus-utils and commons-io overrides** (2026-11-03, #36): the root `pluginManagement`
+  also gives plexus-utils 4.0.3 to compiler 3.15.0, jar 3.5.0, resources 3.4.0, plugin-plugin 3.15.1 and antrun 3.2.0,
+  plexus-utils 3.6.1 to protobuf-maven-plugin 0.6.1 and os-maven-plugin 1.7.1 (GHSA-6fmv-xxpf-w3cw), and commons-io
+  2.21.0 to compiler (GHSA-78wr-2p64-hpwj). Same rule as shade's: remove each once a release of that plugin asks for
+  a fixed version and fleet-dev pins it. protobuf-maven-plugin and os-maven-plugin have no newer release, so theirs
+  stay. os-maven-plugin is now a plugin with `<extensions>true</extensions>` rather than a build `<extension>`,
+  because only a plugin takes `<dependencies>`; server declares it but nothing there reads `os.detected.*`, so it
+  could go from server altogether. build-helper (3.6.2) and exec (3.6.4) moved to fleet-dev's pins and need none.
 - **Drop Javalin from the generated Java chassis, in tacplus** (2026-10-27, #16): kernel moved Javalin
   6.7.0 -> 7.2.4 because Jetty 11 has HIGH advisories and no fixed 11.x on Maven Central. But nothing
   serves HTTP through it: the tacplus-generated `GrpcServer` declares a `Javalin httpServer` that is never

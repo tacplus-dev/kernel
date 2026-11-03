@@ -11,14 +11,12 @@
   <description>Kernel server: cluster, hazelcast, persistence, generated types</description>
   <build>
     <sourceDirectory>src/main/java</sourceDirectory>
-    <extensions>
-      <extension>
+    <plugins>
+      <plugin>
         <groupId>kr.motd.maven</groupId>
         <artifactId>os-maven-plugin</artifactId>
-        <version>1.7.1</version>
-      </extension>
-    </extensions>
-    <plugins>
+        <extensions>true</extensions>
+      </plugin>
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>${maven-compiler-plugin.version}</version>
@@ -26,7 +24,7 @@
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>build-helper-maven-plugin</artifactId>
-        <version>3.6.0</version>
+        <version>${build-helper-plugin.version}</version>
         <executions>
           <execution>
             <id>add-source</id>

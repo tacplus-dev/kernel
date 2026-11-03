@@ -11,13 +11,6 @@
   <description>Tacplus-generated types, gRPC stubs, and libraries for kernel</description>
   <build>
     <sourceDirectory>target/generated-sources/model/src/main/java</sourceDirectory>
-    <extensions>
-      <extension>
-        <groupId>kr.motd.maven</groupId>
-        <artifactId>os-maven-plugin</artifactId>
-        <version>1.7.1</version>
-      </extension>
-    </extensions>
     <resources>
       <resource>
         <directory>target/generated-sources/model/src/main/resources</directory>
@@ -25,13 +18,18 @@
     </resources>
     <plugins>
       <plugin>
+        <groupId>kr.motd.maven</groupId>
+        <artifactId>os-maven-plugin</artifactId>
+        <extensions>true</extensions>
+      </plugin>
+      <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>${maven-compiler-plugin.version}</version>
       </plugin>
       <plugin>
         <groupId>org.xolstice.maven.plugins</groupId>
         <artifactId>protobuf-maven-plugin</artifactId>
-        <version>0.6.1</version>
+        <version>${protobuf-plugin.version}</version>
         <executions>
           <execution>
             <goals>
@@ -83,7 +81,7 @@
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>build-helper-maven-plugin</artifactId>
-        <version>3.6.0</version>
+        <version>${build-helper-plugin.version}</version>
         <executions>
           <execution>
             <id>add-source</id>
@@ -101,7 +99,7 @@
       </plugin>
       <plugin>
         <artifactId>maven-antrun-plugin</artifactId>
-        <version>3.1.0</version>
+        <version>${antrun-plugin.version}</version>
         <executions>
           <execution>
             <id>tacplus-update</id>

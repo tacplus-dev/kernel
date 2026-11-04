@@ -52,6 +52,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   #13 is the same story for transitive Jackson (2.17.0 via opa, 3.1.4 via mcp), now pinned by BOM in the
   root pom: a pin only holds until the next advisory, so the check is what keeps it honest.
   #21 is the third: Guava 33.5.0-android via gRPC 1.79.0 (GHSA-xxph-c9ww-hj94), now pinned at 33.7.2-android.
+  The check has to scan the built `kernel.jar`, not only the resolved tree (2026-11-04, nightly scan, #43, #44):
+  Netty 4.1.127 shaded inside ratis-thirdparty (1 CRITICAL) and Jackson 2.21.2 shaded inside Hazelcast 5.7.0
+  (8 HIGH) never appear in `mvn dependency:list`, so an OSV check of it passes. `trivy rootfs --scanners vuln
+  server/target/kernel.jar` reads the bundled `META-INF/maven/*/pom.properties` and finds both.
 - **Drop the Guava pin with the next gRPC bump** (2026-10-28, #21): `guava.version` in the root pom overrides
   what gRPC asks for. Once a gRPC release depends on Guava `>= 33.7.2` and kernel moves to it, remove the
   property and its `dependencyManagement` entry, or the pin will later hold Guava *below* what gRPC needs.

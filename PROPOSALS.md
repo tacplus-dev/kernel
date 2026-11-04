@@ -5,15 +5,6 @@ the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
 - **<title>** (<date>, <issue/run link>): <what and why>
-- **Say on `extra_claims` which keys kernel refuses** (2026-11-03, #41; waits on tacplus-dev/tacplus#205): #41
-  refuses at mint every `extra_claims` key that names a kernel-set claim (`EXCLUDED_CLAIM_KEYS`, every
-  `JwtPayloadType` name and the registered JWT claims, plus `tid`). The contract does not say so yet: any edit to
-  `proto/vservices/proxy-policy.proto`, a comment included, fails `just gates` with "same path, different
-  contents" until tacplus#205 is fixed, and so would the land. The comment to add under `extra_claims`:
-  "A key may not name a claim kernel sets: every JwtPayloadType name (token_use, linked, namespace, sub, azp, exp,
-  ...), the registered JWT claims (nbf, typ) and tid. Kernel refuses a result naming one with PERMISSION_DENIED;
-  namespace is always the verified caller token's." `MintExternalToken`'s comment in `kernel.proto` could say the
-  same.
 - **Refuse a reserved `extra_claims` key when the proxy policy is loaded** (2026-11-03, #41): kernel refuses one at
   every mint, which is where it sees the result; it never loads the Rego. A policy is loaded by opa from what the
   deployment (operator) hands it, and `extra_claims` is computed per request, so a load-time check could only be a

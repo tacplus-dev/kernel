@@ -55,7 +55,17 @@ the looper then marks it `promoted` or `declined` here with the date.
   The check has to scan the built `kernel.jar`, not only the resolved tree (2026-11-04, nightly scan, #43, #44):
   Netty 4.1.127 shaded inside ratis-thirdparty (1 CRITICAL) and Jackson 2.21.2 shaded inside Hazelcast 5.7.0
   (8 HIGH) never appear in `mvn dependency:list`, so an OSV check of it passes. `trivy rootfs --scanners vuln
-  server/target/kernel.jar` reads the bundled `META-INF/maven/*/pom.properties` and finds both.
+  server/target/kernel.jar` reads the bundled `META-INF/maven/*/pom.properties` and finds both. Hazelcast 5.7.0
+  also shades Jackson 3.1.2 (`tools.jackson`, the same 8 HIGH), which a `kernel.jar` scan cannot see: the uber
+  jar keeps one `pom.properties` per artifact, and kernel's own 3.1.8 overwrites Hazelcast's (and Hazelcast's
+  2.21.2 overwrites kernel's 2.21.8). The check must scan each dependency jar before shading (or read each copy's
+  `PackageVersion`), not the merged `pom.properties` (decisions/2026-11-04-hazelcast-shaded-jackson.md).
+- **Refuse the Hazelcast client protocol on kernel's member port** (2026-11-04, #44): kernel uses no Hazelcast
+  client, but with the advanced network config off, open-source Hazelcast accepts clients on 5001 beside members,
+  so anything reaching the port can put a `HazelcastJsonValue` and drive the shaded jackson-core 3.1.2. An
+  advanced network config with a member endpoint and no client endpoint would close that surface (not the
+  member one, #24). Needs a test that a `HazelcastClient` is refused, and a check that nothing (tooling,
+  debugging) connects as a client today.
 - **Drop the ratis-thirdparty pin with the next Ratis bump** (2026-11-04, #43): `ratis-thirdparty.version` (1.1.1)
   in the root pom overrides the 1.1.0 Ratis 3.3.1 asks for, for its shaded Netty. Once a Ratis release asks for
   `>= 1.1.1`, remove the property and its `dependencyManagement` entry, or the pin will later hold thirdparty

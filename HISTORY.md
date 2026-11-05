@@ -24,3 +24,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-03 looper issue maven-jar-plugin and maven-plugin-plugin load aircompressor 0.27 (GHSA-vx9q-rhv9-3jvg, HIGH) (#37, e3c2595)
 - 2026-11-03 looper issue Trace propagation: no test asserts the inbound trace_id reaches OPA from the minting handlers (#39, 117c474)
 - 2026-11-03 looper issue MintExternalToken never sets the external token's namespace, so sign() throws unless proxy policy returns one in extra_claims (#40, d1ec076)
+- 2026-11-05 looper issue kernel.jar ships Netty 4.1.127 shaded inside ratis-thirdparty 1.0.10 (Ratis 3.2.1): 1 CRITICAL, 20 HIGH advisories (#43, 66217f7)

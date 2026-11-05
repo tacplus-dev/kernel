@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.github.tacplusdev.kernel.model.types.services.kernel.Kernel;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +39,13 @@ class RatisFencedLockTest {
 
 	private static final int PEERS = 3;
 
+	/**
+	 * How long startPeers waits for a cold group to commit its first write: well
+	 * above one election, which split votes can stretch past the client's own
+	 * retry budget (#45).
+	 */
+	private static final long LEADER_DEADLINE_SECONDS = 30;
+
 	private final List<RatisFencedLock> nodes = new ArrayList<>();
 
 	@TempDir
@@ -65,6 +73,32 @@ class RatisFencedLockTest {
 		}
 		// Any peer's client routes to the leader; use the first.
 		lock = nodes.get(0);
+		awaitLeader();
+	}
+
+	/**
+	 * awaitLeader returns once the group has a leader that commits a write, so a
+	 * test measures the lock and not how fast a cold group elects. The probe key
+	 * is released again, leaving no hold behind; its log entries only raise the
+	 * tokens later grants carry, which every assertion here compares relatively.
+	 */
+	private void awaitLeader() throws Exception {
+		final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(LEADER_DEADLINE_SECONDS);
+		IOException last = null;
+		while (System.nanoTime() < deadline) {
+			try {
+				Kernel.FencedLockAcquireResponse probe = acquire("test/leader-ready", "setup");
+				assertTrue(probe.getGranted(), "the setup probe key must be free");
+				assertTrue(release("test/leader-ready", "setup", probe.getFencingToken()).getOk(),
+						"the setup probe must release its own token");
+				return;
+			} catch (IOException e) {
+				// No leader served it within the client's retry budget; try again.
+				last = e;
+			}
+		}
+		throw new AssertionError("no leader within " + LEADER_DEADLINE_SECONDS + " s: the group committed no write",
+				last);
 	}
 
 	@AfterEach

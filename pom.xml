@@ -39,7 +39,12 @@
 		<hazelcast.version>5.7.0</hazelcast.version>
 		<!-- Javalin 7 is on Jetty 12: no fixed Jetty 11 is published (#16). -->
 		<javalin.version>7.2.4</javalin.version>
-		<ratis.version>3.2.1</ratis.version>
+		<ratis.version>3.3.1</ratis.version>
+		<!-- ratis-thirdparty shades its own Netty, which neither mvn dependency:tree nor an
+		     io.netty pin can see. Ratis 3.3.1 is built on 1.1.0 (Netty 4.1.136.Final, still
+		     CVE-2026-75595 CRITICAL); 1.1.1 (Netty 4.1.139.Final, same shaded protobuf, gRPC
+		     1.82.4) clears it (#43). Drop this pin once a Ratis release asks for >= 1.1.1. -->
+		<ratis-thirdparty.version>1.1.1</ratis-thirdparty.version>
 		<spotless-maven-plugin.version>3.2.1</spotless-maven-plugin.version>
 		<shade-plugin.version>3.6.1</shade-plugin.version>
 		<exec-plugin.version>3.6.4</exec-plugin.version>
@@ -156,6 +161,12 @@
 				<groupId>org.apache.ratis</groupId>
 				<artifactId>ratis-metrics-default</artifactId>
 				<version>${ratis.version}</version>
+			</dependency>
+			<!-- Pinned over Ratis's own 1.1.0 for its shaded Netty (#43). -->
+			<dependency>
+				<groupId>org.apache.ratis</groupId>
+				<artifactId>ratis-thirdparty-misc</artifactId>
+				<version>${ratis-thirdparty.version}</version>
 			</dependency>
 			<dependency>
 				<groupId>org.slf4j</groupId>

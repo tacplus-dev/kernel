@@ -56,6 +56,16 @@ the looper then marks it `promoted` or `declined` here with the date.
   Netty 4.1.127 shaded inside ratis-thirdparty (1 CRITICAL) and Jackson 2.21.2 shaded inside Hazelcast 5.7.0
   (8 HIGH) never appear in `mvn dependency:list`, so an OSV check of it passes. `trivy rootfs --scanners vuln
   server/target/kernel.jar` reads the bundled `META-INF/maven/*/pom.properties` and finds both.
+- **Drop the ratis-thirdparty pin with the next Ratis bump** (2026-11-04, #43): `ratis-thirdparty.version` (1.1.1)
+  in the root pom overrides the 1.1.0 Ratis 3.3.1 asks for, for its shaded Netty. Once a Ratis release asks for
+  `>= 1.1.1`, remove the property and its `dependencyManagement` entry, or the pin will later hold thirdparty
+  *below* what Ratis needs. `ShadedNettyVersionTest` keeps the shaded Netty at 4.1.137.Final or later either way.
+  #42 (Raft over the member port) starts its Ratis pin from this one.
+- **Rolling Ratis upgrades, before production** (2026-11-04, #43): #43 moved Ratis 3.2.1 to 3.3.1, and whether a
+  mixed 3.2/3.3 group works was not tested: a deploy of it restarts the whole FencedLock group at once, accepted
+  only because nothing is in production (Jody, #43). Before production, a Ratis bump needs a mixed-version group
+  test (or a documented whole-group restart in the deploy). For tacplus-dev/roadmap's PRODUCTION.md, which the hub
+  keeps.
 - **Drop the Guava pin with the next gRPC bump** (2026-10-28, #21): `guava.version` in the root pom overrides
   what gRPC asks for. Once a gRPC release depends on Guava `>= 33.7.2` and kernel moves to it, remove the
   property and its `dependencyManagement` entry, or the pin will later hold Guava *below* what gRPC needs.

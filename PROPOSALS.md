@@ -210,6 +210,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   maven-core 3.2.5, and site 3.12.1 brings Jetty 9.4.46, velocity 1.7, dom4j 1.1 and jsoup 1.10.2 (site is not
   part of `verify`). Pinning current releases in `pluginManagement` makes the build reproducible and lets the advisory check
   above cover plugins too.
+- **ROADMAP "Now" names floor 2.4; the floor in force is 2.6** (2026-11-06, #46): Jody's decision on #46 asks for
+  "Now" to name the floor in force, but a looper may not push a commit touching ROADMAP.md. The line to change:
+  "Unreleased; tacplus floor 2.4." becomes "Unreleased; tacplus floor 2.6 (2.6.1 pinned in tacplus.lock)."
+- **Make `just verify` a gate again, in the pinned build image** (2026-11-06, #46): the justfile says `verify` is
+  not a gate because "the compiler image has no mvn". Since #46 tacplus runs in the build image tacplus.lock pins
+  (tools/tacplus.sh), which carries every toolchain; whether it resolves the proofs' classpath there is untried. 2.6
+  also made formal verification no gate in tacplus itself (tacplus#275), so this is a choice, not a fix.
 
 ## Promoted / declined
 - **Tenant-owned service identity carries the tid** (2026-10-28, #23): promoted 2026-10-28 (kernel ROADMAP.md, Next),

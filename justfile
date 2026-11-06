@@ -1,6 +1,8 @@
 # Local development builds only — not used in CI/CD.
 
-TACPLUS := env_var_or_default("TACPLUS_BIN", "tacplus")
+# tacplus runs in the build image tacplus.lock pins, by digest (tools/tacplus.sh);
+# TACPLUS_BIN overrides it with a tacplus of your own.
+TACPLUS := env_var_or_default("TACPLUS_BIN", "tools/tacplus.sh")
 
 # The protoc `generate` pins, read from the one protobuf pin in pom.xml so the
 # compiler and the runtime can never drift apart. protoc gencode declares a
@@ -48,7 +50,7 @@ generate:
 verify:
   {{TACPLUS}} verify
 
-# What every change must pass: regenerate from scratch with the floor compiler,
+# What every change must pass: regenerate from scratch with the pinned tacplus,
 # check generation touched nothing under version control, then build and test.
 # tacplus/target is removed first because the tacplus module skips generation
 # whenever generated sources exist, so stale ones would otherwise be compiled.

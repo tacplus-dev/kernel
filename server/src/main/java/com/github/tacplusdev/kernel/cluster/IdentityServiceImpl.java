@@ -84,12 +84,20 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 	private static final Logger logger = LoggerFactory.getLogger(IdentityServiceImpl.class);
 
-	// Standard Schematic claims — all proto-defined JwtPayloadType values plus "typ".
-	// External IdP claims with these names get origin_ prefixed to avoid collision.
+	// Claims tacplus has retired from JwtPayloadType that are still kernel's names:
+	// linked (tacplus#171, JwtPayloadType 29 reserved since 2.6). A fleet service on
+	// an older line still reads it, and it widens the namespaces its backstop accepts,
+	// so no IdP, user token or policy may put it on a token kernel mints.
+	static final Set<String> RETIRED_JWT_CLAIMS = Set.of("linked");
+
+	// Standard Schematic claims — all proto-defined JwtPayloadType values, the retired
+	// ones, plus "typ". External IdP claims with these names get origin_ prefixed to
+	// avoid collision.
 	// Package-private so the claim-copy regression test can exercise the real sets.
 	static final Set<String> STANDARD_JWT_CLAIMS;
 	static {
 		var claims = new java.util.HashSet<>(Helpers.jwtPayloadTypeValidValues());
+		claims.addAll(RETIRED_JWT_CLAIMS);
 		claims.add("typ");
 		STANDARD_JWT_CLAIMS = Set.copyOf(claims);
 	}
@@ -238,14 +246,15 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	private static final String LINK_KEY_SEPARATOR = "|";
 
 	/**
-	 * Schematic-internal claim key names (all JwtPayloadType names) that must not be
-	 * copied verbatim from the user token into the external token. Standard JWT
-	 * fields (iss, sub, aud, exp, iat, jti) are also excluded since they are set
-	 * explicitly on the new token.
+	 * Schematic-internal claim key names (all JwtPayloadType names, and the retired
+	 * ones) that must not be copied verbatim from the user token into the external
+	 * token. Standard JWT fields (iss, sub, aud, exp, iat, jti) are also excluded
+	 * since they are set explicitly on the new token.
 	 */
 	private static final Set<String> EXCLUDED_CLAIM_KEYS;
 	static {
 		var keys = new java.util.HashSet<>(Helpers.jwtPayloadTypeValidValues());
+		keys.addAll(RETIRED_JWT_CLAIMS);
 		// Also exclude well-known JWT fields set explicitly in the minted token.
 		keys.addAll(Set.of("iss", "sub", "aud", "exp", "nbf", "iat", "jti", "typ"));
 		EXCLUDED_CLAIM_KEYS = Set.copyOf(keys);

@@ -66,6 +66,8 @@ class TenantUserLinkTest {
 	private static final String APPLE_SUB = "001672.9c4f1a33be7d4e1fb0c2.0913";
 	private static final String NONCE = "3f1c9a2e-7b44-4a1d-9f0e-2c6b8d5a1e77";
 	private static final Caller CALLER = new Caller("", "test-req");
+	/** The retired claim's name: tacplus 2.6 generates no accessor for it (tacplus#171). */
+	private static final String CLAIM_LINKED = "linked";
 
 
 	private final List<JwkOuterClass.Jwk> verifyingKeys = new CopyOnWriteArrayList<>();
@@ -173,8 +175,7 @@ class TenantUserLinkTest {
 		for (Tokenrequest.TokenMintResponse resp : List.of(tenant, people)) {
 			for (String jwt : List.of(resp.getRefreshToken().getBase64(), resp.getAccessToken().getBase64())) {
 				TokenWrapper token = TokenWrapper.parse(jwt);
-				assertTrue(token.getLinked().isEmpty(), token.getNamespace() + " token carries linked");
-				assertFalse(token.getClaims().containsKey(TokenWrapper.CLAIM_LINKED));
+				assertFalse(token.getClaims().containsKey(CLAIM_LINKED), token.getNamespace() + " token carries linked");
 			}
 		}
 		assertEquals(TENANT_NAMESPACE, TokenWrapper.parse(tenant.getRefreshToken().getBase64()).getNamespace());
@@ -188,7 +189,7 @@ class TenantUserLinkTest {
 	@Test
 	void aRelayedLinkedClaimNeverReachesAToken() throws Exception {
 		Struct claims = idpClaims(TENANT_ISSUER, "jody", null).toBuilder()
-				.putFields(TokenWrapper.CLAIM_LINKED, Value.newBuilder().setStringValue("/tenants/victim").build())
+				.putFields(CLAIM_LINKED, Value.newBuilder().setStringValue("/tenants/victim").build())
 				.build();
 		Tokenrequest.TokenMintResponse resp = mint(Tokenrequest.MintUserTokenRequest.newBuilder()
 				.setSubject(TENANT_SUBJECT)
@@ -197,7 +198,7 @@ class TenantUserLinkTest {
 				.build(), "");
 
 		for (String jwt : List.of(resp.getRefreshToken().getBase64(), resp.getAccessToken().getBase64())) {
-			assertTrue(TokenWrapper.parse(jwt).getLinked().isEmpty());
+			assertFalse(TokenWrapper.parse(jwt).getClaims().containsKey(CLAIM_LINKED));
 		}
 	}
 

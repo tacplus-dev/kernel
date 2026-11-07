@@ -176,6 +176,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   `member:<svc>` tokens, which kernel mints since #30). It is on tacplus main but in no release yet (2.5.x lacks
   `option (spec.member_port)`), so #24 adopts it once the floor can move to 2.6 (tacplus-dev/tacplus#213). The
   port may move onto gRPC first (tacplus-dev/tacplus#259); the adoption is the same.
+  Superseded 2026-11-06 (Jody, on #24, closed as done): kernel's Hazelcast is not wired onto the 2.6 loopback member
+  port, which is planned to go away. Its real protection is #42 on tacplus-dev/tacplus#259's gRPC member port, or
+  Hazelcast leaving kernel. Meanwhile there are no public IPs, and the interim NetworkPolicy (tacplus-dev/operator#20)
+  selects kernel. That policy limits the Raft port to kernel pods but leaves 5001 open to the deployment's own
+  namespaces. Restricting 5001 too is the one-line change operator#20 held back until it is verified on a live
+  kernel cluster. PRODUCTION.md's security review (tacplus-dev/roadmap) should list this traffic.
 - **`kernel.proto` claims Hazelcast mTLS that does not exist** (2026-10-29, #24): the `tls` and `cluster_ca`
   comments say they are used for "Hazelcast mTLS" and its trust, and the `option (spec.smb)` comment says kernel
   uses its SMB member cert "for Hazelcast peer mTLS". Kernel has never configured member TLS that works, and

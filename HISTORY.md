@@ -27,3 +27,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-05 looper issue kernel.jar ships Netty 4.1.127 shaded inside ratis-thirdparty 1.0.10 (Ratis 3.2.1): 1 CRITICAL, 20 HIGH advisories (#43, 66217f7)
 - 2026-11-05 looper issue Hazelcast 5.7.0 bundles shaded Jackson 2.21.2 (8 HIGH advisories); no fixed Hazelcast release yet (#44, a93f085)
 - 2026-11-05 looper issue just gates flakes on main: RatisFencedLockTest contends before the three-peer group has elected a leader (#45)
+- 2026-11-07 looper issue tacplus floor 2.5 is behind the latest released line (2.6) (#46, ded67ca)

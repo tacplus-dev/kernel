@@ -60,6 +60,14 @@ the looper then marks it `promoted` or `declined` here with the date.
   jar keeps one `pom.properties` per artifact, and kernel's own 3.1.8 overwrites Hazelcast's (and Hazelcast's
   2.21.2 overwrites kernel's 2.21.8). The check must scan each dependency jar before shading (or read each copy's
   `PackageVersion`), not the merged `pom.properties` (decisions/2026-11-04-hazelcast-shaded-jackson.md).
+- **The build's security checks cover none of kernel's Java dependencies or bytecode yet** (2026-11-12, nightly
+  scan; tacplus-dev/looper#49): the latest `security-kernel` report (eb21f7aa) lists OSV-Scanner as "Not analyzed"
+  (`failed resolution for .../codegen/pom.xml: ... version Maven:com.github.tacplusdev.kernel:kern...`: it cannot
+  resolve the reactor's own SNAPSHOT `kernel-model`, which is in no registry) and SpotBugs too ("the gates compiled no
+  target/classes", although `mvn verify` writes `server/target/classes` and the other modules' classes). So the
+  build's floor checks no Maven advisory and no Java bytecode for kernel, and only this nightly scan does (#57, #58).
+  The fix is in looper-scan (resolve the reactor as `mvn dependency:list` does, or scan its output, and keep each
+  module's `target/classes` in the gates job's `built/` artifact), not in this repository: a tacplus-dev/looper issue.
 - **Refuse the Hazelcast client protocol on kernel's member port** (2026-11-04, #44): kernel uses no Hazelcast
   client, but with the advanced network config off, open-source Hazelcast accepts clients on 5001 beside members,
   so anything reaching the port can put a `HazelcastJsonValue` and drive the shaded jackson-core 3.1.2. An

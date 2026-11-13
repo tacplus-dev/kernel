@@ -31,10 +31,10 @@ class StateMapConditionalWriteTest {
 	void putIfAbsentValidatesThenDelegatesAndReturnsTheBoundValue() {
 		String src = TemplateEngine.renderFragment("statemap_collection_put_if_absent.java.template", vars());
 
-		assertTrue(src.contains("public Widgets.Widget putIfAbsentWidgets(String key, Widgets.Widget value) throws ProtoException {"),
+		assertTrue(src.contains("public Widgets.Widget putIfAbsentWidgets(String id, Widgets.Widget value) throws ProtoException {"),
 				"putIfAbsent<F> must take the key and value and return the bound value");
 		assertTrue(src.contains("Helpers.validateWidget(value);"), "putIfAbsent must validate like put");
-		assertTrue(src.contains("Widgets.Widget existing = widgetsMap.putIfAbsent(key, value);"),
+		assertTrue(src.contains("Widgets.Widget existing = widgetsMap.putIfAbsent(id, value);"),
 				"putIfAbsent must be the IMap's own putIfAbsent");
 		assertTrue(src.contains("return existing != null ? existing : value;"),
 				"putIfAbsent must return the existing value on conflict, else the inserted one");
@@ -46,14 +46,14 @@ class StateMapConditionalWriteTest {
 		vars.put("EPOCH_GETTER", "getExp");
 		String src = TemplateEngine.renderFragment("statemap_collection_put_if_absent_epoch.java.template", vars);
 
-		assertTrue(src.contains("public Widgets.Widget putIfAbsentWidgets(String key, Widgets.Widget value) throws ProtoException {"),
+		assertTrue(src.contains("public Widgets.Widget putIfAbsentWidgets(String id, Widgets.Widget value) throws ProtoException {"),
 				"putIfAbsent<F> must take the key and value and return the bound value");
 		assertTrue(src.contains("Helpers.validateWidget(value);"), "putIfAbsent must validate like put");
 		assertTrue(src.contains("long ttl = epochExp - (System.currentTimeMillis() / 1000);"),
 				"putIfAbsent must derive the TTL from the epoch field as put does");
-		assertTrue(src.contains("existing = widgetsMap.putIfAbsent(key, value, ttl, java.util.concurrent.TimeUnit.SECONDS);"),
+		assertTrue(src.contains("existing = widgetsMap.putIfAbsent(id, value, ttl, java.util.concurrent.TimeUnit.SECONDS);"),
 				"putIfAbsent must be the IMap's own putIfAbsent, with the TTL");
-		assertTrue(src.contains("existing = widgetsMap.putIfAbsent(key, value);"),
+		assertTrue(src.contains("existing = widgetsMap.putIfAbsent(id, value);"),
 				"a value with no epoch set is stored without a TTL, as put stores it");
 		assertTrue(src.contains("return existing != null ? existing : value;"),
 				"putIfAbsent must return the existing value on conflict, else the inserted one");
@@ -63,10 +63,10 @@ class StateMapConditionalWriteTest {
 	void replaceValidatesNextThenDelegatesToCompareAndReplace() {
 		String src = TemplateEngine.renderFragment("statemap_collection_replace.java.template", vars());
 
-		assertTrue(src.contains("public boolean replaceWidgets(String key, Widgets.Widget expected, Widgets.Widget next) throws ProtoException {"),
+		assertTrue(src.contains("public boolean replaceWidgets(String id, Widgets.Widget expected, Widgets.Widget next) throws ProtoException {"),
 				"replace<F> must take the key, expected and next values and return whether it replaced");
 		assertTrue(src.contains("Helpers.validateWidget(next);"), "replace must validate the value it stores");
-		assertTrue(src.contains("return widgetsMap.replace(key, expected, next);"),
+		assertTrue(src.contains("return widgetsMap.replace(id, expected, next);"),
 				"replace must be the IMap's own compare-and-replace");
 	}
 }

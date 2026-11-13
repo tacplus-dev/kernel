@@ -33,3 +33,28 @@ the Rust rewrite with Hazelcast removed) happen here. The two are not kept in sy
 kernel.proto imports `generated/*.proto`, which the fleet build synthesizes from every service in
 the deployment. Kernel is the centre of the fleet build (roadmap item `tacplus-registry-and-floor`),
 so it is built there, from a manifest, not alone.
+
+## Releasing
+
+Releases are tags `vMAJOR.MINOR.PATCH` on main (on a `release/MAJOR.MINOR` branch for a patch to an older
+line). Fleets pin a release line, `MAJOR.MINOR` (tacplus-dev/tacplus#180). The line is `0.x` until
+SeaBeam's launch, when `1.0.0` is cut. On `0.x` a minor may break; a patch never does. A looper change merged
+to main is released as a patch (a fix) or a minor (a feature).
+
+To cut one, tag the commit and push the tag:
+
+    git tag -a v0.1.1 -m v0.1.1 <commit> && git push origin v0.1.1
+
+The tag starts `.github/workflows/release.yml`. It runs the gates on the tag in the build image its
+`tacplus.lock` pins (`ci/release-gates.sh`) and builds the Dockerfile for the workflow's `PLATFORMS`
+(`arm64`; `amd64 arm64` builds both into one image). It pushes `ghcr.io/tacplus-dev/kernel:X.Y.Z`, and
+`:X.Y` when this is the line's highest release, so the line tag never moves backwards and a patch never
+moves another line (`ci/release-tags.sh`). It then creates the GitHub release with the commits since the
+previous release (`ci/release-notes.sh`). The release is marked Latest only when it is the highest
+(`ci/release-latest.sh`). The image is labelled with the version and the commit. `ci/release_test.sh` tests
+the scripts, and the workflow runs it first. Never move or delete a tag once it is pushed.
+
+Run by hand (Actions, release, Run workflow, or `gh workflow run release.yml -f tag=vX.Y.Z`), the workflow is
+a dry run: it builds the given tag, or HEAD when that tag does not exist yet, and prints the image tags and
+notes that release would get. It publishes nothing. With `-f publish=true` it publishes a tag that already
+exists, for a tag on a commit without the workflow (v0.1.0).

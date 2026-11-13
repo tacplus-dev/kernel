@@ -217,11 +217,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   gone) and the operator must stop minting `NodeTls`, so it needs its own roadmap entry. Kept out of #29 (Jody's answer
   on the issue): kmaker's retirement does not need it.
 - **Pin the default-lifecycle Maven plugins** (2026-11-02, nightly scan): the root pom pins compiler, shade, exec,
-  antrun and build-helper, but clean (3.2.0), resources, jar, surefire (3.2.5), install, deploy and site (3.12.1) come
+  antrun, build-helper, resources, jar and, since #58, surefire (3.6.1), but clean (3.2.0), install, deploy and site (3.12.1) come
   from whichever Maven runs the build (3.9.16 on the scanner). So their versions, and their advisory surface, change with
   the runner, not with a commit here. An OSV check of `mvn dependency:resolve-plugins` finds advisories only on those
-  build-time classpaths, none on what ships in `kernel.jar`: surefire 3.2.5 brings guava 16.0.1 (GHSA-xxph-c9ww-hj94) and
-  maven-core 3.2.5, and site 3.12.1 brings Jetty 9.4.46, velocity 1.7, dom4j 1.1 and jsoup 1.10.2 (site is not
+  build-time classpaths, none on what ships in `kernel.jar`: surefire 3.2.5 brought guava 16.0.1 (GHSA-xxph-c9ww-hj94) and
+  maven-core 3.2.5 (gone with 3.6.1, #58), and site 3.12.1 brings Jetty 9.4.46, velocity 1.7, dom4j 1.1 and jsoup 1.10.2 (site is not
   part of `verify`). Pinning current releases in `pluginManagement` makes the build reproducible and lets the advisory check
   above cover plugins too.
 - **ROADMAP "Now" names floor 2.4; the floor in force is 2.6** (2026-11-06, #46): Jody's decision on #46 asks for
@@ -231,6 +231,12 @@ the looper then marks it `promoted` or `declined` here with the date.
   not a gate because "the compiler image has no mvn". Since #46 tacplus runs in the build image tacplus.lock pins
   (tools/tacplus.sh), which carries every toolchain; whether it resolves the proofs' classpath there is untried. 2.6
   also made formal verification no gate in tacplus itself (tacplus#275), so this is a choice, not a fix.
+- **The tracked dependency-reduced-pom.xml files drift from the poms** (2026-11-12, #58): maven-shade-plugin rewrites
+  them on every `package`, yet they are committed, and only a change whose author ran `mvn package` refreshes them; #58
+  could not (agents never build, looper#71), so `server/dependency-reduced-pom.xml` still names surefire 3.2.5. A scanner
+  reading them sees versions the build does not use. Either stop tracking them (`.gitignore`, or shade's
+  `<generateDependencyReducedPom>false</generateDependencyReducedPom>` / `<dependencyReducedPomLocation>` under `target/`),
+  or have the build job hand back the files it regenerates.
 
 ## Promoted / declined
 - **Tenant-owned service identity carries the tid** (2026-10-28, #23): promoted 2026-10-28 (kernel ROADMAP.md, Next),

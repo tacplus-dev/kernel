@@ -21,6 +21,7 @@ import com.github.tacplusdev.kernel.tacplusbackend.SerializerRegistry;
 import com.github.tacplusdev.kernel.tacplusbackend.views.JwkVerifyingKeysViewServer;
 import com.hazelcast.cluster.MembershipEvent;
 import com.hazelcast.cluster.MembershipListener;
+import com.hazelcast.config.ServerSocketEndpointConfig;
 import com.hazelcast.config.TcpIpConfig;
 import com.hazelcast.core.HazelcastInstance;
 import io.grpc.Attributes;
@@ -1052,10 +1053,16 @@ public class ClusterServer {
 		hzConfig.setProperty("hazelcast.logging.type", "slf4j");
 		hzConfig.setProperty("hazelcast.phone.home.enabled", "false");
 
-		// Network configuration
-		var networkConfig = hzConfig.getNetworkConfig();
-		networkConfig.setPort(hzPort);
-		networkConfig.setPortAutoIncrement(false);
+		// Network configuration. The port takes members only (kernel#47): with the
+		// plain network config, open-source Hazelcast also accepts clients on it,
+		// and kernel uses no Hazelcast client. The advanced config's endpoints
+		// are exactly the ones listed, so a member endpoint and nothing else (no
+		// client, REST, memcache or WAN endpoint) refuses the client protocol.
+		var networkConfig = hzConfig.getAdvancedNetworkConfig();
+		networkConfig.setEnabled(true);
+		networkConfig.setMemberEndpointConfig(new ServerSocketEndpointConfig()
+				.setPort(hzPort)
+				.setPortAutoIncrement(false));
 
 		var joinConfig = networkConfig.getJoin();
 		joinConfig.getMulticastConfig().setEnabled(false);

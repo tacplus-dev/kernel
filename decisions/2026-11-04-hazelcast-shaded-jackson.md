@@ -61,6 +61,11 @@ So the exposure that remains is **denial of service through the 3.x jackson-core
   accepts client connections on the member port (`networkConfig.setPort(hzPort)`, 5001) beside
   member connections. A client that knows the cluster name can put a `HazelcastJsonValue` or run a
   JSON predicate.
+  Closed 2026-11-11 (#47): `ClusterServer.hazelcastConfig` enables the advanced network config with a
+  member endpoint on 5001 and no other endpoint, so the port speaks the member protocol only and a
+  `HazelcastClient` is refused (`KernelMemberTransportTest.hazelcastClientIsRefusedOnTheMemberPort`).
+  Nothing in tacplus-dev connects as a Hazelcast client (GitHub code search, 2026-11-11). The member
+  protocol below is unchanged, so the set that can reach the parser is still the set that reaches 5001.
 - **The member protocol: open to any peer.** Member traffic is plain, unauthenticated Hazelcast
   (#24, `KernelMemberTransportTest`): anything that reaches the port and knows the cluster name
   joins, then reads and writes every map.

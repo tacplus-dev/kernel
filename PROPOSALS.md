@@ -74,6 +74,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   advanced network config with a member endpoint and no client endpoint would close that surface (not the
   member one, #24). Needs a test that a `HazelcastClient` is refused, and a check that nothing (tooling,
   debugging) connects as a client today.
+  Done in #47: a member endpoint only (`ClusterServer.hazelcastConfig`), `KernelMemberTransportTest` refuses a
+  `HazelcastClient`; GitHub code search finds no Hazelcast client in tacplus-dev.
 - **Drop the ratis-thirdparty pin with the next Ratis bump** (2026-11-04, #43): `ratis-thirdparty.version` (1.1.1)
   in the root pom overrides the 1.1.0 Ratis 3.3.1 asks for, for its shaded Netty. Once a Ratis release asks for
   `>= 1.1.1`, remove the property and its `dependencyManagement` entry, or the pin will later hold thirdparty

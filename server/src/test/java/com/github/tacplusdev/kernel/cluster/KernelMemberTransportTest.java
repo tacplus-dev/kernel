@@ -6,11 +6,17 @@ import com.github.tacplusdev.kernel.Bootstrap;
 import com.github.tacplusdev.kernel.model.types.services.kernel.Helpers;
 import com.github.tacplusdev.kernel.model.types.services.kernel.Kernel;
 import com.github.tacplusdev.kernel.model.types.sys.host.HostOuterClass;
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.config.ClientConfig;
 import com.hazelcast.config.Config;
+import com.hazelcast.config.EndpointConfig;
 import com.hazelcast.config.SSLConfig;
+import com.hazelcast.config.ServerSocketEndpointConfig;
 import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.instance.BuildInfoProvider;
+import com.hazelcast.instance.EndpointQualifier;
+import com.hazelcast.instance.ProtocolType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -23,6 +29,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -40,6 +47,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Kernel set that flag, from SeaBeam, and no longer does. Its members speak
  * plain Hazelcast, which this test pins so that no TLS config can come back
  * that silently does nothing.
+ *
+ * <p>The member port takes members only (kernel#47): kernel uses no Hazelcast
+ * client, so its advanced network config has a member endpoint and no client
+ * endpoint, and a {@code HazelcastClient} is refused on the port.
  */
 class KernelMemberTransportTest {
 
@@ -78,15 +89,49 @@ class KernelMemberTransportTest {
 	void kernelConfiguresNoMemberTls() throws Exception {
 		Config config = memberConfig("kernel-transport-" + UUID.randomUUID(), HazelcastTestMembers.freePort());
 
-		SSLConfig ssl = config.getNetworkConfig().getSSLConfig();
-		assertTrue(ssl == null || !ssl.isEnabled(), "kernel must not configure a member TLS it cannot have");
-		assertFalse(config.getAdvancedNetworkConfig().isEnabled());
+		for (EndpointConfig endpoint : config.getAdvancedNetworkConfig().getEndpointConfigs().values()) {
+			SSLConfig ssl = endpoint.getSSLConfig();
+			assertTrue(ssl == null || !ssl.isEnabled(), "kernel must not configure a member TLS it cannot have");
+		}
+	}
+
+	@Test
+	void kernelConfiguresAMemberEndpointOnly() throws Exception {
+		int port = HazelcastTestMembers.freePort();
+		Config config = memberConfig("kernel-transport-" + UUID.randomUUID(), port);
+
+		assertTrue(config.getAdvancedNetworkConfig().isEnabled(),
+				"without the advanced network config, the member port also takes clients");
+		Map<EndpointQualifier, EndpointConfig> endpoints = config.getAdvancedNetworkConfig().getEndpointConfigs();
+		assertEquals(List.of(EndpointQualifier.MEMBER), List.copyOf(endpoints.keySet()),
+				"the member endpoint is kernel's only endpoint: no client, REST, memcache or WAN");
+		assertEquals(ProtocolType.MEMBER, endpoints.get(EndpointQualifier.MEMBER).getProtocolType());
+		assertEquals(port, ((ServerSocketEndpointConfig) endpoints.get(EndpointQualifier.MEMBER)).getPort());
+	}
+
+	@Test
+	void hazelcastClientIsRefusedOnTheMemberPort() throws Exception {
+		String cluster = "kernel-transport-" + UUID.randomUUID();
+		int port = HazelcastTestMembers.freePort();
+		members.add(Hazelcast.newHazelcastInstance(memberConfig(cluster, port)));
+
+		ClientConfig client = new ClientConfig();
+		client.setClusterName(cluster);
+		client.getNetworkConfig().addAddress("127.0.0.1:" + port);
+		client.getConnectionStrategyConfig().getConnectionRetryConfig().setClusterConnectTimeoutMillis(5_000);
+
+		// The port is open (the member above listens on it) and the cluster name is
+		// right: the client is refused for its protocol alone.
+		IllegalStateException refused = assertThrows(IllegalStateException.class,
+				() -> closeables.add(HazelcastClient.newHazelcastClient(client)::shutdown));
+		assertEquals("Unable to connect to any cluster.", refused.getMessage());
 	}
 
 	@Test
 	void memberTlsIsRefusedOnOpenSourceHazelcast() throws Exception {
 		Config config = memberConfig("kernel-transport-" + UUID.randomUUID(), HazelcastTestMembers.freePort());
-		config.getNetworkConfig().setSSLConfig(new SSLConfig().setEnabled(true));
+		config.getAdvancedNetworkConfig().getEndpointConfigs().get(EndpointQualifier.MEMBER)
+				.setSSLConfig(new SSLConfig().setEnabled(true));
 
 		IllegalStateException refused = assertThrows(IllegalStateException.class,
 				() -> members.add(Hazelcast.newHazelcastInstance(config)));
@@ -104,7 +149,7 @@ class KernelMemberTransportTest {
 		RecordingProxy proxy = new RecordingProxy(firstPort);
 		closeables.add(proxy);
 		Config second = memberConfig(cluster, HazelcastTestMembers.freePort());
-		second.getNetworkConfig().getJoin().getTcpIpConfig().setMembers(List.of("127.0.0.1:" + proxy.port()));
+		second.getAdvancedNetworkConfig().getJoin().getTcpIpConfig().setMembers(List.of("127.0.0.1:" + proxy.port()));
 		members.add(Hazelcast.newHazelcastInstance(second));
 
 		assertEquals(2, first.getCluster().getMembers().size(), "the members must form one cluster");
@@ -127,7 +172,7 @@ class KernelMemberTransportTest {
 				.addMembers(HostOuterClass.Host.newBuilder().setHost("127.0.0.1"))
 				.build()).build();
 		Config config = ClusterServer.hazelcastConfig(cfg, "node-" + port);
-		config.getNetworkConfig().getJoin().getAutoDetectionConfig().setEnabled(false);
+		config.getAdvancedNetworkConfig().getJoin().getAutoDetectionConfig().setEnabled(false);
 		return config;
 	}
 

@@ -1,4 +1,4 @@
-# Hazelcast 5.7.0's shaded Jackson: who can reach it, and what we wait for
+# Hazelcast 5.7.0's shaded Jackson (and org.json): who can reach it, and what we wait for
 
 Issue: kernel#44. Decision (Jody, hub, 2026-11-04): **option 1, mitigate and track**. Record the
 reachability analysis here; bump `hazelcast.version` as soon as a Hazelcast release ships a patched
@@ -113,3 +113,57 @@ On 5.7.0 it prints 2.21.2 for both `fasterxml` lines and 3.1.2 for both `tools` 
 Until then, kernel ships both copies knowingly, on the reasoning above. If the reasoning stops
 holding (kernel starts using `HazelcastJsonValue`, SQL or Jet, enables REST, or the member port gains
 a path from outside the cluster), revisit this record.
+
+---
+
+## The shaded org.json (kernel#57)
+
+Issue: kernel#57. Decision (Jody, 2026-11-12): **option 1, record and track**, as for Jackson above.
+Bump `hazelcast.version` once a release ships org.json >= 20260719; #57 stays open until then.
+
+`hazelcast-5.7.0.jar` also bundles org.json `json` **20250107**, relocated to
+`com.hazelcast.shaded.org.json` (its own `META-INF/maven/org.json/json/pom.properties`), and `kernel.jar`
+ships it. It has GHSA-ghc9-756g-vrcv / CVE-2026-59171 (MEDIUM, unbounded numeric string in `JSONTokener`,
+a denial of service; fixed in 20260719). 5.7.0 is still the latest Hazelcast on Maven Central
+(2026-11-12). Kernel's resolved runtime tree has no org.json of its own (#57's scan of
+`mvn dependency:list -DincludeScope=runtime` against OSV), so `kernel.jar`'s `pom.properties` for it
+is Hazelcast's, and a `kernel.jar` scan sees this copy, unlike the Jackson 3 one.
+
+**Who calls it.** Read from the class files of `hazelcast-5.7.0.jar` (sha1
+`ff3b468e3c76421444a3a11ebacdfbb617cf62dc`, 2026-11-12):
+
+- Outside the copy itself, only two Hazelcast classes reference `com.hazelcast.shaded.org.json`:
+  `internal.yaml.YamlToJsonConverter` and `internal.config.YamlConfigSchemaValidator`, plus the shaded
+  everit json-schema library, which only `YamlConfigSchemaValidator` references.
+- `YamlToJsonConverter` builds `JSONObject`/`JSONArray` node by node (`put`), with no `JSONTokener`. The one
+  `JSONTokener` Hazelcast creates is in `YamlConfigSchemaValidator`'s static initializer, which parses
+  Hazelcast's own bundled schema resource, never a caller's input.
+- `YamlConfigSchemaValidator` runs only from the YAML config builders: `config.YamlConfigBuilder`
+  (behind `Config.load*`, `FileSystemYamlConfig`, `ClasspathYamlConfig`, `UrlYamlConfig`,
+  `InMemoryYamlConfig`, and `HazelcastServerCachingProvider` given a config URI) and the client's
+  `YamlClientConfigBuilder` / `YamlClientFailoverConfigBuilder` (client config loading, the JCache client
+  provider, and Jet's `ImdgUtil` for a remote-cluster client config). Within Hazelcast, `Config.load*` is
+  called only by `HazelcastInstanceFactory` when `newHazelcastInstance` is given a null config,
+  `ConsoleApp` and `HazelcastBootstrap` (command-line entry points).
+- **Kernel: none of these.** `ClusterServer.hazelcastConfig` builds the `Config` in code
+  (`new com.hazelcast.config.Config()`) and passes it to `Hazelcast.newHazelcastInstance`, never null.
+  `server/src/main` loads no Hazelcast YAML or XML config (kernel's own `config.yaml` is read by
+  SnakeYAML, `Helpers.configFromYaml`), and uses no Hazelcast client, JCache or Jet (Jet stays at its
+  disabled default).
+
+So nothing in kernel reaches the parser, and the only input it could be given there is a local
+config file, a schema shipped inside the jar, or a config kernel never loads. No network peer, member
+or client, can feed it. The copy is dead code in kernel, like the Jackson 2 copy.
+
+**What closes #57.** Bump `hazelcast.version` to the first release whose bundled org.json is
+>= 20260719. Done when:
+
+- `unzip -p hazelcast-<version>.jar META-INF/maven/org.json/json/pom.properties` (from `~/.m2`) shows
+  `version` 20260719 or later, or the jar no longer bundles org.json;
+- `trivy rootfs --scanners vuln server/target/kernel.jar` reports no `org.json:json` finding;
+- `just gates` passes.
+
+The bump that closes #44 and the one that closes #57 may be the same release or not: check both
+lists on each Hazelcast release. If kernel starts loading a Hazelcast YAML config (`Config.load*`, a
+`*YamlConfig`, a null config to `newHazelcastInstance`, a Hazelcast client or JCache), revisit this
+section.

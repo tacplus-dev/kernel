@@ -1,0 +1,21 @@
+# gitleaks' default rules, minus two false positives kernel's code makes
+# (tacplus-dev/kernel#48 to #55). The build's security checks read this file
+# from the tree; keep each allowlist narrow enough that a real key or token in
+# the source is still reported.
+[extend]
+useDefault = true
+
+# PEM armour around a key generated at runtime: the header string literal is
+# followed by a Base64 encoder call, never by key material.
+[[allowlists]]
+description = "PEM armour around a runtime-generated key"
+targetRules = ["private-key"]
+regexTarget = "match"
+regexes = ['''-----BEGIN PRIVATE KEY-----\\n"\s*\+\s*Base64\.getMimeEncoder\(''']
+
+# A KeyType enum case mapped to a signing algorithm: `KEY_TYPE_X -> KeyRotator.SigAlg.Y`.
+[[allowlists]]
+description = "KeyType switch arms"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = ['''^\s*case KEY_TYPE_\w+ -> KeyRotator\.SigAlg\.\w+;\s*$''']

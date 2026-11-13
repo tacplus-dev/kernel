@@ -113,3 +113,11 @@ On 5.7.0 it prints 2.21.2 for both `fasterxml` lines and 3.1.2 for both `tools` 
 Until then, kernel ships both copies knowingly, on the reasoning above. If the reasoning stops
 holding (kernel starts using `HazelcastJsonValue`, SQL or Jet, enables REST, or the member port gains
 a path from outside the cluster), revisit this record.
+
+## Since: #44 closed, #59 tracks it (2026-11-13)
+
+#44 was closed by a closing keyword in the commit that landed this record, not by the bump. #59 now tracks the
+wait (Jody, #59, 2026-11-13): it stays open until `kernel.jar` carries a Hazelcast with both copies patched, by the
+checks above, which now close #59. Until then `security-exceptions.yaml` accepts exactly the 8 CVEs above, one
+entry each, citing #59 and expiring **2026-12-13**; on expiry the security gate goes red and this decision is
+revisited. The bump removes the eight entries.

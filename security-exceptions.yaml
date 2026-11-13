@@ -1,0 +1,48 @@
+# Copyright (c) 2026 Jody Scott
+# SPDX-License-Identifier: Apache-2.0
+#
+# The known vulnerabilities this repository accepts, each until its expiry, in the form looper-scan reads
+# (tacplus-dev/looper#49: exactly id, reason, decided_by and expires, YYYY-MM-DD; one id per entry). The build's
+# security job enforces it: an expired entry fails the pipeline, and so does the finding it accepted.
+#
+# Hazelcast 5.7.0's two shaded Jackson copies, 2.21.2 (com.hazelcast.shaded.com.fasterxml.jackson) and 3.1.2
+# (com.hazelcast.shaded.tools.jackson), both in kernel.jar: one decision (Jody, #59, 2026-11-13) accepting exactly
+# their 8 HIGH until 2026-12-13, written as one entry per CVE because looper-scan matches one id per entry.
+# Reachability: decisions/2026-11-04-hazelcast-shaded-jackson.md (only the 3.x jackson-core has a caller, and
+# its three HIGH are DoS reachable only through member port 5001). Kernel's own unshaded Jackson (2.21.8, 3.1.8)
+# is patched against all 8, so these entries accept nothing of its. Track and bump: #59 stays open until a
+# Hazelcast release ships Jackson 2 >= 2.21.7 and Jackson 3 >= 3.1.7; bump hazelcast.version to it and remove
+# these entries. On expiry the gate goes red and the decision is revisited.
+exceptions:
+  - id: CVE-2026-54512
+    reason: "jackson-databind 2.21.2 and 3.1.2 shaded in Hazelcast 5.7.0: no class calls either shaded databind (decisions/2026-11-04-hazelcast-shaded-jackson.md). No Hazelcast release with a fixed copy yet; #59 tracks the bump."
+    decided_by: "jodydadescott (tacplus-dev/kernel#59, 2026-11-13)"
+    expires: 2026-12-13
+  - id: CVE-2026-54513
+    reason: "jackson-databind 2.21.2 and 3.1.2 shaded in Hazelcast 5.7.0: no class calls either shaded databind (decisions/2026-11-04-hazelcast-shaded-jackson.md). No Hazelcast release with a fixed copy yet; #59 tracks the bump."
+    decided_by: "jodydadescott (tacplus-dev/kernel#59, 2026-11-13)"
+    expires: 2026-12-13
+  - id: CVE-2026-68497
+    reason: "jackson-databind 2.21.2 and 3.1.2 shaded in Hazelcast 5.7.0: no class calls either shaded databind (decisions/2026-11-04-hazelcast-shaded-jackson.md). No Hazelcast release with a fixed copy yet; #59 tracks the bump."
+    decided_by: "jodydadescott (tacplus-dev/kernel#59, 2026-11-13)"
+    expires: 2026-12-13
+  - id: CVE-2026-91776
+    reason: "jackson-databind 2.21.2 and 3.1.2 shaded in Hazelcast 5.7.0: no class calls either shaded databind (decisions/2026-11-04-hazelcast-shaded-jackson.md). No Hazelcast release with a fixed copy yet; #59 tracks the bump."
+    decided_by: "jodydadescott (tacplus-dev/kernel#59, 2026-11-13)"
+    expires: 2026-12-13
+  - id: CVE-2026-91777
+    reason: "jackson-databind 2.21.2 and 3.1.2 shaded in Hazelcast 5.7.0: no class calls either shaded databind (decisions/2026-11-04-hazelcast-shaded-jackson.md). No Hazelcast release with a fixed copy yet; #59 tracks the bump."
+    decided_by: "jodydadescott (tacplus-dev/kernel#59, 2026-11-13)"
+    expires: 2026-12-13
+  - id: CVE-2026-68494
+    reason: "jackson-core 2.21.2 and 3.1.2 shaded in Hazelcast 5.7.0: the 2.x copy has no caller; the 3.x one is a DoS reachable only by a peer of member port 5001, which already owns kernel's state (decisions/2026-11-04-hazelcast-shaded-jackson.md). No Hazelcast release with a fixed copy yet; #59 tracks the bump."
+    decided_by: "jodydadescott (tacplus-dev/kernel#59, 2026-11-13)"
+    expires: 2026-12-13
+  - id: CVE-2026-89407
+    reason: "jackson-core 2.21.2 and 3.1.2 shaded in Hazelcast 5.7.0: the 2.x copy has no caller; the 3.x one is a DoS reachable only by a peer of member port 5001, which already owns kernel's state (decisions/2026-11-04-hazelcast-shaded-jackson.md). No Hazelcast release with a fixed copy yet; #59 tracks the bump."
+    decided_by: "jodydadescott (tacplus-dev/kernel#59, 2026-11-13)"
+    expires: 2026-12-13
+  - id: CVE-2026-89425
+    reason: "jackson-core 2.21.2 and 3.1.2 shaded in Hazelcast 5.7.0: the 2.x copy has no caller; the 3.x one is a DoS reachable only by a peer of member port 5001, which already owns kernel's state (decisions/2026-11-04-hazelcast-shaded-jackson.md). No Hazelcast release with a fixed copy yet; #59 tracks the bump."
+    decided_by: "jodydadescott (tacplus-dev/kernel#59, 2026-11-13)"
+    expires: 2026-12-13

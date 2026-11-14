@@ -113,3 +113,22 @@ On 5.7.0 it prints 2.21.2 for both `fasterxml` lines and 3.1.2 for both `tools` 
 Until then, kernel ships both copies knowingly, on the reasoning above. If the reasoning stops
 holding (kernel starts using `HazelcastJsonValue`, SQL or Jet, enables REST, or the member port gains
 a path from outside the cluster), revisit this record.
+
+## Since: #44 closed, #59 tracks it (2026-11-13)
+
+#44 was closed by a closing keyword in the commit that landed this record, not by the bump. #59 now tracks the
+wait (Jody, #59, 2026-11-13): it stays open until `kernel.jar` carries a Hazelcast with both copies patched, by the
+checks above, which now close #59. Until then `security-exceptions.yaml` accepts exactly the 8 CVEs above, one
+entry each, citing #59 and expiring **2026-12-14** (the batch on #48, 2026-11-14); on expiry the security gate
+goes red and this decision is revisited. The bump removes the eight entries.
+
+The build's security job finds them in three jars, 24 findings: `kernel.jar`, kernel-model's jar and codegen's,
+each shading `hazelcast-5.7.0.jar` (codegen through kernel-model). kernel-model has no Jackson 2 core or databind
+of its own (`mvn -pl tacplus dependency:tree`), so the 2.21.2 they read is Hazelcast's `pom.properties`. An entry
+matches its CVE id anywhere, not Hazelcast's copy alone (looper-scan's format has no path): kernel's own Jackson
+is patched against all 8, so today it accepts nothing else.
+
+Risk rating (Jody, 2026-11-13, #59): **low**. "The kernel vulnerability is thru hazelcast which is only exposed to
+other kernels." The scanners' severity stays as reported. The rating rests on the member port being kernel-only,
+which #47 (member endpoint only, no client endpoint) and tacplus-dev/operator#30 (5001 admitted only from kernel
+pods) enforce; until both land it describes the design, not the deployed state.

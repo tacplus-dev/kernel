@@ -18,18 +18,18 @@ public class {{CLASS_NAME}} {
         this.imap = imap;
     }
 
-    public {{QUALIFIED_TYPE}} get(String key) {
-        {{QUALIFIED_TYPE}} value = imap.get(key);
+    public {{QUALIFIED_TYPE}} get(String id) {
+        {{QUALIFIED_TYPE}} value = imap.get(id);
         if (value == null) return {{QUALIFIED_TYPE}}.getDefaultInstance();
         return value;
     }
 
-    public void set(String key, {{QUALIFIED_TYPE}} value) throws ProtoException {
+    public void set(String id, {{QUALIFIED_TYPE}} value) throws ProtoException {
         {{HELPERS_REF}}.validate{{TYPE_NAME}}(value);
-        imap.put(key, value);
+        imap.put(id, value);
     }
 
-    public void delete(String key) {
-        imap.remove(key);
+    public void delete(String id) {
+        imap.remove(id);
     }
 }

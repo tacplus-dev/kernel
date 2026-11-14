@@ -5,6 +5,13 @@ the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
 - **<title>** (<date>, <issue/run link>): <what and why>
+- **Run SpotBugs in `just gates`, as the security job runs it** (2026-11-14, #62): the security job's SpotBugs
+  (USO_UNSAFE_OBJECT_SYNCHRONIZATION, HIGH) is the first thing that read kernel's synchronized blocks, two
+  builds after the code landed, and its report is private, so a looper reproduces each finding by hand
+  (`spotbugs -textui -effort:max` on a fixture, #62). The `spotbugs-maven-plugin` in `mvn verify`, with the
+  job's effort and threshold (or the job's own invocation on `server/target/classes`), would fail the change
+  locally and in the land, with the line and the pattern in the output anyone can read. Same story as the
+  advisory check above: the gate that catches it is the one that runs on every change.
 - **Say on `extra_claims` which keys kernel refuses** (2026-11-03, #41; waits on tacplus-dev/tacplus#205): #41
   refuses at mint every `extra_claims` key that names a kernel-set claim (`EXCLUDED_CLAIM_KEYS`, every
   `JwtPayloadType` name and the registered JWT claims, plus `tid`). The contract does not say so yet: any edit to
@@ -74,6 +81,21 @@ the looper then marks it `promoted` or `declined` here with the date.
   advanced network config with a member endpoint and no client endpoint would close that surface (not the
   member one, #24). Needs a test that a `HazelcastClient` is refused, and a check that nothing (tooling,
   debugging) connects as a client today.
+- **Keep a "stays open" issue's number away from closing keywords** (2026-11-13, #59): #44 was to stay open until a
+  patched Hazelcast, but GitHub closed it when a93f085 reached main: its message wraps "the check that" / "closes
+  #44" across a line, and "closes #44" is a closing keyword. Landed commits that only record a wait should say
+  "(#N)" or "for #N", never "closes/fixes/resolves #N". A check in the manager's land (a tacplus-dev/looper issue)
+  could refuse a closing keyword naming an issue its run leaves open.
+- **The shaded-Jackson exception expires 2026-12-14** (2026-11-13, #59; expiry from the batch on #48, 2026-11-14):
+  `security-exceptions.yaml` accepts Hazelcast 5.7.0's 8 shaded-Jackson HIGH until then (Jody, #59). When it expires the security gate goes red and
+  the decision is revisited; when a Hazelcast with Jackson 2 >= 2.21.7 and 3 >= 3.1.7 ships, bump
+  `hazelcast.version`, remove the eight entries and close #59 (decisions/2026-11-04-hazelcast-shaded-jackson.md).
+- **Scope a security exception to where it applies** (2026-11-14, #48): looper-scan matches an exception by finding
+  id or alias only, and a trivy finding's id is the bare CVE, a spotbugs one the bare rule. So #59's entries accept
+  their CVEs in kernel's own Jackson too, and an exception for one generated spotbugs hit (CollectionRuntime's
+  USO_UNSAFE_OBJECT_SYNCHRONIZATION) would accept the rule everywhere. An optional `where` (a path or package
+  pattern matched against the finding's `where`) would let an entry name only the copy decided on; a
+  tacplus-dev/looper change.
 - **Drop the ratis-thirdparty pin with the next Ratis bump** (2026-11-04, #43): `ratis-thirdparty.version` (1.1.1)
   in the root pom overrides the 1.1.0 Ratis 3.3.1 asks for, for its shaded Netty. Once a Ratis release asks for
   `>= 1.1.1`, remove the property and its `dependencyManagement` entry, or the pin will later hold thirdparty

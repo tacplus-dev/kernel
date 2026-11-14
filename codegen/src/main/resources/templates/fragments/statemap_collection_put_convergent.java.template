@@ -1,5 +1,5 @@
 
-    public void put{{FIELD_PASCAL}}(String key, {{QUALIFIED_TYPE}} value) throws ProtoException {
+    public void put{{FIELD_PASCAL}}(String id, {{QUALIFIED_TYPE}} value) throws ProtoException {
         {{HELPERS_REF}}.validate{{TYPE_NAME}}(value);
-        {{FIELD_CAMEL}}Map.put(key, value);
+        {{FIELD_CAMEL}}Map.put(id, value);
     }

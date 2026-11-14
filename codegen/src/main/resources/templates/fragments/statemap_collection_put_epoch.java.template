@@ -1,0 +1,11 @@
+
+    public void put{{FIELD_PASCAL}}(String id, {{QUALIFIED_TYPE}} value) throws ProtoException {
+        {{HELPERS_REF}}.validate{{TYPE_NAME}}(value);
+        long epochExp = value.{{EPOCH_GETTER}}();
+        if (epochExp > 0) {
+            long ttl = epochExp - (System.currentTimeMillis() / 1000);
+            {{FIELD_CAMEL}}Map.put(id, value, ttl, java.util.concurrent.TimeUnit.SECONDS);
+        } else {
+            {{FIELD_CAMEL}}Map.put(id, value);
+        }
+    }

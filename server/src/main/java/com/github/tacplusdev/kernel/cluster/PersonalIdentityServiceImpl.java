@@ -117,13 +117,13 @@ public class PersonalIdentityServiceImpl implements PersonalIdentity.PersonalIde
 				.setExpiresAtMs(nowMs + ttlSeconds * 1000)
 				.build();
 
-		synchronized (IdentityServiceImpl.PENDING_APPROVAL_LOCK) {
+		PendingApprovalLock.run(() -> {
 			if (sweepExpired(nowMs, personKey) >= MAX_LIVE_APPROVALS_PER_PERSON) {
 				throw ProtoException.newErrResourceExhausted(
 						"too many pending approvals; answer or abandon one first");
 			}
 			principalMap.putPendingApprovals(approvalId, approval);
-		}
+		});
 		logger.info("Pending approval created: rpc={} person={} ttl={}s",
 				request.getRpcMethod(), personKey, ttlSeconds);
 		return Kernel.CreatePendingApprovalResponse.newBuilder()
@@ -152,7 +152,7 @@ public class PersonalIdentityServiceImpl implements PersonalIdentity.PersonalIde
 	 * let through. A CONSUMED row is kept until it expires, so a replay inside
 	 * the window is refused as already used rather than as an unknown id.
 	 *
-	 * <p>Call under {@link IdentityServiceImpl#PENDING_APPROVAL_LOCK}.
+	 * <p>Call under the {@link PendingApprovalLock}.
 	 */
 	private int sweepExpired(long nowMs, String personKey) throws ProtoException {
 		int live = 0;

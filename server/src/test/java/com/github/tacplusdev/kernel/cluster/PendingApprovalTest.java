@@ -39,10 +39,16 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -461,6 +467,83 @@ class PendingApprovalTest {
 								approvalId, RPC_METHOD, hash)))));
 
 		assertEquals(ProtoException.NOT_FOUND, ex.getCode());
+	}
+
+	/**
+	 * The two writers of the registry take ONE lock. Proposing and consuming are
+	 * each a read-check-write, from two services on two sides of the C2S
+	 * boundary, and a lock per service would serialize neither against the other:
+	 * a consume could slip between the proposer's sweep and its put. So the lock
+	 * is the registry's ({@link PendingApprovalLock}), private to it (kernel#62),
+	 * and this holds it from a third thread and watches each handler stop at it —
+	 * BLOCKED on a monitor, not finished — then complete once it is let go.
+	 */
+	@Test
+	void theProposerAndTheBrokerTakeTheOnePendingApprovalLock() throws Exception {
+		byte[] hash = requestHash("transfer 5 to alice");
+		Kernel.CreatePendingApprovalResponse proposed = propose(personCaller(), hash);
+		Kernel.WebauthnAssertion tap = passkey.assertFor(proposed.getChallenge());
+
+		assertStopsAtThePendingApprovalLock("createPendingApproval",
+				() -> propose(personCaller(), hash));
+		assertStopsAtThePendingApprovalLock("brokerPendingApproval", () -> brokerCall(
+				brokerRequest(proposed.getApprovalId(), RPC_METHOD, hash, personCaller(), tap)));
+		assertTrue(principalMap.getPendingApprovals(proposed.getApprovalId()).getConsumedAtMs() > 0,
+				"the broker call must have gone through once the lock was released");
+	}
+
+	/**
+	 * Holds the pending-approval lock on one thread, runs {@code call} on another,
+	 * and asserts the call blocks on a monitor while the lock is held and
+	 * completes without error once it is released. A handler on a lock of its own
+	 * finishes while the lock is held, which fails the first assertion.
+	 */
+	private static void assertStopsAtThePendingApprovalLock(String handler, Callable<?> call)
+			throws Exception {
+		CountDownLatch held = new CountDownLatch(1);
+		CountDownLatch release = new CountDownLatch(1);
+		Thread holder = new Thread(() -> {
+			try {
+				PendingApprovalLock.run(() -> {
+					held.countDown();
+					release.await();
+				});
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+		}, "pending-approval-lock-holder");
+		holder.start();
+		assertTrue(held.await(5, TimeUnit.SECONDS), "the holder never took the lock");
+
+		AtomicReference<Throwable> failure = new AtomicReference<>();
+		Thread caller = new Thread(() -> {
+			try {
+				call.call();
+			} catch (Throwable t) {
+				failure.set(t);
+			}
+		}, handler);
+		caller.start();
+		try {
+			long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+			// Two consecutive BLOCKED samples, so a monitor passed through on the way
+			// (a logger, the in-memory store) is not mistaken for ours.
+			int blockedSamples = 0;
+			while (blockedSamples < 2) {
+				assertTrue(caller.isAlive(),
+						handler + " finished while the pending-approval lock was held: "
+								+ "it is not on that lock");
+				assertTrue(System.nanoTime() < deadline, handler + " never reached the lock");
+				blockedSamples = caller.getState() == Thread.State.BLOCKED ? blockedSamples + 1 : 0;
+				Thread.sleep(10);
+			}
+		} finally {
+			release.countDown();
+		}
+		caller.join(TimeUnit.SECONDS.toMillis(5));
+		holder.join(TimeUnit.SECONDS.toMillis(5));
+		assertFalse(caller.isAlive(), handler + " did not complete once the lock was released");
+		assertNull(failure.get(), () -> handler + " failed: " + failure.get());
 	}
 
 	/**

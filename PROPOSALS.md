@@ -5,6 +5,13 @@ the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
 - **<title>** (<date>, <issue/run link>): <what and why>
+- **Run SpotBugs in `just gates`, as the security job runs it** (2026-11-14, #62): the security job's SpotBugs
+  (USO_UNSAFE_OBJECT_SYNCHRONIZATION, HIGH) is the first thing that read kernel's synchronized blocks, two
+  builds after the code landed, and its report is private, so a looper reproduces each finding by hand
+  (`spotbugs -textui -effort:max` on a fixture, #62). The `spotbugs-maven-plugin` in `mvn verify`, with the
+  job's effort and threshold (or the job's own invocation on `server/target/classes`), would fail the change
+  locally and in the land, with the line and the pattern in the output anyone can read. Same story as the
+  advisory check above: the gate that catches it is the one that runs on every change.
 - **Say on `extra_claims` which keys kernel refuses** (2026-11-03, #41; waits on tacplus-dev/tacplus#205): #41
   refuses at mint every `extra_claims` key that names a kernel-set claim (`EXCLUDED_CLAIM_KEYS`, every
   `JwtPayloadType` name and the registered JWT claims, plus `tid`). The contract does not say so yet: any edit to

@@ -214,6 +214,35 @@ class TokenReviewKubernetesTokenVerifierTest {
         assertTrue(ex.getMessage().contains("Kubernetes in-cluster CA file"), ex.getMessage());
     }
 
+    @Test
+    void inClusterHttpClientNamesTls13(@TempDir Path dir) throws Exception {
+        // An SSLContext's default protocols, "TLS" or "TLSv1.3" alike, are whatever the runtime's
+        // java.security allows, so a JVM with a looser policy would let the TokenReview call
+        // downgrade to TLS 1.0 or 1.1: the client names TLS 1.3 and 1.2 itself.
+        Path ca = Files.writeString(dir.resolve("ca.crt"), TEST_CA_PEM);
+
+        HttpClient client = TokenReviewKubernetesTokenVerifier.inClusterHttpClient(ca);
+
+        assertEquals("TLSv1.3", client.sslContext().getProtocol());
+        assertEquals(
+                List.of("TLSv1.3", "TLSv1.2"), List.of(client.sslParameters().getProtocols()));
+    }
+
+    // A self-signed P-256 CA used only to fill the in-cluster trust store.
+    private static final String TEST_CA_PEM = """
+            -----BEGIN CERTIFICATE-----
+            MIIBkTCCATegAwIBAgIUQh7eaw211u9FMlcGlNhnFI5e3EcwCgYIKoZIzj0EAwIw
+            HTEbMBkGA1UEAwwSa3ViZXJuZXRlcy10ZXN0LWNhMCAXDTI2MTExMjEwMTIzMFoY
+            DzIxMjYxMDE5MTAxMjMwWjAdMRswGQYDVQQDDBJrdWJlcm5ldGVzLXRlc3QtY2Ew
+            WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ20XpqSmFWqfhbTCWCL6m4efhYDs0+
+            CQMZ8thK7vBxW43l7G2KiNwyihXtQ14Wut2oyCc817vCkXe5TwefEFO0o1MwUTAd
+            BgNVHQ4EFgQUTEsjLEZAQMd5pyzFR4Z1YQRpOUcwHwYDVR0jBBgwFoAUTEsjLEZA
+            QMd5pyzFR4Z1YQRpOUcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBF
+            AiEAuMZ57yWxEcLgnOta9Y1WCgh5ov37ftWWrkTPoa5SYYsCIECpNJl0B7BWuQAf
+            u/JFew+PWvZqnepNOiNm+K8QoJfR
+            -----END CERTIFICATE-----
+            """;
+
     private static TokenReviewKubernetesTokenVerifier newVerifier(URI uri) {
         return new TokenReviewKubernetesTokenVerifier(uri, "reviewer-token", HttpClient.newHttpClient());
     }

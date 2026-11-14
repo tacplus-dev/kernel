@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManagerFactory;
 
 /**
@@ -271,6 +272,8 @@ public final class TokenReviewKubernetesTokenVerifier implements KubernetesToken
         return HttpClient.newBuilder()
                 .connectTimeout(DEFAULT_TIMEOUT)
                 .sslContext(sslContextForCA(caPath))
+                // The context's defaults are whatever java.security allows: name the protocols.
+                .sslParameters(new SSLParameters(null, new String[] {"TLSv1.3", "TLSv1.2"}))
                 .build();
     }
 
@@ -292,7 +295,7 @@ public final class TokenReviewKubernetesTokenVerifier implements KubernetesToken
 
         TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
         tmf.init(trustStore);
-        SSLContext sslContext = SSLContext.getInstance("TLS");
+        SSLContext sslContext = SSLContext.getInstance("TLSv1.3");
         sslContext.init(null, tmf.getTrustManagers(), null);
         return sslContext;
     }

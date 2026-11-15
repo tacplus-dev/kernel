@@ -1,0 +1,60 @@
+= init
+> Bash cd /builds/looper/kernel/issues/59; git status; git log --oneline -3 HEAD; git log --oneline -3 origin/main; git diff --stat; gh issue view 59 --repo tacplus-dev/kernel --comments | tail -30; gh issue view 48 --repo tacplus-dev/kernel --json state
+< On branch looper/kernel-59 Your branch is up to date with 'origin/main'.  Changes not staged for commit:   (use "git add <file>..." to update what will be committed)   (use "git restore <file>..." to discard changes in working directory) 	modified:   PROPOSALS.md 	modified:   decisions/2026-11-04-ha...
+> Bash cd /builds/looper/kernel/issues/59; git diff; grep -n '^<<<<<<<\|^=======\|^>>>>>>>' PROPOSALS.md decisions/2026-11-04-hazelcast-shaded-jackson.md security-exceptions.yaml; git log --oneline origin/looper/kernel-59 -3 2>/dev/null; git log origin/main --oneline -15
+< diff --git a/PROPOSALS.md b/PROPOSALS.md index 858f866..f6f4977 100644 --- a/PROPOSALS.md +++ b/PROPOSALS.md @@ -86,6 +86,12 @@ the looper then marks it `promoted` or `declined` here with the date.    #44" across a line, and "closes #44" is a closing keyword. Landed commits that only record a wait s...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/kernel/issues/59; git show origin/main:security-exceptions.yaml | head -60; git show origin/main:decisions/2026-11-04-hazelcast-shaded-jackson.md | sed -n 110,140p; git show 5ecc508 --stat | head -30
+< # Copyright (c) 2026 Jody Scott # SPDX-License-Identifier: Apache-2.0 # # The known vulnerabilities this repository accepts, each until its expiry, in the form looper-scan reads # (tacplus-dev/looper#49: exactly id, reason, decided_by and expires, YYYY-MM-DD; one id per entry). The build's # securit...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/kernel/issues/59; git checkout origin/main -- PROPOSALS.md decisions/2026-11-04-hazelcast-shaded-jackson.md security-exceptions.yaml 2>&1; git status --short; git diff origin/main --stat; head -60 /builds/tacplus-dev/looper/looper-runs/20261115T064638Z-issue-59/security/summary.md;...
+< ## Security checks: kernel be84b3d7706edfcf1370200d8b6e19da1ca0c189 (build)  472 finding(s): 0 failing the policy, 0 new since the previous run, 0 baselined (security-baseline.json), 25 accepted by an exception.  ### Accepted (security-exceptions.yaml) - USO_UNSAFE_OBJECT_SYNCHRONIZATION: spotbugs c...
+= thinking_tokens
+= thinking_tokens
+> Bash curl -s https://repo1.maven.org/maven2/com/hazelcast/hazelcast/maven-metadata.xml | grep -E '<latest>|<release>'; cd /builds/looper/kernel/issues/59; grep -n 'hazelcast.version' pom.xml | head -3; git status --short
+<     <latest>5.7.0</latest>     <release>5.7.0</release> 39:		<hazelcast.version>5.7.0</hazelcast.version> 141:				<version>${hazelcast.version}</version> 388:<dependencies><dependency><groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId><version>${protobuf.version}</version></...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/kernel/issues/59; /usr/local/bin/repo-looper --repo kernel --issue 59 --checkpoint "Conflicts resolved to main: #48's batch (5ecc508) already landed this issue's exception (8 CVEs, expiry 2026-12-14), the record section and Jody's risk rating; nothing left to land. Issue stays open...
+< [2026-11-15T06:47:18Z] checkpoint of #59 (a step) pushed to looper/kernel-59:  2 files changed, 268 insertions(+)
+> Bash cat > /tmp/c59.md <<'EOF' Status, 2026-11-15. **Nothing new to land. This issue stays open as the tracker**, per Jody's decision of 2026-11-13.  **Already on main.** #48's batch, **5ecc508** ("Security checks: gitleaks allowlists ..., dated exceptions (#48)"), landed everything this branch held, so ...
+= task_started
+= task_notification
+< https://github.com/tacplus-dev/kernel/issues/59#issuecomment-6890561317 https://github.com/tacplus-dev/kernel/issues/59
+There was nothing new to land for #59: main already has everything this issue asks for. I've left the issue open as Jody decided, commented on it, and labelled it `needs-decision`.
+
+- **Conflicts:** #48's batch commit 5ecc508 had already landed the same changes as this branch's c47cfd8. That covers the exception for the 8 CVEs, the decision record section with Jody's low risk rating (naming #47 and tacplus-dev/operator#30), and the PROPOSALS.md entries. I resolved all three files to main's version, so the branch now has no difference from main and there was nothing to commit.
+- **Expiry date:** the exception expires 2026-12-14, not the 2026-12-13 Jody asked for here, because the #48 batch set that date. I pointed this out in the comment.
+- **Security report:** the latest build scan of main shows 0 findings failing the policy. The 8 CVEs are accepted in all three jars that shade Hazelcast: `kernel.jar`, kernel-model's and codegen's.
+- **Checks not run:** no build job, because there was no change to build. Rule 13 (trace propagation) didn't apply, since no handler changed. No patch release, because the real fix is the Hazelcast bump.
+- **Still waiting:** the latest Hazelcast on Maven Central is still 5.7.0, so the bump can't happen yet.
+
+**Decision needed:** this issue waits on an upstream Hazelcast release, not on another issue, so I can't record it as `Blocked-by:`. As long as it stays `approved` and unblocked, each new run will find nothing to do. My recommendation in the comment is to remove `approved` until a Hazelcast with patched Jackson ships, or until the 2026-12-14 expiry, whichever comes first.
+= success: There was nothing new to land for #59: main already has everything this issue asks for. I've left the issue open as Jody decided, commented on it, and labelled it `needs-decision`.
+
+- **Conflicts:** #48's batch commit 5ecc508 had already landed the same changes as this branch's c47cfd8. That covers the exception for the 8 CVEs, the decision record section with Jody's low risk rating (naming #47 and tacplus-dev/operator#30), and the PROPOSALS.md entries. I resolved all three files to main's version, so the branch now has no difference from main and there was nothing to commit.
+- **Expiry date:** the exception expires 2026-12-14, not the 2026-12-13 Jody asked for here, because the #48 batch set that date. I pointed this out in the comment.
+- **Security report:** the latest build scan of main shows 0 findings failing the policy. The 8 CVEs are accepted in all three jars that shade Hazelcast: `kernel.jar`, kernel-model's and codegen's.
+- **Checks not run:** no build job, because there was no change to build. Rule 13 (trace propagation) didn't apply, since no handler changed. No patch release, because the real fix is the Hazelcast bump.
+- **Still waiting:** the latest Hazelcast on Maven Central is still 5.7.0, so the bump can't happen yet.
+
+**Decision needed:** this issue waits on an upstream Hazelcast release, not on another issue, so I can't record it as `Blocked-by:`. As long as it stays `approved` and unblocked, each new run will find nothing to do. My recommendation in the comment is to remove `approved` until a Hazelcast with patched Jackson ships, or until the 2026-12-14 expiry, whichever comes first.
+= usage: {"claude-opus-5-5":{"inputTokens":16,"outputTokens":3932,"cacheReadInputTokens":273493,"cacheCreationInputTokens":33067,"webSearchRequests":0,"costUSD":0.39793860000000003,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":1155,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}

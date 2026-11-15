@@ -265,6 +265,18 @@ the looper then marks it `promoted` or `declined` here with the date.
   not a gate because "the compiler image has no mvn". Since #46 tacplus runs in the build image tacplus.lock pins
   (tools/tacplus.sh), which carries every toolchain; whether it resolves the proofs' classpath there is untried. 2.6
   also made formal verification no gate in tacplus itself (tacplus#275), so this is a choice, not a fix.
+- **X509Mint logs under its own random id, not the request's `trace_id`** (2026-11-15, nightly scan; tacplus-dev/looper#51):
+  `IdentityServiceImpl.doX509Mint` mints `traceId = UUID.randomUUID()` and stamps every `X509Mint[...]` log line and
+  `ServiceIntermediateCa`'s timing logs with it, while `X509MintRequest.trace_id` (field 200, tacplus
+  `pkg/proto/sys/tokenrequest.proto`) is never read. Not a trace-propagation finding: the handler makes no downstream
+  call (the intermediate CA lives in kernel's own CaMap state), so nothing drops the trace. But a certificate mint cannot
+  be joined to the request's trace tail from kernel's logs. Use the inbound `trace_id` when set and fall back to the
+  random id only when empty; one log assertion in a test. Reading of 2026-11-15: every other handler path that reaches a
+  generated client (the two OPA clients) carries `request.getTraceId()`, and `OpaTracePropagationTest` covers each
+  (`looper-trace check` reads no Java: "198 Java files: read their handlers yourself"). The Kubernetes TokenReview call
+  (`TokenReviewKubernetesTokenVerifier.verify`, caused by a MintToken with a projected SA token) is HTTP to the API
+  server, not a generated client, and has no field for tacplus's `trace_id`; it carries none and needs no marker under
+  the README's definition.
 
 ## Promoted / declined
 - **Tenant-owned service identity carries the tid** (2026-10-28, #23): promoted 2026-10-28 (kernel ROADMAP.md, Next),

@@ -36,3 +36,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-15 looper issue gitleaks private-key at server/src/test/java/com/github/tacplusdev/kernel/cluster/IdentityServiceImplTest.java:475: PEM armour of a runtime-generated key, not a secret (fails the build) (#52)
 - 2026-11-15 looper issue gitleaks private-key at server/src/test/java/com/github/tacplusdev/kernel/cluster/TlsCertServiceImplTest.java:161: PEM armour of a runtime-generated key, not a secret (fails the build) (#55)
 - 2026-11-15 looper release v0.1.2 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.2)
+- 2026-11-15 looper issue codegen's provided maven-plugin-api 3.9.9 puts plexus-utils 3.5.1 (GHSA-6fmv-xxpf-w3cw, HIGH) on its classpath: bump to 3.9.16 (#60, 9ca5a79)

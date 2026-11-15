@@ -32,6 +32,12 @@ repo() { # tag...
 }
 in_repo() { (cd "$scratch/repo" && "$@"); }
 
+# Every script the workflow runs is executable in git: v0.1.2's run failed before its gates with
+# "ci/release-gates.sh: Permission denied", a mode 100644 (#7).
+for s in "$ci"/*.sh; do
+  check "$(basename "$s") is executable" "$(git -C "$ci" ls-files -s "$s" | cut -c1-6)" "100755"
+done
+
 # The first release: its own tag and the line's.
 repo v0.1.0
 check "first release: tags" "$(in_repo "$ci/release-tags.sh" v0.1.0)" "0.1.0 0.1"

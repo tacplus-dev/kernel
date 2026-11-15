@@ -5,11 +5,16 @@ the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
 - **<title>** (<date>, <issue/run link>): <what and why>
-- **One launcher pin for the release images and the fleets** (2026-11-13, #7): the release image builds the
-  launcher (tacplus-dev/launcher) at `LAUNCHER_COMMIT` in `.github/workflows/release.yml`, llmproxy's pin
-  (d130eab). fleet-seatrials' `images/pins.yaml` pins c575e14, 11 commits behind launcher's main (c54ae30), so a
-  service's own release image and the fleet's build of it run different launchers. One pin that every release
-  workflow and the fleets read, moved in one place, would keep them the same.
+- **One launcher pin for the release images and the fleets** (2026-11-13, #7; 2026-11-15, #22): the release image
+  takes the launcher release the Dockerfile pins (tacplus-dev/launcher v0.1.0, its sha256 verified, #22).
+  fleet-seatrials' `images/pins.yaml` pins c575e14 and puts that build beside the Dockerfile, which the
+  Dockerfile no longer reads, so the fleet's build of kernel now runs v0.1.0 as well; eventbus, stratum and
+  llmproxy still copy `launcher-linux-<arch>` from their build context. Each taking the launcher release by
+  version and sha256, as kernel does, and the fleets dropping their launcher build, would keep them the same.
+  Here, `.github/workflows/release.yml` still builds the launcher at `LAUNCHER_COMMIT` and passes it to
+  `ci/release-image.sh`, which no longer reads it: its checkout, setup-go and launcher steps, `LAUNCHER_COMMIT` and
+  the `target/launcher` argument (with `LAUNCHERS` in the script) can go, by a person (the looper's credential may
+  not change `.github/workflows/`).
 - **Run SpotBugs in `just gates`, as the security job runs it** (2026-11-14, #62): the security job's SpotBugs
   (USO_UNSAFE_OBJECT_SYNCHRONIZATION, HIGH) is the first thing that read kernel's synchronized blocks, two
   builds after the code landed, and its report is private, so a looper reproduces each finding by hand

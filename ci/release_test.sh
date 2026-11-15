@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests of the release scripts (.github/workflows/release.yml): the image tags a release gets
 # (release-tags.sh), whether its GitHub release is Latest (release-latest.sh) and its notes
-# (release-notes.sh), each in a scratch repository with the tags given.
+# (release-notes.sh), each in a scratch repository with the tags given; and that the Dockerfile takes the
+# launcher from the release it pins, its sha256 verified.
 #
 # Usage:  ci/release_test.sh
 set -euo pipefail
@@ -95,6 +96,20 @@ for bad in 0.1.0 v0.1 v0.1.0.1 vX.Y.Z latest; do
     fi
   done
 done
+
+# The image takes the launcher from a pinned tacplus-dev/launcher release, its sha256 verified by the build, never
+# from the build context (a binary some other image put there, #22).
+dockerfile="$ci/../Dockerfile"
+check "Dockerfile: no launcher from the build context" "$(grep -c '^COPY launcher-linux' "$dockerfile")" "0"
+check "Dockerfile: the launcher version pinned" \
+  "$(grep -cE '^ARG LAUNCHER_VERSION=v[0-9]+\.[0-9]+\.[0-9]+$' "$dockerfile")" "1"
+for arch in amd64 arm64; do
+  check "Dockerfile: launcher-linux-$arch downloaded, its sha256 verified" \
+    "$(grep -cE "^ADD --checksum=sha256:[0-9a-f]{64} --chmod=755 https://github\.com/tacplus-dev/launcher/releases/download/\\\$\{LAUNCHER_VERSION\}/launcher-linux-$arch /launcher$" "$dockerfile")" "1"
+done
+# launcher v0.1.0 probes HEALTH_PORT (default 5000, kernel's TLS listener) in plaintext: kernel's plaintext health
+# port is health_probe_port, 8444.
+check "Dockerfile: the launcher probes the plaintext health port" "$(grep -c '^ENV HEALTH_PORT=8444$' "$dockerfile")" "1"
 
 if ((failures)); then
   echo "$failures failed"

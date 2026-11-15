@@ -51,7 +51,10 @@ The tag starts `.github/workflows/release.yml`. It runs the gates on the tag in 
 `:X.Y` when this is the line's highest release, so the line tag never moves backwards and a patch never
 moves another line (`ci/release-tags.sh`). It then creates the GitHub release with the commits since the
 previous release (`ci/release-notes.sh`). The release is marked Latest only when it is the highest
-(`ci/release-latest.sh`). The image is labelled with the version and the commit. `ci/release_test.sh` tests
+(`ci/release-latest.sh`). The image is labelled with the version and the commit. It runs under the launcher
+release the Dockerfile pins (`LAUNCHER_VERSION`, tacplus-dev/launcher), downloaded and verified against the
+sha256 of each binary in that release's `checksums.txt`, and the workflow starts it before it is published
+(`ci/release-image.sh`). `ci/release_test.sh` tests
 the scripts, and the workflow runs it first. Never move or delete a tag once it is pushed.
 
 Run by hand (Actions, release, Run workflow, or `gh workflow run release.yml -f tag=vX.Y.Z`), the workflow is

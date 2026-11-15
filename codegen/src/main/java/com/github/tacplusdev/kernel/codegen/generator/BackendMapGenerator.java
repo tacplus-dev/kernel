@@ -110,7 +110,8 @@ public class BackendMapGenerator {
             methods.append(TemplateEngine.renderFragment("statemap_collection_get.java.template", vars));
             if (b.getEpochExpirationGetter() != null) {
                 // TTL-aware put: compute TTL from epoch expiration field
-                methods.append(generateEpochPut(b, vars, outerClassName));
+                vars.put("EPOCH_GETTER", b.getEpochExpirationGetter());
+                methods.append(TemplateEngine.renderFragment("statemap_collection_put_epoch.java.template", vars));
             } else {
                 methods.append(TemplateEngine.renderFragment("statemap_collection_put_convergent.java.template", vars));
             }
@@ -121,7 +122,6 @@ public class BackendMapGenerator {
                 methods.append(TemplateEngine.renderFragment("statemap_collection_put_if_absent.java.template", vars));
                 methods.append(TemplateEngine.renderFragment("statemap_collection_replace.java.template", vars));
             } else if (!b.isReplicated()) {
-                vars.put("EPOCH_GETTER", b.getEpochExpirationGetter());
                 methods.append(TemplateEngine.renderFragment("statemap_collection_put_if_absent_epoch.java.template", vars));
             }
             methods.append(TemplateEngine.renderFragment("statemap_collection_delete.java.template", vars));
@@ -193,30 +193,6 @@ public class BackendMapGenerator {
         Path dir = ctx.getOutputDir().resolve("src/main/java/" + pkg.replace('.', '/'));
         Files.createDirectories(dir);
         Files.writeString(dir.resolve(className + ".java"), content);
-    }
-
-    private static String generateEpochPut(SharedBoundary b, Map<String, String> vars, String outerClassName) {
-        StringBuilder sb = new StringBuilder();
-        String qualifiedType = vars.get("QUALIFIED_TYPE");
-        String helpersRef = vars.get("HELPERS_REF");
-        String typeName = b.getTypeName();
-        String fieldPascal = b.getFieldPascal();
-        String fieldCamel = b.getFieldCamel();
-        String getter = b.getEpochExpirationGetter();
-
-        sb.append("\n    public void put").append(fieldPascal).append("(String key, ").append(qualifiedType)
-          .append(" value) throws ProtoException {\n");
-        sb.append("        ").append(helpersRef).append(".validate").append(typeName).append("(value);\n");
-        sb.append("        long epochExp = value.").append(getter).append("();\n");
-        sb.append("        if (epochExp > 0) {\n");
-        sb.append("            long ttl = epochExp - (System.currentTimeMillis() / 1000);\n");
-        sb.append("            ").append(fieldCamel).append("Map.put(key, value, ttl, java.util.concurrent.TimeUnit.SECONDS);\n");
-        sb.append("        } else {\n");
-        sb.append("            ").append(fieldCamel).append("Map.put(key, value);\n");
-        sb.append("        }\n");
-        sb.append("    }\n");
-
-        return sb.toString();
     }
 
     private static Map<String, String> boundaryVars(SharedBoundary b, String outerClassName,

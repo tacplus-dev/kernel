@@ -1,4 +1,4 @@
 
-    public void delete{{FIELD_PASCAL}}(String key) {
-        {{FIELD_CAMEL}}Map.remove(key);
+    public void delete{{FIELD_PASCAL}}(String id) {
+        {{FIELD_CAMEL}}Map.remove(id);
     }

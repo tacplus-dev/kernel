@@ -247,6 +247,40 @@ final class TenantIds {
 		return configMap.getTenantIds(tid);
 	}
 
+	/**
+	 * The tenant at the top of {@code namespace}, {@code /tenants/<name>}, for
+	 * {@code /tenants/<name>} itself and anything below it (a project, a
+	 * sub-tenant); null when the namespace is in no tenant (root, {@code /system},
+	 * or {@code /tenants} with no name).
+	 */
+	static String topTenantOf(String namespace) {
+		if (namespace == null || !namespace.startsWith(TENANTS_PREFIX)) {
+			return null;
+		}
+		int end = namespace.indexOf('/', TENANTS_PREFIX.length());
+		String top = end < 0 ? namespace : namespace.substring(0, end);
+		return top.length() == TENANTS_PREFIX.length() ? null : top;
+	}
+
+	/**
+	 * The value of a token's {@code tid} claim (kernel#32, tacplus#284): the tid
+	 * of the tenant at the top of {@code namespace}, read from that tenant's
+	 * record now, never from the request or a presented token. Null when the
+	 * namespace is in no tenant, or when kernel holds no record with a tid for
+	 * the tenant (a namespace a deployment names without a kernel record): such
+	 * a token carries no claim, and the generated readers refuse a tenant-scoped
+	 * call without one. A sub-tenant's token names the top tenant, as the claim
+	 * is defined, not the sub-tenant's own tid.
+	 */
+	static String tidOfNamespace(ConfigMap configMap, String namespace) throws ProtoException {
+		String top = topTenantOf(namespace);
+		if (top == null || configMap == null) {
+			return null;
+		}
+		String tid = configMap.getTenants(top).getTid();
+		return tid.isEmpty() ? null : tid;
+	}
+
 	/** True when {@code namespace} is {@code tenantNamespace} or lies below it. */
 	static boolean isWithin(String namespace, String tenantNamespace) {
 		return namespace != null

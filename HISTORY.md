@@ -29,3 +29,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-05 looper issue just gates flakes on main: RatisFencedLockTest contends before the three-peer group has elected a leader (#45)
 - 2026-11-07 looper issue tacplus floor 2.5 is behind the latest released line (2.6) (#46, ded67ca)
 - 2026-11-08 looper issue Bootstrap sets hazelcast.internal.override.enterprise=true: an internal flag that unlocks Enterprise code paths on the open-source jar (#24)
+- 2026-11-15 looper release v0.1.1 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.1)

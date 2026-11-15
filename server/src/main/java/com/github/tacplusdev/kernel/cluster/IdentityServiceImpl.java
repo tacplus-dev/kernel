@@ -339,22 +339,6 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private volatile java.util.function.BooleanSupplier peopleSignupsPaused = () -> false;
 
-	/**
-	 * Serializes a pending approval's read-check-write. Static and
-	 * package-private, not an instance field, because
-	 * {@code PersonalIdentityServiceImpl.createPendingApproval} writes the same
-	 * collection from the other side of the C2S boundary and a second lock would
-	 * serialize nothing.
-	 *
-	 * <p>It is what makes an approval SINGLE-USE, and it is node-local with the
-	 * same limitation every other guard in this file has: two kernel nodes
-	 * serving two copies of the same request could each consume the same approval
-	 * once. Recorded in the slice's decision doc rather than papered over — the
-	 * absent cluster CAS is the same gap {@code seenProofJtis} has for proof
-	 * replay, and closing it needs the FencedLock, not a second mutex.
-	 */
-	static final Object PENDING_APPROVAL_LOCK = new Object();
-
 	private final long defaultTokenExpirySeconds;
 	private final long accessTokenLifetimeSeconds;
 	private final long refreshTokenLifetimeSeconds;
@@ -1929,8 +1913,9 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			Kernel.BrokerPendingApprovalRequest request) throws StatusException {
 		long nowMs = System.currentTimeMillis();
 		// The whole check runs under the lock, because "verify then consume" with a
-		// gap in the middle is not single-use.
-		synchronized (PENDING_APPROVAL_LOCK) {
+		// gap in the middle is not single-use. The lock is the registry's, shared
+		// with the proposer (PendingApprovalLock).
+		return PendingApprovalLock.under(() -> {
 			Kernel.PendingApproval approval =
 					principalMap.getPendingApprovals(request.getApprovalId());
 			// An absent row reads back as the default instance, so the key/field
@@ -1985,7 +1970,7 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 					.setPersonUserKey(approval.getPersonUserKey())
 					.setDeviceCredentialId(approver.credentialId())
 					.build();
-		}
+		});
 	}
 
 	/** The device an approval was signed by: its credential, once it has stood up. */

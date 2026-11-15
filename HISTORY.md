@@ -30,3 +30,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-07 looper issue tacplus floor 2.5 is behind the latest released line (2.6) (#46, ded67ca)
 - 2026-11-08 looper issue Bootstrap sets hazelcast.internal.override.enterprise=true: an internal flag that unlocks Enterprise code paths on the open-source jar (#24)
 - 2026-11-15 looper release v0.1.1 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.1)
+- 2026-11-15 looper issue gitleaks generic-api-key at server/src/main/java/com/github/tacplusdev/kernel/cluster/IdentityServiceImpl.java:294: a KeyType switch arm, not a secret (fails the build) (#48, be84b3d)

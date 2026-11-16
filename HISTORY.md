@@ -41,3 +41,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-15 looper issue gitleaks private-key at server/src/test/java/com/github/tacplusdev/kernel/cluster/TlsCertRevocationTest.java:379: PEM armour of a runtime-generated key, not a secret (fails the build) (#54)
 - 2026-11-16 looper release v0.1.3 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.3)
 - 2026-11-16 looper issue Take the launcher from a pinned tacplus-dev release, not SeaBeam's schematic image (#22)
+- 2026-11-16 looper release v0.1.4 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.4)

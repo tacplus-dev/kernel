@@ -262,7 +262,9 @@ the looper then marks it `promoted` or `declined` here with the date.
   build-time classpaths, none on what ships in `kernel.jar`: surefire 3.2.5 brings guava 16.0.1 (GHSA-xxph-c9ww-hj94) and
   maven-core 3.2.5, and site 3.12.1 brings Jetty 9.4.46, velocity 1.7, dom4j 1.1 and jsoup 1.10.2 (site is not
   part of `verify`). Pinning current releases in `pluginManagement` makes the build reproducible and lets the advisory check
-  above cover plugins too.
+  above cover plugins too. The justfile's `mvn dependency:copy` is the same case outside the lifecycle: unpinned, it runs
+  maven-dependency-plugin 3.7.0 under Maven 3.9.16, whose advisories (dom4j 1.1, velocity 1.7, ...) are #65
+  (2026-11-16, nightly scan).
 - **ROADMAP "Now" names floor 2.4; the floor in force is 2.6** (2026-11-06, #46): Jody's decision on #46 asks for
   "Now" to name the floor in force, but a looper may not push a commit touching ROADMAP.md. The line to change:
   "Unreleased; tacplus floor 2.4." becomes "Unreleased; tacplus floor 2.6 (2.6.1 pinned in tacplus.lock)."

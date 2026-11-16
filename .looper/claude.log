@@ -1,0 +1,52 @@
+= init
+I'll check the checkout's state, the issue's comments, and whether tacplus v2.6.13 exists yet.
+> Bash git status --short && git log --oneline -3 && gh issue view 62 --repo tacplus-dev/kernel --comments --json comments --jq '.comments[-3:][] | "--- \(.author.login) \(.authorAssociation) \(.createdAt)\n\(.body)"' | tail -60
+< d61e510 HISTORY.md: #54 (looper) 8c2b755 ROADMAP: product identities (#63) 1187d09 HISTORY.md: #7 (looper) specify only one of --comments or --json  Display the title, body, and other information about an issue.  When `--comments` is used, terminal output includes the issue details and comments. Whe...
+> Bash gh issue view 62 --repo tacplus-dev/kernel --json comments --jq '.comments[-2:][] | "--- \(.author.login) \(.authorAssociation) \(.createdAt)\n\(.body)"' | tail -40; echo ===712; gh issue view 712 --repo tacplus-dev/tacplus --json state,closedAt,labels --jq '{state,closedAt,labels:[.labels[].name]}'...
+< --- tacplus-looper NONE 2026-11-15T06:42:53Z Nothing was pushed: the run found this issue waits on another, so this issue is now `Blocked-by: tacplus-dev/tacplus#712` and stays approved: it is worked again once that issue is closed. Run record: job https://gitlab.com/tacplus-dev/looper/-/jobs/180410...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash echo ===712-comments; gh issue view 712 --repo tacplus-dev/tacplus --json comments --jq '.comments[-3:][] | "--- \(.author.login) \(.authorAssociation) \(.createdAt)\n\(.body)"' | head -80; echo ===v2.6.13-release; gh api repos/tacplus-dev/tacplus/releases/tags/v2.6.13 --jq '.body' | head -40; echo ...
+< ===712-comments --- tacplus-manager NONE 2026-11-15T23:56:55Z The manager merged [`looper/tacplus-712`](https://github.com/tacplus-dev/tacplus/tree/looper/tacplus-712) on main: 8c824df..cb580bc, on the gates full (pkg/internal/java/types/runtime_templates_regression_test.go is mapped to full (pkg/**...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash echo ===pr720; gh pr view 720 --repo tacplus-dev/tacplus --json isDraft,mergeable,mergeStateStatus,reviewDecision,headRefName,updatedAt,body --jq '{isDraft,mergeable,mergeStateStatus,reviewDecision,headRefName,updatedAt}, .body' | head -60; echo ===rel26; gh api 'repos/tacplus-dev/tacplus/commits?sh...
+< ===pr720 {"headRefName":"backport/712-release-2.6","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"","updatedAt":"2026-11-16T00:01:59Z"} Backport of the fix for #712 from main ("Java chassis: CollectionRuntime locks a private Object, not Ring/WatchHub"): `cb580bc...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash echo ===looper-lib; gh api repos/tacplus-dev/looper/contents/looper-lib.sh -H 'Accept: application/vnd.github.raw' 2>/dev/null | grep -n -i -A12 'blocked' | head -90; echo ===summary; sed -n 1,60p /builds/tacplus-dev/looper/looper-runs/20261116T000523Z-issue-62/security/summary.md; echo ===USO; grep...
+< ===looper-lib 18:# roadmap repository. The rules above the forge (labels, order, Blocked-by) 19-# are the same on both, and an instance reads and writes its own org alone. 20-LOOPER_FORGE="${LOOPER_FORGE:-github}" 21-LOOPER_ORG="${LOOPER_ORG:-tacplus-dev}" 22-LOOPER_FORGE_URL="${LOOPER_FORGE_URL:-ht...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash gh api repos/tacplus-dev/looper/contents/looper-lib.sh -H 'Accept: application/vnd.github.raw' 2>/dev/null | grep -n -A14 '^issue_state()\|^forge_issue_view()' | head -60
+< 184:forge_issue_view() { # repo n fields jq 185-  case "$LOOPER_FORGE" in 186-    github) gh issue view "$2" --repo "$LOOPER_ORG/$1" --json "$3" --jq "$4" ;; 187-    gitlab) local i; i="$(gl_api GET "$(gl_project "$1")/issues/$2")" || return 1 188-            gl_issues <<<"$i" | jq -r "$4" ;; 189-  ...
+= thinking_tokens
+= thinking_tokens
+Checking whether the looper can read a pull request number as a blocker, since the only thing kernel now waits on is tacplus PR #720 (tacplus#712 itself is closed).
+> Bash gh issue view 720 --repo tacplus-dev/tacplus --json state --jq .state; echo "rc=$?"; echo ===open-tacplus-issues-naming-720-or-2.6.14; gh search issues --repo tacplus-dev/tacplus --state open 'v2.6.14 OR "#720" OR backport release/2.6' --json number,title,labels --jq '.[] | "\(.number) \(.title) [\(...
+< OPEN rc=0 ===open-tacplus-issues-naming-720-or-2.6.14 ===who-merges-backports 46-- A **bug** is reproduced with a failing test, fixed in the generator, run 47-  through the gates and opened as a pull request against `main` that closes 48:  the issue, then backported as one pull request per supported...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash python3 -I -c ' import json,sys d=json.load(open(sys.argv[1])) items=d if isinstance(d,list) else next(v for v in d.values() if isinstance(v,list)) for f in items:     s=json.dumps(f)     if "USO_UNSAFE" in s: print(json.dumps({k:f.get(k) for k in ("tool","id","severity","where","status","accepted",...

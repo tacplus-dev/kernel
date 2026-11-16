@@ -44,3 +44,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-16 looper release v0.1.4 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.4)
 - 2026-11-16 looper release v0.1.5 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.5)
 - 2026-11-16 looper issue maven-plugin-plugin 3.15.1 loads guava 33.2.1-jre (GHSA-xxph-c9ww-hj94, HIGH) and jsoup 1.18.1 (GHSA-65r4-943x-97jj, HIGH): override them (#64)
+- 2026-11-16 looper issue just generate runs an unpinned maven-dependency-plugin (3.7.0 under Maven 3.9.16) that loads dom4j 1.1, velocity 1.7, commons-beanutils 1.7.0 and plexus-utils 4.0.1 (1 CRITICAL, 5 HIGH): pin 3.11.0 (#65)

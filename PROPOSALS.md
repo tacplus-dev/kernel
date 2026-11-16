@@ -146,6 +146,13 @@ the looper then marks it `promoted` or `declined` here with the date.
   (GHSA-vx9q-rhv9-3jvg, HIGH) and 4.15.0 no longer depends on aircompressor. Remove each once a release of that
   plugin asks for plexus-archiver 4.15.0 or later (the fixed lines are 4.0.0-beta-2 today) and fleet-dev pins it.
   With the override, `kernel.jar` and the other module jars have the same entries with the same CRCs as without.
+- **Drop the plugin-plugin guava and jsoup overrides** (2026-11-16, #64): the root `pluginManagement` gives
+  plugin-plugin 3.15.1 guava 33.7.2-jre (it asks for 33.2.1-jre through maven-core 3.9.9: GHSA-xxph-c9ww-hj94, HIGH)
+  and jsoup 1.23.2 (it asks for 1.18.1 through maven-plugin-tools-generators: GHSA-65r4-943x-97jj, HIGH, and
+  GHSA-pmhh-3w7g-xqp8). The jsoup one comes out on a move to plugin-plugin 3.16.0 (jsoup 1.23.2); the guava one only
+  once a plugin-plugin release asks for guava >= 33.7.2 (3.16.0's maven-core 3.9.16 still asks for 33.6.0-jre).
+  The build's security checks scan the built jars, not plugin realms, so a plugin realm's advisories are found only
+  by reading `mvn -X` (see shade's entry above) and querying OSV for its jars.
 - **Drop Javalin from the generated Java chassis, in tacplus** (2026-10-27, #16): kernel moved Javalin
   6.7.0 -> 7.2.4 because Jetty 11 has HIGH advisories and no fixed 11.x on Maven Central. But nothing
   serves HTTP through it: the tacplus-generated `GrpcServer` declares a `Javalin httpServer` that is never

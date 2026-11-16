@@ -68,6 +68,16 @@
               <artifactId>plexus-archiver</artifactId>
               <version>4.15.0</version>
             </dependency>
+            <dependency>
+              <groupId>com.google.guava</groupId>
+              <artifactId>guava</artifactId>
+              <version>33.7.2-jre</version>
+            </dependency>
+            <dependency>
+              <groupId>org.jsoup</groupId>
+              <artifactId>jsoup</artifactId>
+              <version>1.23.2</version>
+            </dependency>
           </dependencies>
         </plugin>
         <plugin>

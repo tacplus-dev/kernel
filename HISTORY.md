@@ -42,3 +42,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-16 looper release v0.1.3 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.3)
 - 2026-11-16 looper issue Take the launcher from a pinned tacplus-dev release, not SeaBeam's schematic image (#22)
 - 2026-11-16 looper release v0.1.4 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.4)
+- 2026-11-16 looper release v0.1.5 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.5)

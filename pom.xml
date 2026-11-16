@@ -57,6 +57,9 @@
 		<plugin-plugin.version>3.15.1</plugin-plugin.version>
 		<protobuf-plugin.version>0.6.1</protobuf-plugin.version>
 		<os-plugin.version>1.7.1</os-plugin.version>
+		<!-- The justfile's `mvn dependency:copy` runs this plugin, outside the lifecycle: pinned so the
+		     running Maven does not pick it (3.7.0 under 3.9.16, with dom4j 1.1 and velocity 1.7, #65). -->
+		<dependency-plugin.version>3.11.0</dependency-plugin.version>
 	</properties>
 	<dependencyManagement>
 		<dependencies>
@@ -396,6 +399,20 @@
 					<groupId>org.codehaus.mojo</groupId>
 					<artifactId>exec-maven-plugin</artifactId>
 					<version>${exec-plugin.version}</version>
+				</plugin>
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-dependency-plugin</artifactId>
+					<version>${dependency-plugin.version}</version>
+					<dependencies>
+						<!-- GHSA-wxr5-93ph-8wr9: dependency-plugin 3.11.0 asks for commons-beanutils 1.9.4.
+						     Comes out once a dependency-plugin release asks for commons-beanutils >= 1.11.0 (#65). -->
+						<dependency>
+							<groupId>commons-beanutils</groupId>
+							<artifactId>commons-beanutils</artifactId>
+							<version>1.11.0</version>
+						</dependency>
+					</dependencies>
 				</plugin>
 			</plugins>
 		</pluginManagement>

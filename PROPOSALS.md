@@ -153,6 +153,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   once a plugin-plugin release asks for guava >= 33.7.2 (3.16.0's maven-core 3.9.16 still asks for 33.6.0-jre).
   The build's security checks scan the built jars, not plugin realms, so a plugin realm's advisories are found only
   by reading `mvn -X` (see shade's entry above) and querying OSV for its jars.
+- **Drop the commons-beanutils override on maven-dependency-plugin** (2026-11-16, #65): the root `pluginManagement`
+  pins maven-dependency-plugin 3.11.0 (the justfile's `mvn dependency:copy` otherwise ran whatever the running Maven
+  defaults to, 3.7.0 under 3.9.16, with dom4j 1.1, velocity 1.7 and commons-beanutils 1.7.0) and gives it
+  commons-beanutils 1.11.0, because 3.11.0 asks for 1.9.4 (GHSA-wxr5-93ph-8wr9, HIGH). Remove the override once a
+  dependency-plugin release asks for `>= 1.11.0`.
 - **Drop Javalin from the generated Java chassis, in tacplus** (2026-10-27, #16): kernel moved Javalin
   6.7.0 -> 7.2.4 because Jetty 11 has HIGH advisories and no fixed 11.x on Maven Central. But nothing
   serves HTTP through it: the tacplus-generated `GrpcServer` declares a `Javalin httpServer` that is never
@@ -269,9 +274,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   build-time classpaths, none on what ships in `kernel.jar`: surefire 3.2.5 brings guava 16.0.1 (GHSA-xxph-c9ww-hj94) and
   maven-core 3.2.5, and site 3.12.1 brings Jetty 9.4.46, velocity 1.7, dom4j 1.1 and jsoup 1.10.2 (site is not
   part of `verify`). Pinning current releases in `pluginManagement` makes the build reproducible and lets the advisory check
-  above cover plugins too. The justfile's `mvn dependency:copy` is the same case outside the lifecycle: unpinned, it runs
-  maven-dependency-plugin 3.7.0 under Maven 3.9.16, whose advisories (dom4j 1.1, velocity 1.7, ...) are #65
-  (2026-11-16, nightly scan).
+  above cover plugins too. The justfile's `mvn dependency:copy` was the same case outside the lifecycle: unpinned, it ran
+  maven-dependency-plugin 3.7.0 under Maven 3.9.16, with dom4j 1.1, velocity 1.7, ...; #65 pinned it to 3.11.0.
 - **ROADMAP "Now" names floor 2.4; the floor in force is 2.6** (2026-11-06, #46): Jody's decision on #46 asks for
   "Now" to name the floor in force, but a looper may not push a commit touching ROADMAP.md. The line to change:
   "Unreleased; tacplus floor 2.4." becomes "Unreleased; tacplus floor 2.6 (2.6.1 pinned in tacplus.lock)."

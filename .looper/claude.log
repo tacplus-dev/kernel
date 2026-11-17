@@ -1,0 +1,41 @@
+= init
+> Bash cd /builds/looper/kernel/issues/66; git status --short; grep -n distroless Dockerfile; gh issue view 66 --repo tacplus-dev/kernel --comments --json comments,labels -q '.labels[].name, (.comments[-3:][]|.author.login+": "+.body[0:200])'; head -20 /builds/tacplus-dev/looper/looper-runs/20261117T144738...
+< 12:# points at that day. The base's fixes (distroless's Debian packages) reach the 15:# `crane digest gcr.io/distroless/java25-debian13:latest`. 29:# ownership for the distroless nonroot user (65532). 33:# gcr.io/distroless/java25-debian13:latest, resolved 2026-11-17 (Debian 13.7): it 37:# (HEALTH_P...
+> Bash cd /builds/looper/kernel/issues/66; gh issue view 66 --repo tacplus-dev/kernel --json comments,labels -q '.labels[].name, (.comments[-3:][]|.author.login+" "+.createdAt+": "+.body[0:150])'; which crane skopeo; curl -sI -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distri...
+< bug approved looper:in-progress tacplus-looper 2026-11-17T14:44:04Z: The looper of kernel starts this issue on `claude-opus-5-5`, the default model. Its limit 4h is capped at 4h by this job (https://gitlab.com/tacplus-d tacplus-looper 2026-11-17T14:44:44Z: The run ended before finishing (exit 0). It...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/kernel/issues/66; gh issue comment 66 --repo tacplus-dev/kernel --body "Rechecked 2026-11-17 ~14:50Z (about the 20th run today): still no patched base. \`gcr.io/distroless/java25-debian13:latest\` resolves to \`sha256:6558dff7…d671\`, the digest pinned at Dockerfile line 39. Debian...
+= task_started
+= task_notification
+< https://github.com/tacplus-dev/kernel/issues/66#issuecomment-6951439730 https://github.com/tacplus-dev/kernel/issues/66 [2026-11-17T14:48:20Z] checkpoint of #66 (a step) pushed to looper/kernel-66:  2 files changed, 559 insertions(+)
+= thinking_tokens
+= thinking_tokens
+> Bash cd /builds/looper/kernel/issues/66; git status --short --ignored | head; git fetch -q origin looper/kernel-66 && git diff --stat origin/main origin/looper/kernel-66
+< !! .looper/  .looper/claude.log |   9 +  .looper/prompt.md  | 550 +++++++++++++++++++++++++++++++++++++++++++++++++++++  2 files changed, 559 insertions(+)
+= thinking_tokens
+= thinking_tokens
+Nothing has changed since the last run, so I committed nothing and landed nothing.
+
+- **Base image:** `gcr.io/distroless/java25-debian13:latest` still resolves to `sha256:6558dff7…d671`. That is the digest already pinned at `Dockerfile:39`, so there is no patched digest to move to.
+- **Security report:** this build's report (main at `fa966c9`) lists none of the 8 expat or libuuid findings. That is because the build's scan does not cover the image, not because they are fixed.
+- **Issue comments:** none since the last run, and nothing new from Jody.
+
+About 20 runs today have only re-checked the registry, and a new one starts every few minutes. Earlier runs suggested parking the issue in comments, but nobody acted on that. So this time I commented on the issue asking Jody how it should wait, and added the `needs-decision` label, which should stop the looper from relaunching it. My recommendation was to drop `approved` until distroless publishes a new `java25-debian13` digest or the nightly turns these findings blocking, then re-approve.
+
+I checkpointed with what is left. When a patched digest exists, the next run moves the pin, runs the build, lands it, tags `v0.1.8` on main after the full gates pass (there are no release branches, so no backport), comments and closes the issue.
+
+The checkpoint pushed the looper's own run files (`.looper/claude.log` and `.looper/prompt.md`) to the `looper/kernel-66` branch. git ignores them and they did not touch main, but the branch now differs from main only by those two files.
+= success: Nothing has changed since the last run, so I committed nothing and landed nothing.
+
+- **Base image:** `gcr.io/distroless/java25-debian13:latest` still resolves to `sha256:6558dff7…d671`. That is the digest already pinned at `Dockerfile:39`, so there is no patched digest to move to.
+- **Security report:** this build's report (main at `fa966c9`) lists none of the 8 expat or libuuid findings. That is because the build's scan does not cover the image, not because they are fixed.
+- **Issue comments:** none since the last run, and nothing new from Jody.
+
+About 20 runs today have only re-checked the registry, and a new one starts every few minutes. Earlier runs suggested parking the issue in comments, but nobody acted on that. So this time I commented on the issue asking Jody how it should wait, and added the `needs-decision` label, which should stop the looper from relaunching it. My recommendation was to drop `approved` until distroless publishes a new `java25-debian13` digest or the nightly turns these findings blocking, then re-approve.
+
+I checkpointed with what is left. When a patched digest exists, the next run moves the pin, runs the build, lands it, tags `v0.1.8` on main after the full gates pass (there are no release branches, so no backport), comments and closes the issue.
+
+The checkpoint pushed the looper's own run files (`.looper/claude.log` and `.looper/prompt.md`) to the `looper/kernel-66` branch. git ignores them and they did not touch main, but the branch now differs from main only by those two files.
+= usage: {"claude-opus-5-5":{"inputTokens":10,"outputTokens":2257,"cacheReadInputTokens":202040,"cacheCreationInputTokens":34347,"webSearchRequests":0,"costUSD":0.36036399999999996,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":443,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}

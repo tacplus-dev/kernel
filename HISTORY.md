@@ -48,3 +48,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-17 looper release v0.1.6 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.6)
 - 2026-11-17 looper issue 81 new MEDIUM/LOW/UNKNOWN findings in the release image: unfixed Debian 13 packages in the distroless base, Dockerfile's untagged FROMs (DS-0001) and no HEALTHCHECK (DS-0026) (#67)
 - 2026-11-17 looper release v0.1.7 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.7)
+- 2026-11-17 looper issue Root pom is behind fleet-dev's default-lifecycle pins: jar 3.5.0, resources 3.4.0, and clean, install and deploy unset (commons-io 2.6, plexus-utils 4.0.1: HIGH); pin clean 3.5.0, resources 3.5.0, jar 3.5.1, install/deploy 3.2.0 (#68)

@@ -5,6 +5,13 @@ the looper then marks it `promoted` or `declined` here with the date.
 
 ## Open
 - **<title>** (<date>, <issue/run link>): <what and why>
+- **Move the base images' digests when the base publishes fixes, not by hand** (2026-11-17, #67): the Dockerfile
+  now pins `busybox` and `gcr.io/distroless/java25-debian13` by index digest (Jody's decision on #67), so the
+  base's Debian fixes (#66's HIGH, #67's 79 MEDIUM/LOW) reach kernel's image only when someone moves the digest.
+  Nothing tells anyone to: the nightly report keeps listing the fixed advisories until a person resolves the tag
+  again. A nightly step (looper-scan, or Renovate's `docker` manager with `pinDigests`) that resolves each
+  FROM's tag, compares it with the pinned digest and opens one bump commit or issue when they differ would make
+  the fix land in the next patch without anyone watching distroless.
 - **One launcher pin for the release images and the fleets** (2026-11-13, #7; 2026-11-15, #22): the release image
   takes the launcher release the Dockerfile pins (tacplus-dev/launcher v0.1.0, its sha256 verified, #22).
   fleet-seatrials' `images/pins.yaml` pins c575e14 and puts that build beside the Dockerfile, which the

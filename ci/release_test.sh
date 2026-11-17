@@ -2,7 +2,7 @@
 # Tests of the release scripts (.github/workflows/release.yml): the image tags a release gets
 # (release-tags.sh), whether its GitHub release is Latest (release-latest.sh) and its notes
 # (release-notes.sh), each in a scratch repository with the tags given; and that the Dockerfile takes the
-# launcher from the release it pins, its sha256 verified.
+# launcher from the release it pins, its sha256 verified, and pins every base image by digest.
 #
 # Usage:  ci/release_test.sh
 set -euo pipefail
@@ -105,8 +105,10 @@ check "Dockerfile: the launcher version pinned" \
   "$(grep -cE '^ARG LAUNCHER_VERSION=v[0-9]+\.[0-9]+\.[0-9]+$' "$dockerfile")" "1"
 for arch in amd64 arm64; do
   check "Dockerfile: launcher-linux-$arch downloaded, its sha256 verified" \
-    "$(grep -cE "^ADD --checksum=sha256:[0-9a-f]{64} --chmod=755 https://github\.com/tacplus-dev/launcher/releases/download/\\\$\{LAUNCHER_VERSION\}/launcher-linux-$arch /launcher$" "$dockerfile")" "1"
+    "$(grep -cE "^ADD --checksum=sha256:[0-9a-f]{64} --chmod=755 https://github\.com/tacplus-dev/launcher/releases/download/\\\$\{LAUNCHER_VERSION\}/launcher-linux-$arch /launcher-linux-$arch$" "$dockerfile")" "1"
 done
+check "Dockerfile: the image runs the launcher of its own platform" \
+  "$(grep -cE '^COPY --from=launcher /launcher-linux-\$\{TARGETARCH\} /usr/local/bin/launcher$' "$dockerfile")" "1"
 # launcher v0.1.0 probes HEALTH_PORT (default 5000, kernel's TLS listener) in plaintext: kernel's plaintext health
 # port is health_probe_port, 8444.
 check "Dockerfile: the launcher probes the plaintext health port" "$(grep -c '^ENV HEALTH_PORT=8444$' "$dockerfile")" "1"
@@ -114,6 +116,20 @@ check "Dockerfile: the launcher probes the plaintext health port" "$(grep -c '^E
 # digest: a fixed Debian package reaches the image that way, never by an unpinned rebuild (#66).
 check "Dockerfile: the distroless base pinned by digest" \
   "$(grep -cE '^FROM gcr\.io/distroless/java25-debian13@sha256:[0-9a-f]{64}$' "$dockerfile")" "1"
+# Every image the build pulls is pinned by digest, never a moving tag (#67): a FROM is scratch, an earlier stage,
+# or name[:tag]@sha256:<64 hex>. Not a stage named by a build arg either (FROM launcher-${TARGETARCH}): trivy reads
+# it as an untagged image (DS-0001).
+stages="$(sed -nE 's/^FROM .* AS ([^ ]+)$/\1/p' "$dockerfile")"
+while read -r _ image _; do
+  if [[ "$image" == scratch ]] || grep -qxF "$image" <<< "$stages"; then
+    continue
+  fi
+  if [[ "$image" =~ ^[^@:]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$ ]]; then
+    check "Dockerfile: FROM $image pinned by digest" "pinned" "pinned"
+  else
+    check "Dockerfile: FROM $image pinned by digest" "unpinned" "pinned"
+  fi
+done < <(grep -E '^FROM ' "$dockerfile")
 
 if ((failures)); then
   echo "$failures failed"

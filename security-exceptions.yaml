@@ -27,6 +27,12 @@
 # kernel's own code included, until it is removed: a new finding of that rule in kernel's code goes unreported
 # while it stands (kernel's own instance, PersonalIdentityServiceImpl, was fixed in the same batch, #62). Remove it
 # in the issue that pins kernel to the tacplus 2.6 patch carrying #712 (#62), without waiting for the expiry.
+#
+# DS-0026 (trivy, LOW): the Dockerfile has no HEALTHCHECK. Kubernetes, which runs kernel, ignores Docker's
+# HEALTHCHECK and probes the launcher (HEALTH_PORT=8444) instead, and the distroless base has no shell to run a
+# HEALTHCHECK CMD. Decided on #67 (Jody, 2026-11-17), until 2027-05-17. The base image's unfixed Debian
+# advisories of the same report get no exception (same decision): they are non-blocking by policy, and clear when
+# the Dockerfile's digest moves to a base rebuilt on the fixed packages.
 exceptions:
   - id: USO_UNSAFE_OBJECT_SYNCHRONIZATION
     reason: "The finding at the generated CollectionRuntime.java:102 (synchronized (Ring.this), tacplus's chassis template) is fixed upstream by tacplus-dev/tacplus#712, and kernel cannot change generated code. Accepts the rule anywhere in kernel until removed; remove it when kernel is pinned to the tacplus 2.6 patch carrying #712."
@@ -64,3 +70,7 @@ exceptions:
     reason: "jackson-core 2.21.2 and 3.1.2 shaded in Hazelcast 5.7.0: the 2.x copy has no caller; the 3.x one is a DoS reachable only by a peer of member port 5001, which already owns kernel's state (decisions/2026-11-04-hazelcast-shaded-jackson.md). No Hazelcast release with a fixed copy yet; #59 tracks the bump."
     decided_by: "jodydadescott (tacplus-dev/kernel#59, 2026-11-13; batch and expiry: tacplus-dev/kernel#48, 2026-11-14)"
     expires: 2026-12-14
+  - id: DS-0026
+    reason: "No HEALTHCHECK in the Dockerfile: kernel runs under Kubernetes, which ignores Docker's HEALTHCHECK and probes the launcher's HEALTH_PORT (8444), and the distroless base has no shell for a HEALTHCHECK CMD."
+    decided_by: "jodydadescott (tacplus-dev/kernel#67, 2026-11-17)"
+    expires: 2027-05-17

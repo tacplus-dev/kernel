@@ -110,6 +110,10 @@ done
 # launcher v0.1.0 probes HEALTH_PORT (default 5000, kernel's TLS listener) in plaintext: kernel's plaintext health
 # port is health_probe_port, 8444.
 check "Dockerfile: the launcher probes the plaintext health port" "$(grep -c '^ENV HEALTH_PORT=8444$' "$dockerfile")" "1"
+# The base is pinned by its multi-arch index digest, so an image only changes base in a commit that moves the
+# digest: a fixed Debian package reaches the image that way, never by an unpinned rebuild (#66).
+check "Dockerfile: the distroless base pinned by digest" \
+  "$(grep -cE '^FROM gcr\.io/distroless/java25-debian13@sha256:[0-9a-f]{64}$' "$dockerfile")" "1"
 
 if ((failures)); then
   echo "$failures failed"

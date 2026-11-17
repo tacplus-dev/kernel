@@ -24,7 +24,9 @@ FROM launcher-${TARGETARCH} AS launcher
 FROM busybox AS setup
 RUN mkdir -p /data /app/data
 
-FROM gcr.io/distroless/java25-debian13
+# The base is pinned by its multi-arch index digest (the image `latest` was on 2026-11-17, Debian 13.7), so the
+# image changes base only in a commit: a fixed Debian package reaches it by moving this digest (#66).
+FROM gcr.io/distroless/java25-debian13@sha256:6558dff7db91bf89d34254014dec8ff1f0a3e13f48a575d5a51ce01d1597d671
 
 ARG BUILD_DATE
 ARG VCS_REF

@@ -15,6 +15,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   `ci/release-image.sh`, which no longer reads it: its checkout, setup-go and launcher steps, `LAUNCHER_COMMIT` and
   the `target/launcher` argument (with `LAUNCHERS` in the script) can go, by a person (the looper's credential may
   not change `.github/workflows/`).
+- **Pin the Dockerfile's `busybox` setup stage by digest too** (2026-11-17, #66): #66 pins the distroless base
+  by its index digest, so a base change is a commit. The `setup` stage (`FROM busybox`, only `mkdir` of `/data` and
+  `/app/data`) is still unpinned: nothing of it ships but two empty directories, so it is no security finding, but
+  the build is not reproducible while it floats. Pin it by digest, or drop the stage for `COPY --chown` of an
+  empty directory from the build context.
 - **Run SpotBugs in `just gates`, as the security job runs it** (2026-11-14, #62): the security job's SpotBugs
   (USO_UNSAFE_OBJECT_SYNCHRONIZATION, HIGH) is the first thing that read kernel's synchronized blocks, two
   builds after the code landed, and its report is private, so a looper reproduces each finding by hand

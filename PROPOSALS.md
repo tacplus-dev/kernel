@@ -146,15 +146,16 @@ the looper then marks it `promoted` or `declined` here with the date.
   `codegen` (a Maven plugin) compiles against plexus-utils 3.5.1, `provided` through maven-plugin-api 3.9.9; at run time
   it gets whatever the running Maven core ships, so that one moves with the Maven version, not with a pin here.
 - **Drop the other build-plugin plexus-utils and commons-io overrides** (2026-11-03, #36): the root `pluginManagement`
-  also gives plexus-utils 4.0.3 to compiler 3.15.0, jar 3.5.0, resources 3.4.0, plugin-plugin 3.15.1 and antrun 3.2.0,
+  also gives plexus-utils 4.0.3 to compiler 3.15.0, clean 3.5.0, plugin-plugin 3.15.1 and antrun 3.2.0, plexus-utils
+  3.6.1 to resources 3.5.0 (#68; jar 3.5.1 needs none, and its override came out),
   plexus-utils 3.6.1 to protobuf-maven-plugin 0.6.1 and os-maven-plugin 1.7.1 (GHSA-6fmv-xxpf-w3cw), and commons-io
   2.21.0 to compiler (GHSA-78wr-2p64-hpwj). Same rule as shade's: remove each once a release of that plugin asks for
   a fixed version and fleet-dev pins it. protobuf-maven-plugin and os-maven-plugin have no newer release, so theirs
   stay. os-maven-plugin is now a plugin with `<extensions>true</extensions>` rather than a build `<extension>`,
   because only a plugin takes `<dependencies>`; server declares it but nothing there reads `os.detected.*`, so it
   could go from server altogether. build-helper (3.6.2) and exec (3.6.4) moved to fleet-dev's pins and need none.
-- **Drop the plexus-archiver overrides** (2026-11-03, #37): the root `pluginManagement` gives plexus-archiver 4.15.0
-  to jar 3.5.0 (which asks for 4.10.4) and plugin-plugin 3.15.1 (4.10.0), because those load aircompressor 0.27
+- **Drop the plexus-archiver override** (2026-11-03, #37): the root `pluginManagement` gives plexus-archiver 4.15.0
+  to plugin-plugin 3.15.1 (which asks for 4.10.0; jar's came out with jar 3.5.1, #68), because it loads aircompressor 0.27
   (GHSA-vx9q-rhv9-3jvg, HIGH) and 4.15.0 no longer depends on aircompressor. Remove each once a release of that
   plugin asks for plexus-archiver 4.15.0 or later (the fixed lines are 4.0.0-beta-2 today) and fleet-dev pins it.
   With the override, `kernel.jar` and the other module jars have the same entries with the same CRCs as without.
@@ -280,7 +281,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   gone) and the operator must stop minting `NodeTls`, so it needs its own roadmap entry. Kept out of #29 (Jody's answer
   on the issue): kmaker's retirement does not need it.
 - **Pin the default-lifecycle Maven plugins** (2026-11-02, nightly scan): the root pom pins compiler, shade, exec,
-  antrun and build-helper, but clean (3.2.0), resources, jar, surefire (3.2.5), install, deploy and site (3.12.1) come
+  antrun and build-helper, and clean, resources, jar, install and deploy at fleet-dev's pins (#68), but surefire (3.2.5)
+  and site (3.12.1) come
   from whichever Maven runs the build (3.9.16 on the scanner). So their versions, and their advisory surface, change with
   the runner, not with a commit here. An OSV check of `mvn dependency:resolve-plugins` finds advisories only on those
   build-time classpaths, none on what ships in `kernel.jar`: surefire 3.2.5 brings guava 16.0.1 (GHSA-xxph-c9ww-hj94) and
@@ -288,6 +290,10 @@ the looper then marks it `promoted` or `declined` here with the date.
   part of `verify`). Pinning current releases in `pluginManagement` makes the build reproducible and lets the advisory check
   above cover plugins too. The justfile's `mvn dependency:copy` was the same case outside the lifecycle: unpinned, it ran
   maven-dependency-plugin 3.7.0 under Maven 3.9.16, with dom4j 1.1, velocity 1.7, ...; #65 pinned it to 3.11.0.
+- **maven-compiler-plugin is behind fleet-dev's pin** (2026-11-17, #68): fleet-dev `dependencies.yaml` (11548b3) pins
+  compiler 3.16.0; the root pom has 3.15.0, with plexus-utils 4.0.3 and commons-io 2.21.0 overrides (#36). Move to
+  3.16.0 and drop whichever override it no longer needs (read its realm under Maven 3.9.16 with `mvn -X`). Not part of
+  #68, which covers the default-lifecycle plugins only.
 - **ROADMAP "Now" names floor 2.4; the floor in force is 2.6** (2026-11-06, #46): Jody's decision on #46 asks for
   "Now" to name the floor in force, but a looper may not push a commit touching ROADMAP.md. The line to change:
   "Unreleased; tacplus floor 2.4." becomes "Unreleased; tacplus floor 2.6 (2.6.1 pinned in tacplus.lock)."

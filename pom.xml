@@ -52,8 +52,14 @@
 		     dependencies.yaml's pins where it has one. -->
 		<antrun-plugin.version>3.2.0</antrun-plugin.version>
 		<build-helper-plugin.version>3.6.2</build-helper-plugin.version>
-		<jar-plugin.version>3.5.0</jar-plugin.version>
-		<resources-plugin.version>3.4.0</resources-plugin.version>
+		<jar-plugin.version>3.5.1</jar-plugin.version>
+		<resources-plugin.version>3.5.0</resources-plugin.version>
+		<!-- The default lifecycle runs clean, install and deploy at the running Maven's defaults unless
+		     pinned (clean 3.2.0 with commons-io 2.6, install and deploy 3.1.4 with plexus-utils 4.0.1
+		     under 3.9.16, #68). -->
+		<clean-plugin.version>3.5.0</clean-plugin.version>
+		<install-plugin.version>3.2.0</install-plugin.version>
+		<deploy-plugin.version>3.2.0</deploy-plugin.version>
 		<plugin-plugin.version>3.15.1</plugin-plugin.version>
 		<protobuf-plugin.version>0.6.1</protobuf-plugin.version>
 		<os-plugin.version>1.7.1</os-plugin.version>
@@ -262,39 +268,47 @@
 				</plugin>
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
-					<artifactId>maven-jar-plugin</artifactId>
-					<version>${jar-plugin.version}</version>
+					<artifactId>maven-clean-plugin</artifactId>
+					<version>${clean-plugin.version}</version>
 					<dependencies>
-						<!-- GHSA-6fmv-xxpf-w3cw: jar 3.5.0 asks for plexus-utils 4.0.2 (fleet-dev docs/java-plugins.md).
-						     Comes out once a jar release asks for plexus-utils >= 4.0.3 (#36). -->
+						<!-- GHSA-6fmv-xxpf-w3cw: clean 3.5.0 asks for plexus-utils 4.0.2 (fleet-dev docs/java-plugins.md).
+						     Comes out once a clean release asks for plexus-utils >= 4.0.3 (#68). -->
 						<dependency>
 							<groupId>org.codehaus.plexus</groupId>
 							<artifactId>plexus-utils</artifactId>
 							<version>4.0.3</version>
 						</dependency>
-						<!-- GHSA-vx9q-rhv9-3jvg: jar 3.5.0 brings plexus-archiver 4.10.4, which loads aircompressor 0.27 (fleet-dev
-						     docs/java-plugins.md). plexus-archiver 4.15.0 no longer depends on aircompressor. Comes out once
-						     a jar release asks for plexus-archiver >= 4.15.0 (#37). -->
-						<dependency>
-							<groupId>org.codehaus.plexus</groupId>
-							<artifactId>plexus-archiver</artifactId>
-							<version>4.15.0</version>
-						</dependency>
 					</dependencies>
+				</plugin>
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-jar-plugin</artifactId>
+					<version>${jar-plugin.version}</version>
 				</plugin>
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-resources-plugin</artifactId>
 					<version>${resources-plugin.version}</version>
 					<dependencies>
-						<!-- GHSA-6fmv-xxpf-w3cw: resources 3.4.0 asks for plexus-utils 4.0.2 (fleet-dev docs/java-plugins.md).
-						     Comes out once a resources release asks for plexus-utils >= 4.0.3 (#36). -->
+						<!-- GHSA-6fmv-xxpf-w3cw: resources 3.5.0 asks for plexus-utils 3.6.0 (fleet-dev docs/java-plugins.md);
+						     it is built against the 3.x line, so 3.6.1. Comes out once a resources release asks for
+						     plexus-utils >= 3.6.1 (#68). -->
 						<dependency>
 							<groupId>org.codehaus.plexus</groupId>
 							<artifactId>plexus-utils</artifactId>
-							<version>4.0.3</version>
+							<version>3.6.1</version>
 						</dependency>
 					</dependencies>
+				</plugin>
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-install-plugin</artifactId>
+					<version>${install-plugin.version}</version>
+				</plugin>
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-deploy-plugin</artifactId>
+					<version>${deploy-plugin.version}</version>
 				</plugin>
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>

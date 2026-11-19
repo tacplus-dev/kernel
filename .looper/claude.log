@@ -1,0 +1,212 @@
+= init
+> Bash gh issue view 71 --repo tacplus-dev/kernel --comments; ls; cat STATE.md | head -80; git log --oneline -3 origin/main
+< author:	tacplus-looper association:	none edited:	false status:	none -- The looper of kernel starts this issue on `claude-opus-5-5`, the default model. Its limit 4h is capped at 4h by this job (https://gitlab.com/tacplus-dev/looper/-/jobs/18202050066), which ends sooner: the run stops by itself befor...
+> Bash cat ROADMAP.md IDENTITY.md README.md | head -300; ls decisions docs proto -R | head -50; git show db63dfc --stat
+< # Roadmap: kernel  Owned by Jody; changed only by an agent at Jody's request. Loopers propose in PROPOSALS.md.  ## Now The fleet's state host and token authority (Java, tacplus service). Unreleased; tacplus floor 2.4. Built inside the fleet build from a manifest, not standalone. Ported from SeaBeam ...
+Now the design record.
+> Bash cd /tmp && gh api repos/tacplus-dev/roadmap/contents/decisions/skipper-and-admiral-2026-11-01.md -H 'Accept: application/vnd.github.raw' > /tmp/sa.md; wc -l /tmp/sa.md; cat /tmp/sa.md
+< 254 /tmp/sa.md # Skipper and Admiral are tacplus platform components (Jody, 2026-11-01)  Jody, 2026-11-01: "Originally skipper and admiral were going to be Seabeam. But I now think they are part of tacplus. Seabeam may give them a persona but they are necessary for the fleet. There is one skipper pe...
+= thinking_tokens
+= thinking_tokens
+> Bash cat tacplus.yaml tacplus.lock proto/registry.yaml proto/dependencies.yaml; wc -l proto/services/kernel.proto; grep -n "state\|State\|redact\|config_slice\|Config\b\|message Config\|service \|grant\|read_access\|reader" proto/services/kernel.proto | head -150
+< tacplus: "2.6" language: java pkg: com.github.tacplusdev.kernel output-dir: tacplus/target/generated-sources src: proto # kernel's contract calls out to opa (spec.opa_import) and so needs its proto. # kernel seeds the people tenant's oauth OAuthTenantConfig at boot # (cluster/PeopleTenant.java), and...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 1,60p proto/services/kernel.proto; sed -n 360,440p proto/services/kernel.proto; ls tacplus codegen server; cat justfile | head -80
+< // Copyright (c) 2026 Jody Scott // SPDX-License-Identifier: Apache-2.0 // // Kernel configuration, cluster state, and token exchange definitions. // Admin and Hazelcast types are defined in common/hazelcast.proto.  syntax = "proto3";  package kernel;  import "sys/spec.proto"; import "sys/host.proto...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api 'repos/tacplus-dev/tacplus/git/trees/v2.6.1?recursive=1' --jq '.tree[].path' > /tmp/tree.txt 2>&1; wc -l /tmp/tree.txt; grep -n "spec.proto$" /tmp/tree.txt | head; gh issue view 274 --repo tacplus-dev/tacplus | head -60
+< 2272 /tmp/tree.txt 1492:pkg/proto/sys/spec.proto title:	Redact for any type: an annotation marks sensitive fields; a generated deterministic Redact<T>; Secrets redacted by construction; a gate catches unannotated sensitive-looking fields; the uni-config's redacted view for LLM review state:	CLOSED a...
+> Bash cd /tmp && gh api 'repos/tacplus-dev/tacplus/contents/pkg/proto/sys/spec.proto?ref=v2.6.1' -H 'Accept: application/vnd.github.raw' > /tmp/spec.proto; wc -l spec.proto; grep -n "redact\|Redact\|sensitive\|state_import\|message ServiceState\|export\|readers\|read_access\|grant" spec.proto | head -80
+< 3192 spec.proto 79:  // state_imports is a legacy file-level mirror for field-level state_import roots. 80:  // Prefer field-level state_import; if this option is present, it must exactly 82:  repeated StateImport state_imports = 50012; 148:  // be denied at runtime cannot be generated, and a grant ...
+> Bash cd /tmp && sed -n 2630,2720p spec.proto; sed -n 1975,1995p spec.proto; sed -n 2295,2340p spec.proto; sed -n 2555,2600p spec.proto; sed -n 545,575p spec.proto
+< enum TlsKeyType {   // TLS_KEY_TYPE_NONE disables auto-TLS (default).   TLS_KEY_TYPE_NONE = 0;   // TLS_KEY_TYPE_ED25519 uses Ed25519 (OKP) keys.   TLS_KEY_TYPE_ED25519 = 1;   // TLS_KEY_TYPE_ECDSA uses ECDSA P-256 keys.   TLS_KEY_TYPE_ECDSA = 2; }  // StateAnnotation marks a message as a state root...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && for f in key x509 jwk host; do echo "== $f"; gh api "repos/tacplus-dev/tacplus/contents/pkg/proto/sys/$f.proto?ref=v2.6.1" -H 'Accept: application/vnd.github.raw' | grep -n "sensitive\|^message\|bytes\|private\|secret" | head -30; done; gh repo view tacplus-dev/admiral --json name,descrip...
+> Bash sed -n 60,360p proto/services/kernel.proto
+< == key 35:message PublicKey { 45:// Key represents a private cryptographic key (alias for ProtoKey). 46:message Key { 49:  // Base64 contains the base64url-encoded PEM private key block == x509 25:  // X509PemTypePrivateKey represents a private key PEM block (BEGIN PRIVATE KEY) 89:// Use NewProtoCer...
+< // Config is the complete configuration for a Kernel node. // Schematic assembles this config and delivers it as a single file. // Kernel reads the file at boot. Hot-reloadable fields (delegates, // entitlements, rate limits, token lifetimes) can be updated by // re-reading the file on signal; topol...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api "repos/tacplus-dev/tacplus/contents/docs/USER.md?ref=v2.6.1" -H 'Accept: application/vnd.github.raw' > USER.md; grep -n -i "redact<\|sensitive" USER.md | head -40
+< 549:  Database database = 3 [(spec.sensitive) = {}];        // every string/bytes leaf below 550:  repeated string api_tokens = 4 [(spec.sensitive) = {}, (spec.assert_max_size) = 8]; 551:  map<string, bytes> signing_keys = 5 [(spec.sensitive) = {}, (spec.assert_max_size) = 8]; 552:  string page_toke...
+> Bash cd /tmp && sed -n 520,612p USER.md; grep -n -i "deployment config\|uni-config\|uniconfig" USER.md | head -30
+< | `json_return_value` | Override JSON representation of an enum value |  ---  ## Conditional Requirements  Fields can be conditionally required based on sibling field values:  ```protobuf // Required when disable_tls == false string cert_path = 5 [(spec.required_if_false) = "disable_tls"];  // Requi...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && grep -i "redact\|sensitive" tree.txt | head -30; gh api repos/tacplus-dev/roadmap/contents/decisions/deterministic-deployments-2026-11-02.md -H 'Accept: application/vnd.github.raw' > dd.md; grep -n -i "kernel\|redact\|version ref\|secret" dd.md | head -60
+< cross-test/fixtures/redact_vectors.json cross-test/redact cross-test/redact/genvectors cross-test/redact/genvectors/main.go cross-test/redact/proto cross-test/redact/proto/dependencies.yaml cross-test/redact/proto/redact cross-test/redact/proto/redact/redactcheck.proto cross-test/redact/proto/regist...
+> Bash cd /tmp && sed -n 175,260p dd.md; gh issue view 35 --repo tacplus-dev/kernel --json state,title,labels; gh issue view 19 --repo tacplus-dev/operator --json state,title; gh issue view 17 --repo tacplus-dev/operator --json state,title
+<   - image-baked defaults that change behaviour. - **A test** over the rendered manifests: every env var on every pod traces back to a uni-config field.  ## Addendum: where the configs live (Jody, 2026-11-02); settles the open huddle above  Jody: "There is the system config and tenant configs. The sy...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api "repos/tacplus-dev/tacplus/contents/pkg/internal/common/parser/redact_validate.go?ref=v2.6.1" -H 'Accept: application/vnd.github.raw' > rv.go; gh api "repos/tacplus-dev/tacplus/contents/pkg/internal/common/parser/sensitive.go?ref=v2.6.1" -H 'Accept: application/vnd.github.raw' > se...
+<   204 rv.go   605 sens.go   294 jrg.go  1103 total 1:// Copyright (c) 2026 Jody Scott 2:// SPDX-License-Identifier: Apache-2.0 4:package parser 15:// This file is the language-neutral half of redaction for any type (tacplus#274): 16:// (spec.sensitive) on a field, (spec.sensitive_message) on a messa...
+> Bash cd /tmp && sed -n 185,316p sens.go; grep -n "package\|Package\|another\|cross" rv.go | head -30
+< // NewSensitiveIndex builds the index over allFiles. Call // ValidateSensitiveAnnotations first: the index assumes a valid annotation set. func NewSensitiveIndex(allFiles []model.ProtoFile, r *MessageResolver) *SensitiveIndex { 	ix := &SensitiveIndex{r: r, needs: map[string]bool{}, allNeeds: map[str...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && sed -n 1,204p rv.go
+< // Copyright (c) 2026 Jody Scott // SPDX-License-Identifier: Apache-2.0  package parser  import ( 	"fmt" 	"strings"  	"github.com/tacplus-dev/tacplus/pkg/internal/common/model" )  // ValidateDataEntitlementAnnotations enforces the data-entitlement / (spec.redact) // contract in ONE place, at parse t...
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && sed -n 400,605p sens.go
+< func ValidateSensitiveAnnotations(allFiles []model.ProtoFile) error { 	var errs []string 	r := NewMessageResolver(allFiles) 	for _, pf := range allFiles { 		for _, msg := range pf.Messages { 			if _, ok := msg.Annotations["sensitive_message"]; ok { 				for _, f := range msg.Fields { 					if _, red :...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api "repos/tacplus-dev/tacplus/contents/pkg/proto/sys/x509.proto" -H 'Accept: application/vnd.github.raw' | sed -n 125,140p; gh api "repos/tacplus-dev/tacplus/contents/pkg/internal/common/parser/sensitive.go" -H 'Accept: application/vnd.github.raw' | grep -n "cross packages"; gh search...
+<   repeated string uri_sans = 10 [(spec.assert_max_size) = 8]; }  // X509CertChain contains a certificate chain and optional private key. // chain[0] is the leaf (end-entity) cert, followed by intermediates, ordered toward root. // When key is present, the chain is a full credential suitable for TLS....
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api "repos/tacplus-dev/tacplus/contents/pkg/proto/sys/key.proto" -H 'Accept: application/vnd.github.raw' | sed -n 30,80p; gh issue list --repo tacplus-dev/tacplus --search "Redact in:title" --state all --json number,title,state --limit 20; gh issue list --repo tacplus-dev/tacplus --sea...
+< }  // PublicKey represents a public cryptographic key. // The key is stored as a base64-encoded PEM block in PKIX format. // Use NewProtoPublicKey() in Go or similar constructors in other languages to create. message PublicKey {   // Id is a unique identifier for the key (corresponds to kid in JWK) ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh api 'repos/tacplus-dev/admiral/git/trees/HEAD?recursive=1' --jq '.tree[].path' 2>&1 | head -30; gh issue list --repo tacplus-dev/admiral --state all --json number,title,state --limit 20
+< .gitignore HISTORY.md LICENSE PROPOSALS.md README.md ROADMAP.md STATE.md [{"number":5,"state":"OPEN","title":"The deterministic filing core: private triage record first, sanitized public tacplus-dev issue for a platform cause"},{"number":4,"state":"OPEN","title":"Triage: the LLM proposes a typed iss...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n -A25 "^message PeopleIdpCredential" proto/services/kernel.proto | head -40; grep -n "^message CredPair" -A20 proto/common/credentials.proto | head -30
+< 1460:message PeopleIdpCredential { 1461-  PeopleIdpProvider provider = 1 [(spec.assert_enum_defined) = true]; 1462-  // client_id is the OAuth2 client identifier registered with the provider. 1463-  string client_id = 2 [(spec.assert_required) = true, (spec.assert_min_size) = 1]; 1464-  // client_se...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash cd /tmp && gh label list --repo tacplus-dev/kernel --search needs-decision; cat > /tmp/c71.md <<'EOF' The looper of kernel, on #71: this needs a decision before I can build it. I have not committed anything.  **What I checked:** the issue, `decisions/skipper-and-admiral-2026-11-01.md` (the 2026-11-1...
+= task_started
+= task_notification
+< needs-decision	The looper needs a decision it may not make	#5319E7 feature	New behaviour: needs design, approval and a ROADMAP.md entry; ships in a minor	#a2eeef https://github.com/tacplus-dev/kernel/issues/71#issuecomment-7024150372 https://github.com/tacplus-dev/kernel/issues/71 Shell cwd was rese...
+> Bash /usr/local/bin/repo-looper --repo kernel --issue 71 --checkpoint "needs-decision: nothing committed. Generated Redact<T> (tacplus 2.6.1 and main) does not cross packages, and kernel.Config's secrets live in x509/key/services_config, so a generated redacted copy can't be built without a tacplus chang...
+< [2026-11-19T22:36:39Z] checkpoint of #71 (a step) pushed to looper/kernel-71:  2 files changed, 290 insertions(+)
+= thinking_tokens
+= thinking_tokens
+> Bash git status --short; git log --oneline -2 origin/looper/kernel-71 --stat | head -12
+< 18a335c looper: work in progress on #71 (a step)  .looper/claude.log | 160 +++++++++++++++++++++++++++++++++++++++++++++++++++++  .looper/prompt.md  | 130 +++++++++++++++++++++++++++++++++++++++++++  2 files changed, 290 insertions(+) db63dfc ROADMAP: from the Skipper/Admiral huddles (2026-11-19)  R...
+I stopped issue #71 without committing anything. As the issue is written, it can't be built on the pinned tacplus 2.6.1 without first changing tacplus and the other services. I've posted the questions and my recommendation on the issue (https://github.com/tacplus-dev/kernel/issues/71#issuecomment-7024150372) and added the `needs-decision` label.
+
+**What blocks it:**
+- **The secrets sit in other packages.** The config kernel receives keeps its secrets in types from other proto packages:
+  - the TLS and signing-CA private keys, in `x509.X509CertChain` and `key.Key`;
+  - every service's own config, in `services_config.Services`.
+- **tacplus can't redact across packages.** Its generated redaction refuses to cross package boundaries, in 2.6.1 and still on tacplus main. Its check for sensitive-looking field names would also flag `key.Key.base64`, the TLS private key.
+- **No safe workaround here.** The only way to make kernel generate would be to mark those fields as not sensitive, which would put the private keys in a state the Admiral reads. Writing the redaction by hand would contradict the issue and the design record, which both say it is generated.
+
+**Questions I asked on the issue:**
+- **Version references:** kernel's config carries the secret values themselves today, not version references, so the copy would show `REDACTED` with no version until the pipeline change (operator#17) lands. Is that acceptable for now?
+- **Who can read it:** tacplus state access is export/import only, so any service that declares an import could read the copy, not just the Admiral, and a tenant's Skipper could too. Is that enough?
+- **The bootstrap tenant list (`Config.tenants`):** is it part of "the deployment part", or left out?
+
+**Recommended plan:**
+1. **tacplus (a feature):** let generated redaction cross packages, and mark the shared private-key fields as sensitive.
+2. **Each service in the services config:** mark its own secrets.
+3. **Kernel, this issue:**
+   - add an exported state holding the redacted config, written on every config load and override;
+   - test with planted secrets that none of them reach that state;
+   - keep the tenant slices from #70 out of it.
+
+The checkpoint on `looper/kernel-71` contains only the looper's own run log files. The next run picks this up once the decision is made, and marks the issue as blocked on the tacplus issue if that change isn't in yet.
+= success: I stopped issue #71 without committing anything. As the issue is written, it can't be built on the pinned tacplus 2.6.1 without first changing tacplus and the other services. I've posted the questions and my recommendation on the issue (https://github.com/tacplus-dev/kernel/issues/71#issuecomment-7024150372) and added the `needs-decision` label.
+
+**What blocks it:**
+- **The secrets sit in other packages.** The config kernel receives keeps its secrets in types from other proto packages:
+  - the TLS and signing-CA private keys, in `x509.X509CertChain` and `key.Key`;
+  - every service's own config, in `services_config.Services`.
+- **tacplus can't redact across packages.** Its generated redaction refuses to cross package boundaries, in 2.6.1 and still on tacplus main. Its check for sensitive-looking field names would also flag `key.Key.base64`, the TLS private key.
+- **No safe workaround here.** The only way to make kernel generate would be to mark those fields as not sensitive, which would put the private keys in a state the Admiral reads. Writing the redaction by hand would contradict the issue and the design record, which both say it is generated.
+
+**Questions I asked on the issue:**
+- **Version references:** kernel's config carries the secret values themselves today, not version references, so the copy would show `REDACTED` with no version until the pipeline change (operator#17) lands. Is that acceptable for now?
+- **Who can read it:** tacplus state access is export/import only, so any service that declares an import could read the copy, not just the Admiral, and a tenant's Skipper could too. Is that enough?
+- **The bootstrap tenant list (`Config.tenants`):** is it part of "the deployment part", or left out?
+
+**Recommended plan:**
+1. **tacplus (a feature):** let generated redaction cross packages, and mark the shared private-key fields as sensitive.
+2. **Each service in the services config:** mark its own secrets.
+3. **Kernel, this issue:**
+   - add an exported state holding the redacted config, written on every config load and override;
+   - test with planted secrets that none of them reach that state;
+   - keep the tenant slices from #70 out of it.
+
+The checkpoint on `looper/kernel-71` contains only the looper's own run log files. The next run picks this up once the decision is made, and marks the issue as blocked on the tacplus issue if that change isn't in yet.
+= usage: {"claude-opus-5-5":{"inputTokens":50,"outputTokens":13751,"cacheReadInputTokens":1764336,"cacheCreationInputTokens":92188,"webSearchRequests":0,"costUSD":1.3655912,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":6984,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}

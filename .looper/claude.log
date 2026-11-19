@@ -1,0 +1,110 @@
+= init
+> Bash gh issue view 70 --repo tacplus-dev/kernel --comments | tail -40; ls; cat STATE.md | head -80
+< author:	tacplus-looper association:	none edited:	false status:	none -- The looper of kernel starts this issue on `claude-opus-5-5`, the default model. Its limit 4h is capped at 4h by this job (https://gitlab.com/tacplus-dev/looper/-/jobs/18202050065), which ends sooner: the run stops by itself befor...
+> Bash cat IDENTITY.md README.md | head -200; cat ROADMAP.md; ls decisions docs proto; find server -type f | head -100
+< # Identity and Token Architecture  ## Authority Boundaries  The identity system has a small number of distinct authorities. Keeping them separate is what makes the trust model auditable.  1. **The operator deploys.** It provisions clusters and workloads and is the    only component that wires enviro...
+Now the design decision.
+> Bash cd /tmp && gh api repos/tacplus-dev/roadmap/contents/decisions/skipper-and-admiral-2026-11-01.md -H 'Accept: application/vnd.github.raw' > /tmp/sa.md; wc -l /tmp/sa.md; grep -n "2026-11-19\|config_slice\|publisher\|#70" /tmp/sa.md | head -60
+< 254 /tmp/sa.md 140:## Addendum 2026-11-19: open source, Skipper v1, tenant config, the LLM rule (Jody, huddle with the hub) 156:  (a tenant-scope `config_slice`: sign-in providers, join mode, domains, durations); tacplus generates a publisher on 180:## Addendum 2026-11-19 (later): the report contrac...
+> Bash sed -n 140,254p /tmp/sa.md
+< ## Addendum 2026-11-19: open source, Skipper v1, tenant config, the LLM rule (Jody, huddle with the hub)  - **Skipper and Admiral are open source** (tacplus-dev, like every platform component). What a consumer such as   SeaBeam wants kept private (prompts, playbooks, product knowledge) lives as conf...
+= thinking_tokens
+= thinking_tokens
+> Bash grep -rn "config_slice\|ConfigSlice" --include=* -I . 2>/dev/null | grep -v "^./.git" | head -20; cat tacplus.yaml; cat tacplus.lock | head; ls proto/services proto/vservices proto/common; ls /usr/local/bin
+< ./proto/common/credentials.proto:93:  option (spec.config_slice) = {scope: CONFIG_SLICE_SCOPE_TENANT, service_name: "kernel"}; ./DOWNSTREAM_PROGRESS.md:67:  messages); `tenant_config_slice`/`tenant_config_service` -> `config_slice` tacplus: "2.6" language: java pkg: com.github.tacplusdev.kernel outp...
+= thinking_tokens
+= thinking_tokens
+> Bash sed -n 60,140p proto/common/credentials.proto; sed -n 55,80p DOWNSTREAM_PROGRESS.md
+<   // tenant_name names the owning tenant — the namespace that `namespaces` are   // relative to. The cluster cred_pair's owner is the root "/".   string tenant_name = 2 [(spec.assert_required) = true];    // public_key is the cred_pair's public key, as a JWK. Mint verifies a   // cred_pair-signed pr...
+= thinking_tokens
+= thinking_tokens
+> Bash gh search issues --owner tacplus-dev "config_slice" --limit 30 2>&1 | head -30; echo ---; gh search issues --owner tacplus-dev "publisher stratum kernel" --limit 20 2>&1 | head
+< tacplus-dev/kernel	70	open	Tenant config reaches the kernel by push: a kernel-declared config_slice, a generated publisher on the tenant's Stratum side	approved, looper:in-progress, feature	2026-11-19T22:33:38Z tacplus-dev/tacplus	129	closed	Rust: the compiled TenantConfig is the stub, not the gener...
+> Bash gh search issues --repo tacplus-dev/tacplus "tenant config push kernel" --limit 20; gh search issues --repo tacplus-dev/tacplus "Stratum publisher" --limit 20; gh search issues --repo tacplus-dev/stratum "kernel" --limit 20 2>&1|head; gh api repos/tacplus-dev/roadmap/contents/ROADMAP.md -H 'Accept: ...
+< tacplus-dev/stratum	26	open	Seed members per tenant: a tenant-scope config slice, read from the tenant's TenantConfig (operator#2, option B)	approved, feature	2026-11-07T20:03:14Z tacplus-dev/stratum	36	open	Gates red: `just gates` runs audit-jar, which needs trivy, absent from the build image	bug, ...
+I'm checking whether tacplus already has (or plans) the generated publisher, since the kernel side depends on it.
+> Bash gh api repos/tacplus-dev/tacplus/contents/ROADMAP.md -H 'Accept: application/vnd.github.raw' > /tmp/troad.md; grep -n -i "push\|publisher\|config_slice\|tenant config\|kernel#70" /tmp/troad.md | head -30; grep -n -i "tenant config\|push\|kernel#70" /tmp/proad.md | head; gh issue list --repo tacplus-...
+< (Bash completed with no output)
+> Bash wc -c /tmp/troad.md /tmp/proad.md; head -c 600 /tmp/troad.md; gh issue list --repo tacplus-dev/tacplus --state all --limit 40 --search "sort:created-desc" | head -40
+<  7224 /tmp/troad.md 11624 /tmp/proad.md 18848 total # Roadmap: tacplus  Owned by Jody; changed only by an agent at Jody's request. Loopers propose in PROPOSALS.md.  ## Now tacplus compiles annotated proto definitions into complete services (Go, Rust, Java) and clients (TypeScript, Python, Swift, C#)...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash gh api "search/code?q=config_slice+repo:tacplus-dev/tacplus+extension:md" --jq '.items[].path' 2>&1 | head -20; gh api "search/code?q=CONFIG_SLICE_SCOPE_TENANT+repo:tacplus-dev/tacplus" --jq '.items[].path' 2>&1 | head -20
+< (Bash completed with no output)
+> Bash cd /tmp && rm -rf tp && mkdir tp && cd tp && gh repo clone tacplus-dev/tacplus src -- --depth 1 -q 2>&1 | tail -2; cd src && grep -rln "config_slice" --include=*.md --include=*.proto . | head -20
+< ./pkg/proto/sys/spec.proto ./roadmap/SERVICE_COMPOSITION_PLAN.md ./cross-test/proto-tenantslice/services/ledger.proto ./cross-test/proto-tenantslice/platform/registrarslice.proto ./docs/USER.md ./PROPOSALS.md Shell cwd was reset to /builds/looper/kernel/issues/70
+> Bash cd /tmp/tp/src && grep -n -B3 -A30 "message ConfigSlice\|ConfigSliceScope" pkg/proto/sys/spec.proto | head -90; grep -n -i "config_slice" docs/USER.md PROPOSALS.md | head -30
+< 2840-  string service_name = 1; 2841-} 2842- 2843:// ConfigSliceScope identifies the aggregate config message that receives a 2844-// per-service config slice. 2845:enum ConfigSliceScope { 2846-  CONFIG_SLICE_SCOPE_UNSPECIFIED = 0; 2847-  CONFIG_SLICE_SCOPE_TENANT = 1; 2848-  CONFIG_SLICE_SCOPE_PROJ...
+> Bash cd /tmp/tp/src && sed -n 325,350p docs/USER.md; sed -n 1015,1060p docs/USER.md; grep -rn -i "stratum" docs/USER.md | head -20
+<   one a fleet owner keeps for services that will only ever live in fleets they   control; it allocates 1024-2047. Both are append-only: ids are never reused or   renumbered. Each entry names the service's **contract**, the repo that holds its   proto. That repo may be public, shared with a partner, ...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash grep -n -i "join_mode\|joinmode\|sign_in\|signin\|idp\|domains\|duration" proto/services/kernel.proto | head -40; grep -rln "OAuthTenantConfig\|TenantConfig" server/src/main | head -20
+< 37:// Kernel calls OPA to resolve IDP claims → TokenEntitlements 51:// SIGNING_KEY_FILE is the filename written under disk_dir for the active 52:// signing key. Each kernel instance writes its own key independently. 53:option (spec.string_const) = {name: "SIGNING_KEY_FILE", value: "signing_key.json"...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+> Bash for i in 35 69 71; do gh issue view $i --repo tacplus-dev/kernel --json number,state,labels,title --jq '"\(.number) \(.state) \(.title) [\(.labels|map(.name)|join(","))]"'; done; grep -n "OAuthTenantConfig" -r server/src/main | head -5; grep -n -i "push\|config_slice\|#70\|publisher" PROPOSALS.md | ...
+< 35 OPEN Configs in kernel state: system config read-only to the platform; tenant configs per tenant, versioned, persisted in the tenant's Stratum; GetConfig for the Skipper [approved,feature] 69 OPEN Tenant registry in the system tenant's Stratum: a tenant's id, namespace and trust, written when a t...
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+= thinking_tokens
+I have enough for a decision. The issue needs work in other repositories and contract choices it doesn't settle, so rule 1 applies: I'll ask on the issue, add `needs-decision`, and commit nothing.
+> Bash gh issue view 23 --repo tacplus-dev/kernel --json state --jq .state; cat > /tmp/c70.md <<'EOF' The looper of kernel stopped on this issue before changing anything: it needs decisions this repository can't make on its own (rule 1). Nothing is committed or pushed.  **What I read:** the 2026-11-19 adde...
+< CLOSED https://github.com/tacplus-dev/kernel/issues/70#issuecomment-7024129582 https://github.com/tacplus-dev/kernel/issues/70
+#23 turns out to be closed, so I'll correct that line in my comment.
+> Bash sed -i 's/the tid in the service identity (#23, open) or the registry (#69, open)/the tid in the service identity (#23, closed: check that it covers Stratum) or the registry (#69, open)/; s/(and #23 or #69 if the identity check depends on them)/(and #69 if the identity check depends on the registry)...
+< https://github.com/tacplus-dev/kernel/issues/70#issuecomment-7024129582
+> Bash /usr/local/bin/repo-looper --repo kernel --issue 70 --checkpoint "Stopped for a decision (needs-decision; issue comment 7024129582). Nothing committed. Left: once a tacplus issue exists for the generated tenant-to-kernel push (receiver and publisher) and the slice's fields are settled, add Blocked-b...
+< [2026-11-19T22:35:43Z] checkpoint of #70 (a step) pushed to looper/kernel-70:  2 files changed, 209 insertions(+)
+The checkpoint reported 2 files changed, but I didn't change anything in the checkout, so I'm checking what it pushed.
+> Bash git status --short; git log --stat -1 origin/looper/kernel-70 2>/dev/null | head -20
+< commit 2b7c4e319984d0823100a063cb615528e2b7022b Author: jodydadescott <jody@thescottsweb.com> Date:   Thu Nov 19 22:35:42 2026 +0000      looper: work in progress on #70 (a step)          Stopped for a decision (needs-decision; issue comment 7024129582). Nothing committed. Left: once a tacplus issue...
+I didn't build issue #70. It needs decisions the kernel can't make on its own, so I asked on the issue, added the `needs-decision` label and committed nothing (rule 1).
+
+**Why I stopped:**
+1. **The publisher is tacplus work, and there's nothing filed for it.** tacplus 2.6.1 doesn't generate anything like this push. Its publisher and the stream it uses are a contract that tacplus owns. If I hand-wrote the receiving side in the kernel, the kernel would be setting that contract for tacplus. There's no tacplus issue or tacplus ROADMAP entry for it yet, even though the design record lists it as a new follow-up.
+2. **It's unclear which slice gets pushed.** The kernel's existing tenant slice, `KernelTenantConfig`, holds data the kernel writes itself (workload keys and their `last_used_at`). That data can't be held in memory only or sent by the tenant. The fields the issue names aren't in the kernel today: sign-in providers sit in oauth's slice, and join mode and domains aren't in any kernel message. So the new slice's fields are a new public contract, and it needs a field number from the tacplus registry, which is another repository.
+3. **Checking that a slice comes from the tenant's own Stratum needs a per-tenant identity to check against.** That would come from the tenant id in service identities (#23, closed, but I haven't confirmed it covers Stratum) or the tenant registry (#69, still open).
+
+**What I recommended in the comment** ([issuecomment-7024129582](https://github.com/tacplus-dev/kernel/issues/70#issuecomment-7024129582)):
+- A tacplus feature issue, approved and put on tacplus's roadmap at Jody's request, for a push mode on tenant slices. tacplus would generate both ends: the kernel's receiver and Stratum's publisher.
+- A new kernel slice message (for example `KernelTenantSettings`) whose fields are settled first, while `KernelTenantConfig` stays as it is until #35 decides where it goes.
+- After that, this issue gets `Blocked-by` that tacplus issue. The kernel side is then the slice declaration, sign-in that refuses until a snapshot arrives, and tests for stale versions, the wrong sender, and a kernel restart.
+
+I saved a checkpoint saying what's left; it only pushed the looper's own run files to `looper/kernel-70`. I didn't need to run a build, the trace-propagation check or the security baseline, since nothing changed.
+= success: I didn't build issue #70. It needs decisions the kernel can't make on its own, so I asked on the issue, added the `needs-decision` label and committed nothing (rule 1).
+
+**Why I stopped:**
+1. **The publisher is tacplus work, and there's nothing filed for it.** tacplus 2.6.1 doesn't generate anything like this push. Its publisher and the stream it uses are a contract that tacplus owns. If I hand-wrote the receiving side in the kernel, the kernel would be setting that contract for tacplus. There's no tacplus issue or tacplus ROADMAP entry for it yet, even though the design record lists it as a new follow-up.
+2. **It's unclear which slice gets pushed.** The kernel's existing tenant slice, `KernelTenantConfig`, holds data the kernel writes itself (workload keys and their `last_used_at`). That data can't be held in memory only or sent by the tenant. The fields the issue names aren't in the kernel today: sign-in providers sit in oauth's slice, and join mode and domains aren't in any kernel message. So the new slice's fields are a new public contract, and it needs a field number from the tacplus registry, which is another repository.
+3. **Checking that a slice comes from the tenant's own Stratum needs a per-tenant identity to check against.** That would come from the tenant id in service identities (#23, closed, but I haven't confirmed it covers Stratum) or the tenant registry (#69, still open).
+
+**What I recommended in the comment** ([issuecomment-7024129582](https://github.com/tacplus-dev/kernel/issues/70#issuecomment-7024129582)):
+- A tacplus feature issue, approved and put on tacplus's roadmap at Jody's request, for a push mode on tenant slices. tacplus would generate both ends: the kernel's receiver and Stratum's publisher.
+- A new kernel slice message (for example `KernelTenantSettings`) whose fields are settled first, while `KernelTenantConfig` stays as it is until #35 decides where it goes.
+- After that, this issue gets `Blocked-by` that tacplus issue. The kernel side is then the slice declaration, sign-in that refuses until a snapshot arrives, and tests for stale versions, the wrong sender, and a kernel restart.
+
+I saved a checkpoint saying what's left; it only pushed the looper's own run files to `looper/kernel-70`. I didn't need to run a build, the trace-propagation check or the security baseline, since nothing changed.
+= usage: {"claude-opus-5-5":{"inputTokens":42,"outputTokens":8893,"cacheReadInputTokens":972433,"cacheCreationInputTokens":49995,"webSearchRequests":0,"costUSD":0.7724746,"contextWindow":1000000,"maxOutputTokens":128000,"thinkingTokens":2617,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"list"}}

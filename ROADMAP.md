@@ -7,6 +7,7 @@ The fleet's state host and token authority (Java, tacplus service). Unreleased; 
 Built inside the fleet build from a manifest, not standalone. Ported from SeaBeam through `1672d4d4`; the private schematic kernel is not kept in sync.
 
 ## Next
+- Tenant registry in the system tenant's Stratum (#69); tenant config pushed to the kernel from each tenant's Stratum, memory only, fail closed (#70); the deployment config's redacted copy as kernel state readable by the Admiral (#71). Hub, at Jody's request (Skipper/Admiral huddles), 2026-11-19.
 - Mint the member-port audience `member:<svc>` for a service's own label (#30; for tacplus#212)
 - Sign-in and linking: binding step, kernel-owned pairwise mappings, account classification, proof age (#26)
 - Tenant-owned service identity carries the tid: `spiffe://<td>/tenants/<tid>/services/<svc>` (#23; for tacplus-dev/gateway#3)

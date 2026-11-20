@@ -76,7 +76,7 @@ gates:
   fi
   if ! mvn -B verify > target-mvn.log 2>&1; then
     cat target-mvn.log >&2
-    msg="$(grep -E '^\[ERROR\]' target-mvn.log | grep -vE 'Help 1|re-run|full stack|^\[ERROR\] *$|-> \[Help|To see the full|Re-run Maven|For more information|^\[ERROR\] (Failures|Errors|Tests run):? *$|BUILD FAILURE|Failed to execute goal' | head -n 8 | sed -E 's#/[^ :]*/##g; s/\[ERROR\] //; s/[[:space:]]+/ /g' | tr '\n' '|' | cut -c1-600)"
+    msg="$(grep -aE '^\[ERROR\]' target-mvn.log | grep -avE 'Help 1|re-run|full stack|^\[ERROR\] *$|-> \[Help|To see the full|Re-run Maven|For more information|^\[ERROR\] (Failures|Errors|Tests run):? *$|BUILD FAILURE|Failed to execute goal' | head -n 8 | tr -cd '[:print:]\n' | sed -E 's#/[^ :]*/##g; s/\[ERROR\] //; s/[[:space:]]+/ /g' | tr '\n' '|' | cut -c1-600)"
     echo "error: MVN: ${msg}" >&2
     exit 1
   fi

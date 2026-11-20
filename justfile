@@ -61,7 +61,13 @@ gates:
   set -euo pipefail
   rm -rf tacplus/target
   before="$(git status --porcelain -uall; git diff HEAD)"
-  just generate
+  if ! just generate > target-gen.log 2>&1; then
+    cat target-gen.log >&2
+    msg="$(grep -v '^error: recipe' target-gen.log | grep -iE 'error|fail|refus|cannot|not ' | grep -vE '^\s*(at |\[INFO\]|\[WARN)' | tail -n 4 | sed -E 's#/[^ :]*/##g; s/[[:space:]]+/ /g' | tr '\n' '|' | cut -c1-600)"
+    echo "error: GEN: ${msg}" >&2
+    exit 1
+  fi
+  rm -f target-gen.log
   after="$(git status --porcelain -uall; git diff HEAD)"
   if [[ "$before" != "$after" ]]; then
     echo "gates: generation changed files under version control:" >&2

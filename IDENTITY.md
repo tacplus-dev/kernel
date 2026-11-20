@@ -920,8 +920,9 @@ five recommendations on #69 (2026-11-20).
 
 ### What changed
 
-- **The record.** `kernel.TenantRegistryEntry{tid, name, kubernetes_namespace, services, version, status}`, a
-  `(spec.record)` keyed by `tid`. The operator alone writes it (`s2s`, `s2s_write`), as its `/system` delegate
+- **The record.** `kernel.TenantRegistryEntry{tid, name, kubernetes_namespace, services, version, status,
+  namespace}`, a `(spec.record)` keyed by `tid` and held to `/system` in the store (`namespace`, its
+  `(spec.store_namespace)`, which tacplus requires of every record). The operator alone writes it (`s2s`, `s2s_write`), as its `/system` delegate
   (`spiffe://<td>/system/services/operator`, the delegate it already has); kernel alone reads (`s2s_read`, with the
   file-level `(spec.record_read)`) and watches it (`s2s_subscribe`, beside `stratum`). Not the Admiral, not a tenant.
 - **The trust** is `services`: the tenant-owned services its Kubernetes namespace may run, each

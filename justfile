@@ -61,26 +61,14 @@ gates:
   set -euo pipefail
   rm -rf tacplus/target
   before="$(git status --porcelain -uall; git diff HEAD)"
-  if ! just generate > target-gen.log 2>&1; then
-    cat target-gen.log >&2
-    msg="$(grep -v '^error: recipe' target-gen.log | grep -iE 'error|fail|refus|cannot|not ' | grep -vE '^\s*(at |\[INFO\]|\[WARN)' | tail -n 4 | sed -E 's#/[^ :]*/##g; s/[[:space:]]+/ /g' | tr '\n' '|' | cut -c1-600)"
-    echo "error: GEN: ${msg}" >&2
-    exit 1
-  fi
-  rm -f target-gen.log
+  just generate
   after="$(git status --porcelain -uall; git diff HEAD)"
   if [[ "$before" != "$after" ]]; then
     echo "gates: generation changed files under version control:" >&2
     git status --short >&2
     exit 1
   fi
-  if ! mvn -B verify > target-mvn.log 2>&1; then
-    cat target-mvn.log >&2
-    msg="$(grep -aE '^\[ERROR\]' target-mvn.log | grep -avE 'Help 1|re-run|full stack|^\[ERROR\] *$|-> \[Help|To see the full|Re-run Maven|For more information|^\[ERROR\] (Failures|Errors|Tests run):? *$|BUILD FAILURE|Failed to execute goal' | grep -avE 'Tests run:|<<< (FAILURE|ERROR)!' | head -n 8 | tr -cd '[:print:]\n' | sed -E 's#/[^ :]*/##g; s/\[ERROR\] //; s/com\.github\.tacplusdev\.kernel\.//g; s/[[:space:]]+/ /g' | tr '\n' '|' | cut -c1-600)"
-    echo "error: MVN: ${msg}" >&2
-    exit 1
-  fi
-  rm -f target-mvn.log
+  mvn -B verify
 
 clean:
   rm -rf tacplus/target codegen/target server/target target

@@ -382,6 +382,11 @@ public class ClusterServer {
 		// data instead of the former List::of stub.
 		final var liveGrants = new java.util.concurrent.CopyOnWriteArrayList<>(cfg.getGrantsList());
 
+		// The tenant registry (kernel#69): the top-level tenants the operator
+		// approved, restored from the disk snapshot below and then followed in
+		// the system tenant's Stratum. Each entry derives its tenant's delegates.
+		final var tenantRegistry = new TenantRegistry(kernelConfigMap, this::saveIdentitySnapshot);
+
 		// IdentitySnapshot builds the KernelDiskState snapshot from the rotator's
 		// signing-key records plus the live boundary maps.
 		this.identitySnapshot = new IdentitySnapshot(
@@ -430,7 +435,8 @@ public class ClusterServer {
 						logger.warn("Failed to read the principal registry for snapshot: {}", e.getMessage());
 						return Kernel.PrincipalState.getDefaultInstance();
 					}
-				});
+				},
+				tenantRegistry::entries);
 
 		// Load the identity snapshot from disk and rehydrate Hazelcast-backed state before
 		// the rotator starts (signing_keys are restored into the rotator; the
@@ -448,6 +454,9 @@ public class ClusterServer {
 		restorePeople(snapshot, principalState);
 		migratePersonalPrincipals(snapshot, principalState);
 		restoreGrantRevocations(snapshot, liveGrants);
+		// Kernel serves the registry's tenants of its snapshot at once; the
+		// registry's Watch, started below once kernel serves, brings it current.
+		tenantRegistry.restore(snapshot != null ? snapshot.getTenantRegistryList() : List.of());
 		keyRotator.restore(snapshot != null ? snapshot.getSigningKeysList() : List.of());
 
 		// 5. Build gRPC server
@@ -739,6 +748,9 @@ public class ClusterServer {
 			}
 
 			var opaConn = new com.github.tacplusdev.kernel.model.chassis.serviceconnection.ServiceConnection("opa", s2sChannelFactory);
+			// Stratum is one instance per tenant: its connections are pooled by tid,
+			// and the tenant registry's Watch goes to the system tenant's.
+			var stratumConns = new com.github.tacplusdev.kernel.model.chassis.serviceconnection.TenantConnections("stratum", s2sChannelFactory);
 
 			// Feed ServiceHealthState into the OPA ServiceConnection.
 			var healthMap = backendServers.sys().getServiceHealthMap(); // the health root is the sys contract's now
@@ -764,14 +776,18 @@ public class ClusterServer {
 					try {
 						var instances = new java.util.ArrayList<>(healthMap.proto().getInstancesList());
 						var relevant = new java.util.ArrayList<com.github.tacplusdev.kernel.model.types.sys.healthreport.Healthreport.ServiceInstanceHealth>();
+						var stratumInstances = new java.util.ArrayList<com.github.tacplusdev.kernel.model.types.sys.healthreport.Healthreport.ServiceInstanceHealth>();
 						for (var inst : instances) {
 							var ep = inst.getGrpcEndpoint();
 							if (ep == null || ep.getHost().isEmpty() || ep.getPort() <= 0) continue;
 							if (inst.getServiceId().equals(opaConn.serviceId())) {
 								relevant.add(inst);
+							} else if (inst.getServiceId().equals(stratumConns.serviceId())) {
+								stratumInstances.add(inst);
 							}
 						}
 						opaConn.reconcileFromHealth(relevant);
+						stratumConns.reconcileFromHealth(stratumInstances);
 					} catch (Exception e) {
 						logger.warn("Health update failed: {}", e.getMessage());
 					}
@@ -789,6 +805,7 @@ public class ClusterServer {
 			// the generated s2sm.internal.grpc.clients.GrpcClients.)
 			var grpcClients = new com.github.tacplusdev.kernel.model.s2sm.internal.grpc.clients.GrpcClients(
 					new com.github.tacplusdev.kernel.model.chassis.serviceconnection.ServiceConnection.ChannelProvider(opaConn),
+					new com.github.tacplusdev.kernel.model.chassis.serviceconnection.ServiceConnection.ChannelProvider(stratumConns),
 					aud -> () -> {
 						try {
 							return mintSelfToken(keyRotator, tokenIssuer, aud, () -> spiffeTrustDomain);
@@ -798,6 +815,24 @@ public class ClusterServer {
 					});
 
 			healthPoller.start();
+
+			// The tenant registry's Watch, on the system tenant's Stratum. Stratum
+			// takes its own tokens from kernel, so the first streams fail until
+			// kernel serves and Stratum is up; the Watch retries until one holds.
+			String registryTid = cfg.getTenantRegistryTid();
+			if (registryTid.isEmpty()) {
+				logger.info("No tenant registry (Config.tenant_registry_tid is empty): kernel serves the "
+						+ "tenants of its disk snapshot and Config.tenants");
+			} else {
+				var recordMap = grpcClients.vservices().recordMap();
+				Thread registryWatch = new Thread(new TenantRegistryWatch(tenantRegistry,
+						fromRevision -> StratumTenantRegistryFeed.stream(recordMap.watchTenantRegistryEntryChanges(
+								StratumTenantRegistryFeed.request(registryTid, fromRevision))),
+						5000), "tenant-registry-watch");
+				registryWatch.setDaemon(true);
+				registryWatch.start();
+				logger.info("Following the tenant registry in the Stratum of tenant {}", registryTid);
+			}
 
 			// Both OPA clients (user-entitlement eval + proxy-policy eval). Each is
 			// @Nullable in IdentityServiceImpl — null when OPA isn't reachable.
@@ -814,7 +849,8 @@ public class ClusterServer {
 					cfg.getOfflineTokenLifetimeSeconds(),
 					keyRotator,
 					allKeysSupplier,
-					() -> delegates,
+					// Config.delegates, then the ones the tenant registry derives.
+					() -> tenantRegistry.withDelegatesOf(delegates),
 					() -> liveGrants,
 					// RevokeGrant's single write path: replace the record carrying the
 					// same id in place, so the live list a concurrent mint reads is

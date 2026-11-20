@@ -44,6 +44,11 @@ option (spec.opa_import) = {source: "userentitlements.EntitlementEvalInput", ser
 // URL rewrite, aud override, extra claims, and credential format.
 option (spec.opa_import) = {source: "proxypolicy.ProxyPolicyEvalInput", service: "opa"};
 
+// Kernel reads and follows the tenant registry (TenantRegistryEntry) in the
+// system tenant's Stratum, through the record plane's S2S half: the use half
+// of the record's s2s_read and s2s_subscribe grants (kernel#69).
+option (spec.record_read) = {record: "kernel.TenantRegistryEntry"};
+
 // Data must exist on at least 3 nodes (1 primary + 2 backups).
 // Hazelcast backupCount = min(MIN_DATA_COPIES - 1, clusterSize - 1).
 option (spec.int_const) = {name: "MIN_DATA_COPIES", value: 3};
@@ -289,6 +294,11 @@ message Config {
   // rendered before kernel ran keeps that id; an absent one is minted once and
   // kept. A tenant that already exists keeps its record — the tid of a tenant
   // is immutable, so a listed tid that differs from the record's is refused.
+  //
+  // DEPRECATED (kernel#69): the tenant registry (TenantRegistryEntry, below)
+  // is the source of top-level tenants. Kernel still seeds these for one minor
+  // release, so a deployment moves its tenants to the registry without a gap;
+  // then the field is reserved.
   repeated BootstrapTenant tenants = 41 [(spec.assert_max_size) = 64];
 
   // xid_ageing_period_seconds is how long a person may go without signing in
@@ -301,6 +311,13 @@ message Config {
     (spec.default_int) = 31536000,
     (spec.assert_duration) = DURATION_TYPE_POSITIVE
   ];
+
+  // tenant_registry_tid is the tid of the Stratum instance that holds the
+  // tenant registry (TenantRegistryEntry): the system tenant's. Every record
+  // plane call is routed to one tenant's Stratum by tid, so kernel needs it to
+  // reach the registry. Empty — the default — means no registry: kernel serves
+  // the tenants of its disk snapshot and Config.tenants, and follows nothing.
+  string tenant_registry_tid = 43 [(spec.assert_max_size) = 8];
 }
 
 // BootstrapTenant is one tenant listed in the deployment's bootstrap config
@@ -2074,6 +2091,98 @@ message TenantIdRow {
   int64  tombstoned_at_ms = 4;
 }
 
+// TenantRegistryEntry is one top-level tenant in the tenant registry: that it
+// exists, its id, its namespace and the trust its workloads run under
+// (kernel#69; tacplus-dev/roadmap decisions/skipper-and-admiral-2026-11-01.md,
+// 2026-11-19). Tenant existence is system data, so the registry lives in the
+// system tenant's own Stratum (Config.tenant_registry_tid); a tenant's settings
+// are its own data and live in its own Stratum (kernel#35).
+//
+// The operator writes one entry, a new version of it, when it approves a
+// tenant, as its /system delegate (spiffe://<td>/system/services/operator); no
+// deploy. Kernel alone reads it: at boot, it serves the tenants of its disk
+// snapshot at once, then follows the registry's Watch, applying an entry only
+// at a higher version than it holds. A tenant's workloads get their identity
+// from the entry, so kernel serves a tenant before it has any of its settings.
+//
+// The registry is the only source of top-level tenants: TenantAdmin.CreateTenant
+// refuses one (sub-tenants and projects stay TenantAdmin's), and Config.tenants
+// is seeded for one minor release only.
+message TenantRegistryEntry {
+  option (spec.record) = {
+    key: "tid"
+
+    // PRODUCER: the operator, and nothing else. Written through the store's
+    // write surface (s2s_write); a record is still an event in tacplus 2.6 and
+    // must name its producer (s2s), the same one.
+    s2s: {auth_services: ["operator"]}
+    s2s_write: {auth_services: ["operator"]}
+
+    // CONSUMER and STORED-ROW READ: kernel alone — not the Admiral, not a
+    // tenant. Kernel follows Watch<T>Changes (s2s_subscribe, beside the record
+    // store) and may read a row back (s2s_read, paired with the file-level
+    // (spec.record_read) above).
+    s2s_subscribe: {auth_services: ["stratum", "kernel"]}
+    s2s_read: {auth_services: ["kernel"]}
+
+    // A tenant's existence must survive the store's restart.
+    durability: DURABILITY_LOCAL
+
+    // Config-shaped and long-lived: read at every kernel start, written once
+    // per approval. No (spec.deleted_flag): a tenant leaves the registry by a
+    // Delete of its entry.
+    residency: {idle_seconds: 7776000 deleted_max_age_seconds: 2592000}
+  };
+
+  // tid is the tenant's id, the entry's key: exactly 8 of [0-9a-z], not all
+  // digits (that range is the platform's). The operator names the tenant's
+  // Kubernetes namespace by it before kernel sees the entry, so kernel takes it
+  // as given; it is immutable, and an entry naming a tenant kernel holds under
+  // another tid is refused.
+  string tid = 1 [(spec.indexed) = true, (spec.assert_required) = true, (spec.assert_max_size) = 8];
+
+  // name is the bare tenant name: the tenant is /tenants/<name>. Immutable, as
+  // Tenant.name is: an entry whose name differs from the one kernel holds for
+  // its tid is refused.
+  string name = 2 [(spec.assert_required) = true, (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
+
+  // kubernetes_namespace is the Kubernetes namespace the tenant's workloads
+  // run in (tac-<deployment>-<tid>).
+  string kubernetes_namespace = 3 [(spec.assert_required) = true, (spec.assert_max_size) = 63];
+
+  // services is the trust: the tenant-owned services its namespace may run.
+  // Kernel derives each one's delegate from it, in place of a Config.delegates
+  // entry, so a tenant needs no deploy to get identities.
+  repeated TenantRegistryService services = 4 [(spec.assert_max_size) = 64];
+
+  // version is the entry's version, increasing with every write of it. Kernel
+  // applies an entry only at a higher version than the one it holds; a lower or
+  // equal one is ignored.
+  int64 version = 5;
+
+  // status: SUSPENDED keeps the tenant but derives no delegates, so its
+  // workloads mint nothing. UNSPECIFIED is ACTIVE.
+  TenantStatus status = 6;
+}
+
+// TenantRegistryService is one tenant-owned service a tenant's namespace may
+// run. Kernel derives its delegate: name, tenant_namespace /tenants/<name of the
+// entry>, the one Kubernetes service account kubernetes_service_account in the
+// entry's kubernetes_namespace, and authorized_services. Its minted subject is
+// spiffe://<td>/tenants/<tid>/services/<name>.
+message TenantRegistryService {
+  // name is the service path segment, the delegate's name.
+  string name = 1 [(spec.assert_required) = true, (spec.assert_min_size) = 1, (spec.assert_max_size) = 128];
+
+  // kubernetes_service_account is the Kubernetes ServiceAccount its pods run
+  // as, in the entry's kubernetes_namespace.
+  string kubernetes_service_account = 2 [(spec.assert_required) = true, (spec.assert_max_size) = 253];
+
+  // authorized_services are the services it may request tokens for, as
+  // Delegate.authorized_services.
+  repeated services.ServiceName authorized_services = 3 [(spec.assert_max_size) = 64];
+}
+
 // TenantConfigEntry maps a tenant_name to its full TenantConfig (the tacplus
 // config slices: kernel cred_pairs, oauth IDP, opa policy). TenantAdmin RPCs
 // write these.
@@ -2297,6 +2406,11 @@ message KernelDiskState {
   // the device edges ClusterServer.migratePersonalPrincipals follows; every
   // other edge is ignored. The next snapshot carries none.
   repeated TenantUserLinks tenant_user_links = 12 [(spec.assert_max_size) = 65536];
+
+  // tenant_registry is the tenant registry as kernel last applied it
+  // (TenantRegistryEntry), one entry per tid, so a restarted kernel derives
+  // its tenants' delegates at once, before its Watch of the registry connects.
+  repeated TenantRegistryEntry tenant_registry = 15 [(spec.assert_max_size) = 4096];
 }
 
 // ============================================================================
@@ -2318,8 +2432,9 @@ service TenantAdmin {
   // "/acme/sub" for a sub-tenant) with the given immutable constraints. The
   // tenant must not already exist. Two-step: existence only — it returns the
   // Tenant and nothing else (no config, no key material); bootstrap it via
-  // SetTenantConfig. Caller must be at-or-above tenant_namespace (ROOT "/" to
-  // create a top-level tenant).
+  // SetTenantConfig. Caller must be at-or-above tenant_namespace. A top-level
+  // tenant (/tenants/<name>) is refused with FAILED_PRECONDITION: the tenant
+  // registry (TenantRegistryEntry) is the only source of those (kernel#69).
   rpc CreateTenant(CreateTenantRequest) returns (Tenant) {
     option (spec.rpc) = {principal: RPC_PRINCIPAL_USER, exposure: RPC_EXPOSURE_EXTERNAL, flags: [RPC_FLAG_AUTH_ENTITLED_USERS], target_namespace_field: "tenant_namespace"};
   }

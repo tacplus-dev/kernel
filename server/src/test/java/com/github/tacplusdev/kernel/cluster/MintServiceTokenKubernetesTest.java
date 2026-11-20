@@ -65,7 +65,7 @@ class MintServiceTokenKubernetesTest {
     void createTenants() throws Exception {
         TenantAdminServiceImpl admin = new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, () -> { });
         for (String ns : List.of(ACME_NS, BETA_NS)) {
-            admin.createTenant(CALLER, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(ns).build());
+            TestTenants.create(admin, configMap, ns);
         }
     }
 
@@ -572,8 +572,7 @@ class MintServiceTokenKubernetesTest {
     @Test
     void aSubTenantsInstanceIsRootedAtItsOwnTid() throws Exception {
         String prodNs = ACME_NS + "/prod";
-        new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, () -> { }).createTenant(CALLER,
-                Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(prodNs).build());
+        TestTenants.create(new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, () -> { }), configMap, prodNs);
         addDelegate(TENANT_DELEGATE_NAME, prodNs, K8S_NAMESPACE, ACME_SA);
 
         TokenWrapper prod = mintAccessForSa(ACME_SA);

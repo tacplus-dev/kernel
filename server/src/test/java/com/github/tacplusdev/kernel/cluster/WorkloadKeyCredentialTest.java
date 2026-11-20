@@ -81,10 +81,8 @@ class WorkloadKeyCredentialTest {
 		configMap = new ConfigMap(new InMemoryManager());
 		admin = new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, null);
 		for (String ns : List.of(ACME, GLOBEX)) {
-			admin.createTenant(null, Kernel.CreateTenantRequest.newBuilder()
-					.setTenantNamespace(ns)
-					.setConstraints(Kernel.Constraints.newBuilder()
-							.setEntitlementsCeiling(TenantAdminServiceImpl.buildFullEntitlements()))
+			TestTenants.create(admin, configMap, ns, Kernel.Constraints.newBuilder()
+					.setEntitlementsCeiling(TenantAdminServiceImpl.buildFullEntitlements())
 					.build());
 		}
 		acmeSubject = TenantServiceSubjects.of(configMap, TRUST_DOMAIN, ACME, "ingest");

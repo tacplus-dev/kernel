@@ -120,16 +120,17 @@ class TenantAdminServiceImplTest {
 				configMap.getProjectConfigs(ACME + "/sub/default").getProjectNamespace());
 	}
 
-	/** A top-level tenant's parent is the "/tenants" root: still unbounded. */
+	/** A top-level tenant comes from the tenant registry, whatever its ceiling (kernel#69). */
 	@Test
-	void createTenantAllowsATopLevelTenantWithAnyCeiling() throws Exception {
-		Kernel.Tenant created = impl.createTenant(null, Kernel.CreateTenantRequest.newBuilder()
-				.setTenantNamespace("/tenants/globex")
-				.setConstraints(ceiling("KERNEL_ANY"))
-				.build());
+	void createTenantRefusesATopLevelTenant() {
+		ProtoException e = assertThrows(ProtoException.class,
+				() -> impl.createTenant(null, Kernel.CreateTenantRequest.newBuilder()
+						.setTenantNamespace("/tenants/globex")
+						.setConstraints(ceiling("KERNEL_ANY"))
+						.build()));
 
-		assertEquals("globex", created.getName());
-		assertEquals("globex", configMap.getTenants("/tenants/globex").getName());
+		assertEquals(ProtoException.FAILED_PRECONDITION, e.getCode());
+		assertTrue(configMap.getTenants("/tenants/globex").getName().isEmpty());
 	}
 
 	/**

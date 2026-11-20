@@ -48,7 +48,7 @@ class TenantNameShapeTest {
 	}
 
 	private Kernel.Tenant create(String ns) throws ProtoException {
-		return admin.createTenant(null, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(ns).build());
+		return TestTenants.create(admin, configMap, ns);
 	}
 
 	private void seed(String name) throws ProtoException {

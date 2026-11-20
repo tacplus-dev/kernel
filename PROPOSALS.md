@@ -313,6 +313,27 @@ the looper then marks it `promoted` or `declined` here with the date.
   (`TokenReviewKubernetesTokenVerifier.verify`, caused by a MintToken with a projected SA token) is HTTP to the API
   server, not a generated client, and has no field for tacplus's `trace_id`; it carries none and needs no marker under
   the README's definition.
+- **The tenant registry needs its writer and its Stratum** (2026-11-20, #69): kernel follows
+  `kernel.TenantRegistryEntry` in the Stratum `Config.tenant_registry_tid` names, but nothing writes the registry
+  yet and no deployment renders that Stratum. Needed in tacplus-dev/operator: render a Stratum instance for the
+  system tenant (operator#2 renders none yet) and put its tid in kernel's config; write a tenant's entry, a new
+  `version` each time, through the record write surface when it approves the tenant (as its `/system` delegate
+  `operator`, which it already has), with each tenant-owned service's service account and authorized services; then
+  stop rendering `Config.tenants` and the per-tenant `Config.delegates`. A /system Stratum (an instance outside
+  `/tenants/<tid>`) is not routable today (tacplus `TenantConnections`); if the platform wants one, that is a
+  tacplus and stratum change, and kernel's config field goes.
+- **Reserve `Config.tenants` after one minor release** (2026-11-20, #69): deprecated by the registry, still seeded
+  so deployments move over without a gap. Once the operator writes the registry, reserve field 41 and drop
+  `TenantAdminServiceImpl.seedBootstrapTenants` from boot (the registry applies entries through
+  `seedBootstrapTenant`).
+- **A tenant leaving the registry is not deleted** (2026-11-20, #69): a registry Delete drops the tenant's derived
+  delegates and keeps its record, since deletion purges what kernel holds (#19). Whether a registry Delete should
+  run that purge, or only suspend the tenant, is a decision for when the operator un-approves tenants.
+- **Registry status is per kernel node** (2026-11-20, #69): every kernel node follows the registry on its own and
+  holds the entries in its own disk snapshot; the tenant records they make are the shared ConfigState. Two nodes
+  agree once each has the same entries, by version. A node whose Watch cannot connect keeps serving its last
+  snapshot's entries; nothing reports how far behind it is. A `Cluster` status of the registry's revision per node
+  would show it.
 
 ## Promoted / declined
 - **Tenant-owned service identity carries the tid** (2026-10-28, #23): promoted 2026-10-28 (kernel ROADMAP.md, Next),

@@ -76,7 +76,7 @@ class MemberPortAudienceTest {
 		configMap = new ConfigMap(new InMemoryManager());
 		TenantAdminServiceImpl admin = new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, null);
 		for (String ns : List.of(ACME, BETA)) {
-			admin.createTenant(null, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(ns).build());
+			TestTenants.create(admin, configMap, ns);
 		}
 		svc = new IdentityServiceImpl(
 				3600, 900, 86_400, 86_400, 86_400,

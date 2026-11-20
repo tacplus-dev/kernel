@@ -909,3 +909,64 @@ tid misleads people too.
   and no record or tid is written; the four other names are accepted on both; one refused seed entry leaves the
   others seeded; boot finds pre-guard records (top-level and nested) and not the reserved tenants; the cluster
   status carries what boot found.
+
+## 2026-11-20 — The tenant registry in the system tenant's Stratum (#69)
+
+Tenant existence is system data; a tenant's settings are tenant data (tacplus-dev/roadmap
+`decisions/skipper-and-admiral-2026-11-01.md`, 2026-11-19). The operator writes a tenant into the registry, one
+versioned record, when it approves the tenant; kernel reads it at boot and on change. A tenant's workloads get their
+identity from the registry, so kernel serves a tenant before it has any of the tenant's settings. Jody accepted the
+five recommendations on #69 (2026-11-20).
+
+### What changed
+
+- **The record.** `kernel.TenantRegistryEntry{tid, name, kubernetes_namespace, services, version, status}`, a
+  `(spec.record)` keyed by `tid`. The operator alone writes it (`s2s`, `s2s_write`), as its `/system` delegate
+  (`spiffe://<td>/system/services/operator`, the delegate it already has); kernel alone reads (`s2s_read`, with the
+  file-level `(spec.record_read)`) and watches it (`s2s_subscribe`, beside `stratum`). Not the Admiral, not a tenant.
+- **The trust** is `services`: the tenant-owned services its Kubernetes namespace may run, each
+  `TenantRegistryService{name, kubernetes_service_account, authorized_services}`. Kernel derives one delegate per
+  service: `name`, `tenant_namespace` `/tenants/<name>`, the one service account in the entry's Kubernetes namespace,
+  and its `authorized_services`. Its subject is `spiffe://<td>/tenants/<tid>/services/<name>`, as a configured
+  tenant delegate's is (#23). `Config.delegates` still come first, so a deployment that renders both is unchanged.
+- **Applying an entry** (`TenantRegistry.apply`): only at a higher `version` than the one held (a lower or equal one
+  is ignored); it makes `/tenants/<name>` under the entry's tid, taken as given, as the boot seed does (the same
+  checks: a reserved or tid-shaped name, a reserved or malformed tid, a tid another tenant holds). The tid and the
+  name are immutable: an entry naming a tenant kernel holds under another tid, or a tid kernel holds under another
+  name, is refused. `SUSPENDED` keeps the tenant, marks it suspended and derives no delegates; an entry deleted from
+  the registry derives none either, and the tenant's record is left for `DeleteTenant`.
+- **Where the registry is.** `Config.tenant_registry_tid` names the Stratum instance that holds it: the plane is
+  routed by tid (tacplus#207), and Stratum is one instance per tenant. Empty, the default, means no registry.
+- **Boot order.** The applied entries ride the disk snapshot (`KernelDiskState.tenant_registry`), so kernel serves
+  them at once. Stratum takes its tokens from kernel, so the registry's Watch (`TenantRegistryWatch`, on
+  `WatchTenantRegistryEntryChanges`) retries until it connects. Its first stream is the snapshot: an entry kernel
+  held that the snapshot no longer lists is dropped. Then come the changes, and a stream that ends resumes after the
+  last revision (from 0 again on `OUT_OF_RANGE`). An entry that is refused is logged and skipped. A tenant that is
+  neither in the registry nor in the snapshot is not served.
+- **The only source of top-level tenants.** `TenantAdmin.CreateTenant` refuses `/tenants/<name>` with
+  `FAILED_PRECONDITION`; sub-tenants and projects stay with TenantAdmin. `Config.tenants` is deprecated: still seeded
+  for one minor release, so a deployment moves its tenants over without a gap, then reserved.
+
+### Decided here (issue silent)
+
+- **The trust carries each service's service account and authorized services**, not only its name: the operator
+  names a tenant instance's service account `<svc>-<tenant>` and gives its delegate the services it calls
+  (operator `newServiceDelegate`), and kernel cannot derive either.
+- **`Config.tenant_registry_tid`** rather than a fixed tid: there is no `/system` Stratum instance yet, and a
+  Stratum instance outside `/tenants/<tid>` is not routable (`TenantConnections`). Which tenant hosts it is for the
+  operator that renders it.
+- **A registry delete does not delete the tenant**: deleting a tenant purges what kernel holds for it (#19), which
+  is `DeleteTenant`'s and its caller's decision. PROPOSALS.md.
+
+### Proof
+
+- `TenantRegistryTest`: an entry makes its tenant under its tid with no settings, and its workload mints
+  `spiffe://<td>/tenants/<tid>/services/docmanager` through a projected service-account token; the derived delegate is
+  the entry's trust; another service account or namespace mints nothing; a configured delegate matches first; a lower
+  or equal version changes nothing; a higher one replaces the trust; a changed tid or name is refused; a bootstrap
+  tenant keeps its tid; malformed entries are refused; a suspended or removed tenant's workloads mint nothing;
+  restored entries serve at once; the operator mints its `/system` identity; `CreateTenant` refuses a top-level tenant
+  and makes a registered tenant's sub-tenant.
+- `TenantRegistryWatchTest`: the snapshot then the changes; resuming after the last revision; dropping what the
+  snapshot no longer lists; a refused entry does not stop the feed; `OUT_OF_RANGE` restarts from 0, another failure
+  keeps the revision; the plane's events and the routed request map as they should.

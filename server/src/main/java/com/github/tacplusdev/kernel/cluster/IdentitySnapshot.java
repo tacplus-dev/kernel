@@ -58,6 +58,7 @@ public final class IdentitySnapshot {
     private final Supplier<List<Kernel.WorkloadRevocation>> revocationsReader;
     private final Supplier<List<Kernel.Grant>> grantsReader;
     private final Supplier<Kernel.PrincipalState> principalStateReader;
+    private final Supplier<List<Kernel.TenantRegistryEntry>> tenantRegistryReader;
 
     /**
      * @param diskDir              the kernel disk directory (Config.disk_dir — kernel's
@@ -79,6 +80,25 @@ public final class IdentitySnapshot {
             Supplier<List<Kernel.WorkloadRevocation>> revocationsReader,
             Supplier<List<Kernel.Grant>> grantsReader,
             Supplier<Kernel.PrincipalState> principalStateReader) {
+        this(diskDir, keyRotator, verifyingKeysReader, caReader, configStateReader, revocationsReader,
+                grantsReader, principalStateReader, List::of);
+    }
+
+    /**
+     * As above, and with the tenant registry as kernel holds it.
+     *
+     * @param tenantRegistryReader the held tenant registry entries (kernel#69)
+     */
+    public IdentitySnapshot(
+            String diskDir,
+            KeyRotator keyRotator,
+            Supplier<List<JwkOuterClass.Jwk>> verifyingKeysReader,
+            Supplier<Kernel.Ca> caReader,
+            Supplier<Kernel.ConfigState> configStateReader,
+            Supplier<List<Kernel.WorkloadRevocation>> revocationsReader,
+            Supplier<List<Kernel.Grant>> grantsReader,
+            Supplier<Kernel.PrincipalState> principalStateReader,
+            Supplier<List<Kernel.TenantRegistryEntry>> tenantRegistryReader) {
         this.base = Paths.get(
                 (diskDir != null && !diskDir.isEmpty()) ? diskDir : "/var/lib/kernel");
         this.keyRotator = keyRotator;
@@ -88,6 +108,7 @@ public final class IdentitySnapshot {
         this.revocationsReader = revocationsReader;
         this.grantsReader = grantsReader;
         this.principalStateReader = principalStateReader;
+        this.tenantRegistryReader = tenantRegistryReader;
     }
 
     /**
@@ -121,7 +142,7 @@ public final class IdentitySnapshot {
                 "Loaded kernel disk snapshot from {}: signing_keys={}, verifying_keys={}, "
                         + "ca_certs={}, service_cas={}, tenants={}, tenant_configs={}, "
                         + "project_configs={}, revocations={}, grants={}, "
-                        + "personal_principals={}, people={}",
+                        + "personal_principals={}, people={}, tenant_registry={}",
                 base,
                 state.getSigningKeysCount(),
                 state.getVerifyingKeysCount(),
@@ -133,7 +154,8 @@ public final class IdentitySnapshot {
                 state.getWorkloadRevocationsCount(),
                 state.getGrantsCount(),
                 state.getPersonalPrincipalsCount(),
-                state.getPeopleCount());
+                state.getPeopleCount(),
+                state.getTenantRegistryCount());
         return state;
     }
 
@@ -186,6 +208,9 @@ public final class IdentitySnapshot {
                 // migration (kernel#4).
                 b.addAllPeople(principals.getPeopleList());
                 b.addAllIdentityLinks(principals.getIdentityLinksList());
+            }
+            if (tenantRegistryReader != null) {
+                b.addAllTenantRegistry(tenantRegistryReader.get());
             }
 
             DiskStores.saveKernelDiskState(base, NS, b.build(), Snapshot.Opts.defaults());

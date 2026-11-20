@@ -215,8 +215,7 @@ class TlsCertRevocationTest {
 	void aDeletedTenantsServiceCannotRenewItsCert() throws Exception {
 		String acme = "/tenants/acme";
 		TenantAdminServiceImpl admin = new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, () -> { });
-		Kernel.Tenant tenant = admin.createTenant(null,
-				Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(acme).build());
+		Kernel.Tenant tenant = TestTenants.create(admin, configMap, acme);
 		workloadSpiffe = SpiffeIds.build(TRUST_DOMAIN, SpiffeIds.tenantRoot(tenant.getTid()), "docmanager");
 		Recorder recorder = new Recorder();
 		StreamObserver<Tlscert.TlsCertClientMsg> client = openStream(recorder);

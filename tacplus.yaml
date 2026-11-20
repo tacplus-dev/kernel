@@ -6,9 +6,17 @@ src: proto
 # kernel's contract calls out to opa (spec.opa_import) and so needs its proto.
 # kernel seeds the people tenant's oauth OAuthTenantConfig at boot
 # (cluster/PeopleTenant.java), and so needs oauth's types.
+# kernel declares the tenant registry's record (TenantRegistryEntry) and reads
+# and follows it through the record query plane, the query trait stratum
+# hosts, so stratum's contract is part of this build (kernel#69). A record is
+# still an event in tacplus 2.6: its synthesized topic is brokered by eventbus,
+# which must be in the build too (eventbus depends back on kernel, which its
+# resolution satisfies from these sources).
 depends:
   - opa
   - oauth
+  - stratum
+  - eventbus
 # states: all widens only a fleet build; a standalone build generates from
 # depends and test-depends alone. The ConfigHolder install tests assert on
 # gateway's and llmproxy's configs (ConfigStateSeedBundleWinsTest,

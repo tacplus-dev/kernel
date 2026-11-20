@@ -50,7 +50,7 @@ class TenantIdTest {
 	}
 
 	private Kernel.Tenant create(String ns) throws ProtoException {
-		return admin.createTenant(null, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(ns).build());
+		return TestTenants.create(admin, configMap, ns);
 	}
 
 	private void delete(String ns) throws ProtoException {

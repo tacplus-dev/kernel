@@ -143,6 +143,13 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT, "tenant_namespace must have a leaf segment");
         }
         TenantIds.rejectTidShapedName(leaf);
+        // A top-level tenant exists because the operator approved it: the
+        // tenant registry is the only source of those (kernel#69).
+        if (ns.indexOf('/', TENANTS_PREFIX.length()) < 0) {
+            throw new ProtoException(ProtoException.FAILED_PRECONDITION,
+                    "a top-level tenant (" + ns + ") comes from the tenant registry, not CreateTenant;"
+                            + " CreateTenant creates sub-tenants");
+        }
 
         // Validate the new tenant's ceiling against the parent's ceiling. The
         // parent is the namespace one level up and must already exist (only
@@ -939,9 +946,8 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
      * ({@code kernel.Config.tenants}) at every boot, after the disk snapshot is
      * rehydrated.
      *
-     * <p>A listed tenant that does not exist is created as {@code CreateTenant}
-     * would create a top-level one (active, unconstrained, with its empty
-     * {@code default} project), under the tid the entry carries or, without
+     * <p>A listed tenant that does not exist is created active, unconstrained,
+     * with its empty {@code default} project, under the tid the entry carries or, without
      * one, a freshly minted tid. One that exists keeps its record: a tid is
      * immutable, so an entry whose tid differs from the record's is refused,
      * and a record from before tids existed takes the listed tid. Each entry is
@@ -964,7 +970,12 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         }
     }
 
-    private static void seedBootstrapTenant(ConfigMap configMap, String ns, Kernel.BootstrapTenant t)
+    /**
+     * Seeds one tenant, {@code ns} = /tenants/&lt;name&gt;, under the tid {@code t}
+     * gives (minted when it gives none). The tenant registry applies its entries
+     * through it too ({@link TenantRegistry}).
+     */
+    static void seedBootstrapTenant(ConfigMap configMap, String ns, Kernel.BootstrapTenant t)
             throws ProtoException {
         if (t.getName().isEmpty() || t.getName().indexOf('/') >= 0) {
             throw new ProtoException(ProtoException.INVALID_ARGUMENT, "name must be one bare segment");

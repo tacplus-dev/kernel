@@ -137,8 +137,8 @@ class TenantDeletionTest {
 				null);           // webauthnRelyingParty (fail closed)
 		admin = new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, () -> { },
 				svc::purgeDeletedTenant);
-		admin.createTenant(CALLER, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(ACME_NS).build());
-		admin.createTenant(CALLER, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(BETA_NS).build());
+		TestTenants.create(admin, configMap, ACME_NS);
+		TestTenants.create(admin, configMap, BETA_NS);
 		tids.put(ACME_NS, configMap.getTenants(ACME_NS).getTid());
 		tids.put(BETA_NS, configMap.getTenants(BETA_NS).getTid());
 	}
@@ -294,8 +294,7 @@ class TenantDeletionTest {
 		deleteAcme();
 		assertDeleted(this::tenantIdpLogin);
 
-		Kernel.Tenant again = admin.createTenant(CALLER,
-				Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(ACME_NS).build());
+		Kernel.Tenant again = TestTenants.create(admin, configMap, ACME_NS);
 
 		assertNotEquals(oldTid, again.getTid());
 		assertEquals(ACME_NS, accessToken(tenantIdpLogin()).getNamespace());

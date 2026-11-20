@@ -74,7 +74,13 @@ gates:
     git status --short >&2
     exit 1
   fi
-  mvn -B verify
+  if ! mvn -B verify > target-mvn.log 2>&1; then
+    cat target-mvn.log >&2
+    msg="$(grep -E '^\[ERROR\]|FAIL|expected|Tests run:.*Fail' target-mvn.log | grep -vE 'Help 1|re-run|full stack|^\[ERROR\] *$|-> \[Help|To see the full|Re-run Maven|For more information' | head -n 6 | sed -E 's#/[^ :]*/##g; s/\[ERROR\] //; s/[[:space:]]+/ /g' | tr '\n' '|' | cut -c1-600)"
+    echo "error: MVN: ${msg}" >&2
+    exit 1
+  fi
+  rm -f target-mvn.log
 
 clean:
   rm -rf tacplus/target codegen/target server/target target

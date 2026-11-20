@@ -2163,6 +2163,11 @@ message TenantRegistryEntry {
   // status: SUSPENDED keeps the tenant but derives no delegates, so its
   // workloads mint nothing. UNSPECIFIED is ACTIVE.
   TenantStatus status = 6;
+
+  // namespace is the namespace the entry is held to in the store: "/system".
+  // Tenant existence is system data, written and read by /system services (the
+  // operator and kernel) alone, whatever tenant the entry makes exist.
+  string namespace = 7 [(spec.store_namespace) = true, (spec.assert_max_size) = 256];
 }
 
 // TenantRegistryService is one tenant-owned service a tenant's namespace may

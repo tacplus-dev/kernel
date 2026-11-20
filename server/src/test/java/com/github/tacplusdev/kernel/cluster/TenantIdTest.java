@@ -280,7 +280,8 @@ class TenantIdTest {
 		assertEquals(ProtoException.PERMISSION_DENIED, assertThrows(ProtoException.class,
 				() -> delete(RestoreTenant.NAMESPACE)).getCode());
 		assertEquals(ProtoException.PERMISSION_DENIED, assertThrows(ProtoException.class,
-				() -> create(RestoreTenant.NAMESPACE)).getCode());
+				() -> admin.createTenant(null, Kernel.CreateTenantRequest.newBuilder()
+						.setTenantNamespace(RestoreTenant.NAMESPACE).build())).getCode());
 		assertEquals(ProtoException.PERMISSION_DENIED, assertThrows(ProtoException.class,
 				() -> admin.updateTenantConfig(null, Kernel.SetTenantConfigRequest.newBuilder()
 						.setTenantNamespace(RestoreTenant.NAMESPACE)

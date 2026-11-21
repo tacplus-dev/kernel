@@ -124,7 +124,11 @@ the looper then marks it `promoted` or `declined` here with the date.
   their CVEs in kernel's own Jackson too, and an exception for one generated spotbugs hit (CollectionRuntime's
   USO_UNSAFE_OBJECT_SYNCHRONIZATION) would accept the rule everywhere. An optional `where` (a path or package
   pattern matched against the finding's `where`) would let an entry name only the copy decided on; a
-  tacplus-dev/looper change.
+  tacplus-dev/looper change. Update (nightly scan, 2026-11-21): looper-scan now reads an entry's `where` (README:
+  Security checks), and the build's report of 1259efb warns once for each of the 10 entries without one ("has no where: it
+  accepts <id> in every file (scope it: where)"). What remains is kernel's: give #59's eight entries a `where` naming the jars
+  that shade Hazelcast and the USO entry `CollectionRuntime.java`, so a downgrade of kernel's own Jackson or a new
+  `synchronized` in kernel's code is reported again. The scope of an accepted risk is Jody's decision, recorded on #59/#62.
 - **Drop the ratis-thirdparty pin with the next Ratis bump** (2026-11-04, #43): `ratis-thirdparty.version` (1.1.1)
   in the root pom overrides the 1.1.0 Ratis 3.3.1 asks for, for its shaded Netty. Once a Ratis release asks for
   `>= 1.1.1`, remove the property and its `dependencyManagement` entry, or the pin will later hold thirdparty

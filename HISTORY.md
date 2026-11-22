@@ -50,3 +50,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-17 looper release v0.1.7 (https://github.com/tacplus-dev/kernel/releases/tag/v0.1.7)
 - 2026-11-17 looper issue Root pom is behind fleet-dev's default-lifecycle pins: jar 3.5.0, resources 3.4.0, and clean, install and deploy unset (commons-io 2.6, plexus-utils 4.0.1: HIGH); pin clean 3.5.0, resources 3.5.0, jar 3.5.1, install/deploy 3.2.0 (#68)
 - 2026-11-20 looper issue Tenant registry in the system tenant's Stratum: a tenant's id, namespace and trust, written when a tenant is approved (#69)
+- 2026-11-22 looper issue Pinned images behind their lines: relock (tacplus.lock: tacplus 2.6.1 → 2.6.13, and 1 more) (#73)

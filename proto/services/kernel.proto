@@ -329,6 +329,21 @@ message BootstrapTenant {
   // of [0-9a-z], not all digits (that range is the platform's). Empty: kernel
   // mints one.
   string tid = 2 [(spec.assert_max_size) = 8];
+  // stratum_seed_members are this tenant's Stratum seed members, state the
+  // operator derives (kernel#34): one
+  // "stratum-<i>.stratum.<tenant namespace>.svc.cluster.local:5001" per member
+  // of the tenant's Stratum StatefulSet. At every boot kernel writes them into
+  // the tenant's TenantConfig.stratum (stratum.StratumTenantConfig.seed_members),
+  // replacing what is stored (none clears it); nothing else writes that slice,
+  // and TenantAdmin.SetTenantConfig keeps the stored one. The tenant's own
+  // Stratum reads it through ConfigState's tenant-pinned read. A plain list, not
+  // the slice's message: a proto with (spec.service_state) cannot import
+  // stratum's.
+  //
+  // An entry may name the reserved `people` tenant (its tid empty or 00000001)
+  // to carry that tenant's seeds only: kernel seeds the people tenant's record
+  // itself (PeopleTenant). `restore` has no Stratum and is refused.
+  repeated string stratum_seed_members = 3 [(spec.assert_max_size) = 64];
 }
 
 // ConfigOverride is the runtime write path for a service's Config, and for

@@ -14,6 +14,7 @@ import com.github.tacplusdev.kernel.model.types.sys.errors.ProtoException;
 import com.github.tacplusdev.kernel.model.types.sys.jwk.JwkOuterClass;
 import com.github.tacplusdev.kernel.model.types.sys.spec.Spec;
 import com.github.tacplusdev.kernel.model.types.services.kernel.Kernel;
+import com.github.tacplusdev.kernel.model.types.services.stratum.Stratum;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.ConfigMap;
 
 import com.google.gson.JsonElement;
@@ -306,6 +307,14 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
                 configMap.getTenantConfigs(ns).getConfig().getKernel().getWorkloadKeysList();
         TenantConfigOuterClass.TenantConfig.Builder merged = request.getConfig().toBuilder();
         merged.getKernelBuilder().clearWorkloadKeys().addAllWorkloadKeys(storedKeys);
+        // The Stratum slice is the bootstrap's to write, at boot (kernel#34): keep
+        // the stored one.
+        TenantConfigOuterClass.TenantConfig stored = configMap.getTenantConfigs(ns).getConfig();
+        if (stored.hasStratum()) {
+            merged.setStratum(stored.getStratum());
+        } else {
+            merged.clearStratum();
+        }
         TenantConfigOuterClass.TenantConfig newConfig = merged.build();
         List<Credentials.CredPair> credPairs = newConfig.getKernel().getCredPairsList();
 
@@ -952,6 +961,12 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
      * immutable, so an entry whose tid differs from the record's is refused,
      * and a record from before tids existed takes the listed tid. Each entry is
      * seeded on its own; the ones refused are reported together at the end.
+     *
+     * <p>Each seeded entry's {@code stratum_seed_members}, its tenant's Stratum
+     * seed members, then replace the tenant's {@code TenantConfig.stratum} (kernel#34): derived
+     * state, so the bootstrap value wins on every boot, and none clears it. The
+     * reserved {@code people} tenant may be listed for its slice alone: its record
+     * is {@link PeopleTenant}'s, so the entry only names it, under no tid or its own.
      */
     static void seedBootstrapTenants(ConfigMap configMap, List<Kernel.BootstrapTenant> tenants)
             throws ProtoException {
@@ -959,7 +974,14 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
         for (Kernel.BootstrapTenant t : tenants) {
             String ns = TENANTS_PREFIX + t.getName();
             try {
-                seedBootstrapTenant(configMap, ns, t);
+                if (PeopleTenant.NAMESPACE.equals(ns)) {
+                    requirePeopleSliceOnly(configMap, t);
+                } else {
+                    seedBootstrapTenant(configMap, ns, t);
+                }
+                seedStratumSlice(configMap, ns, Stratum.StratumTenantConfig.newBuilder()
+                        .addAllSeedMembers(t.getStratumSeedMembersList())
+                        .build());
             } catch (ProtoException e) {
                 refused.add(ns + ": " + e.getMessage());
             }
@@ -968,6 +990,44 @@ public class TenantAdminServiceImpl implements TenantAdmin.TenantAdminHandler {
             throw new ProtoException(ProtoException.FAILED_PRECONDITION,
                     "bootstrap tenant(s) not seeded: " + String.join("; ", refused));
         }
+    }
+
+    /**
+     * Refuses a bootstrap entry for the reserved {@code people} tenant that names
+     * any tid but its own, or comes before {@link PeopleTenant#seed} created it.
+     */
+    private static void requirePeopleSliceOnly(ConfigMap configMap, Kernel.BootstrapTenant t)
+            throws ProtoException {
+        if (!t.getTid().isEmpty() && !TenantIds.PEOPLE.equals(t.getTid())) {
+            throw new ProtoException(ProtoException.INVALID_ARGUMENT,
+                    "the reserved people tenant has tid " + TenantIds.PEOPLE + ", not " + t.getTid());
+        }
+        if (configMap.getTenants(PeopleTenant.NAMESPACE).getName().isEmpty()) {
+            throw new ProtoException(ProtoException.FAILED_PRECONDITION,
+                    "the reserved people tenant is not seeded");
+        }
+    }
+
+    /**
+     * Replaces tenant {@code ns}'s {@code TenantConfig.stratum} with {@code stratum},
+     * keeping every other slice of its config; unset clears it. A tenant with no
+     * config entry and no slice gets no entry.
+     */
+    private static void seedStratumSlice(ConfigMap configMap, String ns, Stratum.StratumTenantConfig stratum)
+            throws ProtoException {
+        Kernel.TenantConfigEntry stored = configMap.getTenantConfigs(ns);
+        TenantConfigOuterClass.TenantConfig.Builder cfg = stored.getConfig().toBuilder();
+        if (stratum.equals(Stratum.StratumTenantConfig.getDefaultInstance())) {
+            cfg.clearStratum();
+        } else {
+            cfg.setStratum(stratum);
+        }
+        TenantConfigOuterClass.TenantConfig next = cfg.build();
+        if (next.equals(stored.getConfig())) {
+            return;
+        }
+        configMap.putTenantConfigs(ns, stored.toBuilder().setTenantName(ns).setConfig(next).build());
+        logger.info("Bootstrap tenant {}: {} Stratum seed member(s)", ns, stratum.getSeedMembersCount());
     }
 
     /**

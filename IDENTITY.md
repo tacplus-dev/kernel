@@ -1000,7 +1000,7 @@ to the namespace).
   one, so a token never carries a tid over. A tenant deleted and created again under the same name has a new tid,
   and a refresh of a token from before carries the new one.
 - **Never from a request.** A relayed IdP claim named `tid` (Microsoft relays its directory id under that name) is a
-  platform claim name now, so `setClaimsFromStruct` prefixes it: `origin_tid`. A delegate's `custom_claims` entry
+  platform claim name now, so `setClaimsFromStruct` drops it (`STANDARD_JWT_CLAIMS`). A delegate's `custom_claims` entry
   named `tid` is skipped like every platform claim name, and a proxy policy's `extra_claims` entry is refused (#40,
   #41; `POLICY_REFUSED_CLAIM_KEYS` is `EXCLUDED_CLAIM_KEYS`, which names `tid` through the enum, so the literal
   is gone). Should a token reach the signature with a `tid` kernel did not resolve, the mint is refused
@@ -1034,7 +1034,7 @@ to the namespace).
   tenant's tid; a tenant IdP login's refresh and access tokens and every refresh after; a namespace below the tenant
   names the top tenant; the Kubernetes mint, its S2S exchange and a workload under it (bootstrap, refresh, access,
   refreshed); a grant-minted token; two tenants, two tids; a bootstrap tenant's seeded tid; a `/system` service's S2S
-  token and a `/system` workload's tokens carry no `tid` key; a relayed `tid` lands as `origin_tid` only; a
+  token and a `/system` workload's tokens carry no `tid` key; a relayed `tid` is dropped; a
   delegate's `custom_claims` `tid` is ignored; a refresh after delete-and-recreate carries the new tid while the old
   token keeps its own; a namespace without a record mints with no claim.
 - `TenantIdTest`: `topTenantOf` and `tidOfNamespace` (the tenant, a project, a sub-tenant; root, `/system`,

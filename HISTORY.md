@@ -56,3 +56,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-28 looper issue spotbugs USO_UNSAFE_OBJECT_SYNCHRONIZATION (2 HIGH): PersonalIdentityServiceImpl.java:88, CollectionRuntime.java:102 (#62)
 - 2026-11-28 looper issue Stamp a tid claim on every tenant token (tacplus#284 option 1) (#32)
 - 2026-11-28 looper issue Bootstrap tenants carry each tenant's Stratum seed members into TenantConfig.stratum (operator#2, option B) (#34)
+- 2026-11-28 looper issue STATE.md's Blocked on names closed tacplus-dev/kernel#34 and tacplus-dev/stratum#50 (#77)

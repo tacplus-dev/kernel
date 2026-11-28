@@ -146,9 +146,11 @@ class TenantTidClaimTest {
 				null);           // webauthnRelyingParty (fail closed)
 		admin = new TenantAdminServiceImpl(configMap, () -> TRUST_DOMAIN, () -> { },
 				svc::purgeDeletedTenant);
-		admin.createTenant(CALLER, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(ACME_NS).build());
-		admin.createTenant(CALLER, Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(BETA_NS).build());
+		// A top-level tenant comes from the tenant registry, which seeds it as a
+		// bootstrap tenant (kernel#69); acme and beta take minted tids.
 		TenantAdminServiceImpl.seedBootstrapTenants(configMap, List.of(
+				Kernel.BootstrapTenant.newBuilder().setName("acme").build(),
+				Kernel.BootstrapTenant.newBuilder().setName("beta").build(),
 				Kernel.BootstrapTenant.newBuilder().setName("gamma").setTid(GAMMA_TID).build()));
 		acmeTid = configMap.getTenants(ACME_NS).getTid();
 		assertTrue(acmeTid.matches("^[a-z][0-9a-z]{7}$"), acmeTid);
@@ -325,8 +327,9 @@ class TenantTidClaimTest {
 		assertTid(acmeTid, oldRefresh, ACME_NS);
 
 		admin.deleteTenant(CALLER, Kernel.DeleteTenantRequest.newBuilder().setTenantNamespace(ACME_NS).build());
-		String newTid = admin.createTenant(CALLER,
-				Kernel.CreateTenantRequest.newBuilder().setTenantNamespace(ACME_NS).build()).getTid();
+		TenantAdminServiceImpl.seedBootstrapTenants(configMap, List.of(
+				Kernel.BootstrapTenant.newBuilder().setName("acme").build()));
+		String newTid = configMap.getTenants(ACME_NS).getTid();
 		assertNotEquals(acmeTid, newTid);
 
 		TokenWrapper refreshed = accessToken(mintFrom(oldRefresh.getBase64()));

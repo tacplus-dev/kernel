@@ -27,6 +27,7 @@ Built inside the fleet build from a manifest, not standalone. Ported from SeaBea
 - Bootstrap tenants carry each tenant's Stratum seed members into TenantConfig.stratum (operator#2, option B) (#34). Agent, at Jody's request, 2026-11-06.
 - Hazelcast: a member endpoint only, no client endpoint (#47). Agent, at Jody's request, 2026-11-10.
 - Product layer: mint the `/products/<name>/services/<svc>` identity with the namespace claim `/products/<name>`, no tid (#63; for tacplus#475). Agent, at Jody's request, 2026-11-15; starts after the tacplus landing backlog clears.
+- Kernel holds `tenantdeletion.TenantDeletions`, one row per tombstoned tid, read-only to the product services (#75; tacplus-dev/tacplus#475, the product layer). Hub, on its recommendation with Jody's standing agreement (tp-act-on-recommendations), 2026-11-27.
 
 ## Later
 - Investigate and retire kmaker once kernel uses the member port (#29)

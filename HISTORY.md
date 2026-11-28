@@ -57,3 +57,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-28 looper issue Stamp a tid claim on every tenant token (tacplus#284 option 1) (#32)
 - 2026-11-28 looper issue Bootstrap tenants carry each tenant's Stratum seed members into TenantConfig.stratum (operator#2, option B) (#34)
 - 2026-11-28 looper issue STATE.md's Blocked on names closed tacplus-dev/kernel#34 and tacplus-dev/stratum#50 (#77)
+- 2026-11-28 looper release v0.2.1 (https://github.com/tacplus-dev/kernel/releases/tag/v0.2.1)

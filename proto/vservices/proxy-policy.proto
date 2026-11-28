@@ -73,6 +73,10 @@ message ProxyPolicyEvalResult {
   // Kernel merges these into the token payload alongside the standard claims.
   // Existing claims on the caller's token are never removed — only additions
   // are permitted to prevent privilege escalation via claim stripping.
+  // A key may not name a claim kernel sets: every JwtPayloadType name
+  // (token_use, linked, namespace, sub, azp, exp, ...), the registered JWT
+  // claims (nbf, typ) and tid. Kernel refuses a result naming one with
+  // PERMISSION_DENIED; namespace is always the verified caller token's.
   google.protobuf.Struct extra_claims = 5;
 
   // auth_type determines the credential format kernel returns to the proxy.

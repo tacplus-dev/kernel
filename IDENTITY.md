@@ -909,3 +909,73 @@ tid misleads people too.
   and no record or tid is written; the four other names are accepted on both; one refused seed entry leaves the
   others seeded; boot finds pre-guard records (top-level and nested) and not the reserved tenants; the cluster
   status carries what boot found.
+
+## 2026-11-28 — Every tenant token carries its tenant's tid (#32)
+
+Generated code needs the *caller's* tid (MCP sessions, tacplus#170; the c2s record reader, tacplus#207), and the
+namespace claim holds the tenant's *name*. Jody decided on 2026-11-02 (tacplus-dev/tacplus#284 option 1, "plus the
+name guard" of #31): kernel stamps a `tid` claim on every token whose namespace is in a tenant. tacplus#284 defines
+the claim, `JWT_PAYLOAD_TYPE_TID = 30` (`"tid"`) in `pkg/proto/sys/token.proto`, and its generated Go, Java and Rust
+read a caller's tid from that claim alone, refusing a tenant-scoped call without one (`PERMISSION_DENIED`, no fallback
+to the namespace).
+
+### What changed
+
+- **The claim.** `tid`, named by the generated `JwtPayloadType` like every claim kernel stamps
+  (`IdentityServiceImpl.TID`). Its value is the tid of the tenant at the top of the token's namespace:
+  `/tenants/<name>` and anything below it (`/tenants/<name>/default`, a sub-tenant) name `<name>`'s tid
+  (`TenantIds.topTenantOf`, `TenantIds.tidOfNamespace`). It is read from that tenant's record (`Tenant.tid`) at the
+  signature, from config state, never from a request.
+- **One place: the signature.** `signLive`, which every mint path signs through (the deleted-tenant check of #19 lives
+  there for the same reason), stamps it (`stampTid`). So user, session (the credential's access tokens and the
+  credential itself, in `people`), service (tenant-owned and the Kubernetes mint), workload, device, grant-minted,
+  offline, cred-pair, workload-key and external tokens all carry it when their namespace is in a tenant, and a path
+  added later cannot miss it.
+- **Absent outside a tenant.** A token whose namespace is root or `/system` carries no `tid` key at all (not an
+  empty one). Kernel's own self-minted token (`ClusterServer.mintSelfToken`) is `/system`'s and is unchanged.
+- **Re-derived on refresh and exchange.** The three paths that clone a presented token (the U2S exchange, the
+  refresh→access mint, the offline-token renewal) drop the input's `tid` before the signature stamps the current
+  one, so a token never carries a tid over. A tenant deleted and created again under the same name has a new tid,
+  and a refresh of a token from before carries the new one.
+- **Never from a request.** A relayed IdP claim named `tid` (Microsoft relays its directory id under that name) is a
+  platform claim name now, so `setClaimsFromStruct` prefixes it: `origin_tid`. A delegate's `custom_claims` entry
+  named `tid` is skipped like every platform claim name, and a proxy policy's `extra_claims` entry is refused (#40,
+  #41; `POLICY_REFUSED_CLAIM_KEYS` is `EXCLUDED_CLAIM_KEYS`, which names `tid` through the enum, so the literal
+  is gone). Should a token reach the signature with a `tid` kernel did not resolve, the mint is refused
+  (`INTERNAL`): no path of kernel's puts one there.
+- **The name guard stays** (#31): a tenant's name may still not have a tid's shape.
+
+### Decided here (issue silent)
+
+- **A sub-tenant's token names the top tenant.** The contract says "the tid of the tenant at the top of the token's
+  namespace". `/tenants/acme/prod` has a tid of its own (#3, #23), and its service subjects are rooted at it, but its
+  tokens' `tid` is acme's: the tenant a request is routed by. The hierarchy stays in the namespace claim.
+- **The external token carries it too.** The issue lists user, session, service and device tokens; the proto comment
+  says "every token whose namespace is in a tenant". The proxy's external token already carries the tenant's name in
+  `namespace`, so the tid adds nothing secret, and the one rule at the signature is simpler than an exception.
+  (Resolves the PROPOSALS.md entry "Decide `tid` on external tokens with kernel#32".)
+- **A namespace with no kernel record mints without a tid.** A deployment may name `/tenants/<x>` in its delegates
+  or policy with no kernel tenant record (#19 keeps such a mint allowed; `TenantDeletionTest`). There is no tid to
+  stamp, so the token carries no claim and kernel logs a warning; the generated readers refuse a tenant-scoped call
+  without one, so the token fails closed exactly where the tid would be used. Refusing the mint instead would be a
+  behaviour change to #19's rule that this issue does not ask for.
+- **A rename.** Kernel has no tenant rename (#31: "a tenant's name is set only there"), so "after a rename, the tid is
+  unchanged" is proven as the record's property: the claim is read from `Tenant.tid`, never derived from the name, and
+  a bootstrap tenant seeded under a given tid stamps that tid boot after boot.
+- **The pin.** The claim is on tacplus main (e9c72c90) and in the backports to release/2.6 (tacplus#326) and
+  release/2.5 (tacplus#316). The first 2.6 patch that carries it is `v2.6.16` (2.6.13 to 2.6.15 were cut before
+  #326 merged), so tacplus.lock moves to 2.6.16, and kernel's patch ships with it.
+
+### Proof
+
+- `TenantTidClaimTest`: a person's credential carries `people`'s `00000001` and each exchanged access token its
+  tenant's tid; a tenant IdP login's refresh and access tokens and every refresh after; a namespace below the tenant
+  names the top tenant; the Kubernetes mint, its S2S exchange and a workload under it (bootstrap, refresh, access,
+  refreshed); a grant-minted token; two tenants, two tids; a bootstrap tenant's seeded tid; a `/system` service's S2S
+  token and a `/system` workload's tokens carry no `tid` key; a relayed `tid` lands as `origin_tid` only; a
+  delegate's `custom_claims` `tid` is ignored; a refresh after delete-and-recreate carries the new tid while the old
+  token keeps its own; a namespace without a record mints with no claim.
+- `TenantIdTest`: `topTenantOf` and `tidOfNamespace` (the tenant, a project, a sub-tenant; root, `/system`,
+  `/tenants`, no record, a pre-tid record, no state; delete-and-recreate; a seeded tid across a restart).
+- `DevicePrincipalTest.deviceProofMintsThePersonsTokenNamingTheDevice`: a device token carries `people`'s tid.
+- `MintExternalTokenTest`: a policy naming `tid` is still refused (unchanged).

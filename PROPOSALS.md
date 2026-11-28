@@ -338,6 +338,16 @@ the looper then marks it `promoted` or `declined` here with the date.
   agree once each has the same entries, by version. A node whose Watch cannot connect keeps serving its last
   snapshot's entries; nothing reports how far behind it is. A `Cluster` status of the registry's revision per node
   would show it.
+- **Hold the sys root `tenantdeletion.TenantDeletions`, one row per tombstoned tid** (2026-11-28, #75; for
+  tacplus-dev/tacplus#475): a product service keeps tenants' data keyed by `caller_tid`, and its generated
+  `OnTenantDeleted` reads this root to delete a tenant's rows; nothing writes it until kernel does, so custodian
+  data outlives its tenant. Kernel would take the root through the tacplus pin (as `ServiceHealth`, via
+  `backendServers.sys()`; `kernel.proto` unchanged), put `{tid, deleted_at_ms = tombstoned_at_ms}` in
+  `TenantIds.tombstone`, write every tombstone again at start and after each DeleteTenant (the root is in memory,
+  the tombstones are the truth), never remove a row, and serve it read-only by a policy in `InfraStatePolicies`.
+  A registry Delete tombstones nothing, so writes no row. Waits on a tacplus release carrying
+  `sys/tenantdeletion.proto`; the readers (product services binding `caller_tid` only, or the platform's too, and
+  who computes them) are Jody's to decide (#75).
 
 ## Promoted / declined
 - **Tenant-owned service identity carries the tid** (2026-10-28, #23): promoted 2026-10-28 (kernel ROADMAP.md, Next),

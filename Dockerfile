@@ -30,13 +30,13 @@ ADD --checksum=sha256:f07933da11e08812afa87d814ecbd187087f20c2af7f62d0c1d3567546
 FROM busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4 AS setup
 RUN mkdir -p /data /app/data
 
-# gcr.io/distroless/java25-debian13:latest, resolved 2026-11-17 (Debian 13.7): it
+# gcr.io/distroless/java25-debian13:latest, resolved 2026-11-25 (Debian 13.8): it
 # has no version tags, so it is pinned by its multi-arch index digest alone, and
 # the image changes base only in a commit: a fixed Debian package reaches it by
 # moving this digest (#66, #67). No HEALTHCHECK: Kubernetes probes the launcher
 # (HEALTH_PORT) and ignores Docker's, and distroless has no shell to run one
 # (DS-0026, accepted in security-exceptions.yaml).
-FROM gcr.io/distroless/java25-debian13@sha256:6558dff7db91bf89d34254014dec8ff1f0a3e13f48a575d5a51ce01d1597d671
+FROM gcr.io/distroless/java25-debian13@sha256:2b69a4e2c905ec18cdf267f4b3821ac9feaf737dae588a190f918079b380e434
 
 ARG BUILD_DATE
 ARG VCS_REF

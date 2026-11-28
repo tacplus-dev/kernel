@@ -1020,8 +1020,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 * token kernel signs into a tenant carries it, and a refresh or exchange
 	 * re-derives it from the namespace rather than carrying it over from the
 	 * presented token (the clone paths drop the input's first). A request can
-	 * put no tid on a token: a relayed IdP claim named {@code tid} is
-	 * {@code origin_}-prefixed, a delegate's or a policy's is refused, and the
+	 * put no tid on a token: a relayed IdP claim named {@code tid} is dropped
+	 * (a platform claim name), a delegate's or a policy's is refused, and the
 	 * value written here is kernel's own. A token whose namespace is in no tenant
 	 * (root, {@code /system}) carries none; one reaching the signature with a tid
 	 * kernel did not resolve is refused, since no path of kernel's puts one there.

@@ -285,8 +285,9 @@ class TenantTidClaimTest {
 	// ------------------------------------------------------------------
 
 	/**
-	 * A relayed IdP claim named {@code tid} (Microsoft relays one) reaches the
-	 * token only {@code origin_}-prefixed; the {@code tid} claim is kernel's.
+	 * A relayed IdP claim named {@code tid} (Microsoft relays one) is dropped,
+	 * as every platform claim name is ({@code STANDARD_JWT_CLAIMS}); the
+	 * {@code tid} claim is kernel's.
 	 */
 	@Test
 	void aForgedTidInTheRelayedClaimsIsIgnored() throws Exception {
@@ -296,7 +297,7 @@ class TenantTidClaimTest {
 		for (TokenWrapper token : List.of(refreshToken(login), accessToken(login),
 				accessToken(mintFrom(refreshToken(login).getBase64())))) {
 			assertTid(acmeTid, token, ACME_NS);
-			assertEquals(FORGED_TID, token.getCustomField("origin_tid"), "relayed under its origin_ name");
+			assertNull(token.getCustomField("origin_tid"), "a platform claim name is dropped, not prefixed");
 		}
 	}
 

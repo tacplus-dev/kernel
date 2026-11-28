@@ -103,13 +103,6 @@ the looper then marks it `promoted` or `declined` here with the date.
   `security-exceptions.yaml` accepts Hazelcast 5.7.0's 8 shaded-Jackson HIGH until then (Jody, #59). When it expires the security gate goes red and
   the decision is revisited; when a Hazelcast with Jackson 2 >= 2.21.7 and 3 >= 3.1.7 ships, bump
   `hazelcast.version`, remove the eight entries and close #59 (decisions/2026-11-04-hazelcast-shaded-jackson.md).
-- **Remove the USO_UNSAFE_OBJECT_SYNCHRONIZATION exception with the tacplus pin that carries tacplus#712** (2026-11-15,
-  #48; Jody, 2026-11-14): `security-exceptions.yaml` accepts that SpotBugs rule anywhere in kernel until 2026-12-14,
-  for one finding in generated code (CollectionRuntime.java:102, `synchronized (Ring.this)` in tacplus's chassis
-  template), which tacplus-dev/tacplus#712 fixes upstream. The issue that pins kernel to the 2.6 patch carrying
-  #712 (#62, blocked on it) removes the entry in the same change; Jody's direction is not to wait for the expiry.
-  While it stands, a new finding of the rule in kernel's own code is accepted silently: review `synchronized`
-  blocks by hand in that window, or run SpotBugs locally (the item above).
 - **Scope a security exception to where it applies** (2026-11-14, #48): looper-scan matches an exception by finding
   id or alias only, and a trivy finding's id is the bare CVE, a spotbugs one the bare rule. So #59's entries accept
   their CVEs in kernel's own Jackson too, and an exception for one generated spotbugs hit (CollectionRuntime's
@@ -118,8 +111,8 @@ the looper then marks it `promoted` or `declined` here with the date.
   tacplus-dev/looper change. Update (nightly scan, 2026-11-21): looper-scan now reads an entry's `where` (README:
   Security checks), and the build's report of 1259efb warns once for each of the 10 entries without one ("has no where: it
   accepts <id> in every file (scope it: where)"). What remains is kernel's: give #59's eight entries a `where` naming the jars
-  that shade Hazelcast and the USO entry `CollectionRuntime.java`, so a downgrade of kernel's own Jackson or a new
-  `synchronized` in kernel's code is reported again. The scope of an accepted risk is Jody's decision, recorded on #59/#62.
+  that shade Hazelcast, so a downgrade of kernel's own Jackson is reported again (the USO entry is gone: #62 removed
+  it once tacplus 2.6.14 was pinned). The scope of an accepted risk is Jody's decision, recorded on #59.
 - **Drop the ratis-thirdparty pin with the next Ratis bump** (2026-11-04, #43): `ratis-thirdparty.version` (1.1.1)
   in the root pom overrides the 1.1.0 Ratis 3.3.1 asks for, for its shaded Netty. Once a Ratis release asks for
   `>= 1.1.1`, remove the property and its `dependencyManagement` entry, or the pin will later hold thirdparty

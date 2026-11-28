@@ -42,7 +42,24 @@ the looper then marks it `promoted` or `declined` here with the date.
 - **Decide `tid` on external tokens with kernel#32** (2026-11-03, #40): #32 stamps `tid` on user, session, service
   and device tokens. It does not mention the external token. #40 makes sure no policy can set `tid` there. Once
   `tid` is a `JwtPayloadType` name, `EXCLUDED_CLAIM_KEYS` stops it being forwarded from the user token, so an external
-  token will carry no `tid` unless #32 derives one at mint, the way it derives the others.
+  token will carry no `tid` unless #32 derives one at mint, the way it derives the others. *Resolved by #32
+  (2026-11-15): the signature stamps every token whose namespace is in a tenant, the external token included; the
+  tenant's name is already in its `namespace`, so the tid adds nothing secret (IDENTITY.md, #32, "Decided here").*
+- **A `TokenWrapper` method to drop a claim, in tacplus** (2026-11-15, #32): the Java `TokenWrapper` can set a payload
+  claim but not remove one (`setCustomField("", ...)` leaves an empty value, and the generated readers call an empty
+  `tid` malformed). Kernel drops a cloned token's `tid` on the proto builder (`removePayload`) at each of its three
+  clone sites and refuses, at the signature, a token carrying a tid it did not resolve, where a `removeCustomField`
+  would let the signature simply strip it. A tacplus issue, once the chassis API is the place to ask.
+- **A tenant namespace with no kernel record mints without a `tid`** (2026-11-15, #32): #19 keeps a mint into
+  `/tenants/<x>` allowed when kernel holds no tenant record for `<x>` (a deployment naming it in delegates or policy).
+  Such a token now carries no `tid`, and the generated readers refuse its tenant-scoped calls. Once every deployment's
+  tenants are kernel records (the operator renders `Config.tenants`, #3), refusing the mint itself would fail closed
+  one hop earlier; that is a change to #19's rule for Jody to decide, not something #32 did.
+- **Should a sub-tenant's token name its own tid?** (2026-11-15, #32): the contract (tacplus#284, #32) says the tid of
+  the tenant at the *top* of the namespace, so `/tenants/acme/prod`'s tokens carry acme's tid while its service
+  subjects are rooted at prod's own tid (#23). Generated routing matches the request's target-tenant tid to the
+  instance; if sub-tenants are ever routed as tenants of their own, the claim and the subject would have to agree,
+  and the contract would change in tacplus first.
 - **A grammar for tenant names** (2026-11-02, #31): `CreateTenant` checks only that the leaf is non-empty and not
   tid-shaped (the boot seed adds "no `/`"), so upper case, dots or spaces pass, and the name becomes a SPIFFE path
   segment and a delegate key. One rule (say `^[a-z0-9][a-z0-9-]{0,62}$`, minus the tid shape), checked in

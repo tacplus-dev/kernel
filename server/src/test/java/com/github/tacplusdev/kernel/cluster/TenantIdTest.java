@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -378,5 +379,75 @@ class TenantIdTest {
 		assertEquals("q1w2e3r4", configMap.getTenants(ACME).getTid());
 		assertEquals(Kernel.TenantStatus.TENANT_STATUS_SUSPENDED, configMap.getTenants(ACME).getStatus(),
 				"the rest of the record is kept");
+	}
+
+	// ---- The tid claim's value (kernel#32) --------------------------------
+
+	@Test
+	void theTopTenantOfANamespaceIsItsFirstSegmentUnderTenants() {
+		assertEquals(ACME, TenantIds.topTenantOf(ACME));
+		assertEquals(ACME, TenantIds.topTenantOf(ACME + "/default"));
+		assertEquals(ACME, TenantIds.topTenantOf(ACME + "/prod/deeper"));
+		assertEquals(PeopleTenant.NAMESPACE, TenantIds.topTenantOf(PeopleTenant.NAMESPACE));
+		assertNull(TenantIds.topTenantOf("/system"));
+		assertNull(TenantIds.topTenantOf("/system/kernel"));
+		assertNull(TenantIds.topTenantOf("/"));
+		assertNull(TenantIds.topTenantOf(""));
+		assertNull(TenantIds.topTenantOf(null));
+		assertNull(TenantIds.topTenantOf("/tenants"));
+		assertNull(TenantIds.topTenantOf("/tenants/"));
+		assertNull(TenantIds.topTenantOf("/tenantsx/acme"));
+	}
+
+	/** The claim is the record's tid, for the tenant and anything below it; a sub-tenant's token names the top. */
+	@Test
+	void tidOfNamespaceIsTheTopTenantsRecordedTid() throws Exception {
+		Kernel.Tenant acme = create(ACME);
+		Kernel.Tenant prod = create(ACME + "/prod");
+		assertNotEquals(acme.getTid(), prod.getTid());
+
+		assertEquals(acme.getTid(), TenantIds.tidOfNamespace(configMap, ACME));
+		assertEquals(acme.getTid(), TenantIds.tidOfNamespace(configMap, ACME + "/default"));
+		assertEquals(acme.getTid(), TenantIds.tidOfNamespace(configMap, ACME + "/prod"));
+		assertEquals(acme.getTid(), TenantIds.tidOfNamespace(configMap, ACME + "/prod/deeper"));
+	}
+
+	/** No tenant, no record, no tid, or no state: no claim. */
+	@Test
+	void tidOfNamespaceIsNullOutsideARecordedTenant() throws Exception {
+		create(ACME);
+
+		assertNull(TenantIds.tidOfNamespace(configMap, "/system"));
+		assertNull(TenantIds.tidOfNamespace(configMap, "/"));
+		assertNull(TenantIds.tidOfNamespace(configMap, ""));
+		assertNull(TenantIds.tidOfNamespace(configMap, BETA), "no record");
+		configMap.putTenants(BETA, Kernel.Tenant.newBuilder().setName("beta").build());
+		assertNull(TenantIds.tidOfNamespace(configMap, BETA), "a record from before tids, not yet backfilled");
+		assertNull(TenantIds.tidOfNamespace(null, ACME), "no state to read");
+	}
+
+	/** The claim follows the record: a tenant created again under the same name has a new tid, and so do its tokens. */
+	@Test
+	void tidOfNamespaceFollowsTheRecordAcrossDeleteAndRecreate() throws Exception {
+		String before = create(ACME).getTid();
+		assertEquals(before, TenantIds.tidOfNamespace(configMap, ACME + "/default"));
+
+		delete(ACME);
+		assertNull(TenantIds.tidOfNamespace(configMap, ACME));
+
+		String after = create(ACME).getTid();
+		assertNotEquals(before, after);
+		assertEquals(after, TenantIds.tidOfNamespace(configMap, ACME + "/default"));
+	}
+
+	/** A seeded tid is what the tenant's tokens carry, boot after boot. */
+	@Test
+	void tidOfNamespaceIsTheSeededTidOfABootstrapTenant(@TempDir Path dir) throws Exception {
+		TenantAdminServiceImpl.seedBootstrapTenants(configMap, List.of(bootstrap("acme", "q1w2e3r4")));
+		assertEquals("q1w2e3r4", TenantIds.tidOfNamespace(configMap, ACME + "/default"));
+
+		ConfigMap after = restart(configMap, dir);
+		TenantAdminServiceImpl.seedBootstrapTenants(after, List.of(bootstrap("acme", "q1w2e3r4")));
+		assertEquals("q1w2e3r4", TenantIds.tidOfNamespace(after, ACME));
 	}
 }

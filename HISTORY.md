@@ -54,3 +54,4 @@ Append-only: add entries at the end, never edit or remove one (CI enforces it). 
 - 2026-11-23 looper issue Pinned images behind their lines: relock (tacplus.lock: tacplus 2.6.13 → 2.6.14, and 1 more) (#74)
 - 2026-11-28 looper issue MintExternalToken: proxy policy extra_claims can overwrite token_use, linked and other kernel-set claims (#41)
 - 2026-11-28 looper issue spotbugs USO_UNSAFE_OBJECT_SYNCHRONIZATION (2 HIGH): PersonalIdentityServiceImpl.java:88, CollectionRuntime.java:102 (#62)
+- 2026-11-28 looper issue Stamp a tid claim on every tenant token (tacplus#284 option 1) (#32)

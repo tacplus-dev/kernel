@@ -15,6 +15,7 @@ import com.github.tacplusdev.kernel.model.types.sys.jwk.JwkOuterClass;
 import com.github.tacplusdev.kernel.model.types.sys.key.KeyOuterClass;
 import com.github.tacplusdev.kernel.model.types.sys.tokenrequest.Tokenrequest;
 import com.github.tacplusdev.kernel.model.types.vservices.userentitlements.Userentitlements;
+import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.ConfigMap;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.PrincipalMap;
 import com.github.tacplusdev.kernel.tacplusbackend.services.kernel.WorkloadMap;
 import com.google.protobuf.Struct;
@@ -83,7 +84,7 @@ class DevicePrincipalTest {
 	private IdentityServiceImpl svc;
 
 	@BeforeEach
-	void setUp() {
+	void setUp() throws Exception {
 		keyRotator = new KeyRotator(
 				3600, 86_400,
 				verifyingKeys::add,
@@ -107,6 +108,10 @@ class DevicePrincipalTest {
 				.build());
 		principalMap = new PrincipalMap(new InMemoryManager());
 		graph = new KernelIdentityGraph(principalMap, () -> { }, () -> false);
+		// The people tenant's record, under its reserved tid: what a device token's
+		// tid claim is read from (kernel#32).
+		ConfigMap configMap = new ConfigMap(new InMemoryManager());
+		PeopleTenant.seed(configMap, List.of());
 		svc = new IdentityServiceImpl(
 				3600, 900, 86_400, 86_400, 86_400,
 				keyRotator,
@@ -122,7 +127,7 @@ class DevicePrincipalTest {
 				ISSUER,
 				new FakeOpaEvalGrpcClient(),
 				null,            // proxyPolicyOpaClient
-				null,            // configMap
+				configMap,
 				new WorkloadMap(new InMemoryManager()),
 				principalMap,
 				null,            // writeIdentitySnapshot
@@ -140,7 +145,7 @@ class DevicePrincipalTest {
 	 * token. Its subject is the XID, its namespace is the people tenant — not
 	 * the tenant OPA named, not a {@code /people/<pid>} principal — and the
 	 * {@code device} claim names the credential, on the refresh token and on the
-	 * access token cloned from it.
+	 * access token cloned from it. Both carry the people tenant's tid (kernel#32).
 	 */
 	@Test
 	void deviceProofMintsThePersonsTokenNamingTheDevice() throws Exception {
@@ -156,6 +161,7 @@ class DevicePrincipalTest {
 		for (TokenWrapper token : List.of(refresh, access)) {
 			assertEquals(person, token.getSubject());
 			assertEquals(PeopleTenant.NAMESPACE, token.getNamespace());
+			assertEquals(TenantIds.PEOPLE, token.getTid(), "a device token carries its tenant's tid");
 			assertEquals("cred-iphone", token.getCustomField(IdentityServiceImpl.CLAIM_DEVICE));
 			assertFalse(token.getNamespace().startsWith("/people/"));
 		}

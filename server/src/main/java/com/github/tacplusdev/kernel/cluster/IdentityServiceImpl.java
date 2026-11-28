@@ -143,6 +143,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 			Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_PARENT_SUB);
 	private static final String LOCALITY = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_LOCALITY);
 	private static final String SERVICE_ENTITLEMENTS = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_SERVICE_ENTITLEMENTS);
+	/** The tenant's id claim (kernel#32, tacplus#284); stamped at the signature, {@link #stampTid}. */
+	static final String TID = Helpers.jwtPayloadTypeToString(JwtPayloadType.JWT_PAYLOAD_TYPE_TID);
 
 	private static final Pattern WORKLOAD_NAME_PATTERN = Pattern.compile("[a-zA-Z0-9_-]+");
 
@@ -262,19 +264,15 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 
 	/**
 	 * Claims the proxy policy's {@code extra_claims} may not set on an external
-	 * token: every kernel-set claim (kernel#41), {@link #EXCLUDED_CLAIM_KEYS}, plus
-	 * {@code tid}, the tenant's id claim (kernel#32). {@code extra_claims} may only add
-	 * keys outside them. A policy naming one is refused, so it can never mint into
-	 * another tenant (namespace, tid: kernel#40), widen the token's namespaces
-	 * (linked), or turn an external token into one an internal service accepts
-	 * (token_use).
+	 * token: every kernel-set claim (kernel#41), {@link #EXCLUDED_CLAIM_KEYS}, which
+	 * names {@code tid}, the tenant's id claim kernel stamps at the signature
+	 * (kernel#32; a {@code JwtPayloadType} since tacplus#284). {@code extra_claims}
+	 * may only add keys outside them. A policy naming one is refused, so it can
+	 * never mint into another tenant (namespace, tid: kernel#40), widen the token's
+	 * namespaces (linked), or turn an external token into one an internal service
+	 * accepts (token_use).
 	 */
-	private static final Set<String> POLICY_REFUSED_CLAIM_KEYS;
-	static {
-		var keys = new java.util.HashSet<>(EXCLUDED_CLAIM_KEYS);
-		keys.add("tid");
-		POLICY_REFUSED_CLAIM_KEYS = Set.copyOf(keys);
-	}
+	private static final Set<String> POLICY_REFUSED_CLAIM_KEYS = EXCLUDED_CLAIM_KEYS;
 
 	private static final String TOKEN_USE_EXTERNAL =
 			Helpers.tokenUseToString(TokenUse.TOKEN_USE_EXTERNAL);
@@ -1010,7 +1008,46 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 	 */
 	private void signLive(TokenWrapper token, ImmutableKey signingKey) throws StatusException {
 		refuseDeletedTenant(token.getNamespace());
+		stampTid(token);
 		token.sign(signingKey);
+	}
+
+	/**
+	 * Stamps the {@code tid} claim (kernel#32; tacplus#284 option 1): the tid of
+	 * the tenant at the top of the token's namespace ({@code /tenants/<name>}, or
+	 * anything below it), read from that tenant's record at the signature
+	 * ({@link TenantIds#tidOfNamespace}). Every mint path signs here, so every
+	 * token kernel signs into a tenant carries it, and a refresh or exchange
+	 * re-derives it from the namespace rather than carrying it over from the
+	 * presented token (the clone paths drop the input's first). A request can
+	 * put no tid on a token: a relayed IdP claim named {@code tid} is dropped
+	 * (a platform claim name), a delegate's or a policy's is refused, and the
+	 * value written here is kernel's own. A token whose namespace is in no tenant
+	 * (root, {@code /system}) carries none; one reaching the signature with a tid
+	 * kernel did not resolve is refused, since no path of kernel's puts one there.
+	 * A tenant namespace kernel holds no record (or no tid) for gets none: the
+	 * generated readers refuse a tenant-scoped call that carries no claim, so
+	 * such a token fails closed where the tid would be used.
+	 */
+	private void stampTid(TokenWrapper token) throws StatusException {
+		String namespace = token.getNamespace();
+		String tid;
+		try {
+			tid = TenantIds.tidOfNamespace(configMap, namespace);
+		} catch (ProtoException e) {
+			throw new StatusException(Status.UNAVAILABLE, "tenant records unavailable: " + e.getMessage());
+		}
+		if (tid != null) {
+			token.setTid(tid);
+			return;
+		}
+		if (token.getCustomField(TID) != null) {
+			throw new StatusException(Status.INTERNAL,
+					"a token in " + namespace + " carries a tid kernel did not resolve");
+		}
+		if (TenantIds.topTenantOf(namespace) != null) {
+			logger.warn("No tid for a token in {}: kernel holds no tenant record with a tid for it", namespace);
+		}
 	}
 
 	/** PERMISSION_DENIED when {@code namespace} lies in a deleted tenant; see {@link #signLive}. */
@@ -3604,11 +3641,13 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 		} else {
 			// U2S: clone the entire input token as a mutable copy.
 			// Preserves all claims (profiles, azp, custom IDP claims) exactly.
-			// Only update the fields that differ for a service token.
+			// Only update the fields that differ for a service token. The tid is
+			// never carried over: signLive re-derives it (kernel#32).
 			newToken = TokenWrapper.from(inputToken.getProto().toBuilder()
 					.setSignature("")
 					.setBase64("")
 					.removePayload("typ")
+					.removePayload(TID)
 					.build());
 
 			if (!request.getAud().isEmpty()) {
@@ -3685,6 +3724,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				.setBase64("")
 				.removePayload("typ")
 				.removePayload(SERVICE_ENTITLEMENTS)
+				// Re-derived at the signature, never carried over (kernel#32).
+				.removePayload(TID)
 				.build());
 		accessToken.setTokenUse(TOKEN_USE_ACCESS);
 		// v3: an IDP user's access token is scoped to exactly one project. The
@@ -3846,6 +3887,8 @@ public class IdentityServiceImpl implements Mint.MintHandler, UserMint.UserMintH
 				.setSignature("")
 				.setBase64("")
 				.removePayload(SERVICE_ENTITLEMENTS)
+				// Re-derived at the signature, never carried over (kernel#32).
+				.removePayload(TID)
 				.build());
 		freshOt.setIssuedAt(now)
 				.setExpiration(exp)
